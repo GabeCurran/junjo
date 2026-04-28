@@ -1832,3 +1832,57 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Provider-specific adapters (Clerk, Supabase) are alphabetical underneath. As more land, this ordering scales without re-shuffling existing entries.
 
 **Trade:** none. Pure docs nav choice.
+
+### Phase 6.3 supabaseAdapter takes the Supabase client directly, not a function-shaped wrapper
+
+**Decision:** `supabaseAdapter(opts)` takes `{ client: SupabaseClientLike, userIdField?: string }`. The dev constructs their `@supabase/supabase-js` client at app startup and passes it to the adapter; the adapter calls `client.auth.getUser(token)` on every verification. `@supabase/supabase-js` stays a peer dep, not a regular dep.
+
+**Rationale:**
+- VISION explicitly specifies "Wraps `@supabase/supabase-js` (peer dep)" and "Calls `supabase.auth.getUser(token)` and returns the user id." The natural Supabase usage is "construct a server-side client with a service-role or anon key, then validate user JWTs through it"; taking the client directly matches that mental model and means the same client can be reused for any other Supabase calls in the dev's backend.
+- `clerkAdapter` (Phase 6.2) took a function-shaped `verifyToken` because `@clerk/backend` reshaped its API in v1+ (method-on-client became a standalone function). Supabase's `auth.getUser(token)` has been stable since `@supabase/supabase-js` v2 launched, so the API-stability concern that motivated the function-shape choice on Clerk does not apply here.
+- The structural typing on `SupabaseClientLike` accepts any object with an `auth.getUser(token)` method; devs who want to inject test fakes or wrap the real client to remap fields can do so without a separate factory shape.
+
+**Trade:** if `@supabase/supabase-js` ever reshapes the `auth.getUser` response envelope, the adapter and every consumer break together until the structural type is updated. Acceptable for V1 because the API is well-established; switching this adapter to a function-shaped option later is an additive change behind a deprecation cycle.
+
+### supabaseAdapter throw-vs-null contract matches jwtAdapter and clerkAdapter
+
+**Decision:** `supabaseAdapter`'s `verifyToken` returns `null` on every legitimate verification failure: empty/non-string token, `client.auth.getUser` throws, the response carries `error`, the response has `data` missing or null, `data.user` is null, the configured user-id field is missing / non-string / empty. It throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable: `client` is missing, `client.auth` is missing, or `client.auth.getUser` is not a function.
+
+**Rationale:**
+- Mirrors `jwtAdapter` (Phase 6.1) and `clerkAdapter` (Phase 6.2) so the throw-vs-null contract is consistent across every built-in adapter. A dev branching on `await adapter.verifyToken(token)` works the same way regardless of which adapter is wired up.
+- Supabase distinguishes "auth rejected the token" from "user does not exist" via the `error` field on the response, but both shapes are functionally equivalent to "this caller is not authorized" for Junjo's purposes; collapsing them into `null` keeps the contract simple. The alternative (returning structured failure reasons) would couple the SDK type to provider-specific error taxonomies.
+- Catching network errors as `null` is a deliberate trade. A transient outage between the dev's server and Supabase's auth API surfaces as "user not authenticated" instead of a thrown stack trace; that is the same trade `clerkAdapter` makes against Clerk's JWKS endpoint, and it preserves the adapter contract.
+
+**Trade:** transient network errors against Supabase's auth API silently appear as "user not authenticated" instead of crashing the request. Acceptable; the alternative leaks provider-specific error shapes through Junjo's interface, and the dev can build their own retry / circuit-breaker around the adapter if they need different behavior.
+
+### supabaseAdapter exposes `userIdField` for parity, but only for top-level fields
+
+**Decision:** the adapter accepts an optional `userIdField` (defaults to `"id"`). Devs who store an internal id on the User record under a different top-level field can override the read path. Nested fields under `app_metadata` or `user_metadata` are not supported in V1; devs who need them must wrap the client themselves.
+
+**Rationale:**
+- Parity with `jwtAdapter.userIdClaim` and `clerkAdapter.userIdClaim`. The option is named `userIdField` rather than `userIdClaim` because the value comes from a User record (a JS object with named fields), not a JWT payload (a "claims" object); the wording matches the data model the dev sees in Supabase's docs.
+- Supporting a path expression (`app_metadata.app_user_id`) would force every other adapter to either pick up the same syntax (drift) or stay simple (asymmetry). Wrapping the client at integration time is the natural place to flatten / remap nested fields, and the cost (a 10-line client wrapper) is documented in the adapter's docs page.
+- Most apps that adopt Supabase Auth use the default `id` field (Supabase's user UUID); the override path serves the small fraction that have a separate internal id.
+
+**Trade:** apps that store their internal user id under `app_metadata.app_user_id` (a Supabase-conventional pattern) write a 10-line wrapper instead of a one-line option override. Acceptable; the wrapper is reusable and the alternative (a path-expression syntax) leaks complexity into every adapter.
+
+### `apps/docs/pages/auth/_meta.json` adds `supabase` after `clerk`
+
+**Decision:** the `auth/` section's nav order is `jwt`, `clerk`, `supabase`. Future provider-specific adapters land alphabetically underneath, with `jwt` permanently pinned first.
+
+**Rationale:**
+- Continues the iter-033 nav decision: most-general-first (`jwt`), then alphabetical for provider-specific entries. Supabase falls naturally after Clerk in alphabetical order.
+- Pinning `jwt` first keeps the broadest applicable answer at the top of the nav for newcomers asking "which adapter do I want?"
+
+**Trade:** none. Pure docs nav choice.
+
+### supabaseAdapter does not cache verifications
+
+**Decision:** the adapter calls `client.auth.getUser(token)` on every verification with no caching layer. Devs who need caching wrap the adapter themselves (or wrap the client) with their preferred TTL / invalidation policy.
+
+**Rationale:**
+- Supabase's auth API call is a network round trip on every verification, which is the highest-cost path in the adapter; in steady-state production this can be 10-50ms per call. Caching can dramatically improve throughput, but the right cache shape (TTL, key, invalidation on logout) depends entirely on the dev's session-lifetime tolerance and security model.
+- A built-in cache would force one policy on every consumer, and worse, would make per-request authorization decisions on stale data unless the dev opted into invalidation hooks. The right default in V1 is "no cache, fully consistent with Supabase."
+- Documented in the adapter's docs page so devs are not surprised by the cost.
+
+**Trade:** high-traffic apps pay a Supabase round trip per request. Acceptable for V1; the adapter is correct by default, and caching is an additive concern that the dev controls.
