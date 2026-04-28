@@ -16,7 +16,7 @@ import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import {
-  publishEvent,
+  dispatchEvent,
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
@@ -333,7 +333,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { groupId: updated.row.id, status: "active" },
     });
     if (updated.changed) {
-      publishEvent<GroupUpdatedEvent>(hub, {
+      await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
         type: "group.updated",
         gameId: gameId as GameId,
         groupId: updated.row.id as GroupId,
@@ -355,7 +355,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (hard) {
       await prisma.group.delete({ where: { id: existing.id } });
-      publishEvent<GroupDeletedEvent>(hub, {
+      await dispatchEvent<GroupDeletedEvent>(prisma, hub, {
         type: "group.deleted",
         gameId: existing.gameId as GameId,
         groupId: existing.id as GroupId,
@@ -395,7 +395,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
     });
-    publishEvent<GroupDeletedEvent>(hub, {
+    await dispatchEvent<GroupDeletedEvent>(prisma, hub, {
       type: "group.deleted",
       gameId: updated.gameId as GameId,
       groupId: updated.id as GroupId,
@@ -447,7 +447,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
     });
-    publishEvent<GroupUpdatedEvent>(hub, {
+    await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
       type: "group.updated",
       gameId: updated.gameId as GameId,
       groupId: updated.id as GroupId,
@@ -513,7 +513,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       return created;
     });
 
-    publishEvent<MemberInvitedEvent>(hub, {
+    await dispatchEvent<MemberInvitedEvent>(prisma, hub, {
       type: "member.invited",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -752,7 +752,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    publishEvent<MemberLeftEvent>(hub, {
+    await dispatchEvent<MemberLeftEvent>(prisma, hub, {
       type: "member.left",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -820,7 +820,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    publishEvent<MemberLeftEvent>(hub, {
+    await dispatchEvent<MemberLeftEvent>(prisma, hub, {
       type: "member.left",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -1066,7 +1066,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     for (const inv of createdInvitations) {
-      publishEvent<MemberInvitedEvent>(hub, {
+      await dispatchEvent<MemberInvitedEvent>(prisma, hub, {
         type: "member.invited",
         gameId: gameId as GameId,
         groupId: group.id as GroupId,
@@ -1136,7 +1136,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     permissionCache.invalidateGroup(group.id);
 
-    publishEvent<RoleChangedEvent>(hub, {
+    await dispatchEvent<RoleChangedEvent>(prisma, hub, {
       type: "role.changed",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -1199,7 +1199,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     permissionCache.invalidateGroup(group.id);
 
-    publishEvent<RoleChangedEvent>(hub, {
+    await dispatchEvent<RoleChangedEvent>(prisma, hub, {
       type: "role.changed",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -1459,7 +1459,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       return created;
     });
 
-    publishEvent<RoleCreatedEvent>(hub, {
+    await dispatchEvent<RoleCreatedEvent>(prisma, hub, {
       type: "role.created",
       gameId: gameId as GameId,
       groupId: group.id as GroupId,
@@ -1582,7 +1582,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     for (const rel of result.changed) {
-      publishEvent<GroupRelationshipChangedEvent>(hub, {
+      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
         type: "group.relationship.changed",
         gameId: gameId as GameId,
         groupId: rel.groupAId as GroupId,
@@ -1656,7 +1656,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     for (const dir of cleared) {
-      publishEvent<GroupRelationshipChangedEvent>(hub, {
+      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
         type: "group.relationship.changed",
         gameId: gameId as GameId,
         groupId: dir.aId as GroupId,
@@ -1798,7 +1798,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
     });
-    publishEvent<GroupUpdatedEvent>(hub, {
+    await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
       type: "group.updated",
       gameId: gameId as GameId,
       groupId: updated.id as GroupId,

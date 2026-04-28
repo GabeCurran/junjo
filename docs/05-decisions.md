@@ -1508,3 +1508,57 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the URL path (`/v1/groups/:id/audit`) and the SDK shape (`junjo.audit.list(groupId)`) don't directly mirror each other. The lookup-from-URL-to-method takes one extra hop. Acceptable given the cross-cutting nature.
 
+
+### Phase 5.3 splits across two iterations: 5.3a (enqueue) ships before 5.3b (worker)
+
+**Decision:** Phase 5.3 is broken into two iterations. 5.3a (this) wires every mutation route's published `JunjoEvent` to ALSO create one `pending` `WebhookDelivery` row per matching `WebhookEndpoint`. 5.3b will ship the actual HTTP delivery worker (poll, sign with HMAC, POST, retry with exponential backoff, transition status). 5.3c may further split out the `index.ts` bootstrap if the worker iteration grows too large.
+
+**Rationale:**
+- The enqueue-side and the delivery-side are independent units of work. Enqueueing is a Prisma `findMany` + `create` against an existing schema; delivery is HTTP, signing, retry state-machine, and a poll loop. Bundling both into one iteration would dilute review focus and make the commit hard to revert if either half misbehaves.
+- The Phase 5.1 (SSE) precedent split into 5.1a/b/c. Same shape applies cleanly here.
+- 5.3a is independently valuable: dashboards and admins can already see `WebhookDelivery` rows pile up, which surfaces "are events flowing through" without waiting on the HTTP worker. (The rows just stay `pending` until 5.3b lands.)
+
+**Trade:** between iterations 5.3a and 5.3b, configured webhooks accumulate undelivered `pending` rows but nothing POSTs them. If Gabe wakes up between the two and tests with a real endpoint, nothing fires. Acceptable for an overnight loop; the gap is short.
+
+### `dispatchEvent` wraps `publishEvent` plus the webhook enqueue
+
+**Decision:** `events.ts` exports a new `async dispatchEvent<E>(prisma, hub, payload)` that calls `publishEvent(hub, payload)` then `await enqueueWebhookDeliveries(prisma, event)`. Every mutation route that previously called `publishEvent<X>(hub, payload)` now calls `await dispatchEvent<X>(prisma, hub, payload)` instead (~18 call sites across `routes/groups.ts`, `routes/invitations.ts`, `routes/roles.ts`). `publishEvent` itself remains exported as a hub-only helper for tests and any future consumer that wants pure SSE without a webhook side effect.
+
+**Rationale:**
+- One call site, one event, two delivery channels (SSE + webhooks). The dispatcher captures that invariant and keeps the call sites short. The alternative - calling `publishEvent` then `enqueueWebhookDeliveries` separately at every site - duplicates the wiring 18 times.
+- Renaming `publishEvent` was tempting (since the function does more now) but `publishEvent` is now a perfectly accurate name for "broadcast to the in-process hub only." Keeping it lets niche callers opt out of the webhook side effect cleanly.
+- Making `dispatchEvent` `async` means every call site grows an `await`. That's a mechanical change but it locks in the property that webhook enqueue completes before the route response is returned; no fire-and-forget races where the response arrives before the queue row is committed.
+
+**Trade:** every mutation handler now awaits a webhook query, even when no endpoints exist for the game. The empty-endpoint short-circuit (`if (endpoints.length === 0) return []`) bounds this to one indexed `findMany` per mutation. For the no-webhooks-configured majority case this is a single round-trip with no transaction; not free but not measurable.
+
+### `WebhookEndpoint.events` filter: empty array = match all
+
+**Decision:** an endpoint with `events: []` matches every `JunjoEvent.type`. A non-empty array matches only the listed types. The Prisma filter is `OR: [{ events: { isEmpty: true } }, { events: { has: event.type } }]`.
+
+**Rationale:**
+- The schema comment said so already (`// Subset of event types this endpoint cares about. Empty = all.`). This decision just records the formal Prisma-level interpretation.
+- Empty-as-default is the friendlier ergonomic for `webhooks.create({ url, events?: [] })` callers. "I want everything" is the most common case; making it the default avoids forcing dashboard users to enumerate the full `JunjoEventType` union.
+- The alternative (treat empty as "match nothing") would silently drop all events for endpoints created without specifying `events`, which is a footgun.
+
+**Trade:** there is no way to express "this endpoint cares about no events" via the `events` array alone; if a dev wants to mute an endpoint, they set `disabledAt` instead. Acceptable: muting is the right knob for "off."
+
+### Webhook delivery payload is JSON-stringified-then-parsed for storage
+
+**Decision:** `serializeEventForStorage(event)` does `JSON.parse(JSON.stringify(event))` and returns the result as `Prisma.InputJsonValue`. The stored payload has every `Date` field rendered as an ISO 8601 string, every branded id as a plain string, and is byte-identical to what the worker will eventually POST as the request body.
+
+**Rationale:**
+- Round-tripping through `JSON` is the simplest way to make sure the stored payload matches the wire format. Hand-rolling a per-event-type serializer would duplicate the SDK's `deserializeEvent` and risk drift.
+- The cost (one stringify + one parse per delivery) is small compared to the database write itself.
+- The stored payload IS what the worker POSTs verbatim; not constructing it again at delivery time means the HMAC signature can be computed once over a stable byte sequence (Phase 5.3b will store the signed body alongside the payload, but the payload is the ground truth).
+
+**Trade:** the Prisma `Json` column type is "any JSON-serializable value," so we lose Postgres's strict-type checking on the payload column. Acceptable: the column is opaque to every consumer except the worker, which knows the schema from the originating `JunjoEvent` union.
+
+### No-op routes that skip the audit / SSE event also skip the webhook enqueue
+
+**Decision:** every mutation route that already short-circuits on no actual change (no audit entry written, no SSE event published) continues to short-circuit on the webhook side too, because the dispatcher is only called when the route reaches the publish step. There is no `enqueueWebhookDeliveries` call separately wired for the no-op branches.
+
+**Rationale:**
+- One source of truth for "did anything observable happen": the publish path. If the route decides nothing changed, neither the audit log, the SSE stream, nor the webhook queue records anything.
+- Dispatch-via-`dispatchEvent` is the inversion of control: the route signals "this changed" by calling the dispatcher; the dispatcher fans out. Routes do not need to know about webhooks specifically.
+
+**Trade:** webhook consumers that want "ping me on every successful API call regardless of state change" can't get that out of V1. The right knob for that is API access logs, not webhook events. Acceptable: webhooks are for state-change notifications, not request-trace fan-out.

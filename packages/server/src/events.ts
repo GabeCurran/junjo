@@ -18,6 +18,7 @@ import type {
   UserId,
 } from "@junjo/shared";
 import type {
+  PrismaClient,
   Group as PrismaGroup,
   GroupMember as PrismaGroupMember,
   GroupRelationship as PrismaGroupRelationship,
@@ -25,6 +26,7 @@ import type {
   Role as PrismaRole,
 } from "@prisma/client";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
+import { enqueueWebhookDeliveries } from "./webhooks.js";
 
 // 24 hex chars (96 bits of entropy). Random ids let any emitter mint one
 // without a database round-trip; the id surfaces on the SSE `id:` line so
@@ -128,6 +130,22 @@ export function publishEvent<E extends JunjoEvent>(
     ...payload,
   } as unknown as E;
   hub.publish(event);
+  return event;
+}
+
+// Publishes an event to the SSE hub and enqueues durable webhook
+// deliveries to every matching endpoint in the same call. Mutation
+// routes use this in place of `publishEvent` whenever they would have
+// fired an SSE event; transient subscribers and durable webhook
+// consumers stay in lockstep that way (one event -> one hub broadcast +
+// one delivery per matching endpoint).
+export async function dispatchEvent<E extends JunjoEvent>(
+  prisma: PrismaClient,
+  hub: EventHub,
+  payload: Omit<E, "id" | "occurredAt">,
+): Promise<E> {
+  const event = publishEvent<E>(hub, payload);
+  await enqueueWebhookDeliveries(prisma, event);
   return event;
 }
 

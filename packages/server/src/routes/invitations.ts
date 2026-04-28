@@ -4,7 +4,7 @@ import type { Invitation, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { publishEvent, toPublicMember } from "../events.js";
+import { dispatchEvent, toPublicMember } from "../events.js";
 import { findOrCreateJunjoUser } from "../identity.js";
 import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
 import { serializeMember } from "./members.js";
@@ -193,7 +193,7 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       return member;
     });
 
-    publishEvent<MemberJoinedEvent>(hub, {
+    await dispatchEvent<MemberJoinedEvent>(prisma, hub, {
       type: "member.joined",
       gameId: gameId as GameId,
       groupId: invitation.groupId as GroupId,

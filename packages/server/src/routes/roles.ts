@@ -11,7 +11,7 @@ import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { publishEvent } from "../events.js";
+import { dispatchEvent } from "../events.js";
 import { permissionCache } from "../permissionCache.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
@@ -235,7 +235,7 @@ export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Han
     });
     permissionCache.invalidateGroup(role.groupId);
 
-    publishEvent<PermissionGrantedEvent>(hub, {
+    await dispatchEvent<PermissionGrantedEvent>(prisma, hub, {
       type: "permission.granted",
       gameId: gameId as GameId,
       groupId: role.groupId as GroupId,
@@ -289,7 +289,7 @@ export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Ha
     });
     permissionCache.invalidateGroup(role.groupId);
 
-    publishEvent<PermissionRevokedEvent>(hub, {
+    await dispatchEvent<PermissionRevokedEvent>(prisma, hub, {
       type: "permission.revoked",
       gameId: gameId as GameId,
       groupId: role.groupId as GroupId,
@@ -334,7 +334,7 @@ export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Hand
     });
     permissionCache.invalidateGroup(existing.groupId);
 
-    publishEvent<RoleDeletedEvent>(hub, {
+    await dispatchEvent<RoleDeletedEvent>(prisma, hub, {
       type: "role.deleted",
       gameId: gameId as GameId,
       groupId: existing.groupId as GroupId,
