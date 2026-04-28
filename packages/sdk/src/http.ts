@@ -49,6 +49,30 @@ export class HttpClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
+    return this.parseResponse<T>(res);
+  }
+
+  // POST a non-JSON body (e.g. text/csv for bulk-invite). The body is
+  // forwarded to fetch verbatim; pass a string for the simple case or a
+  // ReadableStream<Uint8Array> when the caller already has a stream.
+  async postRaw<T>(
+    path: string,
+    body: string | ReadableStream<Uint8Array>,
+    contentType: string,
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.apiKey}`,
+        "content-type": contentType,
+      },
+      body,
+    });
+    return this.parseResponse<T>(res);
+  }
+
+  private async parseResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
       let parsed: ServerErrorBody = {};
       try {

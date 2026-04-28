@@ -495,6 +495,60 @@ member.status; // "kicked"
 
 - [`POST /v1/groups/:id/members/:userId/kick`](/api/groups) - the underlying HTTP route.
 
+## `bulkInvite(groupId, csv, opts?)` - shipped
+
+Creates many open-code invitations in one request. The body is plain text, one external user id per line; the SDK accepts either a `string` or a `ReadableStream<Uint8Array>` so callers can stream a large file without first reading it into memory.
+
+```ts
+const result = await junjo.groups.bulkInvite(
+  "grp_xyz" as GroupId,
+  ["user_alice", "user_bob", "user_carol"].join("\n"),
+  { roleId: "role_recruit" as RoleId },
+);
+
+result.invited; // 3
+result.skipped; // 0
+result.errors;  // []
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to invite into. |
+| `csv` | `string \| ReadableStream<Uint8Array>` | One trimmed, non-empty line per userId. Empty lines are silently ignored. Both `\n` and `\r\n` line endings are accepted. Lines are not split on commas; each line is treated as a single userId. |
+| `opts.roleId` | `RoleId` | Optional. Applied to every created invitation. |
+
+### Returns
+
+```ts
+{
+  invited: number,             // count of created Invitation rows
+  skipped: number,             // already-active, already-pending, or duplicate-in-batch
+  errors: Array<{
+    row: number,               // 1-indexed source-line position
+    reason: string,            // e.g. "userId exceeds 255 characters"
+  }>,
+}
+```
+
+### Limits
+
+- 1000 rows per request (errored + valid combined). Exceeding returns `JunjoError("bad_request")`.
+- 255 characters per userId. Longer userids land in `errors`, not in `skipped`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Row count over 1000, or `roleId` is the empty string. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/bulk-invite`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`bulkInvite`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+The relationship helpers and `subscribe` still exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

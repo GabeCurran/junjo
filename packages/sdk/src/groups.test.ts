@@ -1304,3 +1304,159 @@ describe("groups.kick", () => {
     });
   });
 });
+
+describe("groups.bulkInvite", () => {
+  const okBody = { invited: 0, skipped: 0, errors: [] };
+
+  it("POSTs the CSV body verbatim with text/csv content-type", async () => {
+    const csv = "user_alice\nuser_bob\n";
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      const u = new URL(req.url);
+      expect(u.pathname).toBe("/v1/groups/grp_1/bulk-invite");
+      expect(u.search).toBe("");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/^text\/csv/);
+      const text = await req.text();
+      expect(text).toBe(csv);
+      return jsonResponse({ invited: 2, skipped: 0, errors: [] });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.groups.bulkInvite("grp_1" as GroupId, csv);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result).toEqual({ invited: 2, skipped: 0, errors: [] });
+  });
+
+  it("forwards an optional roleId via query string", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const u = new URL(req.url);
+      expect(u.pathname).toBe("/v1/groups/grp_1/bulk-invite");
+      expect(u.searchParams.get("roleId")).toBe("role_recruit");
+      return jsonResponse(okBody);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.bulkInvite("grp_1" as GroupId, "user_x\n", {
+      roleId: "role_recruit" as RoleId,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not encode the body as JSON", async () => {
+    const csv = "user_alice\nuser_bob\n";
+    const fetchMock = makeFetch(async (req) => {
+      const text = await req.text();
+      expect(text).toBe(csv);
+      expect(text.startsWith('"')).toBe(false);
+      return jsonResponse(okBody);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.bulkInvite("grp_1" as GroupId, csv);
+  });
+
+  it("passes a ReadableStream<Uint8Array> body through to fetch unchanged", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("user_alice\n"));
+        controller.enqueue(encoder.encode("user_bob\n"));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as ReadableStream<Uint8Array>;
+      const reader = body.getReader();
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      const total = chunks.reduce((sum, c) => sum + c.length, 0);
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c, off);
+        off += c.length;
+      }
+      const text = new TextDecoder().decode(merged);
+      expect(text).toBe("user_alice\nuser_bob\n");
+      return jsonResponse(okBody);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.bulkInvite("grp_1" as GroupId, stream);
+  });
+
+  it("deserializes the response shape verbatim", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        invited: 5,
+        skipped: 2,
+        errors: [{ row: 7, reason: "userId exceeds 255 characters" }],
+      }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.groups.bulkInvite("grp_1" as GroupId, "user_x\n");
+    expect(result.invited).toBe(5);
+    expect(result.skipped).toBe(2);
+    expect(result.errors).toEqual([{ row: 7, reason: "userId exceeds 255 characters" }]);
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.bulkInvite("grp_missing" as GroupId, "user_x\n"),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("URL-encodes the group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/bulk-invite");
+      return jsonResponse(okBody);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.bulkInvite("has/slash" as GroupId, "user_x\n");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});

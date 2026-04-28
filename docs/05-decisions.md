@@ -777,3 +777,58 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 
 - Initial domain: `junjo.io` only, or also grab `junjo.gg` (gaming TLD) as redirect?
 - npm org: try to claim `@junjo` first, fallback to `@junjo-dev` if taken
+
+### `groups.bulkInvite` accepts plain text, one userId per line
+
+**Decision:** the bulk-invite route takes a `text/csv` body in which each non-empty line is a single external user id. The format is intentionally not a real CSV: there is no header row, no quoting rules, no comma-separated fields. Whitespace is trimmed, empty lines are ignored without being counted, and the `\n` / `\r\n` distinction is collapsed.
+
+**Rationale:**
+- VISION specifies "one user-id or email per line" - that is a one-column CSV with no fancy parsing required. Adding a CSV-spec parser dependency for a single-column file would be over-engineering.
+- Userids are opaque strings (Clerk `user_xyz`, Supabase uuids, Roblox numeric ids as strings); a real CSV parser would have to special-case ids that contain commas, which is the dev's responsibility, not Junjo's.
+- The dev who wants to attach extra columns (display name, intended role, etc.) can pre-process the CSV client-side and call `bulkInvite` with just the userId column. The single-column format keeps the server contract tight and predictable.
+
+**Trade:** if the dev's userIds happen to contain commas (rare but possible for some auth providers), they can pass them through verbatim - we do not split on commas. The cost is that the format is not interoperable with spreadsheet exports that have multiple columns; the dev must export a single-column file.
+
+### `groups.bulkInvite` is capped at 1000 rows per request
+
+**Decision:** the total source-line count (errored rows + valid rows) is capped at 1000. Exceeding the cap returns `400 bad_request` with no invitations created. Userids are individually capped at 255 characters; longer values land in `errors`, not `skipped`.
+
+**Rationale:**
+- One request creates up to 1000 invitations and 1000 audit entries inside one Postgres transaction; that is comfortable for a single transaction without lock contention. Higher numbers (10k, 100k) would either need batching across multiple transactions or a job-queue / async flow, neither of which is in V1.
+- 255 characters is a generous upper bound for any practical userId (Clerk's `user_<26-char-cuid>` is 31, Supabase uuids are 36, Roblox `Players.LocalPlayer.UserId.tostring()` is at most 19). Longer values are almost certainly malformed input (e.g. a CSV row that includes the user's display bio); reporting them as errors gives the dev a useful signal.
+- The cap can be raised later (1000 -> 10000) without breaking dev code, since the validation message includes the active limit. Lowering would be breaking; 1000 leaves room.
+
+**Trade:** a dev with a >1000-user invite list must batch their own requests. The dev's loop is simple (split into chunks of 1000, call `bulkInvite` per chunk), and they get incremental feedback as each chunk returns its `invited` / `skipped` / `errors` counts.
+
+### `groups.bulkInvite` skips users who are already active members or already have a pending invitation
+
+**Decision:** for each unique userId in the batch, the route runs two existence checks in parallel (active `GroupMember` row, unused-and-unexpired `Invitation` row). A hit in either check counts the row as `skipped` and creates no new invitation. Duplicates within the same batch (the same userId appearing twice in the input) also count as `skipped` for every occurrence after the first.
+
+**Rationale:**
+- Bulk invite is conceptually "make sure each of these users has an open invitation", not "create N new rows regardless of state". Re-inviting an already-active member would create churn in the dev's UI ("you have a pending invitation" notifications for users who are already in); creating a duplicate pending invitation for the same user would just leave dead rows.
+- Non-active members (`left`, `kicked`, `invited`) are not skipped - the dev can re-invite them. This matches the existing Phase 2.1 `inviteByUserId` semantics, which only blocks if there is an active membership (not a historical one). VISION calls for symmetry between bulk and single-shot invitations.
+- Expired and used invitations are not skipped either, since they no longer represent live state. The dev's previous attempt has lapsed; the bulk call resurrects the offer.
+
+**Trade:** the response's `skipped` count conflates four distinct cases (already active, already pending, batch duplicate, also-pending-from-prior-call). For V1 a single bucket is enough; if devs ask for a breakdown later, the response can grow `skippedReasons: { activeMember, pendingInvitation, duplicateInBatch }` as an additive field.
+
+### `groups.bulkInvite` audit `payload.source` is `"bulk-invite"`
+
+**Decision:** the `member.invited` audit entries written by the bulk route carry an extra `source: "bulk-invite"` field on `payload` (alongside the standard `invitationId, code, targetUserId, roleId, expiresAt` fields). The single-shot `inviteByUserId` route does not emit this field.
+
+**Rationale:**
+- A future audit consumer (admin dashboard, analytics) needs a way to distinguish "this group received 50 bulk invitations from a CSV import" vs "this group received 50 individual invitations issued one-by-one." The two patterns mean different things operationally; the audit log is where that distinction belongs.
+- An extra payload key is additive: existing audit consumers ignore unknown keys by convention, so adding `source` does not break the read side.
+- The alternative (a new `member.bulk-invited` action on the union) was rejected because the *thing* that happened (a member was invited) is the same; only the *channel* differs. Splitting actions per-channel would multiply the union and force every audit-display layer to handle both names.
+
+**Trade:** the audit table grows one extra small field per bulk-issued invitation. The size cost is negligible (jsonb storage on the existing column).
+
+### SDK `HttpClient.postRaw` for non-JSON request bodies
+
+**Decision:** the shared `HttpClient` grows a `postRaw(path, body, contentType)` method that bypasses JSON encoding. Bulk-invite uses it to send a `text/csv` body (string or `ReadableStream<Uint8Array>`). The original `request` / `post` / etc. methods are unchanged.
+
+**Rationale:**
+- The vast majority of SDK calls send JSON; keeping the default fast path simple is right. Adding a `rawBody` opt to the existing `request` method would clutter the call sites that do not need it.
+- `postRaw` shares the response-parsing path with `request` (factored into a private `parseResponse` helper), so error handling stays identical: non-2xx responses still throw `JunjoError` with the server's code/status/message.
+- Bulk-invite is the only V1 caller of `postRaw`. If a future surface needs raw uploads (file imports, image attachments), the same helper can support them; if no other caller appears, the helper stays a tiny dedicated leaf.
+
+**Trade:** the `HttpClient` now has two POST methods. The naming distinction (`post` vs `postRaw`) is unambiguous and matches conventions like `node-fetch`'s `body` vs raw stream patterns.

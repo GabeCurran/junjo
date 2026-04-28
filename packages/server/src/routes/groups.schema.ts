@@ -47,3 +47,9 @@ export const kickMemberBody = z
   .transform((b) => b ?? {});
 
 export type KickMemberBody = z.infer<typeof kickMemberBody>;
+
+export const bulkInviteQuery = z.object({
+  roleId: z.string().min(1).optional(),
+});
+
+export type BulkInviteQuery = z.infer<typeof bulkInviteQuery>;

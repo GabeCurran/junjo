@@ -179,11 +179,19 @@ export class GroupsApi {
   }
 
   async bulkInvite(
-    _groupId: GroupId,
-    _csv: string | ReadableStream<Uint8Array>,
-    _opts?: { roleId?: RoleId },
+    groupId: GroupId,
+    csv: string | ReadableStream<Uint8Array>,
+    opts?: { roleId?: RoleId },
   ): Promise<{ invited: number; skipped: number; errors: Array<{ row: number; reason: string }> }> {
-    throw NOT_IMPLEMENTED;
+    const params = new URLSearchParams();
+    if (opts?.roleId !== undefined) params.set("roleId", opts.roleId);
+    const qs = params.toString();
+    const path = `/v1/groups/${encodeURIComponent(groupId)}/bulk-invite${qs ? `?${qs}` : ""}`;
+    return this.http.postRaw<{
+      invited: number;
+      skipped: number;
+      errors: Array<{ row: number; reason: string }>;
+    }>(path, csv, "text/csv");
   }
 
   async acceptInvitation(code: string, userId: UserId): Promise<Member> {

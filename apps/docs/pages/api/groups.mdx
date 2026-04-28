@@ -654,3 +654,68 @@ Up to two entries are written, both with `actorUserId` set to `null` (V1 has no 
 | `bad_request` | 400 | Empty body, malformed JSON, notes longer than 5000 chars. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## POST /v1/groups/:id/bulk-invite
+
+Creates many open-code invitations at once. Body is plain text: one trimmed, non-empty line per target external user id.
+
+```http
+POST /v1/groups/:id/bulk-invite[?roleId=<RoleId>]
+Authorization: Bearer <api-key>
+Content-Type: text/csv
+
+user_alice
+user_bob
+user_carol
+```
+
+### Path params
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `id` | `GroupId` | The group to invite into. URL-decoded. |
+
+### Query params
+
+| Param | Required | Notes |
+|-------|----------|-------|
+| `roleId` | no | Forwarded to every created invitation as `Invitation.roleId`. |
+
+### Body format
+
+- One userId per line. Leading and trailing whitespace are trimmed.
+- Empty lines (or lines that are whitespace only) are silently skipped and do not appear in any count.
+- Each non-empty line is treated as a single CSV field; commas are not parsed as separators.
+- Both `\n` and `\r\n` line endings are accepted.
+- Userids longer than 255 characters are reported in `errors` (the row is not invited, not skipped).
+- The total row count (errored + valid) is capped at 1000 per request; exceeding returns `400 bad_request`.
+
+### Response
+
+```json
+{
+  "invited": 47,
+  "skipped": 3,
+  "errors": [
+    { "row": 5, "reason": "userId exceeds 255 characters" }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `invited` | number | Count of new `Invitation` rows created. |
+| `skipped` | number | Count of rows that were not invited because the user is already an active member, or already has an unused, unexpired invitation, or appeared earlier in the same batch. |
+| `errors` | array | One entry per malformed row. `row` is 1-indexed and counts every source line (empty lines included), so the dev can map errors back to the original input. |
+
+### Audit log
+
+One `member.invited` audit entry is written per created invitation, all in the same transaction. `actorUserId` is `null`; `targetId` is the invited user's external id; `payload.source` is the string `"bulk-invite"` so audit consumers can distinguish bulk-issued invitations from single-shot `inviteByUserId` ones.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | More than 1000 rows in one request, or `roleId=` empty. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

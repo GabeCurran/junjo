@@ -2658,3 +2658,349 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id/members/:userId", () =
     expect(body.notesPublic).toBe("ok");
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "Invitation", "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(
+    overrides: Partial<{ gameId: string; softDeletedAt: Date | null }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedActiveMember(groupIdValue: string, externalUserId: string) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status: "active" },
+    });
+    return user;
+  }
+
+  function postBulk(
+    groupId: string,
+    body: string,
+    init: { contentType?: string; header?: string; query?: string } = {},
+  ) {
+    const path = `/v1/groups/${groupId}/bulk-invite${init.query ?? ""}`;
+    return app.request(path, {
+      method: "POST",
+      headers: {
+        authorization: init.header ?? authHeader,
+        "content-type": init.contentType ?? "text/csv",
+      },
+      body,
+    });
+  }
+
+  it("creates one invitation per row and returns the count", async () => {
+    const group = await seedGroup();
+    const csv = "user_alice\nuser_bob\nuser_carol\n";
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ invited: 3, skipped: 0, errors: [] });
+
+    const invitations = await prisma.invitation.findMany({
+      where: { groupId: group.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(invitations).toHaveLength(3);
+    const targets = invitations.map((i) => i.targetUserId).sort();
+    expect(targets).toEqual(["user_alice", "user_bob", "user_carol"]);
+    for (const inv of invitations) {
+      expect(inv.code).toMatch(/^[a-f0-9]{16}$/);
+      expect(inv.expiresAt).toBeNull();
+      expect(inv.roleId).toBeNull();
+      expect(inv.createdByUserId).toBeNull();
+    }
+  });
+
+  it("writes one member.invited audit entry per created invitation", async () => {
+    const group = await seedGroup();
+    const res = await postBulk(group.id, "user_alice\nuser_bob\n");
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "member.invited" },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      expect(entry.actorUserId).toBeNull();
+      expect(entry.payload).toMatchObject({
+        targetUserId: expect.any(String),
+        roleId: null,
+        expiresAt: null,
+        source: "bulk-invite",
+      });
+    }
+    const targetIds = entries.map((e) => e.targetId).sort();
+    expect(targetIds).toEqual(["user_alice", "user_bob"]);
+  });
+
+  it("forwards roleId from the query string to every created invitation", async () => {
+    const group = await seedGroup();
+    const res = await postBulk(group.id, "user_alice\nuser_bob\n", {
+      query: "?roleId=role_recruit",
+    });
+    expect(res.status).toBe(200);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    expect(invitations).toHaveLength(2);
+    for (const inv of invitations) {
+      expect(inv.roleId).toBe("role_recruit");
+    }
+  });
+
+  it("trims whitespace and ignores empty lines without counting them", async () => {
+    const group = await seedGroup();
+    const csv = "  user_alice  \n\n\tuser_bob\t\n   \n";
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(2);
+    expect(body.skipped).toBe(0);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    const targets = invitations.map((i) => i.targetUserId).sort();
+    expect(targets).toEqual(["user_alice", "user_bob"]);
+  });
+
+  it("handles \\r\\n line endings", async () => {
+    const group = await seedGroup();
+    const csv = "user_alice\r\nuser_bob\r\n";
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    const targets = invitations.map((i) => i.targetUserId).sort();
+    expect(targets).toEqual(["user_alice", "user_bob"]);
+  });
+
+  it("returns row-numbered errors for userIds longer than 255 characters", async () => {
+    const group = await seedGroup();
+    const tooLong = "x".repeat(256);
+    const csv = `user_alice\n${tooLong}\nuser_bob\n`;
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      invited: number;
+      skipped: number;
+      errors: Array<{ row: number; reason: string }>;
+    };
+    expect(body.invited).toBe(2);
+    expect(body.skipped).toBe(0);
+    expect(body.errors).toEqual([{ row: 2, reason: "userId exceeds 255 characters" }]);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    expect(invitations).toHaveLength(2);
+  });
+
+  it("counts row numbers based on source line position (empty lines included)", async () => {
+    const group = await seedGroup();
+    const tooLong = "x".repeat(256);
+    const csv = `user_alice\n\n\n${tooLong}\n`;
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { errors: Array<{ row: number; reason: string }> };
+    expect(body.errors).toEqual([{ row: 4, reason: "userId exceeds 255 characters" }]);
+  });
+
+  it("skips users who are already active members of the group", async () => {
+    const group = await seedGroup();
+    await seedActiveMember(group.id, "user_alice");
+
+    const res = await postBulk(group.id, "user_alice\nuser_bob\n");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(1);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    expect(invitations).toHaveLength(1);
+    expect(invitations[0]?.targetUserId).toBe("user_bob");
+  });
+
+  it("skips users who already have an unused, unexpired invitation", async () => {
+    const group = await seedGroup();
+    await prisma.invitation.create({
+      data: { groupId: group.id, code: "abc123abc123abc1", targetUserId: "user_alice" },
+    });
+
+    const res = await postBulk(group.id, "user_alice\nuser_bob\n");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(1);
+
+    const invitations = await prisma.invitation.findMany({
+      where: { groupId: group.id, targetUserId: "user_alice" },
+    });
+    expect(invitations).toHaveLength(1);
+  });
+
+  it("does not skip users whose pending invitation has expired", async () => {
+    const group = await seedGroup();
+    await prisma.invitation.create({
+      data: {
+        groupId: group.id,
+        code: "expiredcodeexpir",
+        targetUserId: "user_alice",
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const res = await postBulk(group.id, "user_alice\n");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(0);
+  });
+
+  it("does not skip users whose only invitation has been used", async () => {
+    const group = await seedGroup();
+    await prisma.invitation.create({
+      data: {
+        groupId: group.id,
+        code: "usedcodeusedcode",
+        targetUserId: "user_alice",
+        usedAt: new Date(),
+      },
+    });
+
+    const res = await postBulk(group.id, "user_alice\n");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(0);
+  });
+
+  it("treats duplicate userIds within one batch as a single invite plus skips", async () => {
+    const group = await seedGroup();
+    const res = await postBulk(group.id, "user_alice\nuser_alice\nuser_alice\n");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(2);
+
+    const invitations = await prisma.invitation.findMany({
+      where: { groupId: group.id, targetUserId: "user_alice" },
+    });
+    expect(invitations).toHaveLength(1);
+  });
+
+  it("returns 400 when the row count exceeds 1000", async () => {
+    const group = await seedGroup();
+    const csv = `${Array.from({ length: 1001 }, (_, i) => `user_${i}`).join("\n")}\n`;
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toMatch(/1000/);
+
+    const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
+    expect(invitations).toHaveLength(0);
+  });
+
+  it("returns zero counts and an empty errors array for an empty body", async () => {
+    const group = await seedGroup();
+    const res = await postBulk(group.id, "");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ invited: 0, skipped: 0, errors: [] });
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await postBulk("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice\n");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await postBulk(group.id, "user_alice\n");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await postBulk(group.id, "user_alice\n");
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}/bulk-invite`, {
+      method: "POST",
+      headers: { "content-type": "text/csv" },
+      body: "user_alice\n",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects an empty roleId query param", async () => {
+    const group = await seedGroup();
+    const res = await postBulk(group.id, "user_alice\n", { query: "?roleId=" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns errors and skips together in one response", async () => {
+    const group = await seedGroup();
+    await seedActiveMember(group.id, "user_alice");
+    const tooLong = "x".repeat(256);
+    const csv = `user_alice\n${tooLong}\nuser_bob\n`;
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      invited: number;
+      skipped: number;
+      errors: Array<{ row: number; reason: string }>;
+    };
+    expect(body.invited).toBe(1);
+    expect(body.skipped).toBe(1);
+    expect(body.errors).toEqual([{ row: 2, reason: "userId exceeds 255 characters" }]);
+  });
+});

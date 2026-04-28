@@ -4,6 +4,7 @@ import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import {
+  bulkInviteQuery,
   createGroupBody,
   kickMemberBody,
   leaveGroupBody,
@@ -19,6 +20,54 @@ import {
   serializeMember,
 } from "./members.js";
 import { listMembersQuery, updateMemberBody } from "./members.schema.js";
+
+// `groups.bulkInvite` request limits. Each non-empty line in the body is
+// one userId; lines beyond `BULK_INVITE_MAX_ROWS` (counting empty rows)
+// trigger a 400. `BULK_INVITE_USERID_MAX_LENGTH` matches a comfortable
+// upper bound for Clerk / Supabase / Roblox user-id-as-string formats.
+export const BULK_INVITE_MAX_ROWS = 1000;
+export const BULK_INVITE_USERID_MAX_LENGTH = 255;
+
+interface BulkInviteRow {
+  row: number;
+  userId: string;
+}
+
+interface BulkInviteError {
+  row: number;
+  reason: string;
+}
+
+interface ParsedBulkBody {
+  rows: BulkInviteRow[];
+  errors: BulkInviteError[];
+}
+
+// Parses the raw text body. One trimmed userId per line; empty lines are
+// silently ignored. Lines whose trimmed userId exceeds the length cap are
+// emitted as errors. Row numbers are 1-indexed (matching how a dev's
+// spreadsheet view numbers them) and count every source line, including
+// empties, so the dev can map errors back to the original input.
+function parseBulkInviteBody(text: string): ParsedBulkBody {
+  const rows: BulkInviteRow[] = [];
+  const errors: BulkInviteError[] = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const lineRaw = lines[i] ?? "";
+    const userId = lineRaw.trim();
+    const rowNumber = i + 1;
+    if (userId.length === 0) continue;
+    if (userId.length > BULK_INVITE_USERID_MAX_LENGTH) {
+      errors.push({
+        row: rowNumber,
+        reason: `userId exceeds ${BULK_INVITE_USERID_MAX_LENGTH} characters`,
+      });
+      continue;
+    }
+    rows.push({ row: rowNumber, userId });
+  }
+  return { rows, errors };
+}
 
 interface WireGroup {
   id: string;
@@ -806,6 +855,136 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
     return c.json(serializeMember(updated, userId, roleIds));
+  });
+
+  // Bulk-invite a list of users by external user id. The body is plain
+  // text: one userId per trimmed, non-empty line. Empty lines are
+  // ignored; lines with userIds longer than the cap are reported in
+  // `errors`. Existence checks (already-active member, already-pending
+  // invitation) run as batched lookups; the resulting invitation creates
+  // and audit entries write inside one transaction so a partial-failure
+  // case rolls back cleanly. The optional `roleId` query param is
+  // forwarded to every created invitation.
+  r.post("/:id/bulk-invite", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const parsedQuery = bulkInviteQuery.safeParse({ roleId: c.req.query("roleId") });
+    if (!parsedQuery.success) {
+      const issues = parsedQuery.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const roleId = parsedQuery.data.roleId ?? null;
+
+    const text = await c.req.text().catch(() => "");
+    const { rows, errors } = parseBulkInviteBody(text);
+
+    if (rows.length + errors.length > BULK_INVITE_MAX_ROWS) {
+      throw Errors.badRequest(`bulk-invite is limited to ${BULK_INVITE_MAX_ROWS} rows per request`);
+    }
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const errorList: BulkInviteError[] = [...errors];
+
+    if (rows.length === 0) {
+      return c.json({ invited: 0, skipped: 0, errors: errorList });
+    }
+
+    const uniqueUserIds = Array.from(new Set(rows.map((r) => r.userId)));
+
+    const identities = await prisma.externalIdentity.findMany({
+      where: { gameId, externalUserId: { in: uniqueUserIds } },
+      select: { junjoUserId: true, externalUserId: true },
+    });
+    const externalToJunjo = new Map(identities.map((x) => [x.externalUserId, x.junjoUserId]));
+
+    const junjoUserIds = identities.map((x) => x.junjoUserId);
+    const activeMembers =
+      junjoUserIds.length === 0
+        ? []
+        : await prisma.groupMember.findMany({
+            where: { groupId: group.id, junjoUserId: { in: junjoUserIds }, status: "active" },
+            select: { junjoUserId: true },
+          });
+    const activeJunjoUserIds = new Set(activeMembers.map((m) => m.junjoUserId));
+
+    const now = new Date();
+    const pendingInvites = await prisma.invitation.findMany({
+      where: {
+        groupId: group.id,
+        targetUserId: { in: uniqueUserIds },
+        usedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: { targetUserId: true },
+    });
+    const pendingTargets = new Set(
+      pendingInvites.map((p) => p.targetUserId).filter((x): x is string => x !== null),
+    );
+
+    const seenInBatch = new Set<string>();
+    const toCreate: BulkInviteRow[] = [];
+    let skipped = 0;
+    for (const row of rows) {
+      if (seenInBatch.has(row.userId)) {
+        skipped++;
+        continue;
+      }
+      seenInBatch.add(row.userId);
+      const junjoUserId = externalToJunjo.get(row.userId);
+      if (junjoUserId && activeJunjoUserIds.has(junjoUserId)) {
+        skipped++;
+        continue;
+      }
+      if (pendingTargets.has(row.userId)) {
+        skipped++;
+        continue;
+      }
+      toCreate.push(row);
+    }
+
+    if (toCreate.length === 0) {
+      return c.json({ invited: 0, skipped, errors: errorList });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const row of toCreate) {
+        const created = await tx.invitation.create({
+          data: {
+            groupId: group.id,
+            code: generateInvitationCode(),
+            roleId,
+            targetUserId: row.userId,
+            createdByUserId: null,
+            expiresAt: null,
+          },
+        });
+        await tx.auditEntry.create({
+          data: {
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.invited",
+            targetId: row.userId,
+            payload: {
+              invitationId: created.id,
+              code: created.code,
+              targetUserId: row.userId,
+              roleId,
+              expiresAt: null,
+              source: "bulk-invite",
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+    });
+
+    return c.json({ invited: toCreate.length, skipped, errors: errorList });
   });
 
   return r;
