@@ -1022,3 +1022,67 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - V1 is not yet released, so the stub-to-real type change is safe. The shared `@junjo/shared` types do not pin the return type: `RolesApi`'s signature lives in the SDK package, where this is an additive enrichment.
 
 **Trade:** a dev who consciously wants to ignore the return value still can (`await junjo.roles.grantPermission(...)` discards it). The richer return type is opt-in.
+
+### `members.overridePermission` and `clearPermissionOverride` URL shape
+
+**Decision:** member-level permission overrides live at `POST/DELETE /v1/groups/:id/members/:userId/permissions/:permission`. The permission key is a path parameter on both verbs (mirroring `roles.revokePermission`), and the POST body carries only `{ grant: bool }`. The list endpoint is `GET /v1/groups/:id/members/:userId/permissions` (bare array, no pagination).
+
+**Rationale:**
+- The override is a `(member, permission)` pair, so putting both identifiers in the path matches the resource shape. The POST body is small (one boolean) and explicit.
+- The asymmetry with `roles.grantPermission` (where the key is in the body) is intentional. Grant operates on a `(role, permission)` pair where the role id is the more "primary" identifier; for an override, the (member, permission) pair has equal footing in the URL. Keeping the permission as a path param makes the same URL idempotent for both `POST` (set or update) and `DELETE` (clear) on a single override.
+- All three routes live inline in `groupsRouter` (consistent with `assignRole` / `removeRole`), since they share the same `groupId/members/userId` URL prefix and the same loading helpers (`findJunjoUserId`, `serializeMemberPermissionOverride`).
+
+**Trade:** a dev who already calls `roles.grantPermission` will note the body-vs-path asymmetry. The SDK signatures are uniform (both take `(roleId, permission)` or `(groupId, userId, permission, grant)`), so the wire-format difference is invisible to most consumers.
+
+### `members.overridePermission` is idempotent on matching `grant`; updates write `before` in audit
+
+**Decision:** posting an override with the same `grant` as the existing one returns the unchanged override with no audit entry written and no `setAt` bump. Posting with a different `grant` updates the row, writes a `permission.override.set` audit entry whose `payload` includes `before: { grant }`, and bumps `setAt`. The first set on a member writes the audit entry without a `before` field.
+
+**Rationale:**
+- Matches the idempotency semantics of every other set / unset operation in the surface (`roles.grantPermission`, `members.assignRole`, `groups.delete`, etc.). A network blip / retry should not surface as a duplicate or a state change.
+- The `before` field on update lets audit consumers reconstruct the override's history without joining over multiple rows. The first-set case has nothing to compare against; the subsequent `permission.override.cleared` audit carries the cleared-grant value via `payload.grant`.
+- Skipping the `setAt` bump on no-op keeps "when was this set" honest: a re-post of the same value should not look like activity.
+
+**Trade:** a caller cannot tell from the response alone whether their POST was a no-op, a fresh set, or an update. Mitigation: inspect the audit log (or, post-Phase 5, subscribe to the SSE / webhook stream).
+
+### `members.clearPermissionOverride` returns 204 (not the cleared row)
+
+**Decision:** clearing a member-level override returns `204 No Content`. The audit entry's `payload.grant` carries the previous value for consumers that need it; the wire response itself is empty.
+
+**Rationale:**
+- Consistent with other `DELETE` routes (`roles.delete` -> 204, `groups.delete?hard=true` -> 204, the soft-delete flow returns the soft-deleted group only because soft-delete is not a real delete). A real delete should not echo the deleted row.
+- The SDK signature stays uniform: `clearPermissionOverride(...): Promise<void>`. A consumer that needs the previous `grant` for a UI confirmation can call `listPermissionOverrides` first, or pull from the audit log.
+- Asymmetric with `roles.revokePermission` (which returns the post-state `Role`), but the asymmetry is structural: a role with a permission revoked still has a richer post-state (its other permissions, name, priority, etc.) worth returning; an override is just a `(member, permission, grant)` triple, and clearing it leaves nothing local to return.
+
+**Trade:** consumers that want the previous `grant` need to either look it up first or pull it from the audit log. In practice the dev's UI knows what was there (it just rendered it), so this is rarely a real friction.
+
+### `members.clearPermissionOverride` is a no-op on missing override
+
+**Decision:** clearing a permission key the member has no override for returns `204 No Content` with no audit entry written. The route does not 404 on "override not found".
+
+**Rationale:**
+- Matches the `roles.revokePermission` precedent ("the join-row state is the only state that matters") and the `members.removeRole` precedent. `DELETE` on a resource that does not exist is conventionally a no-op.
+- Avoids an existence-leak: a 404 response would tell a caller "yes there's a member here, but no override". The collapsed 204 response is consistent regardless.
+
+**Trade:** a typo in the permission key won't surface as an error. Mitigation: the audit log is empty (no `permission.override.cleared` entry), and a follow-up `listPermissionOverrides` shows the member's actual overrides.
+
+### Override `PermissionDef` registration matches `grantPermission`
+
+**Decision:** the first time a permission key is used as a member-level override on a given game (regardless of whether it has been granted to any role yet), the override-set route upserts a `PermissionDef (gameId, key)` row inside the same transaction. Clearing the override does not unregister the key. The same registry table is shared with `roles.grantPermission`; whichever route first introduces a key on a game wins, and subsequent uses (in either route, on any role / member) are idempotent at the registry level.
+
+**Rationale:**
+- Consistency with the `roles.grantPermission` decision (auto-register on first sight, monotonic per-game catalog). A dashboard that lists "permissions known to this game" should see overrides-only keys too; if I gated registration on the role path only, a key used purely for overrides would be invisible.
+- The registry is the source of truth for "every key this game has ever used." It does not care whether the key is currently granted to a role or set as an override; both are evidence the key exists.
+
+**Trade:** none beyond what was already noted for `grantPermission`. The `PermissionDef` table grows monotonically per game; an admin endpoint can prune it later if needed.
+
+### `MemberPermissionOverride.setBy` widened to `UserId | null`
+
+**Decision:** the public `MemberPermissionOverride.setBy` field on `@junjo/shared` widens from `UserId` to `UserId | null` to match the V1 reality that no auth-adapter actor is wired yet (the dev's backend is the trusted layer; the route writes `setByUserId: null`). Parallels `Invitation.createdBy` (widened earlier) and `AuditEntry.actorUserId` (always nullable).
+
+**Rationale:**
+- V1 has no concept of "the override was set by user X" because no auth-adapter token is verified at the API boundary. Pretending otherwise would be a lie at the type level.
+- Phase 6 (auth adapters) will wire a real actor. When that happens, `setBy` will start carrying the resolved external user id of the dev's backend's authenticated user (resolved via `ExternalIdentity` from the internal `JunjoUser` id stored in `setByUserId`).
+- V1 is not yet released, so widening the type is safe (no existing consumers to break). The widening is "additive" in the sense that callers who relied on `setBy` being a string can handle `null` by branching.
+
+**Trade:** a strict consumer that destructures `setBy` without a null check will need to add one. Mitigation: TypeScript flags the missing check at compile time.

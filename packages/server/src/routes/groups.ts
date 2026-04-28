@@ -18,10 +18,11 @@ import {
   batchLoadMemberRoleIds,
   loadMemberRoleIds,
   serializeMember,
+  serializeMemberPermissionOverride,
 } from "./members.js";
-import { listMembersQuery, updateMemberBody } from "./members.schema.js";
+import { listMembersQuery, overridePermissionBody, updateMemberBody } from "./members.schema.js";
 import { batchLoadRolePermissionKeys, serializeRole } from "./roles.js";
-import { createRoleBody } from "./roles.schema.js";
+import { PERMISSION_KEY_MAX_LENGTH, createRoleBody } from "./roles.schema.js";
 
 // `groups.bulkInvite` request limits. Each non-empty line in the body is
 // one userId; lines beyond `BULK_INVITE_MAX_ROWS` (counting empty rows)
@@ -1102,6 +1103,193 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
     return c.json(serializeMember(member, userId, roleIds));
+  });
+
+  // Set or update a member-level permission override. Body: `{ grant }`.
+  // Override semantics: an override (in either direction) wins over any
+  // role-derived grant during permission resolution (Phase 3.5). Setting
+  // an override with the same `grant` value as the existing one is a
+  // no-op (no audit entry, no DB write); setting it with a different
+  // `grant` updates the row and writes one `permission.override.set`
+  // audit entry with `before/after`. The permission key is auto-
+  // registered into `PermissionDef` on first sight per game (matches the
+  // `roles.grantPermission` precedent). `actorUserId` is null in V1.
+  r.post("/:id/members/:userId/permissions/:permission", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const permission = c.req.param("permission");
+    const gameId = c.var.gameId;
+
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+    if (permission.length > PERMISSION_KEY_MAX_LENGTH) {
+      throw Errors.badRequest(`permission must be at most ${PERMISSION_KEY_MAX_LENGTH} characters`);
+    }
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = overridePermissionBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { grant } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("member");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const existing = await prisma.memberPermissionOverride.findUnique({
+      where: {
+        groupMemberId_permissionKey: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+        },
+      },
+    });
+    if (existing && existing.grant === grant) {
+      return c.json(serializeMemberPermissionOverride(existing, group.id, userId));
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.permissionDef.upsert({
+        where: { gameId_key: { gameId, key: permission } },
+        create: { gameId, key: permission },
+        update: {},
+      });
+      const upserted = await tx.memberPermissionOverride.upsert({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: permission,
+          },
+        },
+        create: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+          grant,
+          setByUserId: null,
+        },
+        update: { grant, setAt: new Date() },
+      });
+      const auditPayload: Record<string, unknown> = {
+        memberId: member.id,
+        permission,
+        grant,
+      };
+      if (existing) auditPayload.before = { grant: existing.grant };
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "permission.override.set",
+          targetId: userId,
+          payload: auditPayload as Prisma.InputJsonValue,
+        },
+      });
+      return upserted;
+    });
+
+    return c.json(serializeMemberPermissionOverride(result, group.id, userId));
+  });
+
+  // Clear a member-level permission override. Idempotent: if the member
+  // does not have an override for this key, returns `204 No Content` with
+  // no audit entry. The `PermissionDef` registry row is preserved across
+  // clears (matches the `roles.revokePermission` precedent: the catalog
+  // is monotonic per game).
+  r.delete("/:id/members/:userId/permissions/:permission", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const permission = c.req.param("permission");
+    const gameId = c.var.gameId;
+
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("member");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const existing = await prisma.memberPermissionOverride.findUnique({
+      where: {
+        groupMemberId_permissionKey: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+        },
+      },
+    });
+    if (!existing) return c.body(null, 204);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.memberPermissionOverride.delete({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: permission,
+          },
+        },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "permission.override.cleared",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            permission,
+            grant: existing.grant,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    return c.body(null, 204);
+  });
+
+  // List a member's permission overrides. Returns a bare array (no
+  // pagination wrapper); a member is conventionally going to have a
+  // small set of overrides (handful, not thousands). Sorted by
+  // `permissionKey` ascending for deterministic output.
+  r.get("/:id/members/:userId/permissions", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("member");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const overrides = await prisma.memberPermissionOverride.findMany({
+      where: { groupMemberId: member.id },
+      orderBy: { permissionKey: "asc" },
+    });
+
+    return c.json(overrides.map((o) => serializeMemberPermissionOverride(o, group.id, userId)));
   });
 
   // Create a role inside the group. Body: `{ name, priority, color?,

@@ -3523,3 +3523,765 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id/members/:userId/roles
     expect(body.roles).toEqual([]);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)(
+  "POST /v1/groups/:id/members/:userId/permissions/:permission",
+  () => {
+    let prisma: PrismaClient;
+    let app: Hono;
+    let authHeader: string;
+    let gameId: string;
+
+    beforeAll(() => {
+      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+      app = createApp({ prisma });
+    });
+
+    beforeEach(async () => {
+      await prisma.$executeRawUnsafe(
+        'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+      );
+      const game = await createGame("Test Game", prisma);
+      gameId = game.id;
+      const seeded = await createApiKey(game.id, prisma);
+      authHeader = `Bearer ${seeded.raw.full}`;
+    });
+
+    afterAll(async () => {
+      await prisma.$disconnect();
+    });
+
+    async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+      return prisma.group.create({
+        data: {
+          gameId: overrides.gameId ?? gameId,
+          kind: "guild",
+          name: "Crimson Wolves",
+          visibility: "invite-only",
+          metadata: {},
+          softDeletedAt: overrides.softDeletedAt ?? null,
+        },
+      });
+    }
+
+    async function seedMember(
+      groupIdValue: string,
+      externalUserId: string,
+      gameIdValue: string = gameId,
+    ) {
+      const user = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId: gameIdValue, junjoUserId: user.id, externalUserId },
+      });
+      const member = await prisma.groupMember.create({
+        data: { groupId: groupIdValue, junjoUserId: user.id, status: "active" },
+      });
+      return { user, member };
+    }
+
+    function override(
+      groupIdValue: string,
+      userId: string,
+      permission: string,
+      body: unknown,
+      header: string = authHeader,
+    ) {
+      return app.request(`/v1/groups/${groupIdValue}/members/${userId}/permissions/${permission}`, {
+        method: "POST",
+        headers: { authorization: header, "content-type": "application/json" },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
+    }
+
+    it("creates a MemberPermissionOverride row and returns the wire shape", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+
+      const res = await override(group.id, "user_alice", "guild.invite_member", { grant: true });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        groupId: group.id,
+        userId: "user_alice",
+        permission: "guild.invite_member",
+        grant: true,
+        setBy: null,
+      });
+      expect(typeof body.setAt).toBe("string");
+
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "guild.invite_member",
+          },
+        },
+      });
+      expect(stored?.grant).toBe(true);
+      expect(stored?.setByUserId).toBeNull();
+    });
+
+    it("auto-registers the permission key into PermissionDef on first sight per game", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+
+      expect(await prisma.permissionDef.count()).toBe(0);
+      await override(group.id, "user_alice", "guild.kick", { grant: false });
+      const defs = await prisma.permissionDef.findMany({});
+      expect(defs).toHaveLength(1);
+      expect(defs[0]?.gameId).toBe(gameId);
+      expect(defs[0]?.key).toBe("guild.kick");
+    });
+
+    it("does not duplicate the PermissionDef row across multiple overrides of the same key", async () => {
+      const group = await seedGroup();
+      const m1 = await seedMember(group.id, "user_alice");
+      const userBob = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, junjoUserId: userBob.id, externalUserId: "user_bob" },
+      });
+      await prisma.groupMember.create({
+        data: { groupId: group.id, junjoUserId: userBob.id, status: "active" },
+      });
+
+      void m1;
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      await override(group.id, "user_bob", "guild.kick", { grant: false });
+      const defs = await prisma.permissionDef.findMany({});
+      expect(defs).toHaveLength(1);
+    });
+
+    it("writes a permission.override.set audit entry on create (no `before` field)", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      const entries = await prisma.auditEntry.findMany({
+        where: { action: "permission.override.set" },
+      });
+      expect(entries).toHaveLength(1);
+      const [entry] = entries;
+      if (!entry) throw new Error("expected one audit entry");
+      expect(entry.targetId).toBe("user_alice");
+      expect(entry.actorUserId).toBeNull();
+      expect(entry.payload).toEqual({
+        memberId: member.id,
+        permission: "guild.kick",
+        grant: true,
+      });
+    });
+
+    it("writes audit entry with `before` field when the override is updated", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      const res = await override(group.id, "user_alice", "guild.kick", { grant: false });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { grant: boolean };
+      expect(body.grant).toBe(false);
+
+      const entries = await prisma.auditEntry.findMany({
+        where: { action: "permission.override.set" },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(entries).toHaveLength(2);
+      expect(entries[1]?.payload).toEqual({
+        memberId: member.id,
+        permission: "guild.kick",
+        grant: false,
+        before: { grant: true },
+      });
+    });
+
+    it("is idempotent when grant matches the stored value (no audit entry, no setAt bump)", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "guild.kick",
+          },
+        },
+      });
+      const before = stored?.setAt;
+
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      const after = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "guild.kick",
+          },
+        },
+      });
+      expect(after?.setAt.getTime()).toBe(before?.getTime());
+
+      const entries = await prisma.auditEntry.findMany({
+        where: { action: "permission.override.set" },
+      });
+      expect(entries).toHaveLength(1);
+    });
+
+    it("supports multiple overrides on the same member with different keys", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+
+      await override(group.id, "user_alice", "guild.kick", { grant: true });
+      await override(group.id, "user_alice", "guild.invite_member", { grant: false });
+
+      const stored = await prisma.memberPermissionOverride.findMany({});
+      expect(stored).toHaveLength(2);
+    });
+
+    it("rejects an empty permission key", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await app.request(`/v1/groups/${group.id}/members/user_alice/permissions/`, {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify({ grant: true }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects a permission key over the length cap", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const longKey = "a".repeat(129);
+      const res = await override(group.id, "user_alice", longKey, { grant: true });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a missing grant field", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await override(group.id, "user_alice", "guild.kick", {});
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-boolean grant field", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await override(group.id, "user_alice", "guild.kick", { grant: "yes" });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a malformed JSON body", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await override(group.id, "user_alice", "guild.kick", "not json");
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when the group does not exist", async () => {
+      const res = await override("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", "guild.kick", {
+        grant: true,
+      });
+      expect(res.status).toBe(404);
+      expect(await prisma.permissionDef.count()).toBe(0);
+    });
+
+    it("returns 404 when the group is soft-deleted", async () => {
+      const group = await seedGroup({ softDeletedAt: new Date() });
+      await seedMember(group.id, "user_alice");
+      const res = await override(group.id, "user_alice", "guild.kick", { grant: true });
+      expect(res.status).toBe(404);
+      expect(await prisma.memberPermissionOverride.count()).toBe(0);
+      expect(await prisma.permissionDef.count()).toBe(0);
+    });
+
+    it("returns 404 when the group belongs to a different game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const group = await seedGroup({ gameId: otherGame.id });
+      await seedMember(group.id, "user_alice", otherGame.id);
+      const res = await override(group.id, "user_alice", "guild.kick", { grant: true });
+      expect(res.status).toBe(404);
+      expect(await prisma.permissionDef.count()).toBe(0);
+    });
+
+    it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+      const group = await seedGroup();
+      const res = await override(group.id, "user_unknown", "guild.kick", { grant: true });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when no GroupMember row exists for the user", async () => {
+      const group = await seedGroup();
+      const user = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+      });
+      const res = await override(group.id, "user_alice", "guild.kick", { grant: true });
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await app.request(
+        `/v1/groups/${group.id}/members/user_alice/permissions/guild.kick`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ grant: true }),
+        },
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it("URL-decodes the permission path parameter", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      const res = await override(group.id, "user_alice", "scope%2Fwith-slash", { grant: true });
+      expect(res.status).toBe(200);
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "scope/with-slash",
+          },
+        },
+      });
+      expect(stored?.grant).toBe(true);
+    });
+  },
+);
+
+describe.skipIf(!TEST_DATABASE_URL)(
+  "DELETE /v1/groups/:id/members/:userId/permissions/:permission",
+  () => {
+    let prisma: PrismaClient;
+    let app: Hono;
+    let authHeader: string;
+    let gameId: string;
+
+    beforeAll(() => {
+      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+      app = createApp({ prisma });
+    });
+
+    beforeEach(async () => {
+      await prisma.$executeRawUnsafe(
+        'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+      );
+      const game = await createGame("Test Game", prisma);
+      gameId = game.id;
+      const seeded = await createApiKey(game.id, prisma);
+      authHeader = `Bearer ${seeded.raw.full}`;
+    });
+
+    afterAll(async () => {
+      await prisma.$disconnect();
+    });
+
+    async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+      return prisma.group.create({
+        data: {
+          gameId: overrides.gameId ?? gameId,
+          kind: "guild",
+          name: "Crimson Wolves",
+          visibility: "invite-only",
+          metadata: {},
+          softDeletedAt: overrides.softDeletedAt ?? null,
+        },
+      });
+    }
+
+    async function seedMember(
+      groupIdValue: string,
+      externalUserId: string,
+      gameIdValue: string = gameId,
+    ) {
+      const user = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId: gameIdValue, junjoUserId: user.id, externalUserId },
+      });
+      const member = await prisma.groupMember.create({
+        data: { groupId: groupIdValue, junjoUserId: user.id, status: "active" },
+      });
+      return { user, member };
+    }
+
+    async function seedOverride(
+      groupMemberId: string,
+      permissionKey: string,
+      grant: boolean,
+      ownerGameId: string = gameId,
+    ) {
+      await prisma.permissionDef.upsert({
+        where: { gameId_key: { gameId: ownerGameId, key: permissionKey } },
+        create: { gameId: ownerGameId, key: permissionKey },
+        update: {},
+      });
+      return prisma.memberPermissionOverride.create({
+        data: { groupMemberId, permissionKey, grant, setByUserId: null },
+      });
+    }
+
+    function clearOverride(
+      groupIdValue: string,
+      userId: string,
+      permission: string,
+      header: string = authHeader,
+    ) {
+      return app.request(`/v1/groups/${groupIdValue}/members/${userId}/permissions/${permission}`, {
+        method: "DELETE",
+        headers: { authorization: header },
+      });
+    }
+
+    it("deletes the MemberPermissionOverride row and returns 204", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "guild.kick", true);
+
+      const res = await clearOverride(group.id, "user_alice", "guild.kick");
+      expect(res.status).toBe(204);
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "guild.kick",
+          },
+        },
+      });
+      expect(stored).toBeNull();
+    });
+
+    it("writes a permission.override.cleared audit entry with the previous grant", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "guild.kick", false);
+
+      await clearOverride(group.id, "user_alice", "guild.kick");
+      const entries = await prisma.auditEntry.findMany({
+        where: { action: "permission.override.cleared" },
+      });
+      expect(entries).toHaveLength(1);
+      const [entry] = entries;
+      if (!entry) throw new Error("expected one audit entry");
+      expect(entry.targetId).toBe("user_alice");
+      expect(entry.actorUserId).toBeNull();
+      expect(entry.payload).toEqual({
+        memberId: member.id,
+        permission: "guild.kick",
+        grant: false,
+      });
+    });
+
+    it("preserves PermissionDef when clearing", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "guild.kick", true);
+
+      await clearOverride(group.id, "user_alice", "guild.kick");
+      const defs = await prisma.permissionDef.findMany({});
+      expect(defs).toHaveLength(1);
+    });
+
+    it("is a no-op when the member does not have the override (no audit entry)", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+
+      const res = await clearOverride(group.id, "user_alice", "guild.kick");
+      expect(res.status).toBe(204);
+
+      const entries = await prisma.auditEntry.findMany({});
+      expect(entries).toHaveLength(0);
+    });
+
+    it("preserves other overrides on the same member", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "guild.kick", true);
+      await seedOverride(member.id, "guild.invite_member", false);
+
+      await clearOverride(group.id, "user_alice", "guild.kick");
+      const remaining = await prisma.memberPermissionOverride.findMany({
+        where: { groupMemberId: member.id },
+      });
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.permissionKey).toBe("guild.invite_member");
+    });
+
+    it("returns 404 when the group does not exist", async () => {
+      const res = await clearOverride("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", "guild.kick");
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the group is soft-deleted", async () => {
+      const group = await seedGroup({ softDeletedAt: new Date() });
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "guild.kick", true);
+
+      const res = await clearOverride(group.id, "user_alice", "guild.kick");
+      expect(res.status).toBe(404);
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "guild.kick",
+          },
+        },
+      });
+      expect(stored).not.toBeNull();
+    });
+
+    it("returns 404 when the group belongs to a different game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const group = await seedGroup({ gameId: otherGame.id });
+      const { member } = await seedMember(group.id, "user_alice", otherGame.id);
+      await seedOverride(member.id, "guild.kick", true, otherGame.id);
+
+      const res = await clearOverride(group.id, "user_alice", "guild.kick");
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+      const group = await seedGroup();
+      const res = await clearOverride(group.id, "user_unknown", "guild.kick");
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when no GroupMember row exists for the user", async () => {
+      const group = await seedGroup();
+      const user = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+      });
+      const res = await clearOverride(group.id, "user_alice", "guild.kick");
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const group = await seedGroup();
+      await seedMember(group.id, "user_alice");
+      const res = await app.request(
+        `/v1/groups/${group.id}/members/user_alice/permissions/guild.kick`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it("URL-decodes the permission path parameter", async () => {
+      const group = await seedGroup();
+      const { member } = await seedMember(group.id, "user_alice");
+      await seedOverride(member.id, "scope/with-slash", true);
+
+      const res = await clearOverride(group.id, "user_alice", "scope%2Fwith-slash");
+      expect(res.status).toBe(204);
+      const stored = await prisma.memberPermissionOverride.findUnique({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: "scope/with-slash",
+          },
+        },
+      });
+      expect(stored).toBeNull();
+    });
+  },
+);
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId/permissions", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    gameIdValue: string = gameId,
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId: gameIdValue, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status: "active" },
+    });
+    return { user, member };
+  }
+
+  function listOverrides(groupIdValue: string, userId: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${groupIdValue}/members/${userId}/permissions`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  it("returns an empty array when the member has no overrides", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await listOverrides(group.id, "user_alice");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as unknown[];
+    expect(body).toEqual([]);
+  });
+
+  it("returns overrides sorted by permissionKey ascending", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    await prisma.permissionDef.create({ data: { gameId, key: "alpha" } });
+    await prisma.permissionDef.create({ data: { gameId, key: "beta" } });
+    await prisma.permissionDef.create({ data: { gameId, key: "gamma" } });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: member.id, permissionKey: "gamma", grant: true },
+    });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: member.id, permissionKey: "alpha", grant: false },
+    });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: member.id, permissionKey: "beta", grant: true },
+    });
+
+    const res = await listOverrides(group.id, "user_alice");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ permission: string; grant: boolean }>;
+    expect(body.map((o) => o.permission)).toEqual(["alpha", "beta", "gamma"]);
+    expect(body.map((o) => o.grant)).toEqual([false, true, true]);
+  });
+
+  it("returns the wire shape with groupId, userId, setBy null, and ISO setAt", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    await prisma.permissionDef.create({ data: { gameId, key: "guild.kick" } });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: member.id, permissionKey: "guild.kick", grant: true },
+    });
+
+    const res = await listOverrides(group.id, "user_alice");
+    const body = (await res.json()) as Array<Record<string, unknown>>;
+    expect(body).toHaveLength(1);
+    expect(body[0]).toMatchObject({
+      groupId: group.id,
+      userId: "user_alice",
+      permission: "guild.kick",
+      grant: true,
+      setBy: null,
+    });
+    expect(typeof body[0]?.setAt).toBe("string");
+    expect(new Date(body[0]?.setAt as string).toString()).not.toBe("Invalid Date");
+  });
+
+  it("returns only overrides scoped to this member (not other members in the same group)", async () => {
+    const group = await seedGroup();
+    const { member: alice } = await seedMember(group.id, "user_alice");
+    const userBob = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: userBob.id, externalUserId: "user_bob" },
+    });
+    const bob = await prisma.groupMember.create({
+      data: { groupId: group.id, junjoUserId: userBob.id, status: "active" },
+    });
+    await prisma.permissionDef.create({ data: { gameId, key: "guild.kick" } });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: alice.id, permissionKey: "guild.kick", grant: true },
+    });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: bob.id, permissionKey: "guild.kick", grant: false },
+    });
+
+    const res = await listOverrides(group.id, "user_alice");
+    const body = (await res.json()) as Array<{ grant: boolean }>;
+    expect(body).toHaveLength(1);
+    expect(body[0]?.grant).toBe(true);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await listOverrides("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    await seedMember(group.id, "user_alice");
+    const res = await listOverrides(group.id, "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    await seedMember(group.id, "user_alice", otherGame.id);
+    const res = await listOverrides(group.id, "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const res = await listOverrides(group.id, "user_unknown");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+    const res = await listOverrides(group.id, "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await app.request(`/v1/groups/${group.id}/members/user_alice/permissions`, {
+      method: "GET",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("URL-decodes the userId path parameter", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "weird/user");
+    await prisma.permissionDef.create({ data: { gameId, key: "guild.kick" } });
+    await prisma.memberPermissionOverride.create({
+      data: { groupMemberId: member.id, permissionKey: "guild.kick", grant: true },
+    });
+
+    const res = await listOverrides(group.id, "weird%2Fuser");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ userId: string }>;
+    expect(body).toHaveLength(1);
+    expect(body[0]?.userId).toBe("weird/user");
+  });
+});

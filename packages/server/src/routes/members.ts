@@ -1,4 +1,4 @@
-import type { GroupMember, Prisma, PrismaClient } from "@prisma/client";
+import type { GroupMember, MemberPermissionOverride, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
@@ -95,6 +95,39 @@ export function serializeMember(
     notesPublic: member.notesPublic,
     notesPrivate: member.notesPrivate,
     joinedAt: member.joinedAt.toISOString(),
+  };
+}
+
+export interface WireMemberPermissionOverride {
+  groupId: string;
+  userId: string;
+  permission: string;
+  grant: boolean;
+  setAt: string;
+  setBy: string | null;
+}
+
+// Serializes a `MemberPermissionOverride` row to the wire format. The
+// route is responsible for threading the dev's external `userId` and
+// the owning `groupId` through; the row itself stores `groupMemberId`
+// and `permissionKey` (foreign keys), which are not what the wire uses.
+// `setByExternalUserId` is the dev's external id of whoever set the
+// override, looked up via `ExternalIdentity`; it is null in V1 since no
+// auth-adapter actor is wired yet (parallels `Invitation.createdBy` and
+// `AuditEntry.actorUserId`).
+export function serializeMemberPermissionOverride(
+  override: MemberPermissionOverride,
+  groupId: string,
+  externalUserId: string,
+  setByExternalUserId: string | null = null,
+): WireMemberPermissionOverride {
+  return {
+    groupId,
+    userId: externalUserId,
+    permission: override.permissionKey,
+    grant: override.grant,
+    setAt: override.setAt.toISOString(),
+    setBy: setByExternalUserId,
   };
 }
 

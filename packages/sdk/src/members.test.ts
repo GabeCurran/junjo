@@ -1,4 +1,4 @@
-import type { GameId, GroupId, MemberId, RoleId, UserId } from "@junjo/shared";
+import type { GameId, GroupId, MemberId, PermissionKey, RoleId, UserId } from "@junjo/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
@@ -639,5 +639,267 @@ describe("members.removeRole", () => {
       "weird/user" as UserId,
       "role/a" as RoleId,
     );
+  });
+});
+
+interface WireOverrideSnapshot {
+  groupId: string;
+  userId: string;
+  permission: string;
+  grant: boolean;
+  setAt: string;
+  setBy: string | null;
+}
+
+const overrideFixture: WireOverrideSnapshot = {
+  groupId: "grp_1",
+  userId: "user_alice",
+  permission: "guild.kick",
+  grant: true,
+  setAt: "2026-04-28T05:00:00.000Z",
+  setBy: null,
+};
+
+describe("members.overridePermission", () => {
+  it("POSTs /v1/groups/:groupId/members/:userId/permissions/:permission with the auth header and JSON body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/permissions/guild.kick");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBe("application/json");
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ grant: true });
+      return jsonResponse(overrideFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const override = await junjo.members.overridePermission(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "guild.kick" as PermissionKey,
+      true,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(override.permission).toBe("guild.kick");
+    expect(override.grant).toBe(true);
+    expect(override.setBy).toBeNull();
+    expect(override.setAt).toBeInstanceOf(Date);
+    expect(override.setAt.toISOString()).toBe(overrideFixture.setAt);
+  });
+
+  it("forwards a `false` grant value verbatim", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ grant: false });
+      return jsonResponse({ ...overrideFixture, grant: false });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const override = await junjo.members.overridePermission(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "guild.kick" as PermissionKey,
+      false,
+    );
+    expect(override.grant).toBe(false);
+  });
+
+  it("throws JunjoError on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no member" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.overridePermission(
+        "grp_1" as GroupId,
+        "user_alice" as UserId,
+        "guild.kick" as PermissionKey,
+        true,
+      ),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes the group id, user id, and permission key", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/groups/has%2Fslash/members/weird%2Fuser/permissions/scope%2Fwith-slash",
+      );
+      return jsonResponse({ ...overrideFixture, permission: "scope/with-slash" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.overridePermission(
+      "has/slash" as GroupId,
+      "weird/user" as UserId,
+      "scope/with-slash" as PermissionKey,
+      true,
+    );
+  });
+});
+
+describe("members.clearPermissionOverride", () => {
+  it("DELETEs /v1/groups/:groupId/members/:userId/permissions/:permission with the auth header", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/permissions/guild.kick");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.members.clearPermissionOverride(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "guild.kick" as PermissionKey,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result).toBeUndefined();
+  });
+
+  it("resolves to undefined on a no-op 204", async () => {
+    const fetchMock = makeFetch(async () => new Response(null, { status: 204 }));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const result = await junjo.members.clearPermissionOverride(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "missing.key" as PermissionKey,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("throws JunjoError on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no member" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.clearPermissionOverride(
+        "grp_1" as GroupId,
+        "user_alice" as UserId,
+        "guild.kick" as PermissionKey,
+      ),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes the group id, user id, and permission key", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/groups/has%2Fslash/members/weird%2Fuser/permissions/scope%2Fwith-slash",
+      );
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.clearPermissionOverride(
+      "has/slash" as GroupId,
+      "weird/user" as UserId,
+      "scope/with-slash" as PermissionKey,
+    );
+  });
+});
+
+describe("members.listPermissionOverrides", () => {
+  it("GETs /v1/groups/:groupId/members/:userId/permissions and deserializes the array", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/permissions");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse([
+        overrideFixture,
+        { ...overrideFixture, permission: "guild.invite_member", grant: false },
+      ]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const overrides = await junjo.members.listPermissionOverrides(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(overrides).toHaveLength(2);
+    expect(overrides[0]?.permission).toBe("guild.kick");
+    expect(overrides[0]?.grant).toBe(true);
+    expect(overrides[0]?.setAt).toBeInstanceOf(Date);
+    expect(overrides[1]?.permission).toBe("guild.invite_member");
+    expect(overrides[1]?.grant).toBe(false);
+  });
+
+  it("returns an empty array when the server reports no overrides", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([]));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const overrides = await junjo.members.listPermissionOverrides(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    expect(overrides).toEqual([]);
+  });
+
+  it("throws JunjoError on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no member" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.listPermissionOverrides("grp_1" as GroupId, "user_alice" as UserId),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes the group id and user id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/groups/has%2Fslash/members/weird%2Fuser/permissions",
+      );
+      return jsonResponse([]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.listPermissionOverrides("has/slash" as GroupId, "weird/user" as UserId);
   });
 });

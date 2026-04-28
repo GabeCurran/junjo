@@ -2,7 +2,7 @@
 
 The members namespace operates on `Member` rows: a member is one user's relationship to one group. The same external user id can be a member of many groups within the same game; each membership is a separate `Member` row.
 
-The methods listed as **shipped** are real implementations. Other methods (`overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`) are stubbed and throw `not_implemented` until later phases.
+Every method in this namespace is shipped.
 
 ## `get(groupId, userId)` - shipped
 
@@ -155,6 +155,100 @@ The server treats every supplied metadata as a change (it does not deep-equal ag
 ### See also
 
 - [`PATCH /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+
+## `overridePermission(groupId, userId, permission, grant)` - shipped
+
+Sets or updates a member-level permission override. Returns the `MemberPermissionOverride` row.
+
+```ts
+// Allow Alice to kick others, regardless of her roles' permissions.
+await junjo.members.overridePermission(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  "guild.kick" as PermissionKey,
+  true,
+);
+
+// Block Bob from inviting members, even if his role allows it.
+await junjo.members.overridePermission(
+  "grp_xyz" as GroupId,
+  "user_bob" as UserId,
+  "guild.invite_member" as PermissionKey,
+  false,
+);
+```
+
+The override wins over any role-derived grant during permission resolution (Phase 3.5). Idempotent: setting the same `grant` value twice returns the existing override unchanged.
+
+The permission key is auto-registered into the per-game catalog on first sight (the same `PermissionDef` table populated by `roles.grantPermission`). Permission keys are 1-128 characters.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `grant` missing or non-boolean, or `permission` is empty / over 128 characters. |
+| `not_found` | 404 | Group missing / soft-deleted / cross-game, or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/members/:userId/permissions/:permission`](/api/groups) - the underlying HTTP route.
+
+## `clearPermissionOverride(groupId, userId, permission)` - shipped
+
+Clears a member-level permission override. Returns `void`. Idempotent: clearing a permission the member has no override for is a no-op.
+
+```ts
+await junjo.members.clearPermissionOverride(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  "guild.kick" as PermissionKey,
+);
+```
+
+After clearing, the member's effective permission for this key falls back to whatever their roles dictate.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / soft-deleted / cross-game, or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The override's existence is *not* validated; an unknown permission key collapses to a no-op. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`DELETE /v1/groups/:id/members/:userId/permissions/:permission`](/api/groups) - the underlying HTTP route.
+
+## `listPermissionOverrides(groupId, userId)` - shipped
+
+Returns every permission override on a member. Bare array (no pagination wrapper), sorted by `permission` ascending.
+
+```ts
+const overrides = await junjo.members.listPermissionOverrides(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+);
+for (const o of overrides) {
+  console.log(o.permission, o.grant ? "granted" : "revoked");
+}
+```
+
+A member with no overrides returns `[]`.
+
+### Returns
+
+`MemberPermissionOverride[]`. Each entry carries `groupId`, `userId`, `permission`, `grant`, `setAt`, and `setBy` (always `null` in V1).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / soft-deleted / cross-game, or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups/:id/members/:userId/permissions`](/api/groups) - the underlying HTTP route.
 
 ## `assignRole(groupId, userId, roleId)` - shipped
 

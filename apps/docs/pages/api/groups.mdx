@@ -790,3 +790,139 @@ A no-op (the role was not assigned) does not write an audit entry.
 |------|--------|------|
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The role's existence is *not* validated; an unknown role id collapses to a no-op. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/permissions/:permission`
+
+Sets or updates a member-level permission override. The override wins over any role-derived grant during permission resolution (Phase 3.5). Idempotent: setting an override with the same `grant` value as the existing one returns the unchanged override with no audit entry.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+| `permission` | string | 1-128 characters. URL-decoded by the router. Auto-registered into the per-game `PermissionDef` catalog on first sight. |
+
+### Request
+
+```json
+{ "grant": true }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `grant` | yes | `true` to grant regardless of roles, `false` to revoke regardless of roles. |
+
+### Response
+
+`200 OK` with a `MemberPermissionOverride` body:
+
+```json
+{
+  "groupId": "ckxxx...",
+  "userId": "user_alice",
+  "permission": "guild.kick",
+  "grant": true,
+  "setAt": "2026-04-28T05:00:00.000Z",
+  "setBy": null
+}
+```
+
+`setBy` is the dev's external id of the actor that set the override; it is `null` in V1 (no auth-adapter actor wired yet).
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `permission.override.set` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, permission, grant }`; on update of an existing override, `before: { grant }` is added. |
+
+A no-op (the override already had the same `grant`) writes no audit entry. The first time a permission key is used on a game (across roles or overrides), the route upserts a `PermissionDef` row inside the same transaction; subsequent overrides of the same key reuse the existing registry row.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing or non-boolean `grant`, malformed JSON, or `permission` is empty / over 128 characters. |
+| `not_found` | 404 | The group / member does not exist (the cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id/members/:userId/permissions/:permission`
+
+Clears a member-level permission override. Idempotent: clearing a permission the member does not have an override for returns `204 No Content` with no audit entry.
+
+### Path parameters
+
+Same as `POST /v1/groups/:id/members/:userId/permissions/:permission`.
+
+### Response
+
+`204 No Content`. The route does not echo the deleted row; consumers that need the previous `grant` value can pull it from the `permission.override.cleared` audit entry.
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `permission.override.cleared` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, permission, grant }` where `grant` carries the *previous* value of the cleared override. |
+
+A no-op (no existing override to clear) writes no audit entry. The `PermissionDef` registry row is preserved across clears (matches the `roles.revokePermission` precedent: the catalog is monotonic per game).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `permission` path parameter is empty. |
+| `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members/:userId/permissions`
+
+Lists a member's permission overrides. Returns a bare array (no pagination wrapper); a member is conventionally going to have a small handful of overrides, not thousands.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with a `MemberPermissionOverride[]` body, sorted by `permission` ascending for deterministic output.
+
+```json
+[
+  {
+    "groupId": "ckxxx...",
+    "userId": "user_alice",
+    "permission": "guild.invite_member",
+    "grant": false,
+    "setAt": "2026-04-28T05:00:00.000Z",
+    "setBy": null
+  },
+  {
+    "groupId": "ckxxx...",
+    "userId": "user_alice",
+    "permission": "guild.kick",
+    "grant": true,
+    "setAt": "2026-04-28T05:00:00.000Z",
+    "setBy": null
+  }
+]
+```
+
+A member with no overrides returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

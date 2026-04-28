@@ -26,3 +26,9 @@ export const updateMemberBody = z
   });
 
 export type UpdateMemberBody = z.infer<typeof updateMemberBody>;
+
+export const overridePermissionBody = z.object({
+  grant: z.boolean(),
+});
+
+export type OverridePermissionBody = z.infer<typeof overridePermissionBody>;

@@ -15,8 +15,6 @@ import type {
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 
-const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
-
 export interface WireMember {
   id: string;
   groupId: string;
@@ -40,6 +38,28 @@ export function deserializeMember(w: WireMember): Member {
     notesPublic: w.notesPublic,
     notesPrivate: w.notesPrivate,
     joinedAt: new Date(w.joinedAt),
+  };
+}
+
+export interface WireMemberPermissionOverride {
+  groupId: string;
+  userId: string;
+  permission: string;
+  grant: boolean;
+  setAt: string;
+  setBy: string | null;
+}
+
+export function deserializeMemberPermissionOverride(
+  w: WireMemberPermissionOverride,
+): MemberPermissionOverride {
+  return {
+    groupId: w.groupId as GroupId,
+    userId: w.userId as UserId,
+    permission: w.permission as PermissionKey,
+    grant: w.grant,
+    setAt: new Date(w.setAt),
+    setBy: w.setBy === null ? null : (w.setBy as UserId),
   };
 }
 
@@ -130,26 +150,35 @@ export class MembersApi {
   }
 
   async overridePermission(
-    _groupId: GroupId,
-    _userId: UserId,
-    _permission: PermissionKey,
-    _grant: boolean,
+    groupId: GroupId,
+    userId: UserId,
+    permission: PermissionKey,
+    grant: boolean,
   ): Promise<MemberPermissionOverride> {
-    throw NOT_IMPLEMENTED;
+    const wire = await this.http.post<WireMemberPermissionOverride>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+      { grant },
+    );
+    return deserializeMemberPermissionOverride(wire);
   }
 
   async clearPermissionOverride(
-    _groupId: GroupId,
-    _userId: UserId,
-    _permission: PermissionKey,
+    groupId: GroupId,
+    userId: UserId,
+    permission: PermissionKey,
   ): Promise<void> {
-    throw NOT_IMPLEMENTED;
+    await this.http.delete<unknown>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+    );
   }
 
   async listPermissionOverrides(
-    _groupId: GroupId,
-    _userId: UserId,
+    groupId: GroupId,
+    userId: UserId,
   ): Promise<MemberPermissionOverride[]> {
-    throw NOT_IMPLEMENTED;
+    const wire = await this.http.get<WireMemberPermissionOverride[]>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions`,
+    );
+    return wire.map(deserializeMemberPermissionOverride);
   }
 }

@@ -146,7 +146,10 @@ export interface MemberPermissionOverride {
   // true = grant regardless of roles. false = revoke regardless of roles.
   grant: boolean;
   setAt: Date;
-  setBy: UserId;
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdBy
+  // and AuditEntry.actorUserId).
+  setBy: UserId | null;
 }
 
 // =====================================================================
