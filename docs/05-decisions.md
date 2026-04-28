@@ -1978,3 +1978,47 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** a refetch that resolves after a `groupId` change is silently dropped. The user may briefly see stale data for the new group until the new fetch resolves. Acceptable; the alternative (cancellation via AbortSignal threaded through `groups.get` and `members.list`) would require widening the SDK signatures, which is not a V1 priority.
 
+### Phase 7.3 `useCan` shares a per-provider permission cache
+
+**Decision:** the cache lives in a separate React context (`PermissionCacheContext`) that `JunjoProvider` creates alongside `JunjoContext`. The cache instance is `useMemo`d on the `client` reference, so a fresh `<JunjoProvider client={X}>` mount (or a different `client` prop) creates a new cache. All `useCan` consumers under the same provider share that cache; consumers under different providers do not share.
+
+**Rationale:**
+- The roadmap explicitly says "caches per (userId, groupId, permission) tuple within the provider." A module-global Map would leak across multi-tenant scenarios (two `Junjo` instances pointing at different games would share entries); a per-instance Map keyed off `client` keeps the boundary tight.
+- A separate context (rather than putting the cache on `Junjo` itself) keeps the SDK provider-shape-agnostic. The SDK already has `Junjo.can` / `Junjo.check` and a server-side per-process cache; the React cache is a *consumer-side* concern that should not bleed into SDK consumers who do not use React.
+- `useSyncExternalStore` is the right primitive for "shared external store with subscriptions"; the cache exposes `subscribe(key, listener)` and `get(key)` for it. Using `useReducer` + a force-render trick would also work but is less idiomatic and harder to reason about under StrictMode.
+
+**Trade:** consumers who want to share a cache across two unrelated `Junjo` instances cannot. They would need to render both under the same provider, which the API does not allow (one client per provider). Acceptable: the multi-client pattern is rare and is better solved with two separate `JunjoProvider` subtrees.
+
+### `useCan` does not cache errors; only successful results stick
+
+**Decision:** when `junjo.can(...)` rejects, the cache's inflight slot releases and the entry stays empty. The current consumer's `useCan` returns `undefined` (its effect already fired and will not re-fire on its own), but the next mount of `useCan` with the same key fires a fresh request.
+
+**Rationale:**
+- Caching errors permanently means a transient blip (a 502 from the server, a brief network loss) bricks the permission check for the lifetime of the provider. That is a worse UX than "next consumer retries."
+- Caching errors with a short TTL would let the same consumer recover, but adds timing complexity and a test surface that does not pull weight in V1.
+- The hook signature is `boolean | undefined` per spec, with no `error` field. Surfacing the error to the consumer would require widening the return type, which the roadmap explicitly does not call for.
+
+**Trade:** a single mount that errors stays at `undefined` for as long as the component remains mounted (no automatic retry). Consumers who need stronger retry semantics can remount the component or wait for Phase 7.5 to land an explicit invalidation API.
+
+### `useCan` returns `boolean | undefined` rather than a richer status object
+
+**Decision:** the hook returns the bare three-state value (`true`, `false`, `undefined`) per the roadmap spec. It does NOT return `{ allowed, loading, error, source }` or similar.
+
+**Rationale:**
+- The roadmap is explicit: "Returns boolean (or undefined while loading)." Consumers should treat `undefined` as "not allowed yet" - which collapses the loading and error cases into a single render branch.
+- For the dominant use case (gating a button or render branch), `if (canX !== true) return null` is the natural pattern. Adding a status object would force every consumer to destructure or to ignore fields they do not use.
+- A future consumer that needs the resolution source (`role` vs `override` vs `default`) can call `junjo.check(...)` directly. A separate `useCheck` hook with a richer return type is additive if a real use case emerges.
+
+**Trade:** consumers who want to distinguish "still loading" from "errored" cannot from this hook alone. They can compose with their own state if needed; the common case does not need the distinction.
+
+### `useCan` uses `useSyncExternalStore` rather than `useState` + a force-render trick
+
+**Decision:** the hook reads the cache via `useSyncExternalStore(cache.subscribe, cache.get, () => undefined)`. The third argument (server snapshot) returns `undefined` because the SDK cannot pre-fetch on the server in V1.
+
+**Rationale:**
+- `useSyncExternalStore` is React 18's purpose-built primitive for "shared external store with subscription"; the React docs explicitly recommend it for this exact pattern.
+- It correctly handles StrictMode double-renders, concurrent rendering, and tearing under `useTransition`. A `useReducer` + manual subscribe / dispatch implementation would need to re-derive these properties.
+- The peer-dep range (`react ^18 || ^19`) covers every React version where `useSyncExternalStore` exists.
+
+**Trade:** none significant. `useSyncExternalStore`'s `getSnapshot` must return the same primitive when the value has not changed (otherwise React over-renders). For booleans (and `undefined`), JavaScript primitive equality handles this for free, so the constraint is satisfied trivially.
+

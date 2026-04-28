@@ -3,3 +3,4 @@ export type { JunjoProviderProps } from "./JunjoProvider.js";
 export { useJunjo } from "./useJunjo.js";
 export { useGroup } from "./useGroup.js";
 export type { UseGroupResult } from "./useGroup.js";
+export { useCan } from "./useCan.js";

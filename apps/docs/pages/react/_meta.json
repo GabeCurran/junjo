@@ -1,5 +1,6 @@
 {
   "index": "Overview",
   "provider": "JunjoProvider + useJunjo",
-  "use-group": "useGroup"
+  "use-group": "useGroup",
+  "use-can": "useCan"
 }
