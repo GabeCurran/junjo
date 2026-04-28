@@ -18,7 +18,8 @@ npm install @junjo/sdk @junjo/react
 | [`useJunjo`](/react/provider) | shipped (Phase 7.1). Returns the provided client from any descendant component. |
 | [`useGroup`](/react/use-group) | shipped (Phase 7.2). Snapshot + live event stream for one group's metadata and active members. |
 | [`useCan`](/react/use-can) | shipped (Phase 7.3). Boolean permission check with a per-provider shared cache. |
-| `useMembers`, `useInvitations`, `useAuditLog` | Land in Phase 7.4. |
+| [`useMembers`](/react/use-members) | shipped (Phase 7.4). Paginated roster with status filter and live event updates. |
+| `useInvitations`, `useAuditLog` | Land in Phase 7.4. |
 | Optimistic updates | Land in Phase 7.5. |
 
 The remaining hooks build on the same provider, so wiring `JunjoProvider` once at your app's root is the only setup step you need today.

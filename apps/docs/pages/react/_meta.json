@@ -2,5 +2,6 @@
   "index": "Overview",
   "provider": "JunjoProvider + useJunjo",
   "use-group": "useGroup",
-  "use-can": "useCan"
+  "use-can": "useCan",
+  "use-members": "useMembers"
 }

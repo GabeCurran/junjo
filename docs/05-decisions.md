@@ -2022,3 +2022,58 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** none significant. `useSyncExternalStore`'s `getSnapshot` must return the same primitive when the value has not changed (otherwise React over-renders). For booleans (and `undefined`), JavaScript primitive equality handles this for free, so the constraint is satisfied trivially.
 
+### Phase 7.4 `useMembers` defaults to `status: "active"` and filters client-side
+
+**Decision:** the hook accepts `{ status?: MemberStatus | "all" }`, defaults to `"active"`, and applies the filter on the client after each `members.list` page returns. The server does NOT narrow by status; the SDK passes only `{ limit?, cursor? }` to `junjo.members.list`.
+
+**Rationale:**
+- The dominant consumer pattern is a roster panel showing currently-active members. Defaulting to `"active"` makes the common case zero-config; non-active rosters (audit panels, "ex-members" lists) are rare and pay the explicit option.
+- Filtering client-side keeps the SDK surface narrow: no new query parameter on `members.list`, no new wire shape, no migration. If V1.X surfaces a status filter on the route, it would be additive and the React hook can opt in transparently.
+- The server is already paginated; the worst-case overhead of client-side filtering is the same as the server returning a full page of mostly-non-matching members. For active-heavy groups (the common case), this is negligible.
+
+**Trade:** a heavily-filtered group (e.g., one `active` member out of 1000 historical) requires several `fetchMore` calls before the consumer sees the desired entry. The docs page documents this explicitly. Acceptable for V1 because the dominant use case is the active filter and active members are usually the majority.
+
+### `useMembers` exposes explicit `fetchMore` rather than auto-loading all pages
+
+**Decision:** the hook returns `{ hasMore, fetchMore, loadingMore }` and only loads the first page on mount. Consumers call `fetchMore()` to load each subsequent page; the cursor is held internally.
+
+**Rationale:**
+- Auto-loading every page on mount would hammer the server for groups with thousands of members and waste bandwidth for consumers who only render the first page.
+- The fetchMore-on-demand pattern matches every popular React data library (React Query's `fetchNextPage`, SWR Infinite, Apollo's `fetchMore`); developers will reach for this shape instinctively.
+- Returning the cursor itself is rejected because it leaks the wire format into consumer code. Owning the cursor inside the hook keeps the consumer surface "click button, get more rows" without exposing pagination details.
+
+**Trade:** consumers who want a "load all" pattern have to loop on `fetchMore` themselves, or accept the default first-page behavior. Acceptable: the pattern is two lines and the alternative would prematurely commit to behavior most consumers do not want.
+
+### `useMembers` splits its fetch and subscribe effects so a status change does not re-open the SSE stream
+
+**Decision:** the hook runs two `useEffect`s. Effect A (`[refetch]`, where `refetch` depends on `[junjo, groupId, status, limit]`) fires the initial fetch and re-fetches when filter / limit change. Effect B (`[junjo, groupId]`) opens and closes the SSE subscription. The subscribe handler reads the latest matcher via a `matchesRef`.
+
+**Rationale:**
+- Subscriptions are server resources. Tearing one down and reopening it because the consumer flipped a client-side filter would be wasteful and would briefly miss events during the gap.
+- The `matchesRef` pattern (a ref updated each render that the long-lived handler closure reads) is the standard React idiom for "subscriber sees the latest props." It is correct under StrictMode (refs are not double-mounted) and avoids the stale-closure pitfall of reading `status` directly inside the handler.
+- The alternative (a single `useEffect` with `[junjo, groupId, status, limit]` deps) would correctly tear down + reopen on every filter change but would also disconnect from the live stream during the gap. Worse for V1.
+
+**Trade:** the matcher used by the subscribe handler can lag the rendered state by one tick (the ref updates during render; the handler runs whenever an event arrives). In practice the gap is one microtask and not user-visible. Acceptable.
+
+### `useMembers` removes members on `member.left` regardless of filter
+
+**Decision:** when a `member.left` event arrives for a user already in the visible roster, the hook removes them. It does NOT synthesize a left/kicked Member shape, even when the consumer's filter is `"all"` or `"left"`.
+
+**Rationale:**
+- The event payload (`{ userId, reason: "left" | "kicked", kickedBy? }`) does not carry the post-state member shape. Synthesizing one would require fabricating fields the event does not provide (a new `joinedAt`, a `status` derived from `reason`, etc.) and would diverge from what `members.list` would return on a refetch.
+- For the dominant filter (`"active"`), the behavior is correct: the user is no longer active and should not be in the list.
+- For other filters, the docs page tells the consumer to call `refetch` if they need precise lifecycle tracking. This is honest about what V1 can deliver and avoids painting the hook into a corner where the synthesized shape disagrees with the server.
+
+**Trade:** consumers using `status: "all"` or `status: "left"` see members disappear briefly (until they refetch) when those members leave / get kicked. Acceptable; the dominant filter is "active" and a future event-payload widening (carrying the post-state Member) is additive.
+
+### `useMembers` opens its own SSE subscription rather than sharing one with `useGroup`
+
+**Decision:** if a screen renders both `useGroup` and `useMembers` for the same `groupId`, two parallel SSE subscriptions open against the server. The hook does not coordinate with `useGroup`; each owns its own subscription lifecycle.
+
+**Rationale:**
+- A shared subscription cache would require a cross-hook registry inside `JunjoProvider`, ref-counting, and careful cleanup ordering. That is exactly the kind of infrastructure Phase 7.5 ("optimistic updates layer") is the right place for; baking it in now would couple `useMembers`'s implementation to invariants we have not designed yet.
+- Two subscriptions per screen is wasteful but correct in V1; the server tolerates duplicate subscribers per group.
+- The two hooks have different lifecycle needs (`useMembers` recovers via `refetch` + `fetchMore`; `useGroup` recovers via `refetch`). Sharing a subscription would force one of them to inherit the other's recovery model.
+
+**Trade:** developers rendering both hooks on one screen open two streams. The docs page calls this out explicitly and recommends choosing one hook per screen unless both result shapes are needed. Phase 7.5 will fold them into a shared cache transparently.
+
