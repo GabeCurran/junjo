@@ -1061,3 +1061,71 @@ A group with no outgoing relationships returns `[]`.
 |------|--------|------|
 | `not_found` | 404 | Group does not exist, is soft-deleted, or belongs to a different game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PUT /v1/groups/:id/parent`
+
+Set or clear the sub-group / alliance parent. The parent must be in the same game and not soft-deleted. Cycle detection: a candidate that would create a loop in the parent chain is rejected with `400 parent_cycle`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The child group id. URL-decoded. |
+
+### Request body
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `parentGroupId` | string \| null | Required. Set to a group id to nest under that parent; set to `null` to clear the parent. Omitting the field returns `400 bad_request`. |
+
+### Response
+
+`200 OK` with the updated `Group` (the child). `parentGroupId` reflects the new value.
+
+### Behavior
+
+- A child group with `parentGroupId` already equal to the supplied value is a no-op (no DB write, no audit entry); the unchanged group is returned.
+- The candidate parent's ancestor chain is walked; if the child group itself appears anywhere in that chain (including the candidate being the child's own id), the call is rejected with `400 parent_cycle`. The walk is bounded at depth 100 to defend against corrupted state.
+- On a value change, one audit entry is written on the *child* group's audit log:
+  - `group.parent.set` when the new value is non-null.
+  - `group.parent.cleared` when the new value is null.
+- The audit `payload` is `{ before, after }` carrying the prior and new parent ids (either may be null). The audit row's `targetId` is the new parent id (null when cleared). `actorUserId` is null in V1 (no auth-adapter actor wired).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `parentGroupId`, value is not a non-empty string or null, or body is malformed JSON. |
+| `parent_cycle` | 400 | `parentGroupId === id`, or the candidate is already a descendant of the child. |
+| `not_found` | 404 | The child or candidate parent does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/children`
+
+List the direct children of a group (groups whose `parentGroupId` points at this one).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The parent group id. URL-decoded. |
+
+### Response
+
+`200 OK` with a bare `Group[]` body, sorted by `createdAt desc, id desc` to match `groups.list`. Soft-deleted children are excluded. Each item carries a fresh `memberCount`.
+
+```json
+[
+  { "id": "grp_child_2", "name": "Second", "parentGroupId": "grp_parent", "memberCount": 0, "...": "..." },
+  { "id": "grp_child_1", "name": "First", "parentGroupId": "grp_parent", "memberCount": 3, "...": "..." }
+]
+```
+
+A group with no live direct children returns `[]`. Grandchildren are not included; call `listChildren` on each child for a multi-level tree.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

@@ -73,3 +73,18 @@ export const clearRelationshipQuery = z.object({
 });
 
 export type ClearRelationshipQuery = z.infer<typeof clearRelationshipQuery>;
+
+// Sub-group / alliance parent. `parentGroupId: null` clears the parent;
+// a non-null value sets it. The body must always carry the field
+// (omitting it is rejected) so the call's intent is explicit.
+export const setParentBody = z.object({
+  parentGroupId: z.string().min(1).nullable(),
+});
+
+export type SetParentBody = z.infer<typeof setParentBody>;
+
+// Hard upper bound on how deep the cycle-detection walk goes when
+// resolving a candidate ancestor chain. Practical hierarchies are a
+// handful of levels deep (faction -> guild -> sub-guild); the cap is
+// a defensive guard against a corrupted state with unbounded recursion.
+export const MAX_PARENT_DEPTH = 100;

@@ -34,4 +34,6 @@ export const Errors = {
     new JunjoError("role_name_taken", 409, msg),
   roleGroupMismatch: (msg = "role does not belong to this group") =>
     new JunjoError("role_group_mismatch", 400, msg),
+  parentCycle: (msg = "setting this parent would create a cycle") =>
+    new JunjoError("parent_cycle", 400, msg),
 };

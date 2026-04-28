@@ -10,6 +10,7 @@ interface WireGroupSnapshot {
   visibility: "public" | "invite-only" | "secret";
   metadata: Record<string, unknown>;
   defaultRoleId: string | null;
+  parentGroupId: string | null;
   memberCount: number;
   createdAt: string;
   updatedAt: string;
@@ -24,6 +25,7 @@ const wireFixture: WireGroupSnapshot = {
   visibility: "invite-only",
   metadata: {},
   defaultRoleId: null,
+  parentGroupId: null,
   memberCount: 0,
   createdAt: "2026-04-28T05:00:00.000Z",
   updatedAt: "2026-04-28T05:00:00.000Z",
@@ -1772,5 +1774,186 @@ describe("groups.listRelationships", () => {
     });
 
     await junjo.groups.listRelationships("has/slash" as GroupId);
+  });
+});
+
+describe("groups.setParent", () => {
+  it("PUTs to /v1/groups/:id/parent with the auth header and JSON body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PUT");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_child/parent");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ parentGroupId: "grp_parent" });
+      return jsonResponse({ ...wireFixture, id: "grp_child", parentGroupId: "grp_parent" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.setParent("grp_child" as GroupId, "grp_parent" as GroupId);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(group.id).toBe("grp_child");
+    expect(group.parentGroupId).toBe("grp_parent");
+  });
+
+  it("forwards null verbatim when clearing the parent", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ parentGroupId: null });
+      return jsonResponse({ ...wireFixture, parentGroupId: null });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.setParent("grp_child" as GroupId, null);
+    expect(group.parentGroupId).toBeNull();
+  });
+
+  it("throws JunjoError on 400 parent_cycle", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        { code: "parent_cycle", status: 400, message: "setting this parent would create a cycle" },
+        400,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.setParent("grp_a" as GroupId, "grp_b" as GroupId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "parent_cycle",
+      status: 400,
+    });
+  });
+
+  it("throws JunjoError on 404 when the parent or child group is missing", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.setParent("grp_a" as GroupId, "grp_missing" as GroupId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("URL-encodes the child group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/parent");
+      return jsonResponse({ ...wireFixture, parentGroupId: null });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.setParent("has/slash" as GroupId, null);
+  });
+
+  it("deserializes parentGroupId into the branded GroupId type", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ ...wireFixture, parentGroupId: "grp_parent" }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.setParent("grp_child" as GroupId, "grp_parent" as GroupId);
+    const checked: GroupId | null = group.parentGroupId;
+    expect(checked).toBe("grp_parent");
+  });
+});
+
+describe("groups.listChildren", () => {
+  it("GETs the children path and deserializes each row", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_parent/children");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse([
+        { ...wireFixture, id: "grp_child_1", name: "First", parentGroupId: "grp_parent" },
+        { ...wireFixture, id: "grp_child_2", name: "Second", parentGroupId: "grp_parent" },
+      ]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const children = await junjo.groups.listChildren("grp_parent" as GroupId);
+    expect(children).toHaveLength(2);
+    expect(children[0]?.id).toBe("grp_child_1");
+    expect(children[0]?.name).toBe("First");
+    expect(children[0]?.parentGroupId).toBe("grp_parent");
+    expect(children[0]?.createdAt).toBeInstanceOf(Date);
+    expect(children[1]?.id).toBe("grp_child_2");
+  });
+
+  it("returns an empty array verbatim", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([]));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const children = await junjo.groups.listChildren("grp_parent" as GroupId);
+    expect(children).toEqual([]);
+  });
+
+  it("throws JunjoError on 404 when the parent group is missing", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.listChildren("grp_missing" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("URL-encodes the parent group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/children");
+      return jsonResponse([]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.listChildren("has/slash" as GroupId);
   });
 });

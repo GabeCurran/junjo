@@ -5,12 +5,14 @@ import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import {
+  MAX_PARENT_DEPTH,
   bulkInviteQuery,
   clearRelationshipQuery,
   createGroupBody,
   kickMemberBody,
   leaveGroupBody,
   listGroupsQuery,
+  setParentBody,
   setRelationshipBody,
   updateGroupBody,
 } from "./groups.schema.js";
@@ -84,6 +86,7 @@ interface WireGroup {
   visibility: string;
   metadata: Record<string, unknown>;
   defaultRoleId: string | null;
+  parentGroupId: string | null;
   memberCount: number;
   createdAt: string;
   updatedAt: string;
@@ -99,6 +102,7 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
     visibility: group.visibility,
     metadata: (group.metadata ?? {}) as Record<string, unknown>,
     defaultRoleId: group.defaultRoleId,
+    parentGroupId: group.parentGroupId,
     memberCount,
     createdAt: group.createdAt.toISOString(),
     updatedAt: group.updatedAt.toISOString(),
@@ -1581,6 +1585,122 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     return c.json(rels.map(serializeGroupRelationship));
+  });
+
+  // Set or clear the sub-group / alliance parent. Body:
+  // `{ parentGroupId: string | null }`. The parent must be in the same
+  // game and not soft-deleted; cross-game / missing / soft-deleted
+  // parents collapse to 404. Self-parent (`parentGroupId === id`) and
+  // any candidate that would create a cycle in the parent chain are
+  // rejected with `400 parent_cycle`. Idempotent: if the supplied
+  // `parentGroupId` already equals the stored value, the route returns
+  // the unchanged group with no audit entry. Otherwise one transaction
+  // updates the row and writes a single audit entry: `group.parent.set`
+  // when the new value is non-null; `group.parent.cleared` when it is
+  // null. The audit payload carries `{ before, after }` with the prior
+  // and new parent ids (either may be null). `actorUserId` is null in
+  // V1 (no auth-adapter actor wired).
+  r.put("/:id/parent", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = setParentBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { parentGroupId } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    if (parentGroupId !== null) {
+      if (parentGroupId === group.id) throw Errors.parentCycle();
+
+      const parent = await prisma.group.findFirst({
+        where: { id: parentGroupId, gameId, softDeletedAt: null },
+        select: { id: true, parentGroupId: true },
+      });
+      if (!parent) throw Errors.notFound("group");
+
+      let cursor: { id: string; parentGroupId: string | null } | null = parent;
+      let depth = 0;
+      while (cursor && cursor.parentGroupId !== null && depth < MAX_PARENT_DEPTH) {
+        if (cursor.parentGroupId === group.id) throw Errors.parentCycle();
+        cursor = await prisma.group.findUnique({
+          where: { id: cursor.parentGroupId },
+          select: { id: true, parentGroupId: true },
+        });
+        depth++;
+      }
+    }
+
+    if (group.parentGroupId === parentGroupId) {
+      const memberCount = await prisma.groupMember.count({
+        where: { groupId: group.id, status: "active" },
+      });
+      return c.json(serializeGroup(group, memberCount));
+    }
+
+    const previous = group.parentGroupId;
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.group.update({
+        where: { id: group.id },
+        data: { parentGroupId },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: parentGroupId === null ? "group.parent.cleared" : "group.parent.set",
+          targetId: parentGroupId,
+          payload: {
+            before: previous,
+            after: parentGroupId,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.id, status: "active" },
+    });
+    return c.json(serializeGroup(updated, memberCount));
+  });
+
+  // List the direct children of a group (groups whose `parentGroupId`
+  // points at this one). Returns a bare `Group[]` (no pagination
+  // wrapper); a group's direct child set is conventionally small.
+  // Soft-deleted children are excluded. Sorted by `createdAt desc, id
+  // desc` to match `groups.list`.
+  r.get("/:id/children", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const children = await prisma.group.findMany({
+      where: { parentGroupId: group.id, gameId, softDeletedAt: null },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    if (children.length === 0) return c.json([]);
+
+    const counts = await prisma.groupMember.groupBy({
+      by: ["groupId"],
+      where: { groupId: { in: children.map((g) => g.id) }, status: "active" },
+      _count: { _all: true },
+    });
+    const countMap = new Map(counts.map((row) => [row.groupId, row._count._all]));
+
+    return c.json(children.map((g) => serializeGroup(g, countMap.get(g.id) ?? 0)));
   });
 
   return r;

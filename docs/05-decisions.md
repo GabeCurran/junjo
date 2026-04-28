@@ -1191,3 +1191,74 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - Phase 6 (auth adapters) will populate this field with the resolved JunjoUser id once the dev's frontend / SDK forwards a session token alongside the relationship-set call.
 
 **Trade:** SDK consumers must handle `setBy: null` from V1 onward. This is additive (was previously typed as `UserId`, never undefined / null) and matches the established precedent for the other "actor" fields.
+
+## 2026-04-28
+
+### `groups.setParent` lives at `PUT /v1/groups/:id/parent`, not as a `groups.update` field
+
+**Decision:** the parent / child hierarchy mutator is its own resource: `PUT /v1/groups/:id/parent` with body `{ parentGroupId: string | null }`. It is NOT a field on `groups.update`'s patch body.
+
+**Rationale:**
+- Cycle detection is a non-trivial transactional concern that has nothing to do with the rest of `groups.update`. Co-locating them would mean every `groups.update` call has to consider whether `parentGroupId` was supplied, even when it's a metadata-only or rename-only patch.
+- The audit log gets two distinct actions (`group.parent.set` and `group.parent.cleared`) that are easier to filter on than a generic `group.updated` payload that happens to include `before/after.parentGroupId`.
+- Mirrors the `groups.setRelationship` precedent: a graph-shaped mutation on a group lives at its own endpoint, not on the partial-update patch body.
+
+**Trade:** a dev who wants to rename a group AND reparent it has to make two calls. Acceptable; the two operations are conceptually independent.
+
+### `setParent` is idempotent on matching `parentGroupId`
+
+**Decision:** when the supplied `parentGroupId` already matches the stored value, the route writes nothing (no DB update, no audit entry) and returns the unchanged group.
+
+**Rationale:**
+- Matches the established idempotence precedent for `groups.update` (no-op patches), `setRelationship` (already-matching type), `members.assignRole` (already-assigned), `members.overridePermission` (matching grant), `roles.grantPermission` (already-granted). The codebase pattern is consistent: rerunning a write that would not change state is a free no-op.
+- Audit logs stay clean: a dev's idempotent retry doesn't pollute history with a string of "set parent to X (was already X)" entries.
+- Including the no-op call in the cycle-detection short-circuit (which runs before the idempotence check anyway) means an idempotent call still validates the parent is reachable / live, so a stale parent reference doesn't silently survive.
+
+**Trade:** none. A dev who genuinely wants to "touch" the parent without changing it has no need; there is no `since` field on the parent relation (unlike `GroupRelationship`) so there's nothing to bump.
+
+### Cycle detection walks the candidate parent's ancestor chain with a depth cap
+
+**Decision:** before persisting a `parentGroupId` change, the route walks the candidate parent's ancestor chain (one Prisma round-trip per ancestor) up to the `MAX_PARENT_DEPTH = 100` cap. If the child group itself appears anywhere in the chain (or if the candidate is the child directly), the call is rejected with `400 parent_cycle`. Self-parent (`parentGroupId === id`) hits the same error code.
+
+**Rationale:**
+- Pure reads, no schema-level constraint. Postgres's `WITH RECURSIVE` could shift this to one query but adds query complexity; per-level lookups keep the code legible and the chains are conventionally <10 levels deep (faction -> guild -> sub-guild -> ...).
+- The depth cap is a defensive guard, not a feature limit. Reaching 100 levels would itself indicate corrupted state; the walk just bails rather than recursing forever. Practical hierarchies are far below this.
+- Rejecting `self === parent` with the same `parent_cycle` code keeps the dev-facing error surface coherent: every "this would create a cycle" outcome is one code, regardless of the specific shape.
+- A new error code (vs. reusing `bad_request`) lets the dashboard / SDK surface a specific message ("cycle detected: cannot nest A under B because B is already nested under A").
+
+**Trade:** the per-level-round-trip approach scales O(depth) in queries, not O(1). For 100-level chains that's 100 reads per `setParent` call. Acceptable: the cap is rarely hit, and the code is dramatically simpler than the recursive-CTE alternative.
+
+### Two distinct audit actions: `group.parent.set` and `group.parent.cleared`
+
+**Decision:** every successful `setParent` write produces one audit entry on the *child* group's audit log. The action is `group.parent.set` when the new value is non-null, and `group.parent.cleared` when the new value is null. Payload is `{ before, after }` carrying the prior and new parent ids (either may be null on the `set` action when the child was previously top-level or is being re-parented).
+
+**Rationale:**
+- Mirrors the `permission.override.set` / `permission.override.cleared` and `group.relationship.set` / `group.relationship.cleared` precedents: distinct verbs for distinct user intent.
+- A consumer building a "show me when this group joined an alliance" feed can subscribe to `group.parent.set` only; a consumer building "show me when this group went independent" can subscribe to `group.parent.cleared`. Coalescing into one action would force every consumer to check `payload.after === null` to disambiguate.
+- The audit row's `targetId` is the new parent id (null when cleared). For `set` events that gives a quick way to filter "all groups that joined parent X" without parsing the payload.
+
+**Trade:** the two-action design makes the `AuditAction` union slightly larger. Acceptable; the union grows additively as features land.
+
+### `listChildren` returns direct children only (not grandchildren)
+
+**Decision:** `GET /v1/groups/:id/children` returns rows where `parentGroupId === :id`. It does NOT recurse into grandchildren. A dev who wants the full tree calls `listChildren` per node.
+
+**Rationale:**
+- Recursive listing is a significantly different shape: depth-bounded? cycle-safe (relevant if data is corrupted)? sorted how? This route stays simple and predictable.
+- Most game UX renders one level at a time (clicking into a sub-group expands its children). The flat one-level result matches the rendering model.
+- A future `?recursive=true` flag (or a `?depth=N` cap) is an additive change; we can add it without breaking V1 callers.
+- Matches the implicit precedent set elsewhere in the codebase: `members.list` returns rows for one group only (not "all members across all groups in the tree"); `audit.list` (Phase 5.2) is per-group too.
+
+**Trade:** a dashboard rendering a multi-level tree pays N round-trips. Acceptable for V1; the future `?recursive` flag covers the case if it becomes hot.
+
+### `Group.parentGroupId` is added to the wire format and the shared TypeScript type
+
+**Decision:** the `parentGroupId: GroupId | null` field appears on every serialized `Group` (server `WireGroup`, SDK `WireGroup`, shared `Group` interface). It is NOT optional / nullable-by-omission; the field is always present (with a `null` value when the group is top-level).
+
+**Rationale:**
+- Matches the convention for `defaultRoleId`, `softDeletedAt`, and other "may or may not be set" fields: always present on the wire, value is `null` when unset.
+- Makes the shape predictable for SDK consumers: no need to guard on `if ("parentGroupId" in group)`.
+- The change is strictly additive in the shared `Group` type: existing code that didn't read the field continues to work.
+- The server's `serializeGroup` helper centralizes the wire shape; downstream Prisma->wire conversions (groups.list, get, create, update, delete, restore, the new setParent) all flow through it and gain the field uniformly.
+
+**Trade:** existing SDK test fixtures had to be widened (`parentGroupId: null` added to the snapshot). Trivial one-line update; caught at type-check time.

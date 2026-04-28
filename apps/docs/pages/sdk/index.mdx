@@ -46,7 +46,7 @@ The `Junjo` instance exposes typed namespaces for each resource. See the per-nam
 
 | Namespace | Status |
 |-----------|--------|
-| [`junjo.groups`](/sdk/groups) | CRUD + invites + membership shipped through Phase 2.8; `setRelationship` / `clearRelationship` / `getRelationship` / `listRelationships` shipped in Phase 4.1. `subscribe`, `setParent`, `listChildren` still stubbed. |
+| [`junjo.groups`](/sdk/groups) | CRUD + invites + membership shipped through Phase 2.8; full Phase 4 (group relationships, sub-group `setParent` / `listChildren`) shipped. `subscribe` still stubbed pending Phase 5.1. |
 | [`junjo.roles`](/sdk/roles) | `create`, `get`, `update`, `delete`, `list`, `grantPermission`, `revokePermission` shipped (Phase 3.1 + 3.3). |
 | [`junjo.members`](/sdk/members) | All methods shipped: read (`get`, `getById`, `list`, `listForUser`), metadata / notes (`setMetadata`, `setNotes`), role assignment (`assignRole`, `removeRole`), permission overrides (`overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`). |
 | [`junjo.invitations`](/sdk/invitations) | `list`, `get`, `revoke` shipped (Phase 2.3). Accept/decline land in Phase 2.4. |

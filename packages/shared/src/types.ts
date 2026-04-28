@@ -38,6 +38,9 @@ export interface Group {
   visibility: GroupVisibility;
   metadata: GroupMetadata;
   defaultRoleId: RoleId | null;
+  // The parent in a sub-group / alliance hierarchy. null for top-level
+  // groups. Set via `groups.setParent`; cycle-checked server-side.
+  parentGroupId: GroupId | null;
   memberCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -213,6 +216,8 @@ export type AuditAction =
   | "group.restored"
   | "group.relationship.set"
   | "group.relationship.cleared"
+  | "group.parent.set"
+  | "group.parent.cleared"
   | "member.invited"
   | "member.joined"
   | "member.left"

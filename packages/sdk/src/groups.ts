@@ -77,6 +77,7 @@ export interface WireGroup {
   visibility: GroupVisibility;
   metadata: Record<string, unknown>;
   defaultRoleId: string | null;
+  parentGroupId: string | null;
   memberCount: number;
   createdAt: string;
   updatedAt: string;
@@ -92,6 +93,7 @@ export function deserializeGroup(w: WireGroup): Group {
     visibility: w.visibility,
     metadata: w.metadata,
     defaultRoleId: w.defaultRoleId === null ? null : (w.defaultRoleId as RoleId),
+    parentGroupId: w.parentGroupId === null ? null : (w.parentGroupId as GroupId),
     memberCount: w.memberCount,
     createdAt: new Date(w.createdAt),
     updatedAt: new Date(w.updatedAt),
@@ -299,11 +301,18 @@ export class GroupsApi {
 
   // ------ Sub-groups / alliances ------
 
-  async setParent(_groupId: GroupId, _parentGroupId: GroupId | null): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async setParent(groupId: GroupId, parentGroupId: GroupId | null): Promise<Group> {
+    const wire = await this.http.put<WireGroup>(
+      `/v1/groups/${encodeURIComponent(groupId)}/parent`,
+      { parentGroupId },
+    );
+    return deserializeGroup(wire);
   }
 
-  async listChildren(_groupId: GroupId): Promise<Group[]> {
-    throw NOT_IMPLEMENTED;
+  async listChildren(groupId: GroupId): Promise<Group[]> {
+    const wire = await this.http.get<WireGroup[]>(
+      `/v1/groups/${encodeURIComponent(groupId)}/children`,
+    );
+    return wire.map(deserializeGroup);
   }
 }

@@ -4839,3 +4839,384 @@ describe.skipIf(!TEST_DATABASE_URL)("Group relationships", () => {
     });
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("Sub-group parent + children", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(
+    name: string,
+    overrides: Partial<{ gameId: string; softDeletedAt: Date; parentGroupId: string }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name,
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+        parentGroupId: overrides.parentGroupId ?? null,
+      },
+    });
+  }
+
+  function setParent(id: string, body: unknown, header: string = authHeader) {
+    return app.request(`/v1/groups/${id}/parent`, {
+      method: "PUT",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  function listChildren(id: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${id}/children`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  describe("PUT /v1/groups/:id/parent", () => {
+    it("sets a parent and returns the updated group", async () => {
+      const child = await seedGroup("Child");
+      const parent = await seedGroup("Parent");
+
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.id).toBe(child.id);
+      expect(body.parentGroupId).toBe(parent.id);
+      expect(body.memberCount).toBe(0);
+
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBe(parent.id);
+    });
+
+    it("writes a group.parent.set audit entry on the child group", async () => {
+      const child = await seedGroup("Child");
+      const parent = await seedGroup("Parent");
+
+      await setParent(child.id, { parentGroupId: parent.id });
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: child.id } });
+      expect(entries).toHaveLength(1);
+      const [entry] = entries;
+      if (!entry) throw new Error("expected one audit entry");
+      expect(entry.action).toBe("group.parent.set");
+      expect(entry.targetId).toBe(parent.id);
+      expect(entry.actorUserId).toBeNull();
+      expect(entry.payload).toEqual({ before: null, after: parent.id });
+
+      const otherEntries = await prisma.auditEntry.findMany({ where: { groupId: parent.id } });
+      expect(otherEntries).toHaveLength(0);
+    });
+
+    it("clears the parent and writes a group.parent.cleared audit entry when set to null", async () => {
+      const parent = await seedGroup("Parent");
+      const child = await seedGroup("Child", { parentGroupId: parent.id });
+
+      const res = await setParent(child.id, { parentGroupId: null });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.parentGroupId).toBeNull();
+
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBeNull();
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: child.id } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.action).toBe("group.parent.cleared");
+      expect(entries[0]?.targetId).toBeNull();
+      expect(entries[0]?.payload).toEqual({ before: parent.id, after: null });
+    });
+
+    it("captures the previous parent in before/after when reparenting", async () => {
+      const oldParent = await seedGroup("Old");
+      const newParent = await seedGroup("New");
+      const child = await seedGroup("Child", { parentGroupId: oldParent.id });
+
+      await setParent(child.id, { parentGroupId: newParent.id });
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: child.id } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.action).toBe("group.parent.set");
+      expect(entries[0]?.payload).toEqual({ before: oldParent.id, after: newParent.id });
+    });
+
+    it("is idempotent when the parent already matches the supplied value", async () => {
+      const parent = await seedGroup("Parent");
+      const child = await seedGroup("Child", { parentGroupId: parent.id });
+
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(200);
+
+      expect(await prisma.auditEntry.count()).toBe(0);
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBe(parent.id);
+    });
+
+    it("is idempotent when clearing an already-null parent", async () => {
+      const child = await seedGroup("Child");
+
+      const res = await setParent(child.id, { parentGroupId: null });
+      expect(res.status).toBe(200);
+
+      expect(await prisma.auditEntry.count()).toBe(0);
+    });
+
+    it("rejects a self-parent with 400 parent_cycle", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, { parentGroupId: child.id });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("parent_cycle");
+
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBeNull();
+    });
+
+    it("rejects a candidate that would create a cycle in the parent chain", async () => {
+      const top = await seedGroup("Top");
+      const mid = await seedGroup("Mid", { parentGroupId: top.id });
+      const bottom = await seedGroup("Bottom", { parentGroupId: mid.id });
+
+      const res = await setParent(top.id, { parentGroupId: bottom.id });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("parent_cycle");
+
+      const stored = await prisma.group.findUnique({ where: { id: top.id } });
+      expect(stored?.parentGroupId).toBeNull();
+    });
+
+    it("rejects a candidate that is the direct child", async () => {
+      const parent = await seedGroup("Parent");
+      const child = await seedGroup("Child", { parentGroupId: parent.id });
+
+      const res = await setParent(parent.id, { parentGroupId: child.id });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("parent_cycle");
+    });
+
+    it("allows setting a sibling-style parent (no cycle)", async () => {
+      const root = await seedGroup("Root");
+      const a = await seedGroup("A", { parentGroupId: root.id });
+      const b = await seedGroup("B", { parentGroupId: root.id });
+
+      const res = await setParent(a.id, { parentGroupId: b.id });
+      expect(res.status).toBe(200);
+
+      const stored = await prisma.group.findUnique({ where: { id: a.id } });
+      expect(stored?.parentGroupId).toBe(b.id);
+    });
+
+    it("rejects a missing parentGroupId field with 400 bad_request", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, {});
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("bad_request");
+    });
+
+    it("rejects a non-string non-null parentGroupId with 400 bad_request", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, { parentGroupId: 42 });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an empty-string parentGroupId with 400 bad_request", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, { parentGroupId: "" });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects malformed JSON with 400 bad_request", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, "not json");
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when the child group does not exist", async () => {
+      const parent = await seedGroup("Parent");
+      const res = await setParent("grp_missing", { parentGroupId: parent.id });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the child group is soft-deleted", async () => {
+      const parent = await seedGroup("Parent");
+      const child = await seedGroup("Child", { softDeletedAt: new Date() });
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the parent group does not exist", async () => {
+      const child = await seedGroup("Child");
+      const res = await setParent(child.id, { parentGroupId: "grp_missing" });
+      expect(res.status).toBe(404);
+
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBeNull();
+    });
+
+    it("returns 404 when the parent group is in a different game", async () => {
+      const child = await seedGroup("Child");
+      const otherGame = await createGame("Other Game", prisma);
+      const parent = await seedGroup("Parent", { gameId: otherGame.id });
+
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(404);
+
+      const stored = await prisma.group.findUnique({ where: { id: child.id } });
+      expect(stored?.parentGroupId).toBeNull();
+    });
+
+    it("returns 404 when the parent group is soft-deleted", async () => {
+      const child = await seedGroup("Child");
+      const parent = await seedGroup("Parent", { softDeletedAt: new Date() });
+
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the child group is in a different game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const child = await seedGroup("Child", { gameId: otherGame.id });
+      const parent = await seedGroup("Parent");
+
+      const res = await setParent(child.id, { parentGroupId: parent.id });
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const child = await seedGroup("Child");
+      const res = await app.request(`/v1/groups/${child.id}/parent`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parentGroupId: null }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET /v1/groups/:id/children", () => {
+    it("returns an empty array when the group has no children", async () => {
+      const parent = await seedGroup("Parent");
+      const res = await listChildren(parent.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as unknown[];
+      expect(body).toEqual([]);
+    });
+
+    it("returns direct children sorted by createdAt desc", async () => {
+      const parent = await seedGroup("Parent");
+      const first = await seedGroup("First", { parentGroupId: parent.id });
+      await new Promise((r) => setTimeout(r, 5));
+      const second = await seedGroup("Second", { parentGroupId: parent.id });
+      await new Promise((r) => setTimeout(r, 5));
+      const third = await seedGroup("Third", { parentGroupId: parent.id });
+
+      const res = await listChildren(parent.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{ id: string; parentGroupId: string }>;
+      expect(body.map((g) => g.id)).toEqual([third.id, second.id, first.id]);
+      for (const g of body) expect(g.parentGroupId).toBe(parent.id);
+    });
+
+    it("excludes soft-deleted children", async () => {
+      const parent = await seedGroup("Parent");
+      const live = await seedGroup("Live", { parentGroupId: parent.id });
+      await prisma.group.create({
+        data: {
+          gameId,
+          kind: "guild",
+          name: "Dead",
+          visibility: "invite-only",
+          metadata: {},
+          parentGroupId: parent.id,
+          softDeletedAt: new Date(),
+        },
+      });
+
+      const res = await listChildren(parent.id);
+      const body = (await res.json()) as Array<{ id: string }>;
+      expect(body).toHaveLength(1);
+      expect(body[0]?.id).toBe(live.id);
+    });
+
+    it("does not include grandchildren (direct children only)", async () => {
+      const top = await seedGroup("Top");
+      const mid = await seedGroup("Mid", { parentGroupId: top.id });
+      await seedGroup("Bottom", { parentGroupId: mid.id });
+
+      const res = await listChildren(top.id);
+      const body = (await res.json()) as Array<{ id: string }>;
+      expect(body.map((g) => g.id)).toEqual([mid.id]);
+    });
+
+    it("returns memberCount per child", async () => {
+      const parent = await seedGroup("Parent");
+      const child = await seedGroup("Child", { parentGroupId: parent.id });
+
+      const user = await prisma.junjoUser.create({ data: {} });
+      await prisma.groupMember.create({
+        data: {
+          groupId: child.id,
+          junjoUserId: user.id,
+          status: "active",
+          metadata: {},
+        },
+      });
+
+      const res = await listChildren(parent.id);
+      const body = (await res.json()) as Array<{ id: string; memberCount: number }>;
+      expect(body[0]?.memberCount).toBe(1);
+    });
+
+    it("returns 404 when the parent group does not exist", async () => {
+      const res = await listChildren("grp_missing");
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the parent group is soft-deleted", async () => {
+      const parent = await seedGroup("Parent", { softDeletedAt: new Date() });
+      const res = await listChildren(parent.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the parent group is in a different game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const parent = await seedGroup("Parent", { gameId: otherGame.id });
+
+      const res = await listChildren(parent.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const parent = await seedGroup("Parent");
+      const res = await app.request(`/v1/groups/${parent.id}/children`);
+      expect(res.status).toBe(401);
+    });
+  });
+});

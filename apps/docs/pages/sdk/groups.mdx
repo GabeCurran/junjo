@@ -647,6 +647,56 @@ Return every directed row where this group is the A-side ("this group's stance t
 
 - [`GET /v1/groups/:a/relationships`](/api/groups) - the underlying HTTP route.
 
+## `setParent(groupId, parentGroupId)` - shipped
+
+```ts
+async setParent(groupId: GroupId, parentGroupId: GroupId | null): Promise<Group>
+```
+
+Set or clear the sub-group / alliance parent. Pass a group id to nest under that parent; pass `null` to detach. Both groups must belong to the calling game; the candidate parent must not be soft-deleted.
+
+### Behavior
+
+- Idempotent: when the supplied `parentGroupId` already matches the stored value, no audit entry is written and the unchanged group is returned.
+- Cycle detection: a candidate that would create a loop in the parent chain (including `parentGroupId === groupId` directly, or any ancestor that is already a descendant) throws `parent_cycle`. The walk is bounded at depth 100 to defend against corrupted state.
+- One audit entry is written on the *child* group's audit log on every actual change: `group.parent.set` when the new value is non-null; `group.parent.cleared` when null. Payload is `{ before, after }`.
+
+### Returns
+
+The updated `Group` (including the new `parentGroupId`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `parent_cycle` | 400 | `parentGroupId === groupId`, or the candidate is already a descendant. |
+| `bad_request` | 400 | `parentGroupId` is missing, empty string, or not a string-or-null. |
+| `not_found` | 404 | The child or candidate parent is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`PUT /v1/groups/:id/parent`](/api/groups) - the underlying HTTP route.
+
+## `listChildren(groupId)` - shipped
+
+```ts
+async listChildren(groupId: GroupId): Promise<Group[]>
+```
+
+Return the direct children of a group (groups whose `parentGroupId` points at this one). Sorted by `createdAt desc, id desc` so the most recently nested children appear first. Soft-deleted children are excluded. Grandchildren are NOT included; call `listChildren` on each child for a multi-level tree walk.
+
+A group with no live children returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`GET /v1/groups/:id/children`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`subscribe`, `setParent`, and `listChildren` still exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`subscribe` still exists on the type surface today but throws `JunjoError("not_implemented")` until Phase 5.1 ships. The shape is stable; it will fill in without breaking changes.
