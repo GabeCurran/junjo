@@ -1,13 +1,11 @@
 import type {
   AuthAdapter,
   GroupId,
-  JunjoEvent,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,
   RoleId,
   UserId,
-  WebhookSignatureHeaders,
 } from "@junjo/shared";
 import { AuditApi } from "./audit.js";
 import { JunjoError } from "./errors.js";
@@ -16,6 +14,7 @@ import { HttpClient } from "./http.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
 import { RolesApi } from "./roles.js";
+import { WebhooksApi } from "./webhooks.js";
 
 // =====================================================================
 // Configuration
@@ -112,40 +111,6 @@ export class Junjo {
 }
 
 // =====================================================================
-// Webhooks
-// =====================================================================
-
-interface ExpressLikeRequest {
-  headers: Record<string, string | string[] | undefined>;
-  body: unknown;
-  rawBody?: Uint8Array | string;
-}
-interface ExpressLikeResponse {
-  status(code: number): ExpressLikeResponse;
-  send(body?: unknown): void;
-  sendStatus(code: number): void;
-}
-type ExpressLikeMiddleware = (
-  req: ExpressLikeRequest,
-  res: ExpressLikeResponse,
-  next: (err?: unknown) => void,
-) => void;
-
-export class WebhooksApi {
-  middleware(_opts?: { tolerance?: number }): ExpressLikeMiddleware {
-    throw NOT_IMPLEMENTED;
-  }
-
-  verify(
-    _rawBody: string | Uint8Array,
-    _headers: WebhookSignatureHeaders,
-    _opts?: { tolerance?: number },
-  ): JunjoEvent {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
 // Re-exports for ergonomics
 // =====================================================================
 
@@ -155,6 +120,20 @@ export { GroupsApi } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
 export { MembersApi } from "./members.js";
 export { RolesApi } from "./roles.js";
+export {
+  WebhooksApi,
+  WEBHOOK_DEFAULT_TOLERANCE_MS,
+  WEBHOOK_SIGNATURE_SCHEME,
+  signWebhookBody,
+  verifyWebhook,
+} from "./webhooks.js";
+export type {
+  ExpressLikeMiddleware,
+  ExpressLikeRequest,
+  ExpressLikeResponse,
+  VerifyOptions,
+  WebhookHeaders,
+} from "./webhooks.js";
 
 export type {
   AuditAction,
@@ -171,4 +150,5 @@ export type {
   PermissionSource,
   Role,
   UserId,
+  WebhookSignatureHeaders,
 } from "@junjo/shared";

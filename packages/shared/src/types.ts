@@ -361,8 +361,11 @@ export interface AuthAdapter {
 // =====================================================================
 
 export interface WebhookSignatureHeaders {
-  "junjo-signature": string;
-  "junjo-timestamp": string;
+  "x-junjo-signature": string;
+  "x-junjo-timestamp": string;
+  "x-junjo-event": string;
+  "x-junjo-event-id": string;
+  "x-junjo-delivery-id": string;
 }
 
 export interface WebhookDelivery {

@@ -1,0 +1,141 @@
+# `junjo.webhooks`
+
+Verify the HMAC signature on inbound webhook deliveries from Junjo and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts---shipped) values. Pair with the [HTTP wire format](../api/webhooks) docs for the corresponding server side.
+
+`webhooks.verify` and `webhooks.middleware` are server-only helpers (they run on the dev's backend that receives webhooks). The signing math is HMAC-SHA256 via the Web Crypto API, so the same code runs on Node 19+ and modern browsers without `node:crypto` or `@types/node`.
+
+```ts
+import express from "express";
+import { Junjo } from "@junjo/sdk";
+
+const app = express();
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+
+app.post(
+  "/webhooks/junjo",
+  express.raw({ type: "application/json" }),
+  junjo.webhooks.middleware(process.env.JUNJO_WEBHOOK_SECRET!),
+  (req, res) => {
+    const event = req.body; // typed as JunjoEvent
+    if (event.type === "member.joined") {
+      // ...
+    }
+    res.sendStatus(204);
+  },
+);
+```
+
+## `verify(rawBody, headers, secret, opts?)` - shipped
+
+Returns `Promise<JunjoEvent>`. Throws [`JunjoError`](../api/index#errors) on any verification failure.
+
+```ts
+verify(
+  rawBody: string | Uint8Array,
+  headers: WebhookHeaders,
+  secret: string,
+  opts?: VerifyOptions,
+): Promise<JunjoEvent>;
+
+interface VerifyOptions {
+  tolerance?: number; // ms; defaults to 5 * 60_000 (5 minutes)
+  now?: () => Date; // override the wall clock for tests
+}
+
+type WebhookHeaders =
+  | WebhookSignatureHeaders
+  | Record<string, string | string[] | undefined>;
+```
+
+### Behavior
+
+1. Reads `x-junjo-signature` and `x-junjo-timestamp` from the supplied headers (case-insensitive; arrays are accepted and the first element wins).
+2. Validates the timestamp is a parseable ISO 8601 string.
+3. Validates the timestamp is within `tolerance` of `now`. The default is 5 minutes; raise it only if your clocks are known to drift.
+4. Computes HMAC-SHA256 of `<timestamp>.<body>` with `secret` and constant-time compares against the `x-junjo-signature` header (which is `v1=<hex>`).
+5. JSON.parses the body and rehydrates `Date` fields and branded ids via `deserializeEvent`.
+
+### Errors
+
+Every failure mode throws `JunjoError` with `status: 400`. Branch on `error.code`:
+
+| Code | When |
+|------|------|
+| `webhook_signature_missing` | `x-junjo-signature` header is absent. |
+| `webhook_timestamp_missing` | `x-junjo-timestamp` header is absent. |
+| `webhook_timestamp_invalid` | The timestamp is not parseable as ISO 8601. |
+| `webhook_timestamp_out_of_tolerance` | Skew exceeds `tolerance` (default 5 minutes). |
+| `webhook_invalid_signature` | The recomputed HMAC does not match the header. Either the body was tampered, the wrong secret was supplied, or the signature scheme is unknown. |
+| `webhook_invalid_body` | The body is not valid JSON. (The signature passes only when the body is byte-for-byte what was signed, so the only way to reach this branch is when the upstream sender signed garbage.) |
+
+### Manual call (no Express)
+
+For frameworks where the middleware shape doesn't fit, call `verify` directly:
+
+```ts
+import { Junjo, JunjoError } from "@junjo/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+
+async function handle(rawBody: Uint8Array, headers: Record<string, string>) {
+  try {
+    const event = await junjo.webhooks.verify(
+      rawBody,
+      headers,
+      process.env.JUNJO_WEBHOOK_SECRET!,
+    );
+    // dispatch on event.type
+  } catch (err) {
+    if (err instanceof JunjoError) {
+      // log err.code; respond 400
+    }
+    throw err;
+  }
+}
+```
+
+## `middleware(secret, opts?)` - shipped
+
+Returns an Express-compatible middleware that verifies, parses, and replaces `req.body` with the typed `JunjoEvent` before calling `next()`. Mount it AFTER `express.raw({ type: "application/json" })` so the raw bytes are on `req.body`.
+
+```ts
+middleware(secret: string, opts?: VerifyOptions): ExpressLikeMiddleware;
+```
+
+On verification failure the middleware responds `400` with the `JunjoError` message and does not call `next()`. The next handler downstream sees `req.body` as a fully-typed `JunjoEvent`:
+
+```ts
+app.post(
+  "/webhooks/junjo",
+  express.raw({ type: "application/json" }),
+  junjo.webhooks.middleware(process.env.JUNJO_WEBHOOK_SECRET!),
+  (req, res) => {
+    const event = req.body as JunjoEvent;
+    switch (event.type) {
+      case "member.joined":
+        // event.member.userId is typed as UserId
+        break;
+      case "group.deleted":
+        break;
+    }
+    res.sendStatus(204);
+  },
+);
+```
+
+If your framework has already parsed the body into a Buffer on a different field (e.g., `req.rawBody`), the middleware reads from there as a fallback. The lookup order is: `req.rawBody` first, then `req.body` (if it is a `string` or `Uint8Array`). Anything else and the middleware responds 400 with a hint to add `express.raw`.
+
+## Constants
+
+```ts
+export const WEBHOOK_SIGNATURE_SCHEME = "v1";
+export const WEBHOOK_DEFAULT_TOLERANCE_MS = 5 * 60_000;
+```
+
+`WEBHOOK_SIGNATURE_SCHEME` is the prefix Junjo writes ahead of the hex digest. Future schemes (e.g., `v2=...`) will coexist and the verifier will route on this prefix. `WEBHOOK_DEFAULT_TOLERANCE_MS` is the default replay-protection window; override per call via `opts.tolerance`.
+
+## Receiver requirements
+
+- **Receivers MUST be idempotent on `x-junjo-event-id`.** The worker delivers at-least-once: a crash between POST and row update can re-deliver an event. Use a unique constraint on `eventId` in your receiver-side store.
+- **Receivers MUST verify the signature on the raw body, before JSON.parse.** Parsing then re-stringifying the body changes its bytes (key order, whitespace) and breaks the HMAC. The middleware does this in the right order; manual callers should pass the raw `Uint8Array` straight from the HTTP framework.
+- **Tolerance is bidirectional.** The verifier rejects timestamps too old (replay) AND too far in the future (clock skew or sender attack).

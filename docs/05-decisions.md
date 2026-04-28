@@ -1609,3 +1609,55 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Future use cases (a custom HTTP client with proxy / TLS pinning support) plug in via the same seam.
 
 **Trade:** the type alias diverges from `fetch`'s actual return shape (a full `Response`); tests must remember to return `{ ok, status }` not a `Response`. Documented in the type and in the test helper.
+
+### Phase 5.4 SDK `webhooks.verify` is async (returns `Promise<JunjoEvent>`) and uses Web Crypto, not `node:crypto`
+
+**Decision:** `verifyWebhook(rawBody, headers, secret, opts?)` and `WebhooksApi.verify(...)` return `Promise<JunjoEvent>`. The HMAC computation goes through `crypto.subtle.importKey` + `crypto.subtle.sign` (Web Crypto API) rather than `createHmac` from `node:crypto`. The original stub signature was synchronous, but the stub was unimplemented so no consumer was relying on it.
+
+**Rationale:**
+- The SDK ships for both Node and the browser. Adding `@types/node` as a devDependency to the SDK package would tie the SDK's typecheck to Node's type definitions (which haven't been needed anywhere else in the SDK so far).
+- Web Crypto is available natively in Node 19+ (released 2022) and every modern browser. The SDK's other globals (`fetch`, `TextEncoder`, `ReadableStream`) follow the same "available in both runtimes" pattern.
+- The async API also future-proofs against keyed schemes that need async key import (e.g., asymmetric signatures via `crypto.subtle.importKey` with `RSA-PSS`).
+
+**Trade:** the resulting `verify` is async, so callers MUST `await` it. Stripe's `webhooks.constructEvent` is sync (uses `node:crypto`); an existing user porting from Stripe will need to add an `await`. Documented in the SDK page and in the migration cookbook (Phase 13.4).
+
+### Webhook signature scheme + headers are mirrored verbatim between server worker and SDK verifier
+
+**Decision:** the SDK's `signWebhookBody(secret, body, timestamp)` produces the same `v1=<hex>` output as the server's `signWebhookBody` in `webhookWorker.ts`. The `WEBHOOK_SIGNATURE_SCHEME = "v1"` constant is duplicated rather than shared from `@junjo/shared`. `WebhookSignatureHeaders` in `@junjo/shared` is widened from 2 fields to all 5 headers the worker actually emits (`x-junjo-signature`, `x-junjo-timestamp`, `x-junjo-event`, `x-junjo-event-id`, `x-junjo-delivery-id`).
+
+**Rationale:**
+- The constant is small (one string) and the algorithms diverge across runtimes (`createHmac` vs `crypto.subtle.sign`); duplicating the constant alongside the algorithm is clearer than sharing the constant from a third package.
+- Keeping the actual computation in two places makes drift visible: any change to the signing layout (e.g., adding the event id into the signed message) requires a touch in both files, which is a feature, not a bug. The SDK tests round-trip through both implementations.
+- Widening `WebhookSignatureHeaders` to all 5 headers makes the type accurate for the verifier's input. The previous shape (`junjo-signature` / `junjo-timestamp` without the `x-` prefix) was an early stub that no consumer ever used.
+
+**Trade:** if Phase 5.5 changes the scheme to `v2=...`, both files have to change; missing one site fails fast (signature mismatch on the next delivery). Acceptable.
+
+### Webhook verifier rejects timestamps both too old AND too far in the future
+
+**Decision:** the tolerance check is `Math.abs(now - timestamp) > tolerance` (bidirectional), not just `now - timestamp > tolerance`. Default tolerance is 5 minutes; configurable via `opts.tolerance`.
+
+**Rationale:**
+- One-sided tolerance protects against replay (old timestamps) but lets a sender lie about future timestamps to extend the replay window. Bidirectional protects against both.
+- Stripe's verifier does one-sided; Svix does bidirectional. We follow Svix's lead because the asymmetric protection has a real attack vector even in V1.
+
+**Trade:** receivers with clock skew larger than 5 minutes need to opt into a wider tolerance. Documented; alternative is to fix the receiver's clock.
+
+### `webhooks.middleware` reads `req.rawBody` then `req.body` (string or Uint8Array); errors out on parsed JSON body
+
+**Decision:** the Express middleware reads the raw body via three fallbacks in order: `req.rawBody` (set by some bodyparsers), `req.body` if it is a `string`, `req.body` if it is a `Uint8Array` / `Buffer`. Anything else (parsed object, `undefined`) responds 400 with a hint to add `express.raw({ type: "application/json" })` upstream.
+
+**Rationale:**
+- The signature is computed over the raw bytes; a parsed-then-re-stringified body has a different byte sequence (key order, whitespace) and the signature will not match. Refusing parsed bodies catches the most common misconfiguration eagerly with a clear error message.
+- `req.rawBody` is the convention in some Express setups (e.g., Stripe's docs) where a JSON parser runs first but stashes the original bytes; we accept that path because some deployments cannot reorder middleware.
+
+**Trade:** developers using a custom Express bodyparser that stores the raw body on a non-standard field have to either rename to `rawBody` or call `verify` directly. Acceptable; the manual call path is one line.
+
+### Constant-time comparison is hand-rolled (XOR-and-OR loop) instead of `timingSafeEqual`
+
+**Decision:** the SDK's `constantTimeEqual(a, b)` is a small hand-rolled loop: equal-length strings, XOR each char-code pair, OR-accumulate into a diff variable, return `diff === 0`. We do not import `timingSafeEqual` from `node:crypto`.
+
+**Rationale:**
+- `timingSafeEqual` is a Node-only helper that requires `@types/node` (see the async-Web-Crypto decision above).
+- The loop is short enough to read at a glance. JS engine optimizations could in theory leak timing through branch prediction, but the typical webhook signature verification path is not a tight enough side-channel for this to matter in practice (the network round-trip dominates timing).
+
+**Trade:** a sufficiently dedicated attacker with a high-precision side-channel could in principle extract timing information from the loop. Acceptable threat model for V1; the failure mode is a leaked HMAC byte, which by itself does not yield the secret. If this becomes a concern, swap in `crypto.subtle.timingSafeEqual` once Web Crypto adds it (in draft for the standard).
