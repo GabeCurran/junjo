@@ -10,6 +10,8 @@ export interface UseInvitationsOptions {
   limit?: number;
 }
 
+export type InvitationUpdater = (prev: Invitation[]) => Invitation[];
+
 export interface UseInvitationsResult {
   invitations: Invitation[];
   loading: boolean;
@@ -18,6 +20,7 @@ export interface UseInvitationsResult {
   error: Error | null;
   refetch: () => Promise<void>;
   fetchMore: () => Promise<void>;
+  applyOptimistic: (updater: InvitationUpdater) => () => void;
 }
 
 interface State {
@@ -38,7 +41,9 @@ type Action =
   | { type: "fetch_more_success"; invitations: Invitation[]; hasMore: boolean }
   | { type: "fetch_more_error"; error: Error }
   | { type: "stream_error"; error: Error }
-  | { type: "event"; event: JunjoEvent; matches: InvitationMatcher };
+  | { type: "event"; event: JunjoEvent; matches: InvitationMatcher }
+  | { type: "optimistic_apply"; updater: InvitationUpdater }
+  | { type: "optimistic_rollback"; snapshot: Invitation[] };
 
 const INITIAL_STATE: State = {
   invitations: [],
@@ -81,6 +86,14 @@ function reducer(state: State, action: Action): State {
       return { ...state, error: action.error };
     case "event":
       return applyEvent(state, action.event, action.matches);
+    case "optimistic_apply": {
+      const next = action.updater(state.invitations);
+      if (next === state.invitations) return state;
+      return { ...state, invitations: next };
+    }
+    case "optimistic_rollback":
+      if (action.snapshot === state.invitations) return state;
+      return { ...state, invitations: action.snapshot };
   }
 }
 
@@ -170,6 +183,17 @@ export function useInvitations(
   );
   const matchesRef = useRef(matches);
   matchesRef.current = matches;
+
+  const invitationsRef = useRef(state.invitations);
+  invitationsRef.current = state.invitations;
+
+  const applyOptimistic = useCallback((updater: InvitationUpdater): (() => void) => {
+    const snapshot = invitationsRef.current;
+    dispatch({ type: "optimistic_apply", updater });
+    return () => {
+      dispatch({ type: "optimistic_rollback", snapshot });
+    };
+  }, []);
 
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
@@ -278,5 +302,6 @@ export function useInvitations(
     error: state.error,
     refetch,
     fetchMore,
+    applyOptimistic,
   };
 }

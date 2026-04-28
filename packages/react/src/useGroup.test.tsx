@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
 import { useGroup } from "./useGroup.js";
+import { useMutation } from "./useMutation.js";
 
 const GAME_ID = "game_test" as GameId;
 const GROUP_ID = "grp_alpha" as GroupId;
@@ -539,5 +540,415 @@ describe("useGroup", () => {
       await Promise.resolve();
     });
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  describe("applyOptimistic", () => {
+    it("updates members via the snapshot updater and returns a rollback closure", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.filter((m) => m.userId !== "user_a"),
+        }));
+      });
+      expect(result.current.members).toEqual([b]);
+      expect(result.current.group).toBe(group);
+
+      act(() => {
+        rollback?.();
+      });
+      expect(result.current.members).toEqual([a, b]);
+      expect(result.current.group).toBe(group);
+    });
+
+    it("updates the group field via the snapshot updater", async () => {
+      const h = makeHarness();
+      const group = makeGroup({ name: "Crimson Wolves" });
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) => ({
+          group: prev.group ? { ...prev.group, name: "Sapphire Wolves" } : null,
+          members: prev.members,
+        }));
+      });
+      expect(result.current.group?.name).toBe("Sapphire Wolves");
+
+      act(() => {
+        rollback?.();
+      });
+      expect(result.current.group?.name).toBe("Crimson Wolves");
+    });
+
+    it("updates both group and members atomically", async () => {
+      const h = makeHarness();
+      const group = makeGroup({ memberCount: 2 });
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      act(() => {
+        result.current.applyOptimistic((prev) => ({
+          group: prev.group ? { ...prev.group, memberCount: 1 } : null,
+          members: prev.members.filter((m) => m.userId !== "user_a"),
+        }));
+      });
+
+      expect(result.current.group?.memberCount).toBe(1);
+      expect(result.current.members).toEqual([b]);
+    });
+
+    it("rolls back to the snapshot taken at applyOptimistic call time", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollbackA: (() => void) | undefined;
+      act(() => {
+        rollbackA = result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.filter((m) => m.userId !== "user_a"),
+        }));
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+
+      let rollbackB: (() => void) | undefined;
+      act(() => {
+        rollbackB = result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.filter((m) => m.userId !== "user_b"),
+        }));
+      });
+      expect(result.current.members).toEqual([]);
+
+      act(() => {
+        rollbackB?.();
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+
+      act(() => {
+        rollbackA?.();
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+    });
+
+    it("does not call the SDK", async () => {
+      const h = makeHarness();
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValue(membersPage([makeMember("user_a")]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const getCalls = h.get.mock.calls.length;
+      const listCalls = h.list.mock.calls.length;
+      act(() => {
+        result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.slice(0, 0),
+        }));
+      });
+
+      expect(h.get).toHaveBeenCalledTimes(getCalls);
+      expect(h.list).toHaveBeenCalledTimes(listCalls);
+    });
+
+    it("preserves state when the updater returns the same group and members references", async () => {
+      const h = makeHarness();
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValue(membersPage([makeMember("user_a")]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const beforeGroup = result.current.group;
+      const beforeMembers = result.current.members;
+      act(() => {
+        result.current.applyOptimistic((prev) => prev);
+      });
+
+      expect(result.current.group).toBe(beforeGroup);
+      expect(result.current.members).toBe(beforeMembers);
+    });
+
+    it("layers SSE events on top of the optimistic state", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await waitFor(() => expect(h.captures.length).toBe(1));
+
+      act(() => {
+        result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.filter((m) => m.userId !== "user_a"),
+        }));
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+
+      const c = makeMember("user_c");
+      const event: JunjoEvent = {
+        id: "evt_1",
+        type: "member.joined",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        userId: "user_c" as UserId,
+        member: c,
+        occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+      };
+      const capture = h.captures[0];
+      if (!capture) throw new Error("expected subscription capture");
+      act(() => {
+        capture.handler(event);
+      });
+
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_b", "user_c"]);
+    });
+
+    it("rollback restores the pre-optimistic snapshot, losing intermediate SSE events", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await waitFor(() => expect(h.captures.length).toBe(1));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.filter((m) => m.userId !== "user_a"),
+        }));
+      });
+      expect(result.current.members).toEqual([]);
+
+      const c = makeMember("user_c");
+      const joined: JunjoEvent = {
+        id: "evt_1",
+        type: "member.joined",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        userId: "user_c" as UserId,
+        member: c,
+        occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+      };
+      const capture = h.captures[0];
+      if (!capture) throw new Error("expected subscription capture");
+      act(() => {
+        capture.handler(joined);
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_c"]);
+
+      act(() => {
+        rollback?.();
+      });
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_a"]);
+    });
+
+    it("composes with useMutation for snapshot-and-rollback on error (members)", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      type Ctx = { rollback: () => void };
+      const failure = new JunjoError("kick failed", "internal", 500);
+      const kickFn = vi.fn().mockRejectedValue(failure);
+
+      function Harness() {
+        const { members, applyOptimistic } = useGroup(GROUP_ID);
+        const mutation = useMutation<void, Error, void, Ctx>({
+          mutationFn: () => kickFn(),
+          onMutate: () => {
+            const rollback = applyOptimistic((prev) => ({
+              group: prev.group,
+              members: prev.members.filter((m) => m.userId !== "user_a"),
+            }));
+            return { rollback };
+          },
+          onError: (_err, _vars, ctx) => {
+            ctx?.rollback();
+          },
+        });
+        return { members, mutation };
+      }
+
+      const { result } = renderHook(Harness, { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.members.length).toBe(2));
+
+      await act(async () => {
+        try {
+          await result.current.mutation.mutateAsync();
+        } catch {
+          // expected
+        }
+      });
+
+      expect(kickFn).toHaveBeenCalledTimes(1);
+      expect(result.current.mutation.status).toBe("error");
+      expect(result.current.mutation.error).toBe(failure);
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+    });
+
+    it("composes with useMutation for snapshot-and-rollback on error (group)", async () => {
+      const h = makeHarness();
+      const group = makeGroup({ name: "Crimson Wolves" });
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([]));
+
+      type Ctx = { rollback: () => void };
+      const failure = new JunjoError("rename failed", "internal", 500);
+      const renameFn = vi.fn().mockRejectedValue(failure);
+
+      function Harness() {
+        const { group: g, applyOptimistic } = useGroup(GROUP_ID);
+        const mutation = useMutation<void, Error, void, Ctx>({
+          mutationFn: () => renameFn(),
+          onMutate: () => {
+            const rollback = applyOptimistic((prev) => ({
+              group: prev.group ? { ...prev.group, name: "Sapphire Wolves" } : null,
+              members: prev.members,
+            }));
+            return { rollback };
+          },
+          onError: (_err, _vars, ctx) => {
+            ctx?.rollback();
+          },
+        });
+        return { group: g, mutation };
+      }
+
+      const { result } = renderHook(Harness, { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.group?.name).toBe("Crimson Wolves"));
+
+      await act(async () => {
+        try {
+          await result.current.mutation.mutateAsync();
+        } catch {
+          // expected
+        }
+      });
+
+      expect(renameFn).toHaveBeenCalledTimes(1);
+      expect(result.current.mutation.status).toBe("error");
+      expect(result.current.group?.name).toBe("Crimson Wolves");
+    });
+
+    it("composes with useMutation: no rollback on success", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a, b]));
+
+      type Ctx = { rollback: () => void };
+      const kickFn = vi.fn().mockResolvedValue(undefined);
+
+      function Harness() {
+        const { members, applyOptimistic } = useGroup(GROUP_ID);
+        const mutation = useMutation<void, Error, void, Ctx>({
+          mutationFn: () => kickFn(),
+          onMutate: () => {
+            const rollback = applyOptimistic((prev) => ({
+              group: prev.group,
+              members: prev.members.filter((m) => m.userId !== "user_a"),
+            }));
+            return { rollback };
+          },
+          onError: (_err, _vars, ctx) => {
+            ctx?.rollback();
+          },
+        });
+        return { members, mutation };
+      }
+
+      const { result } = renderHook(Harness, { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.members.length).toBe(2));
+
+      await act(async () => {
+        await result.current.mutation.mutateAsync();
+      });
+
+      expect(kickFn).toHaveBeenCalledTimes(1);
+      expect(result.current.mutation.status).toBe("success");
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+    });
+
+    it("returns a stable applyOptimistic reference across renders", async () => {
+      const h = makeHarness();
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValue(membersPage([makeMember("user_a")]));
+
+      const { result, rerender } = renderHook(({ groupId }) => useGroup(groupId), {
+        wrapper: wrapper(h.client),
+        initialProps: { groupId: GROUP_ID },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const first = result.current.applyOptimistic;
+
+      rerender({ groupId: GROUP_ID });
+
+      expect(result.current.applyOptimistic).toBe(first);
+    });
+
+    it("supports the role-assignment optimistic update pattern", async () => {
+      const h = makeHarness();
+      const group = makeGroup();
+      const a = makeMember("user_a", { roles: ["role_one" as RoleId] });
+      h.get.mockResolvedValue(group);
+      h.list.mockResolvedValue(membersPage([a]));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const newRole = "role_two" as RoleId;
+      act(() => {
+        result.current.applyOptimistic((prev) => ({
+          group: prev.group,
+          members: prev.members.map((m) =>
+            m.userId === "user_a" ? { ...m, roles: [...m.roles, newRole] } : m,
+          ),
+        }));
+      });
+
+      expect(result.current.members[0]?.roles).toEqual(["role_one", "role_two"]);
+    });
   });
 });

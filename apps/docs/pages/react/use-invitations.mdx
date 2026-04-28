@@ -45,6 +45,7 @@ interface UseInvitationsResult {
   error: Error | null;
   refetch: () => Promise<void>;
   fetchMore: () => Promise<void>;
+  applyOptimistic: (updater: (prev: Invitation[]) => Invitation[]) => () => void;
 }
 ```
 
@@ -57,6 +58,7 @@ interface UseInvitationsResult {
 | `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
 | `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
 | `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+| `applyOptimistic` | Applies an updater to the local `invitations` array immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
 
 ## Status filter
 
@@ -114,6 +116,88 @@ The hook never throws; errors land in `result.error`. Three sources:
 - **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect in V1; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
 
 If `useInvitations` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Optimistic updates
+
+`applyOptimistic(updater)` lets a mutation flip the local invitation list *before* the server confirms. It runs `updater(state.invitations)` and replaces `invitations` with the result; it returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation) so the snapshot lives inside the mutation's `context`:
+
+```tsx
+import { useInvitations, useJunjo, useMutation } from "@junjo/react";
+
+function RevokeButton({ groupId, code }: { groupId: GroupId; code: string }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useInvitations(groupId);
+
+  const { mutate, isPending } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.invitations.revoke(code),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => prev.filter((i) => i.code !== code)),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return (
+    <button type="button" onClick={() => mutate()} disabled={isPending}>
+      Revoke
+    </button>
+  );
+}
+```
+
+The same shape covers an optimistic prepend on invite-by-user-id (so the new invitation shows up immediately while the server is contacted):
+
+```tsx
+function InviteButton({
+  groupId,
+  targetUserId,
+}: {
+  groupId: GroupId;
+  targetUserId: UserId;
+}) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useInvitations(groupId);
+
+  const { mutate } = useMutation<Invitation, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.groups.inviteByUserId(groupId, targetUserId),
+    onMutate: () => {
+      const placeholder: Invitation = {
+        id: `pending_${targetUserId}` as InvitationId,
+        groupId,
+        code: "",
+        roleId: null,
+        targetUserId,
+        createdBy: null,
+        createdAt: new Date(),
+        expiresAt: null,
+        usedAt: null,
+        usedBy: null,
+      };
+      return { rollback: applyOptimistic((prev) => [placeholder, ...prev]) };
+    },
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Invite</button>;
+}
+```
+
+After a successful invite, the `member.invited` event arrives over SSE and replaces the placeholder by `id`-based dedupe; if the placeholder's id does not match the server-issued id, the live event simply appends the real invitation in place and the next `refetch` reconciles the list. For exact-match dedupe under optimistic-prepend patterns, prefer constructing the placeholder with a stable id you control on both sides, or call `refetch` from `onSuccess`.
+
+### How the snapshot interacts with SSE events
+
+After `applyOptimistic` runs, the hook keeps applying SSE events (`member.invited`, `member.joined`) on top of the optimistic state. A successful `revoke` does not emit an event in V1, so the optimistic removal stays applied indefinitely; if the mutation fails and you roll back, the row reappears in the list, ready to retry.
+
+### Rollback restores the pre-update snapshot exactly
+
+The rollback closure stores the `invitations` array as it was when `applyOptimistic` was called and restores it verbatim. SSE events that arrived between the optimistic update and the rollback are dropped on rollback. The mutation window is short enough that this is rare in practice; if your UI is sensitive to it, call `refetch()` from `onError` after `rollback()`.
+
+### Concurrent overlapping mutations
+
+Multiple in-flight mutations rolling back in arbitrary order get LIFO snapshot-restore semantics: each rollback restores to the snapshot taken at *its* `applyOptimistic` call. Rolling back an earlier mutation can therefore overwrite the optimistic state of a later one. Matches React Query's mutation rollback behavior.
+
+### `applyOptimistic` does not call the SDK
+
+The hook only mutates local state; the network request is whatever you put in `mutationFn`. Any mutation (revoke, invite, decline, custom server route) can wire optimistic UI through the same primitive without the hook needing per-method support.
 
 ## Composing with `useGroup` and `useMembers`
 

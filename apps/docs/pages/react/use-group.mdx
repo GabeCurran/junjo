@@ -32,6 +32,12 @@ interface UseGroupResult {
   loading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
+  applyOptimistic: (
+    updater: (prev: { group: Group | null; members: Member[] }) => {
+      group: Group | null;
+      members: Member[];
+    },
+  ) => () => void;
 }
 ```
 
@@ -42,6 +48,7 @@ interface UseGroupResult {
 | `loading` | `boolean` | `true` until the initial fetch resolves (success or error). Does NOT flip back to `true` on `refetch`; the hook keeps the last snapshot visible while the new fetch is in flight. |
 | `error` | `Error \| null` | The fetch error or a streaming error. `JunjoError` instances pass through; cast with `instanceof JunjoError` if you want the typed `code` / `status`. |
 | `refetch` | `() => Promise<void>` | Re-runs the group + members fetch. Clears `error` on entry. The promise resolves once state has been dispatched; errors flow into `error`, never thrown. |
+| `applyOptimistic` | `(updater) => () => void` | Applies an updater to a `{ group, members }` snapshot immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
 
 ## Behavior
 
@@ -71,6 +78,76 @@ The hook never throws to the caller. Both fetch errors and streaming errors land
 - The stream drops mid-flight -> `error` set via the subscription's `onError`. `group` and `members` are not touched.
 
 Use `refetch` to recover from any of these states; it clears `error` before retrying.
+
+## Optimistic updates
+
+`applyOptimistic(updater)` lets a mutation flip the local `group` and `members` snapshot *before* the server confirms. The updater receives a `{ group, members }` snapshot and must return a new `{ group, members }` value. The hook returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation):
+
+```tsx
+import { useGroup, useJunjo, useMutation } from "@junjo/react";
+
+function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useGroup(groupId);
+
+  const { mutate, isPending } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.kick(groupId, userId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => ({
+        group: prev.group,
+        members: prev.members.filter((m) => m.userId !== userId),
+      })),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()} disabled={isPending}>Kick</button>;
+}
+```
+
+The same primitive covers an optimistic group rename (touching `prev.group` while leaving `prev.members` untouched):
+
+```tsx
+function RenameButton({ groupId, name }: { groupId: GroupId; name: string }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useGroup(groupId);
+
+  const { mutate } = useMutation<Group, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.groups.update(groupId, { name }),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => ({
+        group: prev.group ? { ...prev.group, name } : null,
+        members: prev.members,
+      })),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Rename</button>;
+}
+```
+
+A single call can update `group` and `members` together (e.g., kick a member and bump `memberCount` in lockstep), which is why the snapshot is a single object instead of two methods.
+
+### Why one method covers both fields
+
+`group` and `members` are two slices of the same logical entity. A single atomic snapshot avoids the trap of an inconsistent intermediate state when a mutation needs to update both (e.g., a kick that should drop both the member row and the cached `group.memberCount`). Spread `prev.group` and `prev.members` through unchanged when you only mean to touch one.
+
+### How the snapshot interacts with SSE events
+
+After `applyOptimistic` runs, the hook keeps applying SSE events on top of the optimistic state. A successful `kick` emits `member.left`, which the reducer's `member.left` handler treats as a no-op when the user is already absent; a successful rename emits `group.updated` with the authoritative `group` payload. The optimistic state and the live stream converge on success.
+
+### Rollback restores the pre-update snapshot exactly
+
+The rollback closure stores `{ group, members }` as it was when `applyOptimistic` was called, and restores both fields verbatim. SSE events that arrived between the optimistic update and the rollback are dropped on rollback. The mutation window is short enough that this is rare in practice; if your UI is sensitive to it, call `refetch()` from `onError` after `rollback()`.
+
+### Concurrent overlapping mutations
+
+Multiple in-flight mutations rolling back in arbitrary order get LIFO snapshot-restore semantics: each rollback restores to the snapshot taken at *its* `applyOptimistic` call. Rolling back an earlier mutation can therefore overwrite the optimistic state of a later one. Matches React Query's mutation rollback behavior.
+
+### `applyOptimistic` does not call the SDK
+
+The hook only mutates local state; the network request is whatever you put in `mutationFn`. Any mutation (kick, rename, role assignment, custom server route) can wire optimistic UI through the same primitive.
 
 ## Multiple consumers
 

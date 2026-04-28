@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
 import { useInvitations } from "./useInvitations.js";
+import { useMutation } from "./useMutation.js";
 
 const GAME_ID = "game_test" as GameId;
 const GROUP_ID = "grp_alpha" as GroupId;
@@ -784,6 +785,351 @@ describe("useInvitations", () => {
       includeUsed: true,
       cursor: "cursor_1",
       limit: 25,
+    });
+  });
+
+  describe("applyOptimistic", () => {
+    it("applies the updater to local invitations and returns a rollback closure", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const b = makeInvitation("code_b");
+      h.list.mockResolvedValue(invitationsPage([a, b]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_a"),
+        );
+      });
+      expect(result.current.invitations).toEqual([b]);
+
+      act(() => {
+        rollback?.();
+      });
+      expect(result.current.invitations).toEqual([a, b]);
+    });
+
+    it("rolls back to the snapshot taken at applyOptimistic call time", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const b = makeInvitation("code_b");
+      h.list.mockResolvedValue(invitationsPage([a, b]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollbackA: (() => void) | undefined;
+      act(() => {
+        rollbackA = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_a"),
+        );
+      });
+      expect(result.current.invitations).toEqual([b]);
+
+      let rollbackB: (() => void) | undefined;
+      act(() => {
+        rollbackB = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_b"),
+        );
+      });
+      expect(result.current.invitations).toEqual([]);
+
+      act(() => {
+        rollbackB?.();
+      });
+      expect(result.current.invitations).toEqual([b]);
+
+      act(() => {
+        rollbackA?.();
+      });
+      expect(result.current.invitations).toEqual([a, b]);
+    });
+
+    it("does not call the SDK", async () => {
+      const h = makeHarness();
+      h.list.mockResolvedValue(invitationsPage([makeInvitation("code_a")]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const callsBefore = h.list.mock.calls.length;
+      act(() => {
+        result.current.applyOptimistic((prev) => prev.slice(0, 0));
+      });
+
+      expect(h.list).toHaveBeenCalledTimes(callsBefore);
+    });
+
+    it("supports the revoke optimistic-removal pattern", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const b = makeInvitation("code_b");
+      const c = makeInvitation("code_c");
+      h.list.mockResolvedValue(invitationsPage([a, b, c]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_b"),
+        );
+      });
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_a", "code_c"]);
+      expect(typeof rollback).toBe("function");
+    });
+
+    it("supports the inviteByUserId optimistic-prepend pattern", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      h.list.mockResolvedValue(invitationsPage([a]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const newInvite = makeInvitation("code_pending", {
+        targetUserId: "user_new" as UserId,
+      });
+
+      act(() => {
+        result.current.applyOptimistic((prev) => [newInvite, ...prev]);
+      });
+
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_pending", "code_a"]);
+    });
+
+    it("preserves invitations reference when updater returns the input array unchanged", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      h.list.mockResolvedValue(invitationsPage([a]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const before = result.current.invitations;
+      act(() => {
+        result.current.applyOptimistic((prev) => prev);
+      });
+      expect(result.current.invitations).toBe(before);
+    });
+
+    it("layers SSE events on top of the optimistic state", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      h.list.mockResolvedValue(invitationsPage([a]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await waitFor(() => expect(h.captures.length).toBe(1));
+
+      act(() => {
+        result.current.applyOptimistic((prev) => prev.filter((i) => i.code !== "code_a"));
+      });
+      expect(result.current.invitations).toEqual([]);
+
+      const newInvite = makeInvitation("code_b");
+      const event: JunjoEvent = {
+        id: "evt_1",
+        type: "member.invited",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        invitation: newInvite,
+        occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+      };
+      const capture = h.captures[0];
+      if (!capture) throw new Error("expected subscription capture");
+      act(() => {
+        capture.handler(event);
+      });
+
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_b"]);
+    });
+
+    it("rollback restores the pre-optimistic snapshot, losing intermediate SSE events", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      h.list.mockResolvedValue(invitationsPage([a]));
+
+      const { result } = renderHook(() => useInvitations(GROUP_ID), {
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      await waitFor(() => expect(h.captures.length).toBe(1));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_a"),
+        );
+      });
+      expect(result.current.invitations).toEqual([]);
+
+      const newInvite = makeInvitation("code_b");
+      const event: JunjoEvent = {
+        id: "evt_1",
+        type: "member.invited",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        invitation: newInvite,
+        occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+      };
+      const capture = h.captures[0];
+      if (!capture) throw new Error("expected subscription capture");
+      act(() => {
+        capture.handler(event);
+      });
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_b"]);
+
+      act(() => {
+        rollback?.();
+      });
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_a"]);
+    });
+
+    it("composes with useMutation for snapshot-and-rollback on error", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const b = makeInvitation("code_b");
+      h.list.mockResolvedValue(invitationsPage([a, b]));
+
+      type Ctx = { rollback: () => void };
+      const failure = new JunjoError("revoke failed", "internal", 500);
+      const revokeFn = vi.fn().mockRejectedValue(failure);
+
+      function Harness() {
+        const { invitations, applyOptimistic } = useInvitations(GROUP_ID);
+        const mutation = useMutation<void, Error, void, Ctx>({
+          mutationFn: () => revokeFn(),
+          onMutate: () => {
+            const rollback = applyOptimistic((prev) => prev.filter((i) => i.code !== "code_a"));
+            return { rollback };
+          },
+          onError: (_err, _vars, ctx) => {
+            ctx?.rollback();
+          },
+        });
+        return { invitations, mutation };
+      }
+
+      const { result } = renderHook(Harness, { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.invitations.length).toBe(2));
+
+      await act(async () => {
+        try {
+          await result.current.mutation.mutateAsync();
+        } catch {
+          // expected
+        }
+      });
+
+      expect(revokeFn).toHaveBeenCalledTimes(1);
+      expect(result.current.mutation.status).toBe("error");
+      expect(result.current.mutation.error).toBe(failure);
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_a", "code_b"]);
+    });
+
+    it("composes with useMutation: optimistic remove, no-op on success", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const b = makeInvitation("code_b");
+      h.list.mockResolvedValue(invitationsPage([a, b]));
+
+      type Ctx = { rollback: () => void };
+      const revokeFn = vi.fn().mockResolvedValue(undefined);
+
+      function Harness() {
+        const { invitations, applyOptimistic } = useInvitations(GROUP_ID);
+        const mutation = useMutation<void, Error, void, Ctx>({
+          mutationFn: () => revokeFn(),
+          onMutate: () => {
+            const rollback = applyOptimistic((prev) => prev.filter((i) => i.code !== "code_a"));
+            return { rollback };
+          },
+          onError: (_err, _vars, ctx) => {
+            ctx?.rollback();
+          },
+        });
+        return { invitations, mutation };
+      }
+
+      const { result } = renderHook(Harness, { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.invitations.length).toBe(2));
+
+      await act(async () => {
+        await result.current.mutation.mutateAsync();
+      });
+
+      expect(revokeFn).toHaveBeenCalledTimes(1);
+      expect(result.current.mutation.status).toBe("success");
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_b"]);
+    });
+
+    it("returns a stable applyOptimistic reference across renders", async () => {
+      const h = makeHarness();
+      h.list.mockResolvedValue(invitationsPage([makeInvitation("code_a")]));
+
+      const { result, rerender } = renderHook(({ groupId }) => useInvitations(groupId), {
+        wrapper: wrapper(h.client),
+        initialProps: { groupId: GROUP_ID },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const first = result.current.applyOptimistic;
+
+      rerender({ groupId: GROUP_ID });
+
+      expect(result.current.applyOptimistic).toBe(first);
+    });
+
+    it("rollback uses the captured snapshot even after groupId changes", async () => {
+      const h = makeHarness();
+      const a = makeInvitation("code_a");
+      const c = makeInvitation("code_c", { groupId: ALT_GROUP_ID });
+      h.list.mockResolvedValueOnce(invitationsPage([a]));
+      h.list.mockResolvedValueOnce(invitationsPage([c]));
+
+      const { result, rerender } = renderHook(({ groupId }) => useInvitations(groupId), {
+        wrapper: wrapper(h.client),
+        initialProps: { groupId: GROUP_ID },
+      });
+      await waitFor(() => expect(result.current.invitations.length).toBe(1));
+
+      let rollback: (() => void) | undefined;
+      act(() => {
+        rollback = result.current.applyOptimistic((prev) =>
+          prev.filter((i) => i.code !== "code_a"),
+        );
+      });
+      expect(result.current.invitations).toEqual([]);
+
+      rerender({ groupId: ALT_GROUP_ID });
+      await waitFor(() =>
+        expect(result.current.invitations.map((i) => i.code)).toEqual(["code_c"]),
+      );
+
+      act(() => {
+        rollback?.();
+      });
+
+      expect(result.current.invitations.map((i) => i.code)).toEqual(["code_a"]);
     });
   });
 });

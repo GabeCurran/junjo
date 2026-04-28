@@ -54,7 +54,11 @@ function useMutation<TData, TError = Error, TVariables = void, TContext = unknow
 
 The `onMutate -> onError` rollback pattern is how `useMutation` supports optimistic UI. Inside `onMutate`, snapshot the local state you are about to mutate and apply the optimistic change; return the snapshot as the context. If `mutationFn` rejects, `onError` receives that snapshot and restores it.
 
-When you are mutating the roster from `useMembers`, prefer its `applyOptimistic` helper - it owns the snapshot lifecycle for you and returns a rollback closure:
+When you are mutating local hook state, prefer the hook's `applyOptimistic` helper - it owns the snapshot lifecycle for you and returns a rollback closure:
+
+- [`useMembers`](./use-members#optimistic-updates) - `applyOptimistic((prev: Member[]) => Member[])`
+- [`useInvitations`](./use-invitations#optimistic-updates) - `applyOptimistic((prev: Invitation[]) => Invitation[])`
+- [`useGroup`](./use-group#optimistic-updates) - `applyOptimistic((prev: { group, members }) => { group, members })`
 
 ```tsx
 function KickWithRollback({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
@@ -73,7 +77,7 @@ function KickWithRollback({ groupId, userId }: { groupId: GroupId; userId: UserI
 }
 ```
 
-For state that does not have a hook-level helper (e.g., `useGroup` and `useInvitations` until Phase 7.5c), the explicit snapshot pattern still applies: hold the prior value in `useState` (or a ref), apply the optimistic mutation in `onMutate`, return the snapshot as the context, and restore it from `onError`.
+For state that does not live in a Junjo hook (e.g., a `useState` value in your own component), the explicit snapshot pattern still applies: hold the prior value in a ref, apply the optimistic mutation in `onMutate`, return the snapshot as the context, and restore it from `onError`.
 
 The dominant SSE path is still authoritative: a successful `kick` emits a `member.left` event that `useMembers` already handles, so the local state stays consistent. The optimistic helper just makes the UI flip *immediately* on click.
 

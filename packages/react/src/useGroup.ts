@@ -3,12 +3,20 @@ import type { Group, GroupId, JunjoEvent, Member } from "@junjo/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { useJunjo } from "./useJunjo.js";
 
+export interface GroupSnapshot {
+  group: Group | null;
+  members: Member[];
+}
+
+export type GroupUpdater = (prev: GroupSnapshot) => GroupSnapshot;
+
 export interface UseGroupResult {
   group: Group | null;
   members: Member[];
   loading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
+  applyOptimistic: (updater: GroupUpdater) => () => void;
 }
 
 interface State {
@@ -23,7 +31,9 @@ type Action =
   | { type: "fetch_success"; group: Group | null; members: Member[] }
   | { type: "fetch_error"; error: Error }
   | { type: "stream_error"; error: Error }
-  | { type: "event"; event: JunjoEvent };
+  | { type: "event"; event: JunjoEvent }
+  | { type: "optimistic_apply"; updater: GroupUpdater }
+  | { type: "optimistic_rollback"; snapshot: GroupSnapshot };
 
 const INITIAL_STATE: State = {
   group: null,
@@ -44,6 +54,16 @@ function reducer(state: State, action: Action): State {
       return { ...state, error: action.error };
     case "event":
       return applyEvent(state, action.event);
+    case "optimistic_apply": {
+      const next = action.updater({ group: state.group, members: state.members });
+      if (next.group === state.group && next.members === state.members) return state;
+      return { ...state, group: next.group, members: next.members };
+    }
+    case "optimistic_rollback":
+      if (action.snapshot.group === state.group && action.snapshot.members === state.members) {
+        return state;
+      }
+      return { ...state, group: action.snapshot.group, members: action.snapshot.members };
   }
 }
 
@@ -85,6 +105,22 @@ export function useGroup(groupId: GroupId): UseGroupResult {
   const junjo = useJunjo();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const generationRef = useRef(0);
+
+  const groupRef = useRef(state.group);
+  groupRef.current = state.group;
+  const membersRef = useRef(state.members);
+  membersRef.current = state.members;
+
+  const applyOptimistic = useCallback((updater: GroupUpdater): (() => void) => {
+    const snapshot: GroupSnapshot = {
+      group: groupRef.current,
+      members: membersRef.current,
+    };
+    dispatch({ type: "optimistic_apply", updater });
+    return () => {
+      dispatch({ type: "optimistic_rollback", snapshot });
+    };
+  }, []);
 
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
@@ -153,5 +189,6 @@ export function useGroup(groupId: GroupId): UseGroupResult {
     loading: state.loading,
     error: state.error,
     refetch,
+    applyOptimistic,
   };
 }

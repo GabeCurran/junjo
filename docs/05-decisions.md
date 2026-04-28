@@ -2290,3 +2290,35 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - In practice, simultaneous mutations against the same roster are rare; the common case is single-mutation-at-a-time button clicks. The doc page documents this trade.
 
 **Trade:** apps that genuinely run multiple concurrent optimistic mutations (e.g. bulk-kick UI) will see weirdness on partial failure. Mitigation: call `refetch()` from `onSettled` to reconcile. Documented.
+
+### Phase 7.5c: `useGroup.applyOptimistic` takes a `{ group, members }` snapshot updater (one method, atomic snapshot)
+
+**Decision:** `useGroup` exposes a single `applyOptimistic(updater: (prev: { group, members }) => { group, members }): rollback` method, not separate `applyOptimisticGroup` and `applyOptimisticMembers` helpers. The hook captures one snapshot containing both fields and dispatches an `optimistic_apply` reducer action that runs the updater against `{ group: state.group, members: state.members }`; the rollback closure restores both fields together.
+
+**Rationale:**
+- `group` and `members` are two slices of the same logical entity. Mutations frequently need to update them in lockstep (e.g., a kick that drops the member row AND bumps `group.memberCount` so cached UI stays consistent). Two separate methods would force consumers to call them in sequence, which is racier and exposes the inconsistent intermediate state.
+- A single atomic snapshot also gives a single rollback closure, which is what `useMutation`'s `onMutate -> context -> onError(rollback)` flow expects. Two methods would mean tracking two rollback closures in the mutation's context.
+- Consumers updating only one field spread the other through unchanged in the updater: `{ group: prev.group, members: ... }` for a kick, `{ group: ..., members: prev.members }` for a rename. The shape is verbose by one line; the trade buys atomicity.
+
+**Trade:** consumers updating only one field write a one-line passthrough for the other. Acceptable - the alternative (two methods) would have leaked the bookkeeping onto every consumer instead.
+
+### Phase 7.5c: `useInvitations.applyOptimistic` is a direct port of the `useMembers` shape
+
+**Decision:** `useInvitations` exposes `applyOptimistic(updater: (prev: Invitation[]) => Invitation[]): rollback` with the same single-list-updater signature, the same `invitationsRef` snapshot capture, the same identity-equal short-circuit, and the same LIFO concurrent-rollback semantics as `useMembers`.
+
+**Rationale:**
+- Both hooks track a single list as their primary mutable surface; the API can be identical.
+- A consistent helper shape across hooks reduces the cognitive load when consumers move between mutating rosters and mutating invitation panels.
+- The decisions for `useMembers.applyOptimistic` (no per-mutation named helpers, snapshot-and-restore semantics, stable callback identity, LIFO rollback) all apply here verbatim and need no per-hook reasoning.
+
+**Trade:** none beyond the inherited trades documented for `useMembers.applyOptimistic`.
+
+### Phase 7.5c: `useGroup` exposes a `GroupSnapshot` type so consumers can name the updater shape
+
+**Decision:** the `useGroup` updater is typed as `(prev: GroupSnapshot) => GroupSnapshot`, where `GroupSnapshot = { group: Group | null; members: Member[] }`. Both type aliases (`GroupSnapshot`, `GroupUpdater`) are re-exported from `@junjo/react`.
+
+**Rationale:**
+- Inline `(prev: { group: Group | null; members: Member[] }) => ...` is technically equivalent but verbose at the call site, especially when a consumer wants to factor the updater out into a helper for testing or sharing across components.
+- The exported type alias gives consumers a shorthand for typing helpers that build optimistic updates without re-typing the shape.
+
+**Trade:** more surface area on the public API. Minor, and additive: the inline shape still works for consumers who do not import the alias.
