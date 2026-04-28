@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { prisma as defaultPrisma } from "./db.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
+import { groupsRouter } from "./routes/groups.js";
 
 export interface CreateAppOptions {
   prisma?: PrismaClient;
@@ -31,6 +32,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   const v1 = new Hono();
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
+  v1.route("/groups", groupsRouter(prisma));
   app.route("/v1", v1);
 
   return app;

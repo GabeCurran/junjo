@@ -1,0 +1,48 @@
+# groups
+
+Methods on `junjo.groups`. The full surface is defined; only methods marked **shipped** are wired to the server today. Calling a stubbed method throws `JunjoError` with `code: "not_implemented"`.
+
+## `create(input)` - shipped
+
+Creates a new group scoped to the calling game. Returns the persisted `Group` with timestamps already deserialized to `Date` instances.
+
+```ts
+const group = await junjo.groups.create({
+  kind: "guild",
+  name: "Crimson Wolves",
+  visibility: "invite-only",        // optional; default: "invite-only"
+  metadata: { motto: "Howl together" }, // optional; default: {}
+  defaultRoleId: "role_xyz",        // optional; default: null
+});
+
+group.id;            // GroupId (branded string)
+group.gameId;        // GameId (branded string)
+group.memberCount;   // 0
+group.createdAt;     // Date
+group.softDeletedAt; // null
+```
+
+### Input
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| `kind` | string | yes | |
+| `name` | string | yes | |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | no | `"invite-only"` |
+| `metadata` | object | no | `{}` |
+| `defaultRoleId` | `RoleId` | no | `null` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation (missing field, bad visibility, malformed JSON, etc.). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups`](/api/groups) - the underlying HTTP route.
+
+## Other methods (stubbed)
+
+`get`, `update`, `delete`, `restore`, `list`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

@@ -49,7 +49,7 @@ The `packages/server/src/` tree:
 - `middleware/apiKey.ts` - extracts the `Authorization: Bearer prefix.secret` header, verifies the secret, and populates `c.var.gameId`. Accepts an injected `ApiKeyStore` rather than the full Prisma client so the middleware can be tested without a live database.
 - `seed.ts` - importable helpers `createGame(name, prisma?)` and `createApiKey(gameId, prisma?)`. Used by tests and the `db:seed` CLI. The Prisma client is optional so callers can pass a client bound to `TEST_DATABASE_URL` or fall back to the singleton from `db.ts`.
 - `seed.cli.ts` - thin CLI wrapper around `seed.ts`. Wired up as `npm run db:seed` for local-dev key issuance; prints the plaintext API key once and disconnects.
-- `routes/` - per-resource route modules (added as features land in Phase 1 and beyond).
+- `routes/` - per-resource route modules. Each module exports a `<resource>Router(prisma)` factory that returns a fresh `Hono` sub-app, plus a sibling `<resource>.schema.ts` of co-located Zod schemas. `app.ts` wires them under the `/v1` namespace. As of Phase 1.1: `routes/groups.ts` (`POST /v1/groups`).
 
 The `packages/server/prisma/` tree:
 
@@ -61,6 +61,16 @@ The `packages/server/prisma/` tree:
 ### `@junjo/sdk` (TypeScript)
 
 Universal client for Node + browser. Tree-shakeable. Zero runtime dependencies beyond `fetch` (built-in).
+
+#### File layout
+
+The `packages/sdk/src/` tree:
+
+- `index.ts` - the `Junjo` top-level class. Constructs the shared `HttpClient` from `JunjoConfig` and instantiates each sub-namespace class (`GroupsApi`, `RolesApi`, ...). Re-exports the public types from `@junjo/shared`.
+- `errors.ts` - the `JunjoError` class. Thrown by every method that talks to the server when the response is non-2xx; preserves the server envelope's `code`, `status`, and `message`.
+- `http.ts` - shared `HttpClient`. Thin wrapper around `fetch` that injects the `Authorization` header, JSON-encodes bodies, parses responses, and turns non-2xx responses into `JunjoError`. Each sub-namespace class receives one via constructor.
+- `<resource>.ts` - per-resource sub-namespace class plus its wire-format type and deserializer (e.g., `groups.ts` exports `GroupsApi`, `WireGroup`, and `deserializeGroup`). Wire types match the server's JSON exactly (timestamps as ISO strings); the deserializer rehydrates them into branded ids and `Date` instances at the boundary.
+- `adapters/` - built-in auth adapters (Clerk, Supabase, JWT). Distributed under the `@junjo/sdk/adapters` subpath export so callers without those backends do not pay the install cost.
 
 Core surface (sketch):
 

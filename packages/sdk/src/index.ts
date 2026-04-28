@@ -1,14 +1,9 @@
 import type {
   AuditEntry,
   AuthAdapter,
-  CreateGroupInput,
-  CreateInvitationInput,
   CreateRoleInput,
   GameId,
-  Group,
   GroupId,
-  GroupRelationship,
-  GroupRelationshipType,
   Invitation,
   JunjoEvent,
   ListAuditOptions,
@@ -22,11 +17,13 @@ import type {
   Role,
   RoleId,
   SetMemberNotesInput,
-  UpdateGroupInput,
   UpdateRoleInput,
   UserId,
   WebhookSignatureHeaders,
 } from "@junjo/shared";
+import { JunjoError } from "./errors.js";
+import { GroupsApi } from "./groups.js";
+import { HttpClient } from "./http.js";
 
 // =====================================================================
 // Configuration
@@ -39,20 +36,7 @@ export interface JunjoConfig {
   fetch?: typeof fetch;
 }
 
-// =====================================================================
-// Errors
-// =====================================================================
-
-export class JunjoError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly status?: number,
-  ) {
-    super(message);
-    this.name = "JunjoError";
-  }
-}
+const DEFAULT_BASE_URL = "https://api.junjo.io";
 
 const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
 
@@ -68,8 +52,14 @@ export class Junjo {
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
 
-  constructor(_config: JunjoConfig) {
-    this.groups = new GroupsApi();
+  constructor(config: JunjoConfig) {
+    const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
+    const http = new HttpClient({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+      fetch: fetchImpl,
+    });
+    this.groups = new GroupsApi(http);
     this.roles = new RolesApi();
     this.members = new MembersApi();
     this.invitations = new InvitationsApi();
@@ -97,130 +87,6 @@ export class Junjo {
   // Resolve a player session token to a Junjo user id. Calls the
   // configured auth adapter and the cross-game identity layer (cloud).
   async whoami(_token: string): Promise<{ userId: UserId } | null> {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
-// Groups
-// =====================================================================
-
-export class GroupsApi {
-  async create(_input: CreateGroupInput): Promise<Group> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async get(_id: GroupId): Promise<Group | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async update(_id: GroupId, _input: UpdateGroupInput): Promise<Group> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // Soft delete with a 7-day undo window. Pass `hard: true` to bypass.
-  async delete(_id: GroupId, _opts?: { hard?: boolean }): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async restore(_id: GroupId): Promise<Group> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async list(_opts?: PageOptions & { gameId?: GameId }): Promise<Page<Group>> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // ------ Membership ------
-
-  async inviteByUserId(
-    _groupId: GroupId,
-    _userId: UserId,
-    _opts?: { roleId?: RoleId },
-  ): Promise<Invitation> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async inviteByCode(_groupId: GroupId, _input?: CreateInvitationInput): Promise<Invitation> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async inviteByLink(
-    _groupId: GroupId,
-    _input?: CreateInvitationInput,
-  ): Promise<{ invitation: Invitation; url: string }> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // CSV bulk-invite. Accepts a stream of user-ids or emails.
-  async bulkInvite(
-    _groupId: GroupId,
-    _csv: string | ReadableStream<Uint8Array>,
-    _opts?: { roleId?: RoleId },
-  ): Promise<{ invited: number; skipped: number; errors: Array<{ row: number; reason: string }> }> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async acceptInvitation(_code: string): Promise<Member> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async declineInvitation(_code: string): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async leave(_groupId: GroupId): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async kick(_groupId: GroupId, _userId: UserId, _opts?: { reason?: string }): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // ------ Real-time ------
-
-  // Returns a subscription handle. `close()` ends the SSE connection.
-  subscribe(_groupId: GroupId, _handler: (event: JunjoEvent) => void): { close: () => void } {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // ------ Group relationships ------
-
-  // Set a directed relationship A -> B. Pass `mutual: true` to also
-  // write the reverse row (useful for symmetric relationships like
-  // "ally" or "enemy" where both sides should agree).
-  async setRelationship(
-    _groupAId: GroupId,
-    _groupBId: GroupId,
-    _type: GroupRelationshipType,
-    _opts?: { mutual?: boolean },
-  ): Promise<GroupRelationship> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async clearRelationship(
-    _groupAId: GroupId,
-    _groupBId: GroupId,
-    _opts?: { mutual?: boolean },
-  ): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async getRelationship(_groupAId: GroupId, _groupBId: GroupId): Promise<GroupRelationship | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async listRelationships(_groupId: GroupId): Promise<GroupRelationship[]> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  // ------ Sub-groups / alliances ------
-
-  async setParent(_groupId: GroupId, _parentGroupId: GroupId | null): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async listChildren(_groupId: GroupId): Promise<Group[]> {
     throw NOT_IMPLEMENTED;
   }
 }
@@ -276,7 +142,6 @@ export class MembersApi {
     throw NOT_IMPLEMENTED;
   }
 
-  // List the groups a user belongs to. Useful for the player profile UI.
   async listForUser(_userId: UserId, _opts?: { gameId?: GameId }): Promise<Member[]> {
     throw NOT_IMPLEMENTED;
   }
@@ -301,7 +166,6 @@ export class MembersApi {
     throw NOT_IMPLEMENTED;
   }
 
-  // Member-level permission override. Wins over role-derived permissions.
   async overridePermission(
     _groupId: GroupId,
     _userId: UserId,
@@ -332,8 +196,6 @@ export class MembersApi {
 // =====================================================================
 
 export class InvitationsApi {
-  // Pending + expired invites for a group. For moderation tooling and
-  // the dashboard's "outstanding invites" view.
   async list(
     _groupId: GroupId,
     _opts?: PageOptions & { includeExpired?: boolean; includeUsed?: boolean },
@@ -345,9 +207,6 @@ export class InvitationsApi {
     throw NOT_IMPLEMENTED;
   }
 
-  // Revoke an invite that hasn't been used yet. Already-used invites
-  // are no-ops (a 200 with a "was-already-used" flag, not an error,
-  // because the membership it created is the source of truth now).
   async revoke(_code: string): Promise<void> {
     throw NOT_IMPLEMENTED;
   }
@@ -367,10 +226,6 @@ export class AuditApi {
 // Webhooks
 // =====================================================================
 
-// Express-compatible request shape, kept structural so we don't take
-// a runtime dependency on @types/express. Uint8Array (not Buffer)
-// because the SDK ships for browser too; Buffer extends Uint8Array
-// so Node callers passing a Buffer still typecheck.
 interface ExpressLikeRequest {
   headers: Record<string, string | string[] | undefined>;
   body: unknown;
@@ -388,14 +243,10 @@ type ExpressLikeMiddleware = (
 ) => void;
 
 export class WebhooksApi {
-  // Express-style middleware. Verifies the HMAC signature, parses the
-  // event into a JunjoEvent, attaches it to req.body, then calls next().
   middleware(_opts?: { tolerance?: number }): ExpressLikeMiddleware {
     throw NOT_IMPLEMENTED;
   }
 
-  // Lower-level: verify a raw body + signature header pair. Throws on
-  // failure. Use this if you're not on Express.
   verify(
     _rawBody: string | Uint8Array,
     _headers: WebhookSignatureHeaders,
@@ -408,6 +259,9 @@ export class WebhooksApi {
 // =====================================================================
 // Re-exports for ergonomics
 // =====================================================================
+
+export { JunjoError } from "./errors.js";
+export { GroupsApi } from "./groups.js";
 
 export type {
   AuditEntry,

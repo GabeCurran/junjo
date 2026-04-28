@@ -1,0 +1,79 @@
+# Groups
+
+A `Group` is the unit Junjo organizes players around: guild, clan, faction, party, crew. The dev's UI labels it however they want; Junjo stores the dev-supplied `kind` string verbatim and never branches on it.
+
+## Wire format
+
+`Group` is returned in this shape on every endpoint that emits it. Timestamps are ISO 8601 strings (the SDK rehydrates them into `Date` instances on the client).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `gameId` | string | The game that owns the group. Always equal to the calling key's game. |
+| `kind` | string | Dev-defined taxonomy ("guild", "clan", "faction", ...). Stored verbatim. |
+| `name` | string | Display name. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | See `POST /v1/groups`. |
+| `metadata` | object | Free-form JSON. The dev's bag for motto, banner URL, etc. |
+| `defaultRoleId` | string \| null | Role automatically assigned to new members; null until set. |
+| `memberCount` | number | Cached count of active members. `0` for a freshly created group. |
+| `createdAt` | string | ISO 8601 timestamp. |
+| `updatedAt` | string | ISO 8601 timestamp. |
+| `softDeletedAt` | string \| null | Set when the group is soft-deleted; null otherwise. |
+
+## `POST /v1/groups`
+
+Creates a new group scoped to the calling game. Writes a `group.created` audit entry in the same transaction.
+
+### Request
+
+```json
+{
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz"
+}
+```
+
+| Field | Required | Default | Notes |
+|-------|----------|---------|-------|
+| `kind` | yes | | 1-64 characters. Dev-defined taxonomy string. |
+| `name` | yes | | 1-120 characters. Not unique. |
+| `visibility` | no | `"invite-only"` | One of `"public"`, `"invite-only"`, `"secret"`. |
+| `metadata` | no | `{}` | Arbitrary JSON object. |
+| `defaultRoleId` | no | null | Pre-assigned role for new members. The role must exist on this group; the server does not verify this on create (Phase 3.1 will). |
+
+A missing or malformed body returns `400 bad_request` with the failing path in the message (e.g., `name: required`). A malformed JSON body also returns `400 bad_request`.
+
+### Response
+
+`201 Created` with a `Group` body:
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz",
+  "memberCount": 0,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T05:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Audit log
+
+Every successful create writes one entry:
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.created` |
+| `groupId` | the new group id |
+| `targetId` | the new group id |
+| `actorUserId` | `null` (server-to-server creation; user actors arrive in later phases) |
+| `payload` | `{ kind, name, visibility, metadata, defaultRoleId }` |
