@@ -11,6 +11,7 @@ interface WireWebhookEndpoint {
   gameId: string;
   url: string;
   events: string[];
+  format: string;
   createdAt: string;
   disabledAt: string | null;
 }
@@ -65,6 +66,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(body.gameId).toBe(gameId);
       expect(body.url).toBe("https://dev.example.com/hook");
       expect(body.events).toEqual([]);
+      expect(body.format).toBe("junjo");
       expect(body.disabledAt).toBeNull();
       expect(typeof body.id).toBe("string");
       expect(typeof body.createdAt).toBe("string");
@@ -74,6 +76,28 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
       expect(stored?.secret).toBe(body.secret);
       expect(stored?.gameId).toBe(gameId);
+      expect(stored?.format).toBe("junjo");
+    });
+
+    it("creates a discord-format endpoint and persists format", async () => {
+      const res = await jsonRequest("POST", "/v1/webhooks", {
+        url: "https://discord.com/api/webhooks/1/token",
+        format: "discord",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as WireWebhookEndpointWithSecret;
+      expect(body.format).toBe("discord");
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
+      expect(stored?.format).toBe("discord");
+    });
+
+    it("rejects an unknown format on create", async () => {
+      const res = await jsonRequest("POST", "/v1/webhooks", {
+        url: "https://dev.example.com/hook",
+        format: "slack",
+      });
+      expect(res.status).toBe(400);
+      expect(await prisma.webhookEndpoint.count()).toBe(0);
     });
 
     it("uses a caller-supplied secret verbatim when present", async () => {
@@ -247,6 +271,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         events: string[];
         disabledAt: Date | null;
         gameId: string;
+        format: string;
       }> = {},
     ) {
       return prisma.webhookEndpoint.create({
@@ -256,6 +281,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
           secret: "test-secret-1234567890",
           events: overrides.events ?? [],
           disabledAt: overrides.disabledAt ?? null,
+          ...(overrides.format !== undefined ? { format: overrides.format } : {}),
         },
       });
     }
@@ -324,6 +350,30 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
       expect(stored?.url).toBe(ep.url);
       expect(stored?.disabledAt).toBeNull();
+    });
+
+    it("switches format from junjo to discord", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, { format: "discord" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as WireWebhookEndpoint;
+      expect(body.format).toBe("discord");
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
+      expect(stored?.format).toBe("discord");
+    });
+
+    it("rejects an unknown format on update", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, { format: "slack" });
+      expect(res.status).toBe(400);
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
+      expect(stored?.format).toBe("junjo");
+    });
+
+    it("accepts a sole format change as the only PATCH field", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, { format: "discord" });
+      expect(res.status).toBe(200);
     });
 
     it("rejects an empty body", async () => {

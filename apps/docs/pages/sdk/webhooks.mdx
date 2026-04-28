@@ -153,13 +153,17 @@ interface CreateWebhookEndpointInput {
   url: string;
   events?: JunjoEventType[];
   secret?: string;
+  format?: WebhookEndpointFormat;
 }
 
 interface UpdateWebhookEndpointInput {
   url?: string;
   events?: JunjoEventType[];
   disabled?: boolean;
+  format?: WebhookEndpointFormat;
 }
+
+type WebhookEndpointFormat = "junjo" | "discord";
 ```
 
 ### `endpoints.create(input)`
@@ -177,6 +181,17 @@ console.log(endpoint.secret); // store this in your secret manager NOW
 If `secret` is omitted (the common case), the server generates a 32-byte base64url secret. To rotate to a known string (e.g. recovering after a leak by re-creating with a fresh value), pass `secret`. The minimum length is 16; the maximum is 256.
 
 `events` defaults to `[]` (match-all). Pass a non-empty array to filter to specific event types; unknown event types are rejected with a 400.
+
+`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api/webhooks-discord) before POSTing - the URL is then a Discord webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (Discord receives the delivery directly).
+
+```ts
+// Pipe Junjo events to a Discord channel
+await junjo.webhooks.endpoints.create({
+  url: "https://discord.com/api/webhooks/123/abc...",
+  format: "discord",
+  events: ["member.joined", "member.left", "group.deleted"],
+});
+```
 
 ### `endpoints.list()`
 

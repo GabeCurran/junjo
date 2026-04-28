@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import { formatJunjoEventForDiscord } from "./discordFormatter.js";
 
 // Backoff schedule between attempts. After attempt N fails (and the
 // failure is retriable), wait `WEBHOOK_BACKOFF_MS[N - 1]` before
@@ -101,14 +102,34 @@ export async function deliverOne(
       : { status: "failed", httpStatus: delivery.responseStatus };
   }
 
-  const body = JSON.stringify(delivery.payload);
   const ts = now().toISOString();
-  const secret = delivery.endpoint.secret;
-  const signature = signWebhookBody(secret, body, ts);
-
   const payload = delivery.payload as Record<string, unknown> | null;
   const eventId = typeof payload?.id === "string" ? payload.id : "";
   const eventType = typeof payload?.type === "string" ? payload.type : "";
+
+  // Format-specific wire shape. "discord" produces an embed payload and
+  // omits the HMAC headers (Discord webhooks authenticate via URL token,
+  // not signed headers - and Discord ignores unknown headers anyway, so
+  // sending them would be both useless and noisy). "junjo" stays on the
+  // raw JunjoEvent JSON with the canonical signed-header set; receivers
+  // running `junjo.webhooks.verify` need every header in this map.
+  let body: string;
+  let headers: Record<string, string>;
+  if (delivery.endpoint.format === "discord") {
+    body = JSON.stringify(formatJunjoEventForDiscord(payload ?? {}));
+    headers = { "content-type": "application/json" };
+  } else {
+    body = JSON.stringify(delivery.payload);
+    const signature = signWebhookBody(delivery.endpoint.secret, body, ts);
+    headers = {
+      "content-type": "application/json",
+      "x-junjo-event-id": eventId,
+      "x-junjo-event": eventType,
+      "x-junjo-delivery-id": delivery.id,
+      "x-junjo-timestamp": ts,
+      "x-junjo-signature": signature,
+    };
+  }
 
   let httpStatus: number | null = null;
   let httpOk = false;
@@ -118,14 +139,7 @@ export async function deliverOne(
   try {
     const res = await fetcher(delivery.endpoint.url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-junjo-event-id": eventId,
-        "x-junjo-event": eventType,
-        "x-junjo-delivery-id": delivery.id,
-        "x-junjo-timestamp": ts,
-        "x-junjo-signature": signature,
-      },
+      headers,
       body,
       signal: controller.signal,
     });

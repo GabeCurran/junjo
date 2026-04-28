@@ -369,6 +369,12 @@ export interface WebhookSignatureHeaders {
   "x-junjo-delivery-id": string;
 }
 
+// Wire format the worker applies at delivery time. "junjo" (the default)
+// posts the raw JunjoEvent JSON with HMAC headers; "discord" posts a
+// Discord embed payload and skips the HMAC (Discord webhooks
+// authenticate via URL token, not headers).
+export type WebhookEndpointFormat = "junjo" | "discord";
+
 export interface WebhookEndpoint {
   id: WebhookEndpointId;
   gameId: GameId;
@@ -376,6 +382,7 @@ export interface WebhookEndpoint {
   // Subset of event types this endpoint subscribes to. Empty array
   // means "match every event type" (the friendly default).
   events: JunjoEventType[];
+  format: WebhookEndpointFormat;
   createdAt: Date;
   // When set, the endpoint is muted: matching events do not enqueue
   // deliveries. Toggle with `endpoints.update(id, { disabled })`.
@@ -395,6 +402,8 @@ export interface CreateWebhookEndpointInput {
   // Optional. When omitted the server generates a 32-byte base64url
   // secret and returns it on the create response.
   secret?: string;
+  // Optional. Defaults to "junjo".
+  format?: WebhookEndpointFormat;
 }
 
 export interface UpdateWebhookEndpointInput {
@@ -402,6 +411,7 @@ export interface UpdateWebhookEndpointInput {
   events?: JunjoEventType[];
   // true sets `disabledAt = now()`; false clears it.
   disabled?: boolean;
+  format?: WebhookEndpointFormat;
 }
 
 export interface WebhookDelivery {

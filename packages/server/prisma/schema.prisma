@@ -294,6 +294,11 @@ model WebhookEndpoint {
   secret     String
   // Subset of event types this endpoint cares about. Empty = all.
   events     String[]
+  // Wire format applied at delivery time. "junjo" (default) sends the raw
+  // JunjoEvent JSON with HMAC headers; "discord" sends a Discord embed
+  // payload and skips the HMAC (Discord webhooks authenticate via URL).
+  // Slack and other targets land here in later phases.
+  format     String    @default("junjo")
   createdAt  DateTime  @default(now())
   disabledAt DateTime?
 

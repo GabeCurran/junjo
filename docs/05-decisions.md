@@ -2322,3 +2322,57 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The exported type alias gives consumers a shorthand for typing helpers that build optimistic updates without re-typing the shape.
 
 **Trade:** more surface area on the public API. Minor, and additive: the inline shape still works for consumers who do not import the alias.
+
+### Phase 9.1: webhook endpoint `format` is a per-endpoint enum (`"junjo" | "discord"`), default `"junjo"`
+
+**Decision:** `WebhookEndpoint` grows a `format` column (Postgres `TEXT NOT NULL DEFAULT 'junjo'`) that decides the wire shape applied at delivery time. `"junjo"` (the default) keeps the existing behavior: raw `JunjoEvent` JSON with the canonical `x-junjo-*` signed headers. `"discord"` produces a Discord embed payload via the new `discordFormatter.ts` module and skips the HMAC headers entirely. Validation lives in `WEBHOOK_FORMATS = ["junjo", "discord"] as const` in `routes/webhooks.schema.ts`; unknown values return 400 on create / update.
+
+**Rationale:**
+- Devs running a Discord-only workflow want to point Junjo at a Discord webhook URL and have events show up as readable embeds, not raw JunjoEvent JSON. The dominant alternative (relay through their own server) is significant infra for a feature that is actually a small data transformation.
+- Per-endpoint (not per-event-type, not global) lets a single game pipe `member.joined` to Discord AND keep raw events flowing to their own backend by configuring two endpoints. Aligns with how Stripe / GitHub webhooks model destinations.
+- Defaulting to `"junjo"` preserves backwards compatibility: every existing endpoint row gets `'junjo'` from the column default, so the worker behavior for already-deployed endpoints is unchanged.
+- Slack lands as `format: "slack"` in Phase 9.2 with the same shape (no schema change, just a new enum value and a sibling `slackFormatter.ts`).
+
+**Trade:** the format set is closed (devs can't define their own). For V1 this is the right boundary; arbitrary outbound transforms belong in a relay the dev controls. If a fourth target ever needs to land, the cost is one new enum entry plus a formatter module.
+
+### Phase 9.1: Discord deliveries skip HMAC and `x-junjo-*` headers
+
+**Decision:** when `endpoint.format === "discord"`, the worker writes `content-type: application/json` and nothing else. No `x-junjo-event`, `x-junjo-event-id`, `x-junjo-delivery-id`, `x-junjo-timestamp`, or `x-junjo-signature` headers; no HMAC computation. The endpoint's stored `secret` is ignored on the delivery path (but kept in the row, in case the dev later switches the format back to `"junjo"`).
+
+**Rationale:**
+- Discord webhook URLs are themselves the auth token (`https://discord.com/api/webhooks/<id>/<token>`). A leaked URL is the same threat surface as a leaked HMAC secret. Adding HMAC headers on top would be redundant and would confuse developers reading their own access logs.
+- Discord's webhook API documents that unknown headers are ignored. Sending the `x-junjo-*` set would still work, but would (1) leak Junjo-internal metadata into Discord's request logs and (2) suggest to a misconfigured endpoint reader that the payload is verifiable when it isn't.
+- Receivers of `format: "discord"` deliveries are by definition Discord (or a Discord-shaped consumer); they don't run `junjo.webhooks.verify`, so the signature would never be checked anyway.
+
+**Trade:** if a dev configures `format: "discord"` but accidentally points the URL at their own server (instead of Discord), they receive an unauthenticated payload. We accept this: the URL itself is the only authentication for this format, and the SDK / docs are explicit that the URL is the secret.
+
+### Phase 9.1: stored payload stays raw (`JunjoEvent` JSON), formatting happens at delivery time
+
+**Decision:** `WebhookDelivery.payload` continues to store `serializeEventForStorage(event)` (the round-tripped `JunjoEvent`) regardless of the endpoint's `format`. The Discord embed is computed fresh by `formatJunjoEventForDiscord(payload)` inside `deliverOne`, every attempt.
+
+**Rationale:**
+- A delivery row created when `format = "junjo"` and then re-targeted by a `PATCH /v1/webhooks/:id` to `format = "discord"` should arrive in the new format. Storing the formatted payload at enqueue time would freeze the wire shape at the wrong moment.
+- The formatter is pure and cheap; running it per attempt costs ~microseconds and avoids any "stored format vs current format" reconciliation logic.
+- Re-delivery / debugging tooling can render the same row in either format without rewriting the database.
+
+**Trade:** every retry recomputes the embed. Acceptable - the formatter is allocation-light and runs at most 6 times per delivery.
+
+### Phase 9.1: Discord formatter is forward-compatible against unknown event types
+
+**Decision:** `formatJunjoEventForDiscord` switches on `payload.type`. Anything not in the switch falls through to a generic grey embed (`Junjo event: <type>`) with the type and event id as fields.
+
+**Rationale:**
+- `JunjoEventType` is open in the sense that future Junjo releases can add new event variants. A rolling deploy where the worker is on a newer release than the formatter (or vice versa) could otherwise produce 500s mid-delivery.
+- Treating unknown types as "still deliverable, just less pretty" is the right failure mode for an outbound integration: the dev still sees the activity in Discord, even without bespoke styling.
+
+**Trade:** new event types ship to Discord without per-type embed customization until a follow-up commit lands. Documented in the Discord docs page so devs know to expect it.
+
+### Phase 9.1: Discord embed field values truncated at 1024 chars
+
+**Decision:** the formatter applies a hard cap on every field value (`FIELD_VALUE_MAX_LENGTH = 1024`) using a single-character ellipsis suffix when truncation kicks in.
+
+**Rationale:**
+- Discord rejects payloads with field values exceeding 1024 chars with a 400 response. The retry policy would then mark the delivery as `failed` immediately (4xx is permanent), which is the wrong behavior for a Junjo bug spilling oversized data.
+- The typical event has tiny field values (user ids, group ids, role names). The cap only kicks in for `role.changed` events with very large `added` / `removed` arrays - rare in practice but possible.
+
+**Trade:** very-long role lists get a `…` suffix instead of full enumeration. Acceptable - the Discord page is for at-a-glance activity, not a complete audit log (which lives at `audit.list`).

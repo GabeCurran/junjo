@@ -157,6 +157,7 @@ export type {
   UpdateWebhookEndpointInput,
   UserId,
   WebhookEndpoint,
+  WebhookEndpointFormat,
   WebhookEndpointId,
   WebhookEndpointWithSecret,
   WebhookSignatureHeaders,

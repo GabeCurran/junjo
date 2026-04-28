@@ -5,6 +5,7 @@ import type {
   JunjoEventType,
   UpdateWebhookEndpointInput,
   WebhookEndpoint,
+  WebhookEndpointFormat,
   WebhookEndpointId,
   WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
@@ -182,6 +183,7 @@ interface WireWebhookEndpoint {
   gameId: string;
   url: string;
   events: string[];
+  format: string;
   createdAt: string;
   disabledAt: string | null;
 }
@@ -196,6 +198,7 @@ function deserializeEndpoint(w: WireWebhookEndpoint): WebhookEndpoint {
     gameId: w.gameId as GameId,
     url: w.url,
     events: w.events as JunjoEventType[],
+    format: w.format as WebhookEndpointFormat,
     createdAt: new Date(w.createdAt),
     disabledAt: w.disabledAt === null ? null : new Date(w.disabledAt),
   };
@@ -220,6 +223,7 @@ export class WebhookEndpointsApi {
     const body: Record<string, unknown> = { url: input.url };
     if (input.events !== undefined) body.events = input.events;
     if (input.secret !== undefined) body.secret = input.secret;
+    if (input.format !== undefined) body.format = input.format;
     const wire = await this.http.post<WireWebhookEndpointWithSecret>("/v1/webhooks", body);
     return deserializeEndpointWithSecret(wire);
   }
@@ -240,6 +244,7 @@ export class WebhookEndpointsApi {
     if (input.url !== undefined) body.url = input.url;
     if (input.events !== undefined) body.events = input.events;
     if (input.disabled !== undefined) body.disabled = input.disabled;
+    if (input.format !== undefined) body.format = input.format;
     const wire = await this.http.patch<WireWebhookEndpoint>(
       `/v1/webhooks/${encodeURIComponent(id)}`,
       body,

@@ -140,6 +140,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       events: string[];
       secret: string;
       disabledAt: Date | null;
+      format: string;
     }> = {},
   ) {
     return prisma.webhookEndpoint.create({
@@ -149,6 +150,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         secret: overrides.secret ?? "topsecret",
         events: overrides.events ?? [],
         disabledAt: overrides.disabledAt ?? null,
+        ...(overrides.format !== undefined ? { format: overrides.format } : {}),
       },
     });
   }
@@ -471,6 +473,78 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id } });
       expect(row.status).toBe("pending");
       expect(row.attemptCount).toBe(0);
+    });
+  });
+
+  describe("deliverOne (discord format)", () => {
+    async function enqueueDiscordDelivery(): Promise<string> {
+      await makeEndpoint({ url: "https://discord.com/api/webhooks/1/abc", format: "discord" });
+      const event = makeGroupUpdatedEvent(gameId, groupId);
+      const ids = await enqueueWebhookDeliveries(prisma, event);
+      expect(ids).toHaveLength(1);
+      return ids[0] as string;
+    }
+
+    it("posts a Discord embed payload instead of the raw JunjoEvent", async () => {
+      const id = await enqueueDiscordDelivery();
+      const { fetcher, calls } = makeFetcher([{ ok: true, status: 204 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome).toEqual({ status: "delivered", httpStatus: 204 });
+      const call = calls[0];
+      expect(call?.url).toBe("https://discord.com/api/webhooks/1/abc");
+      const body = JSON.parse(call?.init.body ?? "") as { embeds?: unknown[] };
+      expect(Array.isArray(body.embeds)).toBe(true);
+      expect(body.embeds).toHaveLength(1);
+      const embed = body.embeds?.[0] as Record<string, unknown>;
+      expect(embed.title).toBe("Group updated");
+      expect(typeof embed.color).toBe("number");
+    });
+
+    it("omits all x-junjo-* headers and the HMAC signature on a Discord delivery", async () => {
+      const id = await enqueueDiscordDelivery();
+      const { fetcher, calls } = makeFetcher([{ ok: true, status: 204 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      await deliverOne(prisma, id, fetcher, () => now);
+
+      const headers = calls[0]?.init.headers ?? {};
+      expect(headers["content-type"]).toBe("application/json");
+      expect(headers["x-junjo-event"]).toBeUndefined();
+      expect(headers["x-junjo-event-id"]).toBeUndefined();
+      expect(headers["x-junjo-delivery-id"]).toBeUndefined();
+      expect(headers["x-junjo-timestamp"]).toBeUndefined();
+      expect(headers["x-junjo-signature"]).toBeUndefined();
+    });
+
+    it("retries Discord deliveries on 5xx with the same backoff as junjo format", async () => {
+      const id = await enqueueDiscordDelivery();
+      const { fetcher } = makeFetcher([{ ok: false, status: 502 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome.status).toBe("pending");
+      const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id } });
+      expect(row.attemptCount).toBe(1);
+      expect(row.responseStatus).toBe(502);
+      const expectedNext = new Date(now.getTime() + WEBHOOK_BACKOFF_MS[0]);
+      expect(row.nextAttemptAt?.toISOString()).toBe(expectedNext.toISOString());
+    });
+
+    it("treats Discord 4xx as terminal failure (e.g. 401 unknown webhook)", async () => {
+      const id = await enqueueDiscordDelivery();
+      const { fetcher } = makeFetcher([{ ok: false, status: 401 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome.status).toBe("failed");
+      const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe("failed");
+      expect(row.attemptCount).toBe(1);
     });
   });
 });

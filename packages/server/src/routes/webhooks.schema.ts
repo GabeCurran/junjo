@@ -20,6 +20,13 @@ export const WEBHOOK_EVENT_TYPES = [
 
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];
 
+// Wire formats the worker can serialize a JunjoEvent into. "junjo" is the
+// raw JunjoEvent JSON with HMAC headers; "discord" is a Discord embed
+// payload. Slack and other targets land here in later phases.
+export const WEBHOOK_FORMATS = ["junjo", "discord"] as const;
+
+export type WebhookFormatString = (typeof WEBHOOK_FORMATS)[number];
+
 export const WEBHOOK_URL_MAX_LENGTH = 2000;
 export const WEBHOOK_SECRET_MIN_LENGTH = 16;
 export const WEBHOOK_SECRET_MAX_LENGTH = 256;
@@ -44,10 +51,13 @@ const secretSchema = z.string().min(WEBHOOK_SECRET_MIN_LENGTH).max(WEBHOOK_SECRE
 
 const eventsSchema = z.array(z.enum(WEBHOOK_EVENT_TYPES));
 
+const formatSchema = z.enum(WEBHOOK_FORMATS);
+
 export const createWebhookEndpointBody = z.object({
   url: urlSchema,
   events: eventsSchema.optional(),
   secret: secretSchema.optional(),
+  format: formatSchema.optional(),
 });
 
 export const updateWebhookEndpointBody = z
@@ -55,9 +65,14 @@ export const updateWebhookEndpointBody = z
     url: urlSchema.optional(),
     events: eventsSchema.optional(),
     disabled: z.boolean().optional(),
+    format: formatSchema.optional(),
   })
   .refine(
-    (data) => data.url !== undefined || data.events !== undefined || data.disabled !== undefined,
+    (data) =>
+      data.url !== undefined ||
+      data.events !== undefined ||
+      data.disabled !== undefined ||
+      data.format !== undefined,
     { message: "at least one field is required" },
   );
 

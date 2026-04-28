@@ -414,6 +414,7 @@ const wireEndpoint = {
   gameId: "game_1",
   url: "https://dev.example.com/hook",
   events: ["member.joined"],
+  format: "junjo",
   createdAt: "2026-04-28T05:00:00.000Z",
   disabledAt: null,
 };
@@ -472,6 +473,42 @@ describe("WebhookEndpointsApi.create", () => {
       secret: "supplied-secret-1234",
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards the format field when set to discord", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        url: "https://discord.com/api/webhooks/1/abc",
+        format: "discord",
+      });
+      return jsonResponse({ ...wireEndpointWithSecret, format: "discord" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://discord.com/api/webhooks/1/abc",
+      format: "discord",
+    });
+    expect(created.format).toBe("discord");
+  });
+
+  it("deserializes the format field from the wire response", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ ...wireEndpointWithSecret, format: "discord" }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://dev.example.com/hook",
+    });
+    expect(created.format).toBe("discord");
   });
 
   it("propagates JunjoError on a 400 response", async () => {
@@ -600,6 +637,23 @@ describe("WebhookEndpointsApi.update", () => {
       fetch: fetchMock as unknown as typeof fetch,
     });
     await junjo.webhooks.endpoints.update("whe_1" as never, { disabled: false });
+  });
+
+  it("forwards a sole format change in the PATCH body", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ format: "discord" });
+      return jsonResponse({ ...wireEndpoint, format: "discord" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const updated = await junjo.webhooks.endpoints.update("whe_1" as never, {
+      format: "discord",
+    });
+    expect(updated.format).toBe("discord");
   });
 
   it("URL-encodes the endpoint id", async () => {

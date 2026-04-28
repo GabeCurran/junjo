@@ -9,6 +9,7 @@ export interface WireWebhookEndpoint {
   gameId: string;
   url: string;
   events: string[];
+  format: string;
   createdAt: string;
   disabledAt: string | null;
 }
@@ -23,6 +24,7 @@ export function serializeWebhookEndpoint(endpoint: WebhookEndpoint): WireWebhook
     gameId: endpoint.gameId,
     url: endpoint.url,
     events: endpoint.events,
+    format: endpoint.format,
     createdAt: endpoint.createdAt.toISOString(),
     disabledAt: endpoint.disabledAt ? endpoint.disabledAt.toISOString() : null,
   };
@@ -53,7 +55,7 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid body");
     }
-    const { url, events, secret } = parsed.data;
+    const { url, events, secret, format } = parsed.data;
     const finalSecret = secret ?? generateWebhookSecret();
 
     const created = await prisma.webhookEndpoint.create({
@@ -62,6 +64,7 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
         url,
         secret: finalSecret,
         events: events ?? [],
+        ...(format !== undefined ? { format } : {}),
       },
     });
 
@@ -101,12 +104,13 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid body");
     }
-    const { url, events, disabled } = parsed.data;
+    const { url, events, disabled, format } = parsed.data;
 
     const data: {
       url?: string;
       events?: string[];
       disabledAt?: Date | null;
+      format?: string;
     } = {};
     if (url !== undefined && url !== existing.url) {
       data.url = url;
@@ -120,6 +124,9 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
       if (disabled !== currentlyDisabled) {
         data.disabledAt = targetDisabled;
       }
+    }
+    if (format !== undefined && format !== existing.format) {
+      data.format = format;
     }
 
     if (Object.keys(data).length === 0) {
