@@ -1,0 +1,31 @@
+{
+  "name": "@junjo/server",
+  "version": "0.0.0",
+  "description": "Junjo HTTP API + SSE + webhook dispatcher. Hono on Node, Postgres via Prisma.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prisma:format": "prisma format",
+    "prisma:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@junjo/shared": "*",
+    "@prisma/client": "^5.22.0",
+    "hono": "^4.6.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.3",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

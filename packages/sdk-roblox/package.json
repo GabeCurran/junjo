@@ -1,0 +1,7 @@
+{
+  "name": "@junjo/sdk-roblox-meta",
+  "version": "0.0.0",
+  "description": "Workspace placeholder. The real client is distributed as a Roblox model + GitHub release asset, not on npm. Source lives in src/Junjo.lua.",
+  "license": "MIT",
+  "private": true
+}

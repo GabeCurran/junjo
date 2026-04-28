@@ -1,0 +1,26 @@
+{
+  "name": "@junjo/dashboard",
+  "version": "0.0.0",
+  "description": "Junjo cloud admin + analytics dashboard. Proprietary.",
+  "license": "SEE LICENSE IN ./LICENSE",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@junjo/sdk": "*",
+    "next": "^15.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.3",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.6.3"
+  }
+}

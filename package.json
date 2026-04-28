@@ -1,0 +1,28 @@
+{
+  "name": "junjo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Game-domain primitives for groups, ranks, and permissions.",
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*", "examples/*"],
+  "scripts": {
+    "build": "npm run build -w @junjo/shared && npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check .",
+    "typecheck": "npm run build -w @junjo/shared && npm run typecheck --workspaces --if-present",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "npm run build && changeset publish"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@changesets/cli": "^2.27.11",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@10.0.0"
+}

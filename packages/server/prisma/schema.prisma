@@ -1,0 +1,315 @@
+// Junjo data model. Postgres only. No migrations yet (the schema is
+// still moving). Run `prisma format` after edits.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// Tenancy + identity
+// =====================================================================
+
+model Game {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys            ApiKey[]
+  groups             Group[]
+  permissionDefs     PermissionDef[]
+  externalIdentities ExternalIdentity[]
+  webhookEndpoints   WebhookEndpoint[]
+}
+
+model ApiKey {
+  id           String    @id @default(cuid())
+  gameId       String
+  game         Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  // Display prefix shown to the dev. The full key is `prefix.secret`.
+  prefix       String    @unique
+  hashedSecret String
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+
+  @@index([gameId])
+}
+
+// Junjo's own user table. Powers cross-game shared identity in cloud:
+// the same human can have memberships in many games' groups, all
+// keyed by the same junjoUserId.
+model JunjoUser {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  externalIdentities ExternalIdentity[]
+  groupMemberships   GroupMember[]
+  auditEntriesActed  AuditEntry[]       @relation("AuditActor")
+}
+
+// Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
+// UserId-as-string) to a JunjoUser. Per game, so two different games
+// can use the same external id without colliding.
+model ExternalIdentity {
+  id             String    @id @default(cuid())
+  gameId         String
+  game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId    String
+  junjoUser      JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  externalUserId String
+  createdAt      DateTime  @default(now())
+
+  @@unique([gameId, externalUserId])
+  @@index([junjoUserId])
+}
+
+// =====================================================================
+// Groups
+// =====================================================================
+
+model Group {
+  id            String  @id @default(cuid())
+  gameId        String
+  game          Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  kind          String
+  name          String
+  visibility    String // "public" | "invite-only" | "secret"
+  metadata      Json    @default("{}")
+  defaultRoleId String?
+  // Sub-group / alliance parent. WoW-style guild alliances and
+  // multi-tier factions both use this.
+  parentGroupId String?
+  parentGroup   Group?  @relation("GroupParent", fields: [parentGroupId], references: [id])
+  childGroups   Group[] @relation("GroupParent")
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  // Soft delete with 7-day undo. A nightly job hard-deletes rows whose
+  // softDeletedAt is older than 7 days.
+  softDeletedAt DateTime?
+
+  members      GroupMember[]
+  roles        Role[]
+  invitations  Invitation[]
+  auditEntries AuditEntry[]
+  relsAsA      GroupRelationship[] @relation("RelGroupA")
+  relsAsB      GroupRelationship[] @relation("RelGroupB")
+
+  @@index([gameId])
+  @@index([gameId, name])
+  @@index([gameId, kind])
+  @@index([parentGroupId])
+}
+
+model GroupMember {
+  id          String    @id @default(cuid())
+  groupId     String
+  group       Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  junjoUserId String
+  junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+
+  status       String // "active" | "invited" | "left" | "kicked"
+  metadata     Json    @default("{}")
+  notesPublic  String?
+  notesPrivate String?
+
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  // Multi-role per member (TERA-style). The join table sits below.
+  memberRoles         MemberRole[]
+  permissionOverrides MemberPermissionOverride[]
+
+  @@unique([groupId, junjoUserId])
+  @@index([junjoUserId])
+  @@index([groupId, status])
+}
+
+// =====================================================================
+// Roles + permissions
+// =====================================================================
+
+model Role {
+  id        String  @id @default(cuid())
+  groupId   String
+  group     Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name      String
+  // Higher = more authority. Used by "can-act-on" checks
+  // (you can't kick a member whose top role priority >= yours).
+  priority  Int
+  color     String?
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  memberRoles     MemberRole[]
+
+  @@unique([groupId, name])
+  @@index([groupId, priority(sort: Desc)])
+}
+
+// Multi-role per member is V1 scope. A separate join table lets us
+// add per-assignment data later (assigned-by, assigned-at) without
+// schema gymnastics.
+model MemberRole {
+  groupMemberId String
+  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Cascade)
+  roleId        String
+  role          Role        @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedAt    DateTime    @default(now())
+
+  @@id([groupMemberId, roleId])
+  @@index([roleId])
+}
+
+// Permission keys are dev-defined strings ("invite_member",
+// "claim_territory"). We register the set of keys per game so the
+// dashboard can list them and the SDK can validate them client-side.
+model PermissionDef {
+  id          String   @id @default(cuid())
+  gameId      String
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  key         String
+  description String?
+  createdAt   DateTime @default(now())
+
+  @@unique([gameId, key])
+}
+
+model RolePermission {
+  roleId        String
+  role          Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionKey String
+  grantedAt     DateTime @default(now())
+
+  @@id([roleId, permissionKey])
+  @@index([permissionKey])
+}
+
+// Member-level override. Wins over role-derived permissions, in either
+// direction (grant or revoke).
+model MemberPermissionOverride {
+  groupMemberId String
+  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Cascade)
+  permissionKey String
+  grant         Boolean
+  setAt         DateTime    @default(now())
+  setByUserId   String?
+
+  @@id([groupMemberId, permissionKey])
+  @@index([permissionKey])
+}
+
+// =====================================================================
+// Group relationships (Minecraft Factions style)
+// =====================================================================
+
+// Stored *directed* (A -> B). Symmetric relationships are two rows.
+// This avoids the "is A < B or B < A?" canonicalization mess and lets
+// asymmetric cases ("A sees B as enemy, B sees A as neutral") exist.
+// The SDK exposes a `mutual: true` helper that writes both rows.
+model GroupRelationship {
+  groupAId    String
+  groupA      Group    @relation("RelGroupA", fields: [groupAId], references: [id], onDelete: Cascade)
+  groupBId    String
+  groupB      Group    @relation("RelGroupB", fields: [groupBId], references: [id], onDelete: Cascade)
+  type        String // "ally" | "enemy" | "neutral" | dev-defined
+  since       DateTime @default(now())
+  setByUserId String
+
+  @@id([groupAId, groupBId])
+  @@index([groupBId])
+}
+
+// =====================================================================
+// Invitations
+// =====================================================================
+
+model Invitation {
+  id              String    @id @default(cuid())
+  groupId         String
+  group           Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  code            String    @unique
+  roleId          String?
+  // null = open code/link invite. Set = direct push to a specific user.
+  targetUserId    String?
+  createdByUserId String
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime?
+  usedAt          DateTime?
+  usedByUserId    String?
+
+  @@index([groupId, expiresAt])
+}
+
+// =====================================================================
+// Audit log
+// =====================================================================
+
+// Append-only by convention (no `update` calls in the server). Lives
+// in its own table because retention policies and indexing patterns
+// differ from operational tables, and because future log-shipping
+// (S3 cold storage on the Pro tier) will be easier to bolt on.
+model AuditEntry {
+  id          String     @id @default(cuid())
+  groupId     String
+  group       Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  // null when an action is taken by the system (invitation expiry,
+  // soft-delete cleanup, etc.).
+  actorUserId String?
+  actor       JunjoUser? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  action      String
+  targetId    String?
+  payload     Json       @default("{}")
+  createdAt   DateTime   @default(now())
+
+  @@index([groupId, createdAt(sort: Desc)])
+  @@index([actorUserId, createdAt(sort: Desc)])
+}
+
+// =====================================================================
+// Webhooks
+// =====================================================================
+
+model WebhookEndpoint {
+  id           String    @id @default(cuid())
+  gameId       String
+  game         Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  url          String
+  hashedSecret String
+  // Subset of event types this endpoint cares about. Empty = all.
+  events       String[]
+  createdAt    DateTime  @default(now())
+  disabledAt   DateTime?
+
+  deliveries WebhookDelivery[]
+
+  @@index([gameId])
+}
+
+// Postgres-backed delivery queue. Avoids a Redis dependency.
+// Ordering is handled with `pg_advisory_xact_lock(endpointId)` in the
+// dispatch worker so deliveries to the same endpoint can't race.
+model WebhookDelivery {
+  id                String          @id @default(cuid())
+  webhookEndpointId String
+  endpoint          WebhookEndpoint @relation(fields: [webhookEndpointId], references: [id], onDelete: Cascade)
+  eventId           String
+  payload           Json
+  status            String // "pending" | "delivered" | "failed"
+  attemptCount      Int             @default(0)
+  responseStatus    Int?
+  lastAttemptAt     DateTime?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime        @default(now())
+
+  @@index([status, nextAttemptAt])
+  @@index([webhookEndpointId, createdAt])
+}

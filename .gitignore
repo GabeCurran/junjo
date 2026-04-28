@@ -1,0 +1,94 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/cache
+.yarn/install-state.gz
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+.swc/
+.rollup.cache/
+*.tsbuildinfo
+
+# Test + coverage
+coverage/
+*.lcov
+.nyc_output/
+.vitest-cache/
+
+# Env
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+.env.*.local
+
+# Logs + process
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Vercel
+.vercel/
+
+# npm pack artifacts
+*.tgz
+
+# Prisma
+packages/server/prisma/migrations/.queries/
+
+# Changesets staging
+.changeset/.cache/
+
+# Local notes / scratch
+PROMPT.txt
+NOTES.md
+SCRATCH.md
+TODO.local.md
+/tmp/
+/temp/
+
+# Claude Code
+.claude/settings.local.json
+.claude/.credentials.json
+.claude/projects/
+.claude/statsig/
+.claude/todos/
+.claude/shell-snapshots/
+.claude/ide/
+.claude/plugins/
+.claude/agents/
+.claude/plans/
+
+# Other AI assistants
+.cursor/
+.cursorignore
+.cursorrules
+.aider*
+.codeium/
+.continue/
+.windsurfrules
