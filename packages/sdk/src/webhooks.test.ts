@@ -389,3 +389,292 @@ describe("WebhooksApi.middleware", () => {
     expect((req.body as unknown as { type: string }).type).toBe("group.updated");
   });
 });
+
+// =====================================================================
+// junjo.webhooks.endpoints CRUD
+// =====================================================================
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function endpointFetch(handler: (req: Request) => Response | Promise<Response>) {
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const target = url instanceof URL ? url.toString() : (url as string);
+    const req = new Request(target, init);
+    return handler(req);
+  });
+}
+
+const wireEndpoint = {
+  id: "whe_1",
+  gameId: "game_1",
+  url: "https://dev.example.com/hook",
+  events: ["member.joined"],
+  createdAt: "2026-04-28T05:00:00.000Z",
+  disabledAt: null,
+};
+
+const wireEndpointWithSecret = { ...wireEndpoint, secret: "generated-secret" };
+
+describe("WebhookEndpointsApi.create", () => {
+  it("POSTs /v1/webhooks with the auth header, body, and returns the deserialized endpoint with secret", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBe("application/json");
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ url: "https://dev.example.com/hook" });
+      return jsonResponse(wireEndpointWithSecret);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://dev.example.com/hook",
+    });
+    expect(created.id).toBe("whe_1");
+    expect(created.gameId).toBe("game_1");
+    expect(created.url).toBe("https://dev.example.com/hook");
+    expect(created.events).toEqual(["member.joined"]);
+    expect(created.secret).toBe("generated-secret");
+    expect(created.createdAt).toBeInstanceOf(Date);
+    expect(created.createdAt.toISOString()).toBe("2026-04-28T05:00:00.000Z");
+    expect(created.disabledAt).toBeNull();
+  });
+
+  it("forwards optional events and secret in the body", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        url: "https://dev.example.com/hook",
+        events: ["group.deleted", "group.updated"],
+        secret: "supplied-secret-1234",
+      });
+      return jsonResponse(wireEndpointWithSecret);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.webhooks.endpoints.create({
+      url: "https://dev.example.com/hook",
+      events: ["group.deleted", "group.updated"],
+      secret: "supplied-secret-1234",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("propagates JunjoError on a 400 response", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "url is required" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(junjo.webhooks.endpoints.create({ url: "" })).rejects.toMatchObject({
+      code: "bad_request",
+      status: 400,
+    });
+  });
+
+  it("rehydrates disabledAt to a Date when set on the wire", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ ...wireEndpointWithSecret, disabledAt: "2026-04-28T06:00:00.000Z" }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://dev.example.com/hook",
+    });
+    expect(created.disabledAt).toBeInstanceOf(Date);
+    expect(created.disabledAt?.toISOString()).toBe("2026-04-28T06:00:00.000Z");
+  });
+});
+
+describe("WebhookEndpointsApi.list", () => {
+  it("GETs /v1/webhooks and returns deserialized endpoints (no secret on the wire)", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({ items: [wireEndpoint] });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const items = await junjo.webhooks.endpoints.list();
+    expect(items).toHaveLength(1);
+    expect(items[0]?.id).toBe("whe_1");
+    expect((items[0] as unknown as Record<string, unknown>).secret).toBeUndefined();
+    expect(items[0]?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("returns an empty array when the server returns no items", async () => {
+    const fetchMock = endpointFetch(async () => jsonResponse({ items: [] }));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const items = await junjo.webhooks.endpoints.list();
+    expect(items).toEqual([]);
+  });
+
+  it("propagates JunjoError on a non-2xx response", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ code: "invalid_api_key", status: 401, message: "invalid" }, 401),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(junjo.webhooks.endpoints.list()).rejects.toMatchObject({
+      code: "invalid_api_key",
+      status: 401,
+    });
+  });
+});
+
+describe("WebhookEndpointsApi.update", () => {
+  it("PATCHes /v1/webhooks/:id with the supplied fields and returns the post-state", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      expect(req.method).toBe("PATCH");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks/whe_1");
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        url: "https://renamed.example.com/hook",
+        events: ["group.deleted"],
+        disabled: true,
+      });
+      return jsonResponse({
+        ...wireEndpoint,
+        url: "https://renamed.example.com/hook",
+        events: ["group.deleted"],
+        disabledAt: "2026-04-28T07:00:00.000Z",
+      });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const updated = await junjo.webhooks.endpoints.update("whe_1" as never, {
+      url: "https://renamed.example.com/hook",
+      events: ["group.deleted"],
+      disabled: true,
+    });
+    expect(updated.url).toBe("https://renamed.example.com/hook");
+    expect(updated.events).toEqual(["group.deleted"]);
+    expect(updated.disabledAt).toBeInstanceOf(Date);
+  });
+
+  it("omits keys whose value is undefined from the PATCH body", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ disabled: false });
+      return jsonResponse(wireEndpoint);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.webhooks.endpoints.update("whe_1" as never, { disabled: false });
+  });
+
+  it("URL-encodes the endpoint id", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks/whe%2Fwith%20slash");
+      return jsonResponse(wireEndpoint);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.webhooks.endpoints.update("whe/with slash" as never, { disabled: true });
+  });
+
+  it("propagates JunjoError on a 404", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.webhooks.endpoints.update("whe_missing" as never, { disabled: true }),
+    ).rejects.toMatchObject({ code: "not_found", status: 404 });
+  });
+});
+
+describe("WebhookEndpointsApi.delete", () => {
+  it("DELETEs /v1/webhooks/:id and resolves to undefined on 204", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks/whe_1");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const result = await junjo.webhooks.endpoints.delete("whe_1" as never);
+    expect(result).toBeUndefined();
+  });
+
+  it("URL-encodes the endpoint id", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks/whe%2Fwith%20slash");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.webhooks.endpoints.delete("whe/with slash" as never);
+  });
+
+  it("propagates JunjoError on a 404", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(junjo.webhooks.endpoints.delete("whe_missing" as never)).rejects.toMatchObject({
+      code: "not_found",
+      status: 404,
+    });
+  });
+});

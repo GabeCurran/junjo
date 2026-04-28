@@ -2,7 +2,7 @@
 
 Webhooks are Junjo's durable counterpart to the [SSE event stream](./events.mdx). Every `JunjoEvent` published by a mutation route is also enqueued as a `WebhookDelivery` row for every active `WebhookEndpoint` that matches the event type. A background worker drains the queue, signs each request with HMAC-SHA256, and POSTs the event to the dev's URL with retry and exponential backoff.
 
-This page documents the wire format, retry semantics, and signature scheme. The receiver-side helpers live in [`junjo.webhooks`](../sdk/webhooks); endpoint CRUD lands in Phase 5.5.
+This page documents the wire format, retry semantics, signature scheme, and the `/v1/webhooks` CRUD routes that configure endpoints. The receiver-side helpers live in [`junjo.webhooks`](../sdk/webhooks).
 
 ## Delivery lifecycle
 
@@ -96,12 +96,72 @@ A 2xx response marks the delivery `delivered` and stops retrying.
 
 ## Endpoint configuration
 
-Endpoint CRUD (`POST /v1/webhooks`, etc.) lands in Phase 5.5. Until then, endpoints exist only as direct database rows. Each endpoint carries:
+Endpoints are configured per game through the `/v1/webhooks` routes below. The dev-facing SDK ergonomics live at [`junjo.webhooks.endpoints`](../sdk/webhooks#endpoints---shipped).
 
-- `url` - destination for the POST.
-- `events` - array of event types this endpoint subscribes to. **Empty array means match-all** (the friendly default for "I want everything"). Non-empty array filters to the listed types only.
+Each endpoint carries:
+
+- `url` - destination for the POST. Must use `https://` or `http://`.
+- `events` - array of event types this endpoint subscribes to. **Empty array means match-all** (the friendly default for "I want everything"). Non-empty array filters to the listed types; unknown event types are rejected at create / update time.
 - `disabledAt` - when set, the endpoint is muted: matching events do not enqueue deliveries to it.
-- `secret` - the HMAC signing key. Stored in recoverable form so the worker can sign requests; surfaced once at create time so the dev can verify on their side.
+- `secret` - the HMAC signing key. Stored in recoverable form so the worker can sign requests; surfaced exactly once on `POST /v1/webhooks` and never again. Persist it on creation.
+
+### Wire format
+
+`WebhookEndpoint`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated. |
+| `gameId` | string | Always equals the calling game's id. |
+| `url` | string | Destination. |
+| `events` | `string[]` | Subset of [`JunjoEventType`](./events.mdx). Empty array = match-all. |
+| `createdAt` | ISO 8601 | |
+| `disabledAt` | ISO 8601 \| null | |
+
+`POST /v1/webhooks` returns the same shape with an extra `secret` field. The secret is omitted on every other response.
+
+### `POST /v1/webhooks`
+
+Body: `{ url, events?, secret? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all).
+
+| Validation | Notes |
+|------------|-------|
+| `url` | Required. Must parse as `http://` or `https://`. Max 2000 chars. |
+| `events` | Optional. Each entry must be a valid `JunjoEventType`; unknown types return 400. |
+| `secret` | Optional. 16-256 chars. |
+
+Errors:
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `bad_request` | Missing url, malformed URL, unknown event type, secret too short, malformed JSON. |
+| 401 | `invalid_api_key` | Missing or invalid Authorization header. |
+
+### `GET /v1/webhooks`
+
+Returns `{ items: WebhookEndpoint[] }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included.
+
+### `PATCH /v1/webhooks/:id`
+
+Body: `{ url?, events?, disabled? }`. At least one field is required.
+
+- `url` revalidated as on create.
+- `events` replaces wholesale; `[]` clears the filter (match-all).
+- `disabled: true` stamps `disabledAt = now()`. `disabled: false` clears it. Idempotent on matching values.
+
+Returns the post-state `WebhookEndpoint` (no secret). A no-op PATCH (matching url, events, disabled) returns the unchanged row without writing.
+
+Errors:
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `bad_request` | Empty body, invalid url, unknown event type, malformed JSON. |
+| 404 | `not_found` | Endpoint does not exist or belongs to a different game. |
+| 401 | `invalid_api_key` | Missing or invalid Authorization header. |
+
+### `DELETE /v1/webhooks/:id`
+
+Hard-deletes the endpoint and cascades to any pending `WebhookDelivery` rows. Returns 204. A second DELETE on the same id returns 404 (no idempotent-on-missing-row contract: the dev should hold onto the id only as long as it exists).
 
 ## Limitations and trade-offs
 
@@ -109,6 +169,6 @@ The V1 worker is single-process, single-instance:
 
 - **No cross-process coordination.** Two server processes running the worker would both pick up the same due deliveries. The `WEBHOOK_BACKOFF_MS` interval and the `WebhookDelivery` row state are the only coordination. When this scales out, the right move is `pg_try_advisory_lock(webhookEndpointId)` keyed per-endpoint so the same endpoint cannot be hit by two workers concurrently. The function signatures in `webhookWorker.ts` are stable across that change.
 - **At-least-once delivery.** A worker crash between POST and row update can re-deliver an event. Receivers MUST be idempotent on `x-junjo-event-id`.
-- **No replay UI.** Phase 5.5 will add a manual replay endpoint for `failed` deliveries. Until then, replays require direct database access.
+- **No replay UI.** Manual replay of `failed` deliveries is not exposed through the V1 API; replays require direct database access. A future release will add a manual replay endpoint.
 - **No dead-letter queue.** Permanently failed deliveries stay in the `WebhookDelivery` table; they're not deleted automatically. A future retention sweeper can age them out alongside the soft-delete sweeper pattern.
 - **No body capture for debug.** The worker records the response status but does not capture the response body. A future iteration can add this for support tickets if needed.

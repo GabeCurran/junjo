@@ -139,7 +139,7 @@ describe.skipIf(!TEST_DATABASE_URL)("enqueueWebhookDeliveries", () => {
       data: {
         gameId: overrides.gameId ?? gameId,
         url: overrides.url ?? "https://example.com/hook",
-        hashedSecret: "deadbeef",
+        secret: "deadbeef",
         events: overrides.events ?? [],
         disabledAt: overrides.disabledAt ?? null,
       },

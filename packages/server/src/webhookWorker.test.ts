@@ -146,7 +146,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       data: {
         gameId,
         url: overrides.url ?? "https://example.com/hook",
-        hashedSecret: overrides.secret ?? "topsecret",
+        secret: overrides.secret ?? "topsecret",
         events: overrides.events ?? [],
         disabledAt: overrides.disabledAt ?? null,
       },

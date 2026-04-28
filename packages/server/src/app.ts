@@ -21,6 +21,7 @@ import {
   revokePermissionHandler,
   updateRoleByIdHandler,
 } from "./routes/roles.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 
 export interface CreateAppOptions {
   prisma?: PrismaClient;
@@ -75,6 +76,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
+  v1.route("/webhooks", webhooksRouter(prisma));
   app.route("/v1", v1);
 
   return app;

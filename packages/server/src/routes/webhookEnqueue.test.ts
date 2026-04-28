@@ -53,7 +53,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook delivery enqueue from mutation rout
       data: {
         gameId,
         url: overrides.url ?? "https://example.com/hook",
-        hashedSecret: "deadbeef",
+        secret: "deadbeef",
         events: overrides.events ?? [],
         disabledAt: overrides.disabledAt ?? null,
       },

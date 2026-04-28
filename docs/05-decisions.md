@@ -1661,3 +1661,67 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The loop is short enough to read at a glance. JS engine optimizations could in theory leak timing through branch prediction, but the typical webhook signature verification path is not a tight enough side-channel for this to matter in practice (the network round-trip dominates timing).
 
 **Trade:** a sufficiently dedicated attacker with a high-precision side-channel could in principle extract timing information from the loop. Acceptable threat model for V1; the failure mode is a leaked HMAC byte, which by itself does not yield the secret. If this becomes a concern, swap in `crypto.subtle.timingSafeEqual` once Web Crypto adds it (in draft for the standard).
+
+### Phase 5.5 renames `WebhookEndpoint.hashedSecret` -> `secret`
+
+**Decision:** Phase 5.5 (this iteration) renames the `WebhookEndpoint.hashedSecret` Postgres column to `secret`. The column always stored the HMAC signing key in recoverable form (HMAC requires the secret on the signing side, unlike the API-key path which stores a one-way scrypt hash); the original name was inherited from the API-key model when the schema was first drafted. Migration `20260428110000_webhook_secret_rename` is one line: `ALTER TABLE "WebhookEndpoint" RENAME COLUMN "hashedSecret" TO "secret"`. The schema's `WebhookEndpoint.secret` field replaces `hashedSecret`; the worker, the new CRUD routes, and the existing test fixtures all use `secret`.
+
+**Rationale:**
+- The prior decision (Phase 5.3b) explicitly deferred this rename to Phase 5.5 because Phase 5.5 owns the dev-facing create flow that surfaces the secret. Without that flow, no one was ever going to read the column name; with it, a misnamed column would be confusing in dashboards and SQL audits.
+- The rename is data-safe: `RENAME COLUMN` is metadata-only in Postgres (no row rewrite, no lock escalation). The migration runs in milliseconds even on production-scale tables.
+- The `ApiKey.hashedSecret` column is not affected: that column truly stores a one-way hash and the name remains accurate.
+
+**Trade:** any downstream consumer querying the column directly (none exist yet outside this repo) needs to update. The rename happens before the dev-facing surface ships, so external impact is zero.
+
+### Phase 5.5: webhook endpoint CRUD lives at `/v1/webhooks` with the secret returned only on create
+
+**Decision:** webhook endpoints are configured via four routes under `/v1/webhooks`: `POST /` (create), `GET /` (list), `PATCH /:id` (update), `DELETE /:id` (delete). The `secret` is returned exactly once, in the response body of `POST /v1/webhooks`. `GET` and `PATCH` responses omit it.
+
+**Rationale:**
+- "Surface the secret once at creation, never again" is the standard webhook UX (Stripe, GitHub, Discord). Devs persist the value into their secret manager on receipt; if they lose it, they create a new endpoint.
+- The omission on `GET` reduces blast radius on a database leak: an attacker with a Postgres dump but no server access still cannot easily harvest active signing keys (they have to read the row directly, not just call the API).
+- The route shape mirrors every other Junjo CRUD resource: per-resource path, per-method verb, calling-API-key scopes results to one game.
+
+**Trade:** there is no "rotate secret" endpoint in V1. Devs who need rotation create a new endpoint and delete the old one. A future `PATCH /v1/webhooks/:id/rotate-secret` is additive and can land without breaking the V1 contract.
+
+### Webhook endpoints take an explicit allowlist of `JunjoEventType` strings; unknown types are rejected at create / update time
+
+**Decision:** the `events` field on `WebhookEndpoint` accepts only strings that appear in the `WEBHOOK_EVENT_TYPES` const enum in `routes/webhooks.schema.ts` (mirrors `JunjoEventType` in `@junjo/shared`). Unknown event types return `400 bad_request` with the Zod issue list. Empty array continues to mean "match all" (the iteration-029 decision).
+
+**Rationale:**
+- Storing an unknown string would silently fail to match anything; the dev would discover the typo only when their receiver never fires. A 400 at the create flow turns that silent failure into an immediate, actionable error.
+- The const enum lives in the same module as the rest of the schema validation, so adding a new event type means adding it to the enum (one source of truth for the API surface). The `AUDIT_ACTIONS` const list (Phase 5.2) follows the same pattern; this is consistent.
+- The cost is low: every Junjo deployment ships with the same set of event types, so a request-side validator does not split implementations across versions.
+
+**Trade:** when a future event type lands, the schema enum has to be updated in lockstep. Acceptable; it is one line and the test suite covers it. Alternative (accepting any string) would let typos through silently and is strictly worse.
+
+### `endpoints.update` PATCH is per-field-diff with full-replace semantics on `events`
+
+**Decision:** `PATCH /v1/webhooks/:id` is a partial update. `url` rewrites the destination, `events` replaces the filter wholesale (an empty array clears it back to match-all), and `disabled` is a boolean toggle (`true` stamps `disabledAt = now()`, `false` clears it). At least one field is required (empty body returns 400). A no-op PATCH (matching url, events, and disabled with current state) is idempotent: no DB write, no audit, returns the unchanged row.
+
+**Rationale:**
+- `events` replaces wholesale because the alternative (delta semantics: "add X, remove Y") is harder to specify, harder to test, and harder for devs to reason about. Calling `update(id, { events: ["a", "b", "c"] })` is unambiguous; the result is exactly that filter.
+- The `disabled: false` cycle is the recommended way to pause + resume a misbehaving endpoint without forgetting the `events` filter (which a delete + re-create would lose).
+- Idempotency on no-op matches the precedent set by `groups.update`, `members.setMetadata`, and `setRelationship`: a PATCH that asserts the existing state should not generate audit log noise.
+
+**Trade:** there is no audit entry for endpoint changes in V1 (webhooks are infrastructure, not domain events; the audit log is per-group). If observability of endpoint changes becomes important, a dedicated `WebhookEndpointAudit` table is the right shape; the existing `AuditEntry` is keyed on `groupId` and does not fit.
+
+### `endpoints.delete` returns 404 on a missing id (no idempotent-on-missing-row contract)
+
+**Decision:** `DELETE /v1/webhooks/:id` hard-deletes the row and cascades to any pending `WebhookDelivery` rows. A second DELETE on the same id (or a DELETE on an id that never existed) returns 404. This differs from `revokeInvitation` (which returns 204 on already-used codes for idempotency) and matches the `roles.delete` precedent.
+
+**Rationale:**
+- Webhook endpoints are stateful resources owned by the calling game; a DELETE that succeeded once is a strong signal that a stale id is in flight when the next DELETE comes in. Returning 404 surfaces that bug to the dev rather than silently swallowing the second call.
+- The cascade through the FK relation handles the only edge case (in-flight pending deliveries) cleanly. There is no half-delete state to worry about.
+
+**Trade:** retry-on-DELETE clients have to special-case 404 as success. The retry pattern for HTTP DELETE typically does this anyway (network failures can lose the original 204). Documented; the SDK's `endpoints.delete` propagates the JunjoError so callers can branch on `code === "not_found"`.
+
+### `WebhookEndpointsApi` lives as a sub-namespace on `WebhooksApi`, not a top-level `WebhookEndpointsApi` instance
+
+**Decision:** the SDK shape is `junjo.webhooks.endpoints.{create,list,update,delete}`. The `Junjo` class exposes `webhooks: WebhooksApi`; `WebhooksApi` exposes `endpoints: WebhookEndpointsApi` plus the existing `verify` / `middleware` instance methods.
+
+**Rationale:**
+- VISION explicitly specifies `junjo.webhooks.endpoints.{create,list,update,delete}`. The nesting groups every webhook-related dev surface (verify, middleware, endpoints) under one ergonomic root.
+- The `WebhooksApi` constructor changing from `()` to `(http: HttpClient)` is a breaking change to anyone instantiating it directly; in practice, the only instantiation site is the `Junjo` constructor, so the impact is internal.
+
+**Trade:** sub-namespacing on existing classes is a less common pattern than promoting siblings to the top level. We accept the inconsistency for the namespace ergonomics.

@@ -16,6 +16,7 @@ export type MemberId = Brand<string, "MemberId">;
 export type UserId = Brand<string, "UserId">;
 export type InvitationId = Brand<string, "InvitationId">;
 export type AuditEntryId = Brand<string, "AuditEntryId">;
+export type WebhookEndpointId = Brand<string, "WebhookEndpointId">;
 
 // =====================================================================
 // Group
@@ -366,6 +367,41 @@ export interface WebhookSignatureHeaders {
   "x-junjo-event": string;
   "x-junjo-event-id": string;
   "x-junjo-delivery-id": string;
+}
+
+export interface WebhookEndpoint {
+  id: WebhookEndpointId;
+  gameId: GameId;
+  url: string;
+  // Subset of event types this endpoint subscribes to. Empty array
+  // means "match every event type" (the friendly default).
+  events: JunjoEventType[];
+  createdAt: Date;
+  // When set, the endpoint is muted: matching events do not enqueue
+  // deliveries. Toggle with `endpoints.update(id, { disabled })`.
+  disabledAt: Date | null;
+}
+
+// Returned exactly once, as the response body of `endpoints.create`.
+// The dev MUST persist this secret immediately: it is never surfaced
+// again by `endpoints.list` or `endpoints.update`.
+export interface WebhookEndpointWithSecret extends WebhookEndpoint {
+  secret: string;
+}
+
+export interface CreateWebhookEndpointInput {
+  url: string;
+  events?: JunjoEventType[];
+  // Optional. When omitted the server generates a 32-byte base64url
+  // secret and returns it on the create response.
+  secret?: string;
+}
+
+export interface UpdateWebhookEndpointInput {
+  url?: string;
+  events?: JunjoEventType[];
+  // true sets `disabledAt = now()`; false clears it.
+  disabled?: boolean;
 }
 
 export interface WebhookDelivery {

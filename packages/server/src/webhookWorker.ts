@@ -103,12 +103,7 @@ export async function deliverOne(
 
   const body = JSON.stringify(delivery.payload);
   const ts = now().toISOString();
-  // The `hashedSecret` column stores the endpoint's signing secret in
-  // recoverable form (HMAC requires the secret on the signing side,
-  // unlike the API-key path which stores a one-way hash). The column
-  // name predates this iteration; Phase 5.5 renames it when it owns the
-  // create flow.
-  const secret = delivery.endpoint.hashedSecret;
+  const secret = delivery.endpoint.secret;
   const signature = signWebhookBody(secret, body, ts);
 
   const payload = delivery.payload as Record<string, unknown> | null;

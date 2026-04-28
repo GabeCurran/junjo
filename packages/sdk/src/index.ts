@@ -69,7 +69,7 @@ export class Junjo {
     this.members = new MembersApi(this.http);
     this.invitations = new InvitationsApi(this.http);
     this.audit = new AuditApi(this.http);
-    this.webhooks = new WebhooksApi();
+    this.webhooks = new WebhooksApi(this.http);
   }
 
   // The hot path for any game logic: "is this user allowed to do X in
@@ -121,6 +121,7 @@ export { InvitationsApi } from "./invitations.js";
 export { MembersApi } from "./members.js";
 export { RolesApi } from "./roles.js";
 export {
+  WebhookEndpointsApi,
   WebhooksApi,
   WEBHOOK_DEFAULT_TOLERANCE_MS,
   WEBHOOK_SIGNATURE_SCHEME,
@@ -139,16 +140,22 @@ export type {
   AuditAction,
   AuditEntry,
   AuthAdapter,
+  CreateWebhookEndpointInput,
   Group,
   GroupId,
   Invitation,
   JunjoEvent,
+  JunjoEventType,
   ListAuditOptions,
   Member,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,
   Role,
+  UpdateWebhookEndpointInput,
   UserId,
+  WebhookEndpoint,
+  WebhookEndpointId,
+  WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
 } from "@junjo/shared";

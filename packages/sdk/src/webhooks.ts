@@ -1,6 +1,17 @@
-import type { JunjoEvent, WebhookSignatureHeaders } from "@junjo/shared";
+import type {
+  CreateWebhookEndpointInput,
+  GameId,
+  JunjoEvent,
+  JunjoEventType,
+  UpdateWebhookEndpointInput,
+  WebhookEndpoint,
+  WebhookEndpointId,
+  WebhookEndpointWithSecret,
+  WebhookSignatureHeaders,
+} from "@junjo/shared";
 import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent } from "./events.js";
+import type { HttpClient } from "./http.js";
 
 // Must match `WEBHOOK_SIGNATURE_SCHEME` and the signing layout in the
 // server's `webhookWorker.ts`. Receivers recompute HMAC-SHA256 of
@@ -166,7 +177,91 @@ function readMiddlewareBody(req: ExpressLikeRequest): string | Uint8Array | null
   return null;
 }
 
+interface WireWebhookEndpoint {
+  id: string;
+  gameId: string;
+  url: string;
+  events: string[];
+  createdAt: string;
+  disabledAt: string | null;
+}
+
+interface WireWebhookEndpointWithSecret extends WireWebhookEndpoint {
+  secret: string;
+}
+
+function deserializeEndpoint(w: WireWebhookEndpoint): WebhookEndpoint {
+  return {
+    id: w.id as WebhookEndpointId,
+    gameId: w.gameId as GameId,
+    url: w.url,
+    events: w.events as JunjoEventType[],
+    createdAt: new Date(w.createdAt),
+    disabledAt: w.disabledAt === null ? null : new Date(w.disabledAt),
+  };
+}
+
+function deserializeEndpointWithSecret(
+  w: WireWebhookEndpointWithSecret,
+): WebhookEndpointWithSecret {
+  return { ...deserializeEndpoint(w), secret: w.secret };
+}
+
+// CRUD for webhook endpoints. Reachable as `junjo.webhooks.endpoints`.
+// Endpoint configuration is per-game; all routes are scoped by the
+// calling API key.
+export class WebhookEndpointsApi {
+  constructor(private readonly http: HttpClient) {}
+
+  // Creates an endpoint and returns it including the signing secret.
+  // The secret is returned exactly once; persist it server-side
+  // immediately. Subsequent `list` and `update` calls do not return it.
+  async create(input: CreateWebhookEndpointInput): Promise<WebhookEndpointWithSecret> {
+    const body: Record<string, unknown> = { url: input.url };
+    if (input.events !== undefined) body.events = input.events;
+    if (input.secret !== undefined) body.secret = input.secret;
+    const wire = await this.http.post<WireWebhookEndpointWithSecret>("/v1/webhooks", body);
+    return deserializeEndpointWithSecret(wire);
+  }
+
+  // Returns every endpoint configured for the calling game, newest first.
+  // No pagination (typical games have a handful; if needed later, this is
+  // an additive change to add `?limit&cursor`).
+  async list(): Promise<WebhookEndpoint[]> {
+    const wire = await this.http.get<{ items: WireWebhookEndpoint[] }>("/v1/webhooks");
+    return wire.items.map(deserializeEndpoint);
+  }
+
+  // Partial update. At least one field is required. `disabled: true` mutes
+  // the endpoint (matching events stop enqueueing); `disabled: false`
+  // un-mutes. Returns the post-state endpoint without the secret.
+  async update(id: WebhookEndpointId, input: UpdateWebhookEndpointInput): Promise<WebhookEndpoint> {
+    const body: Record<string, unknown> = {};
+    if (input.url !== undefined) body.url = input.url;
+    if (input.events !== undefined) body.events = input.events;
+    if (input.disabled !== undefined) body.disabled = input.disabled;
+    const wire = await this.http.patch<WireWebhookEndpoint>(
+      `/v1/webhooks/${encodeURIComponent(id)}`,
+      body,
+    );
+    return deserializeEndpoint(wire);
+  }
+
+  // Hard-deletes the endpoint. Pending deliveries are cascaded by the
+  // database. Idempotency on a missing id throws `JunjoError` with
+  // `code: "not_found"`.
+  async delete(id: WebhookEndpointId): Promise<void> {
+    await this.http.delete<void>(`/v1/webhooks/${encodeURIComponent(id)}`);
+  }
+}
+
 export class WebhooksApi {
+  readonly endpoints: WebhookEndpointsApi;
+
+  constructor(http: HttpClient) {
+    this.endpoints = new WebhookEndpointsApi(http);
+  }
+
   // Validates the signature, parses the JunjoEvent, and returns it. Pass
   // `req.body` (or `req.rawBody` if you have a JSON body parser ahead of
   // this call) and `req.headers` from your Express handler.
