@@ -2077,3 +2077,58 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** developers rendering both hooks on one screen open two streams. The docs page calls this out explicitly and recommends choosing one hook per screen unless both result shapes are needed. Phase 7.5 will fold them into a shared cache transparently.
 
+
+### Phase 7.4 `useInvitations` defaults to `status: "pending"` and combines server-side narrowing with a client-side matcher
+
+**Decision:** the hook accepts `{ status?: "pending" | "used" | "expired" | "all" }` and defaults to `"pending"`. It maps the status to the server's `includeExpired` / `includeUsed` flags on `junjo.invitations.list` (so the server narrows the result set), and then applies a client-side matcher that drops rows the inclusive flags return alongside the requested ones.
+
+**Rationale:**
+- The server's flags are inclusive ("also include expired" / "also include used"), not exclusive. Asking for "only used" still requires a client-side filter to drop the pending rows the server returned alongside the used ones.
+- The dominant consumer pattern is a "Pending Invitations" admin panel; defaulting to `"pending"` makes the common case zero-config.
+- Server-side narrowing minimizes wire traffic for the common case (`pending` is the smallest result set; expired and used rows can grow unboundedly over time). The client-side matcher exists only to clean up the inclusive-flag overflow.
+- Mirrors the `useMembers` precedent of "filter on the client even when the server has flags" while taking advantage of the server flags that already exist for invitations specifically.
+
+**Trade:** the hook duplicates filter logic that already exists conceptually on the server. Acceptable: the server's flags are inclusive, so a strict server-side-only filter would require new query parameters (e.g. `?status=used`). That's a roadmap-V1.X widening; the React hook can opt in transparently.
+
+### `useInvitations` only handles `member.invited` and `member.joined` for live updates
+
+**Decision:** the hook reacts to two SSE event types: `member.invited` (append a new invitation, filter-aware) and `member.joined` (transition direct invitations targeting the joining user from pending to used; either drop them or update them in place depending on the active filter). Every other event type is a no-op.
+
+**Rationale:**
+- `member.invited` and `member.joined` are the only events whose payload is rich enough to apply locally. Revoke and decline emit no events at all (per iteration 026's split: "mutations whose audit action has no `JunjoEvent`-union counterpart publish nothing"). Expiration is not an event - it's a derived state from `expiresAt < now`.
+- Adding a polling timer to re-evaluate expirations would add real complexity (a `setInterval` plus a dependency on wall-clock skew). For V1, leaving expired rows visible until the next `refetch` is honest about what the data layer can deliver.
+- The docs page explicitly tells consumers to call `refetch` after `revoke`, `decline`, or when expiration timing matters. This matches the established pattern: live updates handle the common cases, and consumers reach for `refetch` to bridge the gaps.
+
+**Trade:** the visible list can lag the server until the next user action triggers a refetch. Acceptable in V1; Phase 7.5 (optimistic updates layer) is the right place to add automatic invalidation on revoke / decline mutations.
+
+### `useInvitations` does not auto-correlate open-code invitations to `member.joined`
+
+**Decision:** when a `member.joined` event arrives, only direct invitations (where `targetUserId === event.userId`) are transitioned to used. Open-code invitations (`targetUserId: null`) are left untouched.
+
+**Rationale:**
+- The `member.joined` event payload (`{ userId, member }`) does not carry the invitation id that was used. The server records that id in the audit log (see iteration 013's `payload: { memberId, invitationId, code }`) but does not propagate it onto the live event.
+- For direct invitations the correlation is unambiguous: there is at most one pending invitation per `(groupId, targetUserId)` pair the server enforces. For open-code invitations a single accept could correspond to any of several active codes, and the hook has no way to choose.
+- Synthesizing a "use up the oldest open-code invitation" heuristic would be wrong on basically any concurrent scenario and would silently disagree with the server's actual record.
+
+**Trade:** consumers showing open-code invitations need to call `refetch` after `acceptInvitation` to see the post-state. Acceptable: open codes are typically published via shareable URLs (Discord, Slack, etc.) where the consumer's UI is not the redemption surface anyway.
+
+### `useInvitations` evaluates `expiresAt` against `new Date()` at filter time, with no auto-tick
+
+**Decision:** the matcher reads `new Date()` each time it runs (during initial fetch, fetchMore, and event dispatch). The hook does NOT run a `setInterval` to re-evaluate the matcher when wall-clock time crosses an `expiresAt` boundary.
+
+**Rationale:**
+- A timer adds complexity (cleanup, dependence on wall-clock skew, test-determinism issues with fake timers) for a niche use case. The dominant case is a panel that re-renders on user action - call `refetch` when the user clicks "refresh."
+- Reading `new Date()` at filter time is sufficient for the events that fire (each event triggers a render in which the matcher re-runs); only the case "no events fire AND wall-clock crosses expiresAt" goes unhandled.
+- The docs explicitly call this out as a V1 limitation with the recommendation to `refetch` periodically if the consumer cares.
+
+**Trade:** an invitation that expires while the panel is mounted with no events firing stays visible until the next user action. Acceptable; consumers needing real-time expiration can poll with `refetch` on a timer themselves.
+
+### `useInvitations` deduplicates by invitation `id` and not `code`
+
+**Decision:** `fetch_more_success` and `member.invited` (re-emit) both deduplicate using the invitation's database id (branded `InvitationId`), not the human-shareable `code`.
+
+**Rationale:**
+- The id is the stable primary key; the code is human-facing but never duplicated either, so the choice is mostly cosmetic. The id is consistent with the `useMembers` precedent (deduplicating by `userId`, the natural primary key).
+- Preserves the door for future invitation rotation (e.g. a code refresh) where the underlying invitation row would keep its id.
+
+**Trade:** none significant. Both fields are unique within a group; `id` is the safer long-term choice.

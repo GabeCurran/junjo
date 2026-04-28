@@ -1,0 +1,141 @@
+# useInvitations
+
+Returns the paginated invitation list for a group plus a live event subscription that keeps it in sync with `member.invited` and `member.joined` events.
+
+```tsx
+import { useInvitations } from "@junjo/react";
+
+function PendingInvites({ groupId }: { groupId: GroupId }) {
+  const { invitations, loading, error, hasMore, fetchMore, loadingMore } =
+    useInvitations(groupId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {invitations.map((i) => (
+        <li key={i.id}>{i.code}</li>
+      ))}
+      {hasMore ? (
+        <li>
+          <button type="button" onClick={fetchMore} disabled={loadingMore}>
+            {loadingMore ? "Loading more..." : "Load more"}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useInvitations(groupId: GroupId, opts?: UseInvitationsOptions): UseInvitationsResult;
+
+interface UseInvitationsOptions {
+  status?: "pending" | "used" | "expired" | "all";
+  limit?: number;
+}
+
+interface UseInvitationsResult {
+  invitations: Invitation[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  fetchMore: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `invitations` | The current list, filtered by `status`. Server order on the initial page; new pages append at the end; live events insert / remove / update in place. |
+| `loading` | `true` from mount until the first `invitations.list` response (success or error). |
+| `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
+| `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
+| `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+
+## Status filter
+
+The `status` option defaults to `"pending"`, which is the dominant case (a "Pending Invitations" panel that should not show invitations that have already been accepted, declined, or that have expired). The other valid values are `"used"`, `"expired"`, or `"all"`.
+
+The filter combines two layers:
+
+1. **Server-side narrowing.** The hook maps the `status` to the `includeExpired` and `includeUsed` flags on `junjo.invitations.list`:
+
+   | `status` | Server flags |
+   |----------|--------------|
+   | `pending` | `{}` (server default excludes both) |
+   | `used` | `{ includeUsed: true }` |
+   | `expired` | `{ includeExpired: true }` |
+   | `all` | `{ includeExpired: true, includeUsed: true }` |
+
+2. **Client-side narrowing.** After the page returns, the hook applies a matcher that keeps only rows matching the requested status. For `pending`, this is `usedAt === null && (expiresAt === null || expiresAt > now)`. For `used`, `usedAt !== null`. For `expired`, `expiresAt !== null && expiresAt <= now`. For `all`, every row passes.
+
+The two-layer design exists because the server's flags are inclusive ("also include expired" / "also include used"), not exclusive. Asking for "only used" still requires a client-side filter to drop the pending rows the server returned alongside the used ones.
+
+Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands with new server flags) but does NOT re-open the SSE subscription.
+
+## Pagination
+
+Pagination is cursor-based. The hook calls `junjo.invitations.list(groupId, opts)` for each page; the first call carries `{ ...statusFlags, limit? }` (no cursor) and subsequent `fetchMore` calls carry `{ ...statusFlags, cursor, limit? }`. The server's response shape is `{ items: Invitation[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
+
+`fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `id` when appending.
+
+## Live updates
+
+After the first page lands, the hook opens an SSE subscription scoped to the group. Two event types modify state:
+
+| Event | Behavior |
+|-------|----------|
+| `member.invited` | If the new invitation matches the current filter, append at the end (or replace in-place when the same `id` is already present, idempotent on dedupe). If the filter excludes it, ignore. |
+| `member.joined` | For each direct invitation in state where `targetUserId === event.userId && usedAt === null`, set `usedAt` to `event.occurredAt` and `usedBy` to `event.userId`. If the updated invitation no longer matches the current filter (e.g. `pending` no longer applies because it is now `used`), remove it; otherwise keep it updated in place. |
+
+Other events (`role.created`, `role.deleted`, `member.left`, `permission.granted`, `permission.revoked`, `group.updated`, `group.deleted`, `role.changed`, `group.relationship.changed`) are ignored and do not cause re-renders.
+
+The subscription is tied to `(junjo, groupId)`. Changing `status` does not re-open it. Changing `groupId` closes the old subscription and opens a new one.
+
+### V1 limitations on live updates
+
+- **Open-code invitations are NOT auto-updated on accept.** The `member.joined` event identifies the user who joined but not the invitation they used. Direct invitations are correlated by matching `targetUserId === event.userId`. Open-code invitations (those with `targetUserId: null`) cannot be correlated; they stay in the list until the next `refetch`. Call `refetch` after `junjo.groups.acceptInvitation` if your UI needs precise lifecycle tracking on open codes.
+- **Revoke is not an event.** The server publishes no event when an invitation is revoked. After calling `junjo.invitations.revoke(code)`, call `refetch` to drop the row from the list.
+- **Decline is not an event.** Same caveat as revoke: the server publishes no event on decline; refetch to update.
+- **Expiration is not auto-tracked.** An invitation whose `expiresAt` passes during the lifetime of the hook stays in the visible list with status `pending` until the next `refetch`. The hook does not run a timer to re-evaluate the matcher on the wall clock. Call `refetch` if your UI needs to surface expiration changes between user actions.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Three sources:
+
+- **Initial fetch error**: a `JunjoError` (or other) from the first `invitations.list` call. The hook stays at `loading: false` with `invitations: []`.
+- **`fetchMore` error**: appended to `error` while `invitations` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
+- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect in V1; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+
+If `useInvitations` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Composing with `useGroup` and `useMembers`
+
+Each Phase 7 list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct in V1 (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. Phase 7.5 will introduce a shared subscription cache that deduplicates streams under one provider.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.invitations.list` and `junjo.groups.subscribe` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.invitations, {
+  list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+});
+Object.assign(client.groups, {
+  subscribe: vi.fn().mockResolvedValue({ close: vi.fn() }),
+});
+```

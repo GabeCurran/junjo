@@ -3,5 +3,6 @@
   "provider": "JunjoProvider + useJunjo",
   "use-group": "useGroup",
   "use-can": "useCan",
-  "use-members": "useMembers"
+  "use-members": "useMembers",
+  "use-invitations": "useInvitations"
 }
