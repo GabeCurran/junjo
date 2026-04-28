@@ -1136,3 +1136,58 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - Matches Stripe / Supabase / Clerk SDK conventions where cross-cutting verbs (`stripe.charge`, `supabase.auth.getUser`, `clerk.verifyToken`) live at the top of the SDK rather than nested in resource namespaces.
 
 **Trade:** discoverability via IDE autocomplete is slightly weaker than a `junjo.permissions.*` namespace (a dev typing `junjo.p` does not see anything). Mitigation: the top-level methods table on the SDK index docs page calls them out, and `can` is the most obvious name for "is this allowed?".
+
+### Group relationships are stored directed; mutual is a writer flag, not a stored property
+
+**Decision:** `GroupRelationship` rows are stored directed (one row per A->B direction). When a dev calls `setRelationship(a, b, type, { mutual: true })` the route writes both A->B and B->A in the same transaction, but the rows themselves carry no "this is half of a symmetric pair" marker. Each row is independently fetchable, updatable, and clearable.
+
+**Rationale:**
+- The schema comment ("Stored *directed* (A -> B). Symmetric relationships are two rows") already pins this. Phase 4.1 honors it.
+- Asymmetric relationships are a real use case (Minecraft Factions: A treats B as ally, B treats A as enemy; WoW factions can have one-sided diplomatic stances). A symmetric-only model would require fabricating a synthetic "I treat them as ally but they don't reciprocate" representation later.
+- Storing the mutual flag on the row would create a coherence problem: what if the dev later updates only one side? The flag would lie. The directed model has no such problem.
+- The audit log captures the `mutual` flag in the payload so consumers can tell whether a write was issued as a mutual call or a single-direction call.
+
+**Trade:** a dev who wants the canonical "are these two groups allies in both directions?" view has to fetch two rows. We can add a `getMutualRelationship` helper later as additive sugar if it becomes common.
+
+### `setRelationship` is per-direction idempotent and bumps `since` only when `type` changes
+
+**Decision:** Each direction in `setRelationship` is checked independently. If the existing row already has the supplied `type`, that direction is a no-op (no DB write, no audit entry, no `since` update). If the type differs, the row is updated, `since` is bumped to the current time, and an audit entry is written for that direction's origin group. Mutual writes therefore can produce 0, 1, or 2 audit entries depending on which directions were no-ops.
+
+**Rationale:**
+- Idempotence matches the established precedent for permission grants / overrides / role assignments. Re-running the same call is harmless.
+- Updating `since` on a type change reflects "the date this relationship took its current form"; re-confirming the same type does not constitute a new relationship event, so leaving `since` alone is correct.
+- The audit log carries `before: { type }` only when the type changed; on a fresh insert the `before` field is omitted.
+
+**Trade:** a dev who wants to "touch" the relationship to bump `since` without changing the type cannot do so via this route. That is intentional; if they want to record a "we re-confirmed the alliance today" event they can use the audit log's `payload` of a different action, or an out-of-band note.
+
+### Self-relationships (a == b) are rejected with `400 bad_request`
+
+**Decision:** `setRelationship`, `clearRelationship`, and `getRelationship` all reject calls where the two group ids are equal. `setRelationship` and `clearRelationship` return `400 bad_request`; `getRelationship` returns `404 not_found` (since "the row does not exist" is the more natural response for a read).
+
+**Rationale:**
+- A group having a relationship with itself has no semantic meaning. Allowing the row would just clutter the storage and audit log.
+- The 400 / 404 split mirrors the established convention: writes return validation errors as 400, reads return missing-resource errors as 404.
+
+**Trade:** none material. If a dev accidentally passes the same id twice, they get a clear error.
+
+### `listRelationships` returns A-side rows only (the group's outgoing stance)
+
+**Decision:** `GET /v1/groups/:a/relationships` returns rows where `groupAId = :a`. The reverse direction (rows where `groupBId = :a`) does not appear in this list.
+
+**Rationale:**
+- The natural reading of "this group's relationships" is "this group's stance toward others." A->B rows answer that question; B->A rows answer "what do other groups think about A?" - a related but distinct question.
+- Symmetric pairs already produce two rows (one in each group's outgoing list); both groups see the relationship correctly via their own list.
+- The B-side view is useful for "who has me in their list?" UX. We can add it as `?direction=incoming` later as an additive change without breaking V1 callers.
+
+**Trade:** a dev who wants to see "all relationships involving this group" from one call has to also call `listRelationships` for each B that has rows pointing back, or wait for the future `?direction=incoming` flag. For most game UX (rendering the list of allies / enemies on a guild page), the A-side view is sufficient.
+
+### `GroupRelationship.setByUserId` is widened to `String?` to match V1 reality
+
+**Decision:** the `GroupRelationship.setByUserId` column is migrated to nullable. The shared TypeScript type `GroupRelationship.setBy` widens from `UserId` to `UserId | null`. V1's set-relationship route writes `null` for this field (no auth-adapter actor wired yet behind the API key boundary).
+
+**Rationale:**
+- Parallels `Invitation.createdByUserId` (widened in iteration 010) and `MemberPermissionOverride.setByUserId` (already nullable in the init schema): every "who took this action?" field is nullable while the auth-adapter actor pathway remains unwired.
+- Keeping it `NOT NULL` would force the V1 route to fabricate a placeholder JunjoUser id, which would either leak the API-key abstraction or create ghost users.
+- Phase 6 (auth adapters) will populate this field with the resolved JunjoUser id once the dev's frontend / SDK forwards a session token alongside the relationship-set call.
+
+**Trade:** SDK consumers must handle `setBy: null` from V1 onward. This is additive (was previously typed as `UserId`, never undefined / null) and matches the established precedent for the other "actor" fields.

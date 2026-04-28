@@ -169,7 +169,10 @@ export interface GroupRelationship {
   groupBId: GroupId;
   type: GroupRelationshipType;
   since: Date;
-  setBy: UserId;
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdBy and
+  // MemberPermissionOverride.setBy).
+  setBy: UserId | null;
 }
 
 // =====================================================================

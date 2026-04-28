@@ -549,6 +549,104 @@ result.errors;  // []
 
 - [`POST /v1/groups/:id/bulk-invite`](/api/groups) - the underlying HTTP route.
 
+## `setRelationship(groupAId, groupBId, type, opts?)` - shipped
+
+```ts
+async setRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+  type: GroupRelationshipType,
+  opts?: { mutual?: boolean },
+): Promise<GroupRelationship>
+```
+
+Set or update the directed A->B relationship. Pass `mutual: true` to write both A->B and B->A with the same `type` in the same transaction. The return value is always the A->B row (the canonical "this group's stance" view).
+
+### Behavior
+
+- Each direction is independent. If A->B already has the supplied `type` it is a no-op for that direction (no audit, no `since` bump). The other direction (B->A) still goes through its own check when `mutual: true`.
+- `actorUserId` is null in V1 (the dev's backend is the trusted layer behind the API key); `setBy` reads as `null` on the wire and on the deserialized SDK type.
+- Self-relationships (`groupAId === groupBId`) throw `bad_request`.
+
+### Returns
+
+```ts
+interface GroupRelationship {
+  groupAId: GroupId;
+  groupBId: GroupId;
+  type: string;
+  since: Date;
+  setBy: UserId | null;
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Self-relationship, `type` missing, empty, or over 64 chars. |
+| `not_found` | 404 | Either group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`PUT /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+
+## `clearRelationship(groupAId, groupBId, opts?)` - shipped
+
+```ts
+async clearRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+  opts?: { mutual?: boolean },
+): Promise<void>
+```
+
+Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missing row is a no-op (no audit entry, no error).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Self-relationship. |
+| `not_found` | 404 | Either group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`DELETE /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+
+## `getRelationship(groupAId, groupBId)` - shipped
+
+```ts
+async getRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+): Promise<GroupRelationship | null>
+```
+
+Fetch the directed A->B row, or `null` when no row exists for that direction. To inspect the reverse direction, call again with the arguments swapped.
+
+### See also
+
+- [`GET /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+
+## `listRelationships(groupId)` - shipped
+
+```ts
+async listRelationships(groupId: GroupId): Promise<GroupRelationship[]>
+```
+
+Return every directed row where this group is the A-side ("this group's stance toward others"). Sorted by `groupBId` ascending. A group with no outgoing relationships returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`GET /v1/groups/:a/relationships`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-The relationship helpers and `subscribe` still exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`subscribe`, `setParent`, and `listChildren` still exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

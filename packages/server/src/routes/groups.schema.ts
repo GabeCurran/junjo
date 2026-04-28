@@ -53,3 +53,23 @@ export const bulkInviteQuery = z.object({
 });
 
 export type BulkInviteQuery = z.infer<typeof bulkInviteQuery>;
+
+// Relationship `type` is dev-defined (the schema stores it as a free
+// string). Capped at 64 chars to match `Role.name` (the other open string
+// devs commonly hand the API).
+export const RELATIONSHIP_TYPE_MAX_LENGTH = 64;
+
+export const setRelationshipBody = z.object({
+  type: z.string().min(1).max(RELATIONSHIP_TYPE_MAX_LENGTH),
+  mutual: z.boolean().optional(),
+});
+
+export type SetRelationshipBody = z.infer<typeof setRelationshipBody>;
+
+// Strict "true" / "false" matches the precedent set by the
+// `includeExpired` / `includeUsed` flags on `listInvitationsQuery`.
+export const clearRelationshipQuery = z.object({
+  mutual: z.enum(["true", "false"]).optional(),
+});
+
+export type ClearRelationshipQuery = z.infer<typeof clearRelationshipQuery>;

@@ -1460,3 +1460,317 @@ describe("groups.bulkInvite", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+const relWireFixture = {
+  groupAId: "grp_a",
+  groupBId: "grp_b",
+  type: "ally",
+  since: "2026-04-28T05:00:00.000Z",
+  setBy: null,
+};
+
+describe("groups.setRelationship", () => {
+  it("PUTs to the relationships path with the type body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PUT");
+      const u = new URL(req.url);
+      expect(u.pathname).toBe("/v1/groups/grp_a/relationships/grp_b");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ type: "ally" });
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const rel = await junjo.groups.setRelationship("grp_a" as GroupId, "grp_b" as GroupId, "ally");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(rel.groupAId).toBe("grp_a");
+    expect(rel.groupBId).toBe("grp_b");
+    expect(rel.type).toBe("ally");
+    expect(rel.since).toBeInstanceOf(Date);
+    expect(rel.since.toISOString()).toBe(relWireFixture.since);
+    expect(rel.setBy).toBeNull();
+  });
+
+  it("forwards mutual: true in the body when supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ type: "ally", mutual: true });
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.setRelationship("grp_a" as GroupId, "grp_b" as GroupId, "ally", {
+      mutual: true,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards mutual: false verbatim when supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ type: "ally", mutual: false });
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.setRelationship("grp_a" as GroupId, "grp_b" as GroupId, "ally", {
+      mutual: false,
+    });
+  });
+
+  it("URL-encodes both group ids", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/relationships/has%20space");
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.setRelationship("has/slash" as GroupId, "has space" as GroupId, "ally");
+  });
+
+  it("deserializes a relationship with a non-null setBy", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ ...relWireFixture, setBy: "user_alice" }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const rel = await junjo.groups.setRelationship("grp_a" as GroupId, "grp_b" as GroupId, "ally");
+    const setBy: UserId | null = rel.setBy;
+    expect(setBy).toBe("user_alice");
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "self-rel" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.setRelationship("grp_a" as GroupId, "grp_a" as GroupId, "ally"),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "bad_request", status: 400 });
+  });
+});
+
+describe("groups.clearRelationship", () => {
+  it("DELETEs the relationship path with the auth header", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const u = new URL(req.url);
+      expect(u.pathname).toBe("/v1/groups/grp_a/relationships/grp_b");
+      expect(u.search).toBe("");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.clearRelationship("grp_a" as GroupId, "grp_b" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards ?mutual=true when opts.mutual is true", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const u = new URL(req.url);
+      expect(u.searchParams.get("mutual")).toBe("true");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.clearRelationship("grp_a" as GroupId, "grp_b" as GroupId, { mutual: true });
+  });
+
+  it("URL-encodes both group ids", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/relationships/has%20space");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.clearRelationship("has/slash" as GroupId, "has space" as GroupId);
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "missing" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.clearRelationship("grp_a" as GroupId, "grp_b" as GroupId),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "not_found", status: 404 });
+  });
+});
+
+describe("groups.getRelationship", () => {
+  it("GETs the relationship path and deserializes the wire shape", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_a/relationships/grp_b");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const rel = await junjo.groups.getRelationship("grp_a" as GroupId, "grp_b" as GroupId);
+    expect(rel).not.toBeNull();
+    expect(rel?.type).toBe("ally");
+    expect(rel?.since).toBeInstanceOf(Date);
+  });
+
+  it("returns null on 404 not_found", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "missing" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const rel = await junjo.groups.getRelationship("grp_a" as GroupId, "grp_b" as GroupId);
+    expect(rel).toBeNull();
+  });
+
+  it("throws on non-404 errors", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "internal", status: 500, message: "boom" }, 500),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.getRelationship("grp_a" as GroupId, "grp_b" as GroupId),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "internal" });
+  });
+
+  it("URL-encodes both group ids", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/relationships/has%20space");
+      return jsonResponse(relWireFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.getRelationship("has/slash" as GroupId, "has space" as GroupId);
+  });
+});
+
+describe("groups.listRelationships", () => {
+  it("GETs the list path and deserializes each row", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_a/relationships");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse([
+        relWireFixture,
+        { ...relWireFixture, groupBId: "grp_c", type: "enemy" },
+      ]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const list = await junjo.groups.listRelationships("grp_a" as GroupId);
+    expect(list).toHaveLength(2);
+    expect(list[0]?.groupBId).toBe("grp_b");
+    expect(list[0]?.type).toBe("ally");
+    expect(list[0]?.since).toBeInstanceOf(Date);
+    expect(list[1]?.groupBId).toBe("grp_c");
+    expect(list[1]?.type).toBe("enemy");
+  });
+
+  it("returns an empty array verbatim", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([]));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const list = await junjo.groups.listRelationships("grp_a" as GroupId);
+    expect(list).toEqual([]);
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "missing" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.listRelationships("grp_missing" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("URL-encodes the group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/relationships");
+      return jsonResponse([]);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.listRelationships("has/slash" as GroupId);
+  });
+});

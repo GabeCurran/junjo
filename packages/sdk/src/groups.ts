@@ -23,6 +23,24 @@ import { type WireMember, deserializeMember } from "./members.js";
 
 const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
 
+export interface WireGroupRelationship {
+  groupAId: string;
+  groupBId: string;
+  type: string;
+  since: string;
+  setBy: string | null;
+}
+
+export function deserializeGroupRelationship(w: WireGroupRelationship): GroupRelationship {
+  return {
+    groupAId: w.groupAId as GroupId,
+    groupBId: w.groupBId as GroupId,
+    type: w.type,
+    since: new Date(w.since),
+    setBy: w.setBy === null ? null : (w.setBy as UserId),
+  };
+}
+
 export interface WireInvitation {
   id: string;
   groupId: string;
@@ -235,28 +253,48 @@ export class GroupsApi {
   // ------ Group relationships ------
 
   async setRelationship(
-    _groupAId: GroupId,
-    _groupBId: GroupId,
-    _type: GroupRelationshipType,
-    _opts?: { mutual?: boolean },
+    groupAId: GroupId,
+    groupBId: GroupId,
+    type: GroupRelationshipType,
+    opts?: { mutual?: boolean },
   ): Promise<GroupRelationship> {
-    throw NOT_IMPLEMENTED;
+    const body: { type: string; mutual?: boolean } = { type };
+    if (opts?.mutual !== undefined) body.mutual = opts.mutual;
+    const wire = await this.http.put<WireGroupRelationship>(
+      `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`,
+      body,
+    );
+    return deserializeGroupRelationship(wire);
   }
 
   async clearRelationship(
-    _groupAId: GroupId,
-    _groupBId: GroupId,
-    _opts?: { mutual?: boolean },
+    groupAId: GroupId,
+    groupBId: GroupId,
+    opts?: { mutual?: boolean },
   ): Promise<void> {
-    throw NOT_IMPLEMENTED;
+    const path = opts?.mutual
+      ? `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}?mutual=true`
+      : `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`;
+    await this.http.delete<unknown>(path);
   }
 
-  async getRelationship(_groupAId: GroupId, _groupBId: GroupId): Promise<GroupRelationship | null> {
-    throw NOT_IMPLEMENTED;
+  async getRelationship(groupAId: GroupId, groupBId: GroupId): Promise<GroupRelationship | null> {
+    try {
+      const wire = await this.http.get<WireGroupRelationship>(
+        `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`,
+      );
+      return deserializeGroupRelationship(wire);
+    } catch (err) {
+      if (err instanceof JunjoError && err.code === "not_found") return null;
+      throw err;
+    }
   }
 
-  async listRelationships(_groupId: GroupId): Promise<GroupRelationship[]> {
-    throw NOT_IMPLEMENTED;
+  async listRelationships(groupId: GroupId): Promise<GroupRelationship[]> {
+    const wire = await this.http.get<WireGroupRelationship[]>(
+      `/v1/groups/${encodeURIComponent(groupId)}/relationships`,
+    );
+    return wire.map(deserializeGroupRelationship);
   }
 
   // ------ Sub-groups / alliances ------

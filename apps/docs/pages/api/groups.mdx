@@ -926,3 +926,138 @@ A member with no overrides returns `[]`.
 |------|--------|------|
 | `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PUT /v1/groups/:a/relationships/:b`
+
+Set or update a directed relationship from group A to group B. Relationships are stored *directed* (A's stance toward B), so an asymmetric pair like "A allies B but B sees A as neutral" is two rows. Pass `mutual: true` to write both directions in one call.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Request body
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string (1-64 chars) | Required. Open string: `"ally"`, `"enemy"`, `"neutral"`, `"trade-partner"`, `"vassal"`, etc. The server stores it verbatim. |
+| `mutual` | boolean | Optional. When `true` the route writes both A->B and B->A rows with the same `type`. Defaults to `false`. |
+
+### Response
+
+`200 OK` with the A->B `GroupRelationship` row (the canonical "this group's stance" view, even when `mutual: true` writes both sides).
+
+```json
+{
+  "groupAId": "grp_a",
+  "groupBId": "grp_b",
+  "type": "ally",
+  "since": "2026-04-28T05:00:00.000Z",
+  "setBy": null
+}
+```
+
+### Behavior
+
+- Each direction is independent. If A->B already has the supplied `type`, that direction is a no-op (no DB write, no audit entry, no `since` bump). The other direction (B->A) still goes through its own check.
+- A direction whose `type` actually changes writes one `group.relationship.set` audit entry on the *origin* group's audit log. Mutual writes therefore produce up to two audit entries; partial-mutual writes produce one.
+- Self-relationships (`a === b`) are rejected with `400 bad_request`.
+- The audit payload is `{ groupAId, groupBId, type, mutual, before? }`. `before` is included only when the row already existed and the type changed; on a fresh insert `before` is omitted.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `type`, `type` empty or over 64 chars, body malformed JSON, or `a === b`. |
+| `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:a/relationships/:b`
+
+Clear the directed A->B relationship. Idempotent: a missing row is a no-op (no audit entry). Pass `?mutual=true` to clear B->A in the same transaction.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Query parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `mutual` | `"true"` \| `"false"` | Optional. When `"true"`, clears both A->B and B->A. Strict string match. |
+
+### Response
+
+`204 No Content`. The audit log carries the previous `type` for any direction that was actually deleted.
+
+### Behavior
+
+- For each direction (A->B, plus B->A when `mutual=true`):
+  - If no row exists: no-op for that direction.
+  - If a row exists: hard-deleted, and one `group.relationship.cleared` audit entry is written on the *origin* group's audit log with `payload: { groupAId, groupBId, type, mutual }` (where `type` is the row's previous value).
+- Self-relationships (`a === b`) are rejected with `400 bad_request`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `mutual` is not `"true"` / `"false"`, or `a === b`. |
+| `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:a/relationships/:b`
+
+Fetch the directed A->B relationship row.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Response
+
+`200 OK` with the `GroupRelationship` row, or `404 not_found` if no such row exists in this direction. To fetch the reverse direction, swap `a` and `b`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No A->B row, or either group is missing / soft-deleted / cross-game / `a === b`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:a/relationships`
+
+List every directed relationship where this group is the A-side ("this group's stance toward others"). Returns a bare array (no pagination wrapper); a group's relationship list is conventionally a small set.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+
+### Response
+
+`200 OK` with a `GroupRelationship[]` body, sorted by `groupBId` ascending for deterministic output. Symmetric pairs appear once per direction; query the other group to see the reverse row.
+
+```json
+[
+  { "groupAId": "grp_a", "groupBId": "grp_b", "type": "ally", "since": "2026-04-28T05:00:00.000Z", "setBy": null },
+  { "groupAId": "grp_a", "groupBId": "grp_c", "type": "enemy", "since": "2026-04-28T05:00:00.000Z", "setBy": null }
+]
+```
+
+A group with no outgoing relationships returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

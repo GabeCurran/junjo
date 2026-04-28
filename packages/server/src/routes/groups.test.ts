@@ -4285,3 +4285,557 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId/permissi
     expect(body[0]?.userId).toBe("weird/user");
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("Group relationships", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "GroupRelationship", "AuditEntry", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(
+    name: string,
+    overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name,
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  function setRelationship(a: string, b: string, body: unknown, header: string = authHeader) {
+    return app.request(`/v1/groups/${a}/relationships/${b}`, {
+      method: "PUT",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  function clearRelationship(a: string, b: string, query = "", header: string = authHeader) {
+    return app.request(`/v1/groups/${a}/relationships/${b}${query}`, {
+      method: "DELETE",
+      headers: { authorization: header },
+    });
+  }
+
+  function getRelationship(a: string, b: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${a}/relationships/${b}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  function listRelationships(a: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${a}/relationships`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  describe("PUT /v1/groups/:a/relationships/:b", () => {
+    it("creates a directed relationship and returns the wire shape", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+
+      const res = await setRelationship(a.id, b.id, { type: "ally" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        groupAId: a.id,
+        groupBId: b.id,
+        type: "ally",
+        since: expect.any(String),
+        setBy: null,
+      });
+
+      const stored = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      expect(stored?.type).toBe("ally");
+      expect(stored?.setByUserId).toBeNull();
+    });
+
+    it("writes a group.relationship.set audit entry on the origin group", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+
+      await setRelationship(a.id, b.id, { type: "ally" });
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: a.id } });
+      expect(entries).toHaveLength(1);
+      const [entry] = entries;
+      if (!entry) throw new Error("expected one audit entry");
+      expect(entry.action).toBe("group.relationship.set");
+      expect(entry.targetId).toBe(b.id);
+      expect(entry.actorUserId).toBeNull();
+      expect(entry.payload).toEqual({
+        groupAId: a.id,
+        groupBId: b.id,
+        type: "ally",
+        mutual: false,
+      });
+
+      const otherEntries = await prisma.auditEntry.findMany({ where: { groupId: b.id } });
+      expect(otherEntries).toHaveLength(0);
+    });
+
+    it("writes both directions when mutual is true", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+
+      const res = await setRelationship(a.id, b.id, { type: "ally", mutual: true });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { groupAId: string; groupBId: string };
+      expect(body.groupAId).toBe(a.id);
+      expect(body.groupBId).toBe(b.id);
+
+      const both = await prisma.groupRelationship.findMany({
+        where: {
+          OR: [
+            { groupAId: a.id, groupBId: b.id },
+            { groupAId: b.id, groupBId: a.id },
+          ],
+        },
+      });
+      expect(both).toHaveLength(2);
+      expect(new Set(both.map((r) => r.type))).toEqual(new Set(["ally"]));
+
+      const auditA = await prisma.auditEntry.findMany({ where: { groupId: a.id } });
+      expect(auditA).toHaveLength(1);
+      expect(auditA[0]?.payload).toMatchObject({
+        groupAId: a.id,
+        groupBId: b.id,
+        mutual: true,
+      });
+      const auditB = await prisma.auditEntry.findMany({ where: { groupId: b.id } });
+      expect(auditB).toHaveLength(1);
+      expect(auditB[0]?.payload).toMatchObject({
+        groupAId: b.id,
+        groupBId: a.id,
+        mutual: true,
+      });
+    });
+
+    it("updates the type and bumps `since` when the row already exists with a different type", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "neutral", setByUserId: null },
+      });
+      const before = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      if (!before) throw new Error("expected seeded row");
+
+      await new Promise((r) => setTimeout(r, 5));
+      const res = await setRelationship(a.id, b.id, { type: "enemy" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { type: string; since: string };
+      expect(body.type).toBe("enemy");
+      expect(new Date(body.since).getTime()).toBeGreaterThan(before.since.getTime());
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: a.id } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.payload).toMatchObject({
+        groupAId: a.id,
+        groupBId: b.id,
+        type: "enemy",
+        before: { type: "neutral" },
+      });
+    });
+
+    it("is idempotent when the type already matches", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const seeded = await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await setRelationship(a.id, b.id, { type: "ally" });
+      expect(res.status).toBe(200);
+
+      const stored = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      expect(stored?.since.toISOString()).toBe(seeded.since.toISOString());
+      expect(await prisma.auditEntry.count()).toBe(0);
+    });
+
+    it("writes only the missing direction on a partial-mutual update", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await setRelationship(a.id, b.id, { type: "ally", mutual: true });
+      expect(res.status).toBe(200);
+
+      const both = await prisma.groupRelationship.findMany();
+      expect(both).toHaveLength(2);
+
+      const entries = await prisma.auditEntry.findMany();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.groupId).toBe(b.id);
+    });
+
+    it("supports asymmetric relationships when mutual is omitted", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+
+      await setRelationship(a.id, b.id, { type: "ally" });
+      await setRelationship(b.id, a.id, { type: "neutral" });
+
+      const ab = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      const ba = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: b.id, groupBId: a.id } },
+      });
+      expect(ab?.type).toBe("ally");
+      expect(ba?.type).toBe("neutral");
+    });
+
+    it("rejects a self-relationship with 400 bad_request", async () => {
+      const a = await seedGroup("A");
+      const res = await setRelationship(a.id, a.id, { type: "ally" });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("bad_request");
+    });
+
+    it("rejects a missing type with 400 bad_request", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await setRelationship(a.id, b.id, {});
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an over-cap type with 400 bad_request", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await setRelationship(a.id, b.id, { type: "x".repeat(65) });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-string type with 400 bad_request", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await setRelationship(a.id, b.id, { type: 123 });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when group A does not exist", async () => {
+      const b = await seedGroup("B");
+      const res = await setRelationship("grp_missing", b.id, { type: "ally" });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when group B does not exist", async () => {
+      const a = await seedGroup("A");
+      const res = await setRelationship(a.id, "grp_missing", { type: "ally" });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when group A is soft-deleted", async () => {
+      const a = await seedGroup("A", { softDeletedAt: new Date() });
+      const b = await seedGroup("B");
+      const res = await setRelationship(a.id, b.id, { type: "ally" });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when group B belongs to a different game", async () => {
+      const a = await seedGroup("A");
+      const otherGame = await createGame("Other Game", prisma);
+      const b = await seedGroup("B", { gameId: otherGame.id });
+      const res = await setRelationship(a.id, b.id, { type: "ally" });
+      expect(res.status).toBe(404);
+
+      const stored = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      expect(stored).toBeNull();
+    });
+
+    it("rejects requests without an API key", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await app.request(`/v1/groups/${a.id}/relationships/${b.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "ally" }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("DELETE /v1/groups/:a/relationships/:b", () => {
+    it("deletes the row and writes a group.relationship.cleared audit entry", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await clearRelationship(a.id, b.id);
+      expect(res.status).toBe(204);
+
+      const stored = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      expect(stored).toBeNull();
+
+      const entries = await prisma.auditEntry.findMany({ where: { groupId: a.id } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.action).toBe("group.relationship.cleared");
+      expect(entries[0]?.payload).toEqual({
+        groupAId: a.id,
+        groupBId: b.id,
+        type: "ally",
+        mutual: false,
+      });
+    });
+
+    it("clears both directions when ?mutual=true is supplied", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+      await prisma.groupRelationship.create({
+        data: { groupAId: b.id, groupBId: a.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await clearRelationship(a.id, b.id, "?mutual=true");
+      expect(res.status).toBe(204);
+
+      const remaining = await prisma.groupRelationship.findMany();
+      expect(remaining).toHaveLength(0);
+
+      const entries = await prisma.auditEntry.findMany();
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.map((e) => e.groupId))).toEqual(new Set([a.id, b.id]));
+    });
+
+    it("is idempotent when the row does not exist", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+
+      const res = await clearRelationship(a.id, b.id);
+      expect(res.status).toBe(204);
+      expect(await prisma.auditEntry.count()).toBe(0);
+    });
+
+    it("clears only the existing direction when ?mutual=true and only one side is present", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await clearRelationship(a.id, b.id, "?mutual=true");
+      expect(res.status).toBe(204);
+
+      const remaining = await prisma.groupRelationship.findMany();
+      expect(remaining).toHaveLength(0);
+
+      const entries = await prisma.auditEntry.findMany();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.groupId).toBe(a.id);
+    });
+
+    it("preserves the asymmetric counterpart when mutual is not set", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+      await prisma.groupRelationship.create({
+        data: { groupAId: b.id, groupBId: a.id, type: "neutral", setByUserId: null },
+      });
+
+      const res = await clearRelationship(a.id, b.id);
+      expect(res.status).toBe(204);
+
+      const remaining = await prisma.groupRelationship.findMany();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.groupAId).toBe(b.id);
+      expect(remaining[0]?.type).toBe("neutral");
+    });
+
+    it("rejects a self-relationship with 400 bad_request", async () => {
+      const a = await seedGroup("A");
+      const res = await clearRelationship(a.id, a.id);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a malformed mutual query value", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await clearRelationship(a.id, b.id, "?mutual=yes");
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when group A or B is missing", async () => {
+      const a = await seedGroup("A");
+      const res = await clearRelationship(a.id, "grp_missing");
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when group B is in a different game", async () => {
+      const a = await seedGroup("A");
+      const otherGame = await createGame("Other Game", prisma);
+      const b = await seedGroup("B", { gameId: otherGame.id });
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await clearRelationship(a.id, b.id);
+      expect(res.status).toBe(404);
+
+      const stored = await prisma.groupRelationship.findUnique({
+        where: { groupAId_groupBId: { groupAId: a.id, groupBId: b.id } },
+      });
+      expect(stored).not.toBeNull();
+    });
+
+    it("rejects requests without an API key", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await app.request(`/v1/groups/${a.id}/relationships/${b.id}`, {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET /v1/groups/:a/relationships/:b", () => {
+    it("returns the directed row when present", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await getRelationship(a.id, b.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        groupAId: a.id,
+        groupBId: b.id,
+        type: "ally",
+        setBy: null,
+      });
+    });
+
+    it("returns 404 when no row exists for that direction", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      await prisma.groupRelationship.create({
+        data: { groupAId: b.id, groupBId: a.id, type: "ally", setByUserId: null },
+      });
+
+      const res = await getRelationship(a.id, b.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when either group is missing or cross-game", async () => {
+      const a = await seedGroup("A");
+      const otherGame = await createGame("Other Game", prisma);
+      const b = await seedGroup("B", { gameId: otherGame.id });
+
+      const res = await getRelationship(a.id, b.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 on a self-relationship lookup", async () => {
+      const a = await seedGroup("A");
+      const res = await getRelationship(a.id, a.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const res = await app.request(`/v1/groups/${a.id}/relationships/${b.id}`);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe("GET /v1/groups/:a/relationships", () => {
+    it("returns an empty array when the group has no outgoing relationships", async () => {
+      const a = await seedGroup("A");
+      const res = await listRelationships(a.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as unknown[];
+      expect(body).toEqual([]);
+    });
+
+    it("returns rows where the group is the A-side, sorted by groupBId asc", async () => {
+      const a = await seedGroup("A");
+      const b = await seedGroup("B");
+      const c = await seedGroup("C");
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: c.id, type: "enemy", setByUserId: null },
+      });
+      await prisma.groupRelationship.create({
+        data: { groupAId: a.id, groupBId: b.id, type: "ally", setByUserId: null },
+      });
+      // Reverse direction; should NOT appear in A's outgoing list.
+      await prisma.groupRelationship.create({
+        data: { groupAId: b.id, groupBId: a.id, type: "neutral", setByUserId: null },
+      });
+
+      const res = await listRelationships(a.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{ groupBId: string; type: string }>;
+      expect(body).toHaveLength(2);
+      const ids = [b.id, c.id].sort();
+      expect(body.map((r) => r.groupBId)).toEqual(ids);
+    });
+
+    it("returns 404 when the group does not exist or belongs to a different game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const a = await seedGroup("A", { gameId: otherGame.id });
+
+      const res = await listRelationships(a.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the group is soft-deleted", async () => {
+      const a = await seedGroup("A", { softDeletedAt: new Date() });
+      const res = await listRelationships(a.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const a = await seedGroup("A");
+      const res = await app.request(`/v1/groups/${a.id}/relationships`);
+      expect(res.status).toBe(401);
+    });
+  });
+});

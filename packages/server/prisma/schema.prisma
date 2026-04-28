@@ -222,7 +222,10 @@ model GroupRelationship {
   groupB      Group    @relation("RelGroupB", fields: [groupBId], references: [id], onDelete: Cascade)
   type        String // "ally" | "enemy" | "neutral" | dev-defined
   since       DateTime @default(now())
-  setByUserId String
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdByUserId
+  // and MemberPermissionOverride.setByUserId).
+  setByUserId String?
 
   @@id([groupAId, groupBId])
   @@index([groupBId])

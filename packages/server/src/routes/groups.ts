@@ -1,4 +1,4 @@
-import type { Group, Prisma, PrismaClient } from "@prisma/client";
+import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
@@ -6,10 +6,12 @@ import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import {
   bulkInviteQuery,
+  clearRelationshipQuery,
   createGroupBody,
   kickMemberBody,
   leaveGroupBody,
   listGroupsQuery,
+  setRelationshipBody,
   updateGroupBody,
 } from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
@@ -22,6 +24,7 @@ import {
   serializeMemberPermissionOverride,
 } from "./members.js";
 import { listMembersQuery, overridePermissionBody, updateMemberBody } from "./members.schema.js";
+import { serializeGroupRelationship } from "./relationships.js";
 import { batchLoadRolePermissionKeys, serializeRole } from "./roles.js";
 import { PERMISSION_KEY_MAX_LENGTH, createRoleBody } from "./roles.schema.js";
 
@@ -1382,6 +1385,202 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       roles.map((r2) => r2.id),
     );
     return c.json(roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? [])));
+  });
+
+  // Set or update a directed relationship from group A to group B.
+  // Body: `{ type, mutual? }`. When `mutual: true` the route writes both
+  // directions (A->B and B->A) with the same `type` in the same
+  // transaction; the response is always the A->B row (the "this group's
+  // stance" canonical view). Idempotent on each direction: if the row's
+  // existing `type` already equals the supplied value, that direction is
+  // a no-op (no DB write, no audit entry, no `since` bump). A direction
+  // that does change writes one `group.relationship.set` audit entry on
+  // the *origin* group's audit log; mutual writes therefore produce up
+  // to two audit entries (one per direction). Self-relationships
+  // (`groupAId == groupBId`) are rejected with `400 bad_request`.
+  // `actorUserId` is null in V1 (no auth-adapter actor wired); the dev's
+  // backend is the trusted layer behind the API key.
+  r.put("/:a/relationships/:b", async (c) => {
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    const gameId = c.var.gameId;
+
+    if (a === b) throw Errors.badRequest("groupAId and groupBId must differ");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = setRelationshipBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { type, mutual } = parsed.data;
+
+    const groups = await prisma.group.findMany({
+      where: { id: { in: [a, b] }, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (groups.length !== 2) throw Errors.notFound("group");
+
+    const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
+    if (mutual) directions.push({ aId: b, bId: a });
+
+    const result = await prisma.$transaction(async (tx) => {
+      let primary: GroupRelationship | null = null;
+      for (const dir of directions) {
+        const existing = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        if (existing && existing.type === type) {
+          if (dir.aId === a) primary = existing;
+          continue;
+        }
+
+        const upserted = await tx.groupRelationship.upsert({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+          create: { groupAId: dir.aId, groupBId: dir.bId, type, setByUserId: null },
+          update: { type, since: new Date() },
+        });
+        if (dir.aId === a) primary = upserted;
+
+        const auditPayload: Record<string, unknown> = {
+          groupAId: dir.aId,
+          groupBId: dir.bId,
+          type,
+          mutual: mutual === true,
+        };
+        if (existing) auditPayload.before = { type: existing.type };
+        await tx.auditEntry.create({
+          data: {
+            groupId: dir.aId,
+            actorUserId: null,
+            action: "group.relationship.set",
+            targetId: dir.bId,
+            payload: auditPayload as Prisma.InputJsonValue,
+          },
+        });
+      }
+      if (!primary) {
+        // Both directions were no-ops; reload the existing A->B row.
+        const reloaded = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: a, groupBId: b } },
+        });
+        if (!reloaded) throw new Error("relationship row missing after no-op upsert");
+        primary = reloaded;
+      }
+      return primary;
+    });
+
+    return c.json(serializeGroupRelationship(result));
+  });
+
+  // Clear the directed relationship from group A to group B. Idempotent:
+  // a missing row is a no-op (no audit entry). When `?mutual=true` is
+  // supplied, both directions are cleared in the same transaction; each
+  // direction is independent (clearing A->B is independent of B->A even
+  // when both exist). Returns 204 in every case so callers do not need
+  // to branch on whether something was actually deleted.
+  r.delete("/:a/relationships/:b", async (c) => {
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    const gameId = c.var.gameId;
+
+    const parsedQuery = clearRelationshipQuery.safeParse({ mutual: c.req.query("mutual") });
+    if (!parsedQuery.success) {
+      const issues = parsedQuery.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const mutual = parsedQuery.data.mutual === "true";
+
+    if (a === b) throw Errors.badRequest("groupAId and groupBId must differ");
+
+    const groups = await prisma.group.findMany({
+      where: { id: { in: [a, b] }, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (groups.length !== 2) throw Errors.notFound("group");
+
+    const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
+    if (mutual) directions.push({ aId: b, bId: a });
+
+    await prisma.$transaction(async (tx) => {
+      for (const dir of directions) {
+        const existing = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        if (!existing) continue;
+
+        await tx.groupRelationship.delete({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        await tx.auditEntry.create({
+          data: {
+            groupId: dir.aId,
+            actorUserId: null,
+            action: "group.relationship.cleared",
+            targetId: dir.bId,
+            payload: {
+              groupAId: dir.aId,
+              groupBId: dir.bId,
+              type: existing.type,
+              mutual,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+    });
+
+    return c.body(null, 204);
+  });
+
+  // Fetch the directed A->B relationship row, or 404 if no such row
+  // exists. Both groups must be in the calling game; cross-game lookups
+  // collapse to 404 to avoid leaking existence.
+  r.get("/:a/relationships/:b", async (c) => {
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    const gameId = c.var.gameId;
+
+    if (a === b) throw Errors.notFound("relationship");
+
+    const groups = await prisma.group.findMany({
+      where: { id: { in: [a, b] }, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (groups.length !== 2) throw Errors.notFound("relationship");
+
+    const rel = await prisma.groupRelationship.findUnique({
+      where: { groupAId_groupBId: { groupAId: a, groupBId: b } },
+    });
+    if (!rel) throw Errors.notFound("relationship");
+
+    return c.json(serializeGroupRelationship(rel));
+  });
+
+  // List every directed relationship where this group is the A-side
+  // (i.e. "this group's stance toward others"). Returns a bare array
+  // sorted by `groupBId` ascending for deterministic output. Symmetric
+  // pairs appear once per direction; the dev queries the other group to
+  // see the reverse row. The B-side ("incoming" relationships) is left
+  // for a future `?direction=incoming` filter as an additive change.
+  r.get("/:a/relationships", async (c) => {
+    const a = c.req.param("a");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id: a, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const rels = await prisma.groupRelationship.findMany({
+      where: { groupAId: group.id },
+      orderBy: { groupBId: "asc" },
+    });
+
+    return c.json(rels.map(serializeGroupRelationship));
   });
 
   return r;
