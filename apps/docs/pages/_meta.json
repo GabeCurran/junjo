@@ -1,6 +1,7 @@
 {
   "index": "Introduction",
   "sdk": "SDK",
+  "react": "React",
   "api": "API",
   "auth": "Auth"
 }

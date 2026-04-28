@@ -1886,3 +1886,49 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Documented in the adapter's docs page so devs are not surprised by the cost.
 
 **Trade:** high-traffic apps pay a Supabase round trip per request. Acceptable for V1; the adapter is correct by default, and caching is an additive concern that the dev controls.
+
+
+### Phase 7.1 `JunjoProvider` takes `client` (not `value`) and accepts a constructed `Junjo` instance
+
+**Decision:** `JunjoProvider` is a thin `<Context.Provider>` wrapper that takes `{ client: Junjo, children }`. The dev constructs a `Junjo` instance somewhere outside the React tree (typically once at app startup) and passes it in. `@junjo/react` does not own the SDK instances lifecycle.
+
+**Rationale:**
+- The SDK can be used independently of React (Node servers, edge functions, scripts that share a module with React components). Coupling instance construction to a React component would force every non-React caller to ignore that path or duplicate it.
+- Naming the prop `client` rather than `value` follows the convention set by Stripes `<Elements stripe={stripe}>`, Apollos `<ApolloProvider client={client}>`, and React Querys `<QueryClientProvider client={qc}>`. Devs who have wired one of these before recognize the shape immediately; `value` would echo the underlying `Context.Provider` API and obscure intent.
+- A future option to accept a `JunjoConfig` (so the provider constructs the client itself) would be additive on top of `client`. Starting with the explicit instance keeps V1 surface small.
+
+**Trade:** devs see two layers (`new Junjo(...)` then `<JunjoProvider client={...}>`) instead of one. Acceptable; the trade buys reusability across non-React surfaces and matches industry-standard patterns.
+
+### `useJunjo` throws when used outside a provider rather than returning `null`
+
+**Decision:** `useJunjo()` reads from `JunjoContext` and throws `Error("useJunjo must be used inside a <JunjoProvider>")` when no provider is in scope. The hook never returns `null` or `undefined`.
+
+**Rationale:**
+- The downstream hooks that will land in Phases 7.2-7.5 (`useGroup`, `useCan`, `useMembers`, etc.) all assume a non-null `Junjo`. If `useJunjo` returned `Junjo | null`, every dependent hook would either replicate the null check or accept silent no-op behavior on misuse. Throwing once at the boundary keeps the rest of the React surface free of defensive branches.
+- Calling a hook outside its provider is a programmer error, not a runtime condition. Throwing at the call site surfaces the mistake the first time it is wired, with a stack trace pointing directly at the offending component, instead of producing a confusing "nothing happens" symptom.
+- The error message names the hook AND the provider so the fix is one search away.
+
+**Trade:** SSR / pre-render paths that mount `<JunjoProvider>` only on the client need to either render the consumer subtree client-side too or short-circuit before the hook call. Standard React pattern; no special handling required.
+
+### `JunjoContext` is module-private; only `JunjoProvider` and `useJunjo` are exported
+
+**Decision:** `JunjoContext` lives in `packages/react/src/context.ts` but is NOT re-exported from `packages/react/src/index.ts`. Consumers can only interact with it through `JunjoProvider` (write side) and `useJunjo` (read side).
+
+**Rationale:**
+- Hiding the context object preserves the freedom to change the internal shape later (wrap in another provider, switch to a multi-context pattern for SSE subscriptions, etc.) without breaking callers.
+- Devs who think they need direct context access for a custom edge case almost always actually need a new typed hook; bottling that motivation into a future PR is fine.
+
+**Trade:** a small fraction of advanced devs may want to consume the context directly (e.g., to feed it to a non-hook code path inside a class component). Acceptable; the workaround is to wrap the value in a one-off custom hook + render-prop. We have not seen the need yet.
+
+### `@junjo/react` test infra: vitest + jsdom + @testing-library/react
+
+**Decision:** the React package tests run under Vitest with `environment: "jsdom"` and use `@testing-library/react` for component / hook rendering. The vitest config (`packages/react/vitest.config.ts`) sets `esbuild.jsx: "automatic"` so `.tsx` test files transpile under the React 17+ JSX runtime that the source already uses.
+
+**Rationale:**
+- Vitest is already the test runner across `@junjo/sdk` and `@junjo/server`; staying on it preserves a single test command (`npm test`) and a single config style. No second runner to maintain.
+- jsdom is the standard browser-DOM emulator for React component tests; the alternative (`happy-dom`) is faster but has known incompatibilities with React 18 / 19 features. The throughput difference is irrelevant at our test count.
+- `@testing-library/react` (v16) is the de facto standard for React testing and the version line that supports both React 18 and React 19; it ships `renderHook` so we can test hooks in isolation without writing a custom harness.
+- Added as devDeps on `packages/react` (not the workspace root) so the SDK and server packages do not pull jsdom into their `npm install` graphs.
+
+**Trade:** the verify gate now installs jsdom + @testing-library/react on every fresh clone. Acceptable; the install completes in one digit seconds and the alternative (no React tests) defers a quality gate to morning review.
+

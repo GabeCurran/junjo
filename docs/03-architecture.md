@@ -182,6 +182,17 @@ function GuildPanel({ groupId }) {
 }
 ```
 
+#### File layout
+
+The `packages/react/src/` tree:
+
+- `index.ts` - public exports. Re-exports `JunjoProvider`, `JunjoProviderProps`, and `useJunjo`. Future hooks (`useGroup`, `useCan`, etc.) land here as they ship.
+- `context.ts` - the module-private `JunjoContext` (a `React.Context<Junjo | null>`). Created with a `null` default so `useJunjo` can detect the "no provider in scope" case and throw a descriptive error rather than silently handing back a stub.
+- `JunjoProvider.tsx` - the provider component. Takes `{ client: Junjo, children }`; renders `<JunjoContext.Provider value={client}>`. Naming the prop `client` (not `value`) matches the convention set by Stripe's `<Elements stripe={...}>` and Apollo's `<ApolloProvider client={...}>`.
+- `useJunjo.ts` - the consumer hook. Reads from `JunjoContext` and throws when used outside a provider so descendants can rely on a non-null `Junjo` without their own null check.
+
+The package depends on `@junjo/sdk` (regular dep, for the `Junjo` type) and declares `react` (^18 || ^19) as a peer dep. Tests run under Vitest with `environment: "jsdom"` and `@testing-library/react`; the vitest config (`packages/react/vitest.config.ts`) sets `esbuild.jsx: "automatic"` so `.tsx` test files transpile under the same JSX runtime as the source.
+
 ### `junjo-roblox` (Luau)
 
 Roblox model bundling a Luau module. Wraps `HttpService` and `MessagingService`. Dogfooded against the existing `mobarena-roblox` project.
