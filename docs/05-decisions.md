@@ -1562,3 +1562,50 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Dispatch-via-`dispatchEvent` is the inversion of control: the route signals "this changed" by calling the dispatcher; the dispatcher fans out. Routes do not need to know about webhooks specifically.
 
 **Trade:** webhook consumers that want "ping me on every successful API call regardless of state change" can't get that out of V1. The right knob for that is API access logs, not webhook events. Acceptable: webhooks are for state-change notifications, not request-trace fan-out.
+
+### Webhook signing scheme: HMAC-SHA256 of `<timestamp>.<body>` with `v1=` scheme prefix
+
+**Decision:** the webhook worker signs each request with HMAC-SHA256, hex-encoded, prefixed with the scheme version (`v1=`). The signed message is the timestamp string concatenated with a literal period and the JSON body bytes (`<x-junjo-timestamp>.<body>`). The signature ships in the `x-junjo-signature` header alongside `x-junjo-timestamp`, `x-junjo-event-id`, `x-junjo-event`, and `x-junjo-delivery-id`.
+
+**Rationale:**
+- Same shape as Stripe / GitHub / Slack webhooks. Devs who have integrated any of those will recognize the pattern immediately; the SDK helper Phase 5.4 ships matches the standard `verify(rawBody, headers)` signature.
+- Binding the timestamp into the HMAC defeats replay attacks: a leaked signature is only valid for the small tolerance window the receiver enforces (5 minutes in `webhooks.verify`).
+- The `v1=` prefix lets future schemes coexist (rotating the HMAC algorithm or moving to JWT-style tokens). The verifier rejects everything but `v1=` in V1.
+- HMAC-SHA256 is already in `node:crypto`; no new dependency.
+
+**Trade:** the HMAC scheme requires the server to retain the secret in recoverable form (not one-way hashed like the API-key path). The `WebhookEndpoint.hashedSecret` schema column is misnamed for that reason; Phase 5.5 renames it when it owns the dev-facing create flow that actually populates the column.
+
+### Webhook retry policy: exponential backoff up to 6 attempts; 4xx is permanent
+
+**Decision:** each `WebhookDelivery` is attempted at most 6 times. Wait between attempts: 1m, 5m, 30m, 2h, 8h. The 6th attempt is terminal regardless of outcome. A 4xx HTTP response (except 408 Request Timeout and 429 Too Many Requests) is treated as permanent failure: the delivery transitions straight to `failed` after the first attempt. A 5xx response, a 408, a 429, or a request that fails before a response arrives (network error, DNS failure, request timeout > 10s) is retriable.
+
+**Rationale:**
+- 4xx means "this request is malformed and nothing will change if you retry." Retrying wastes both sides' time. Stripe and GitHub treat 4xx the same way.
+- 408 and 429 are exceptions: they signal transient conditions (slow request, rate-limited) where a backoff retry is the right move.
+- 6 attempts spread across ~10.5 hours covers the operationally-typical "endpoint was down for a few hours and is now back" window without flooding when it stays down.
+- Retriable network failures (no HTTP response) are common at scale; retrying them gracefully covers the long tail of transient infrastructure flakes.
+
+**Trade:** a misconfigured receiver that 4xxes legitimate events permanently fails them on the first attempt; recovery requires the dev to fix the receiver and request a manual replay (Phase 5.5). Acceptable: alternative is wasting capacity on a request that has explicitly been rejected.
+
+### Webhook worker: in-process `setInterval` polling, sequential delivery, no advisory lock in V1
+
+**Decision:** the webhook worker runs as a `setInterval` inside the same Node process as the HTTP API (started by `startWebhookWorker(prisma)` from `index.ts`, stopped on SIGINT / SIGTERM). Each tick polls `WebhookDelivery` for `pending` rows whose `nextAttemptAt` has elapsed (capped at 50 per tick) and processes them sequentially. No `pg_advisory_xact_lock` is held in V1. Stops on signal handlers via the `WorkerHandle.stop()` returned to the bootstrap.
+
+**Rationale:**
+- Mirrors the `softDelete.ts` / `startHardDeleteSweeper` pattern: a single worker baked into the same image as the API. Self-hosters get the worker for free with no additional container.
+- Sequential processing inside one process trivially serializes per-endpoint and per-event ordering without an explicit Postgres lock.
+- The `pg_advisory_xact_lock` interface is the right tool when this scales to multiple worker processes; the V1 code is structured (one delivery per `deliverOne` call, with a clean function-level boundary) so the lock can be added later without restructuring.
+- `setInterval` cadence at 5 seconds means the maximum end-to-end latency for a freshly-enqueued event is the polling interval plus the HTTP call; well under the 10-second timeout budget.
+
+**Trade:** a horizontally-scaled deployment (two server processes) doubles polling load on the database and could double-deliver any event whose row state lags between processes. V1 deployments are single-process per the broader SSE-hub decision; webhooks inherit the same constraint. When that constraint lifts (Redis / advisory locks / a dedicated worker container), the worker function signatures stay stable.
+
+### Webhook worker uses an injected `WebhookFetch` for testability instead of `globalThis.fetch` directly
+
+**Decision:** `deliverOne` and `runWorkerOnce` accept an optional `fetch?: WebhookFetch` (and `now?: () => Date`) for testing. Production wires the default which wraps `globalThis.fetch`. The fake implementation in tests records calls and replays canned responses or thrown errors.
+
+**Rationale:**
+- Hitting real HTTP URLs from tests is fragile (DNS, network, port collisions); mocking via the standard injection seam matches the rest of the codebase (`PrismaClient` injection, `EventHub` injection, `WebhookFetch` is the third).
+- The `WebhookFetch` interface is a strict subset of `fetch` (no body / no headers helpers), which lets tests verify exactly what the worker emits without simulating a `Response` body.
+- Future use cases (a custom HTTP client with proxy / TLS pinning support) plug in via the same seam.
+
+**Trade:** the type alias diverges from `fetch`'s actual return shape (a full `Response`); tests must remember to return `{ ok, status }` not a `Response`. Documented in the type and in the test helper.
