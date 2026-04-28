@@ -14,7 +14,19 @@ docker run -e DATABASE_URL=postgres://... -p 8787:8787 ghcr.io/junjo/server:late
 npm run dev
 ```
 
-The Prisma schema lives at `prisma/schema.prisma`. Migrations live at `prisma/migrations/` once the first `prisma migrate dev` has been run.
+The Prisma schema lives at `prisma/schema.prisma`. Committed migrations live at `prisma/migrations/` and are applied by `npm run db:migrate` (production path) or recreated locally by `npm run db:migrate:dev` when the schema changes.
+
+### Database scripts
+
+| Script | What it does |
+|--------|--------------|
+| `npm run db:migrate` | Applies any pending committed migrations against `DATABASE_URL`. This is the production / deploy path; it never writes new migrations. |
+| `npm run db:migrate:dev` | Compares the schema to the database, generates a new migration if needed, applies it, and regenerates the Prisma client. Use this whenever you edit `prisma/schema.prisma`. |
+| `npm run db:reset` | Drops the schema, reapplies every committed migration, and skips seeding. Used by tests to start from a known-empty state. Destructive: do not point at a database with real data. |
+| `npm run prisma:format` | `prisma format` against `prisma/schema.prisma`. Also runs as part of the verify gate. |
+| `npm run prisma:generate` | One-shot regenerate of the Prisma client. Normally unnecessary because `postinstall` handles it. |
+
+The `postinstall` script runs `prisma generate` automatically after every `npm install` so the typechecker can find the generated client on a fresh clone.
 
 ### Environment variables
 

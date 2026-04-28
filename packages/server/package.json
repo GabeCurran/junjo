@@ -12,8 +12,12 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "postinstall": "prisma generate",
     "prisma:format": "prisma format",
-    "prisma:generate": "prisma generate"
+    "prisma:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
