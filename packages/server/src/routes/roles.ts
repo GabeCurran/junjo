@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
+import { permissionCache } from "../permissionCache.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
 export interface WireRole {
@@ -221,6 +222,7 @@ export function grantPermissionHandler(prisma: PrismaClient): Handler {
         },
       });
     });
+    permissionCache.invalidateGroup(role.groupId);
 
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
@@ -266,6 +268,7 @@ export function revokePermissionHandler(prisma: PrismaClient): Handler {
         },
       });
     });
+    permissionCache.invalidateGroup(role.groupId);
 
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
@@ -302,6 +305,7 @@ export function deleteRoleByIdHandler(prisma: PrismaClient): Handler {
         },
       });
     });
+    permissionCache.invalidateGroup(existing.groupId);
 
     return c.body(null, 204);
   };

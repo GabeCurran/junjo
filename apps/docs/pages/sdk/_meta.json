@@ -3,5 +3,6 @@
   "groups": "groups",
   "invitations": "invitations",
   "members": "members",
-  "roles": "roles"
+  "roles": "roles",
+  "permissions": "permissions"
 }

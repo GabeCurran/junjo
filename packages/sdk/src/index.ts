@@ -7,6 +7,8 @@ import type {
   Page,
   PermissionCheckResult,
   PermissionKey,
+  PermissionSource,
+  RoleId,
   UserId,
   WebhookSignatureHeaders,
 } from "@junjo/shared";
@@ -41,6 +43,12 @@ const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
 // Top-level client
 // =====================================================================
 
+interface WirePermissionCheckResult {
+  allowed: boolean;
+  source: PermissionSource;
+  viaRoleId?: string;
+}
+
 export class Junjo {
   readonly groups: GroupsApi;
   readonly roles: RolesApi;
@@ -48,39 +56,54 @@ export class Junjo {
   readonly invitations: InvitationsApi;
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
+  private readonly http: HttpClient;
 
   constructor(config: JunjoConfig) {
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
-    const http = new HttpClient({
+    this.http = new HttpClient({
       apiKey: config.apiKey,
       baseUrl,
       fetch: fetchImpl,
     });
     const inviteBaseUrl = (config.inviteBaseUrl ?? baseUrl).replace(/\/+$/, "");
-    this.groups = new GroupsApi(http, inviteBaseUrl);
-    this.roles = new RolesApi(http);
-    this.members = new MembersApi(http);
-    this.invitations = new InvitationsApi(http);
+    this.groups = new GroupsApi(this.http, inviteBaseUrl);
+    this.roles = new RolesApi(this.http);
+    this.members = new MembersApi(this.http);
+    this.invitations = new InvitationsApi(this.http);
     this.audit = new AuditApi();
     this.webhooks = new WebhooksApi();
   }
 
   // The hot path for any game logic: "is this user allowed to do X in
-  // this group?" Server-side cached.
-  async can(_userId: UserId, _groupId: GroupId, _permission: PermissionKey): Promise<boolean> {
-    throw NOT_IMPLEMENTED;
+  // this group?" Server-side cached. Boolean wrapper around `check`.
+  async can(userId: UserId, groupId: GroupId, permission: PermissionKey): Promise<boolean> {
+    const result = await this.check(userId, groupId, permission);
+    return result.allowed;
   }
 
   // Slightly richer than `can`: returns *why* a check passed or failed.
   // Useful for admin tooling and "you don't have permission because
   // your role X is missing key Y" UX.
   async check(
-    _userId: UserId,
-    _groupId: GroupId,
-    _permission: PermissionKey,
+    userId: UserId,
+    groupId: GroupId,
+    permission: PermissionKey,
   ): Promise<PermissionCheckResult> {
-    throw NOT_IMPLEMENTED;
+    const params = new URLSearchParams({
+      userId,
+      groupId,
+      permission,
+    });
+    const wire = await this.http.get<WirePermissionCheckResult>(
+      `/v1/permissions/check?${params.toString()}`,
+    );
+    const result: PermissionCheckResult = {
+      allowed: wire.allowed,
+      source: wire.source,
+    };
+    if (wire.viaRoleId !== undefined) result.viaRoleId = wire.viaRoleId as RoleId;
+    return result;
   }
 
   // Resolve a player session token to a Junjo user id. Calls the
@@ -152,7 +175,9 @@ export type {
   Invitation,
   JunjoEvent,
   Member,
+  PermissionCheckResult,
   PermissionKey,
+  PermissionSource,
   Role,
   UserId,
 } from "@junjo/shared";

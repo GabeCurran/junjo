@@ -1086,3 +1086,53 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - V1 is not yet released, so widening the type is safe (no existing consumers to break). The widening is "additive" in the sense that callers who relied on `setBy` being a string can handle `null` by branching.
 
 **Trade:** a strict consumer that destructures `setBy` without a null check will need to add one. Mitigation: TypeScript flags the missing check at compile time.
+
+### `PermissionCheckResult.source` taxonomy
+
+**Decision:** the four `PermissionSource` values (`role`, `override`, `default`, `none`) carry distinct meanings:
+
+- `none`: the user is not a member of the group, has no `ExternalIdentity` for this game, or is a non-active member (`left`, `kicked`, `invited`). `allowed = false`.
+- `default`: the user is an active member with no override and no role granting this permission. `allowed = false`. This is the "default state" - no rule applies, so the answer falls through to false.
+- `role`: at least one of the member's roles grants the permission. `allowed = true`. The route returns the highest-priority granting role in `viaRoleId` (priority desc, with role id desc as a tiebreaker).
+- `override`: a `MemberPermissionOverride` row exists. `allowed` mirrors `override.grant`. Override beats role.
+
+**Rationale:**
+- The four-value taxonomy was already declared on the public type. This decision pins the runtime semantics so all consumers - the dashboard, the SDK admin tooling, future webhook event payloads - can branch consistently.
+- Distinguishing `none` (not a member) from `default` (member with no rule) is useful for UX: "you can't do this because you're not in the guild" is a different message from "you can't do this because your role doesn't allow it".
+- The highest-priority-role tiebreaker is deterministic so the answer is stable across ties; it has no semantic meaning beyond "pick one and stick with it." A debugger can read the priority hierarchy from `roles.list` if they want context.
+
+**Trade:** a dev who wants to know *all* the roles that grant a permission has to call `roles.list` and filter client-side; the resolver only returns one. We could return an array later as an additive change.
+
+### Non-active members short-circuit to `none`
+
+**Decision:** the permission resolver returns `{ allowed: false, source: "none" }` for any member whose `status` is not `active` (i.e. `left`, `kicked`, or `invited`). The resolver does not consult role assignments or overrides for non-active members.
+
+**Rationale:**
+- A `kicked` or `left` user should not be able to exercise permissions, regardless of their stored role assignments. The lifecycle gate has to live somewhere; putting it at the resolver keeps `assignRole` / `overridePermission` permissive (they accept members in any status, matching the metadata / notes precedent) and centralizes the "is this member effective right now" check at the read path.
+- Matches the conventional reading of "member status": active members participate, non-active members are historical.
+- Soft-coupled with the `members.list` decision (returns rows in every status, no implicit `active` filter): the resolver enforces what the listing does not.
+
+**Trade:** a re-joining user (Phase 2.4 currently rejects this; future re-join would set status back to `active`) would automatically regain their role-derived permissions without an extra step. That is the desired behavior; status is the gate.
+
+### Permission cache: 60s TTL, in-memory, per-process, per-group invalidation
+
+**Decision:** `GET /v1/permissions/check` reads through an in-memory `PermissionCache` (singleton in `packages/server/src/permissionCache.ts`) with a 60-second TTL. The cache key is `(gameId, groupId, externalUserId, permission)`. Mutations that can change a permission outcome (role assign / remove, role permission grant / revoke, member-level override set / clear, role delete) call `permissionCache.invalidateGroup(groupId)` after their transaction commits. This nukes every cached entry for that group.
+
+**Rationale:**
+- VISION specifies "in-memory, per-process, with TTL of 60s; invalidate on role/permission change events". The implementation matches.
+- Per-group invalidation is the right granularity. A guild has at most a few hundred members; nuking ~hundreds of map entries on a role change is cheap. Per-member or per-(member,permission) invalidation would be more surgical but requires building a richer index over the cache; the value-add is small at V1's scale.
+- The cache is per-process. A horizontally-scaled cluster gets eventual consistency across instances bounded by the TTL. V1 ships single-instance (matches PokeDnD pattern); Phase-12-ish horizontal scaling can layer Redis or pubsub-based invalidation if it becomes a real concern.
+- The cache is unbounded in size (no LRU eviction). Entries expire naturally on TTL; in steady state the working set is bounded by the number of distinct `(member, permission)` pairs the dev's game queries inside any 60-second window. If a long-running process accumulates a large cache (e.g. a stress-test that probes thousands of permissions), entries still expire on read; we can layer in size-bounded eviction later if needed.
+
+**Trade:** a stale answer can persist for up to 60 seconds if a row is mutated outside the API (direct SQL, for instance). We document this in both the API and SDK docs. Within the API, the cache is consistent: mutations invalidate before they return.
+
+### `Junjo.can` and `Junjo.check` live on the top-level instance
+
+**Decision:** `can` and `check` are methods on the `Junjo` class itself (not on a sub-namespace like `junjo.permissions.check`). The two are the shipped surface from Phase 3.5; `whoami` stays a stub for Phase 6.
+
+**Rationale:**
+- The stub for both methods has lived on `Junjo` since the SDK was first scaffolded; shipping them in place is the lowest-friction option.
+- Permission checks are cross-cutting: they take a user id, a group id, and a permission key. They are not naturally a method of any one resource (it's not "check a group's permission for a user", and it's not "check a user's permission in a group" either - it's the resolution itself). Top-level matches the operation's shape better than wedging it under one of `groups`, `members`, or `roles`.
+- Matches Stripe / Supabase / Clerk SDK conventions where cross-cutting verbs (`stripe.charge`, `supabase.auth.getUser`, `clerk.verifyToken`) live at the top of the SDK rather than nested in resource namespaces.
+
+**Trade:** discoverability via IDE autocomplete is slightly weaker than a `junjo.permissions.*` namespace (a dev typing `junjo.p` does not see anything). Mitigation: the top-level methods table on the SDK index docs page calls them out, and `can` is the most obvious name for "is this allowed?".

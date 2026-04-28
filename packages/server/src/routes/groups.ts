@@ -2,6 +2,7 @@ import type { Group, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
+import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import {
   bulkInviteQuery,
@@ -1047,6 +1048,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         },
       });
     });
+    permissionCache.invalidateGroup(group.id);
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
     return c.json(serializeMember(member, userId, roleIds));
@@ -1100,6 +1102,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         },
       });
     });
+    permissionCache.invalidateGroup(group.id);
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
     return c.json(serializeMember(member, userId, roleIds));
@@ -1197,6 +1200,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       });
       return upserted;
     });
+    permissionCache.invalidateGroup(group.id);
 
     return c.json(serializeMemberPermissionOverride(result, group.id, userId));
   });
@@ -1259,6 +1263,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         },
       });
     });
+    permissionCache.invalidateGroup(group.id);
 
     return c.body(null, 204);
   });

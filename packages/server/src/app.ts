@@ -11,6 +11,7 @@ import {
   getInvitationByCodeHandler,
 } from "./routes/invitations.js";
 import { getMemberByIdHandler, listMembersForUserHandler } from "./routes/members.js";
+import { checkPermissionHandler } from "./routes/permissions.js";
 import {
   deleteRoleByIdHandler,
   getRoleByIdHandler,
@@ -63,6 +64,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.delete("/roles/:id", deleteRoleByIdHandler(prisma));
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma));
+  v1.get("/permissions/check", checkPermissionHandler(prisma));
   app.route("/v1", v1);
 
   return app;
