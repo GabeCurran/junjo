@@ -1,5 +1,6 @@
 {
   "index": "Introduction",
   "sdk": "SDK",
-  "api": "API"
+  "api": "API",
+  "auth": "Auth"
 }

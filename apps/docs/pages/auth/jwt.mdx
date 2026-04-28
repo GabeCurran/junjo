@@ -1,0 +1,106 @@
+# jwtAdapter
+
+`jwtAdapter` is the built-in `AuthAdapter` for verifying JSON Web Tokens. Use it when your auth provider issues JWTs that you want Junjo to validate before resolving a user id (most cloud auth providers, custom auth systems, server-issued session tokens).
+
+The adapter wraps the `jose` library and validates signature, expiration, not-before, issuer, and audience claims, then reads the user id from the configured claim (defaults to `sub`).
+
+## Install
+
+`jose` is a runtime dependency of `@junjo/sdk`; you do not need to install it separately.
+
+## Basic usage
+
+```ts
+import { Junjo } from "@junjo/sdk";
+import { jwtAdapter } from "@junjo/sdk/adapters";
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  authAdapter: jwtAdapter({
+    key: process.env.JWT_SHARED_SECRET!,
+    algorithm: "HS256",
+  }),
+});
+```
+
+## Options
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `key` | yes | For `HS256`, the UTF-8 shared secret. For `RS256` and `ES256`, a PEM-encoded SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs are not supported in V1; rotate keys by deploying a new adapter. |
+| `algorithm` | yes | One of `"HS256"`, `"RS256"`, `"ES256"`. The adapter rejects tokens signed with any other algorithm, including the (insecure) `none` algorithm. |
+| `userIdClaim` | no | The JWT claim to read the user id from. Defaults to `"sub"`. Set this to `"user_id"`, `"uid"`, or whatever your provider uses if it is not the standard `sub`. |
+| `issuer` | no | When set, the JWT's `iss` claim must equal this value. When omitted, `iss` is not checked. |
+| `audience` | no | When set, the JWT's `aud` claim must include this value. Accepts a single string or an array (the JWT's `aud` itself can also be an array; jose handles both). |
+| `clockToleranceSeconds` | no | Maximum allowed clock skew between the JWT's `nbf`/`exp` and the current time, in seconds. Defaults to `0` (strict). |
+
+## Algorithm selection
+
+| Algorithm | When to use |
+|-----------|-------------|
+| `HS256` | The same secret is shared between the signer (your auth service) and the verifier (your Junjo-using server). Both sides hold a symmetric secret. Simplest setup, but compromise of either side reveals the signing key. |
+| `RS256` | The signer holds a private RSA key; verifiers hold the public key. Common for off-the-shelf auth providers (Auth0, Cognito, Keycloak). Public-key rotation is straightforward. |
+| `ES256` | Same as `RS256` but with a P-256 EC keypair. Smaller signatures, faster verification, recommended for new deployments. |
+
+## Failure modes
+
+`verifyToken` returns `null` for any verification failure. None of these cases throw, so the calling code can treat `null` as "session not authorized":
+
+- token is missing, empty, or not a JWS three-segment string
+- signature is invalid (wrong key, wrong algorithm, tampered token)
+- `exp` is in the past (modulo `clockToleranceSeconds`)
+- `nbf` is in the future (modulo `clockToleranceSeconds`)
+- `iss` does not match the configured `issuer` (when set)
+- `aud` does not include the configured `audience` (when set)
+- the configured user-id claim is missing, not a string, or empty
+
+The adapter throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable: an empty `key`, an unsupported `algorithm`, or a malformed PEM block. Configuration errors should fail loud at startup, not at runtime.
+
+## Custom claims
+
+If your provider puts the user id in a non-standard claim:
+
+```ts
+jwtAdapter({
+  key: PUBLIC_KEY_PEM,
+  algorithm: "RS256",
+  userIdClaim: "user_id",
+});
+```
+
+The adapter reads exactly that claim. The standard `sub` claim is ignored if `userIdClaim` is overridden.
+
+## Issuer + audience
+
+Production JWT verification almost always pins `iss` and `aud`:
+
+```ts
+jwtAdapter({
+  key: PUBLIC_KEY_PEM,
+  algorithm: "RS256",
+  issuer: "https://auth.example.com/",
+  audience: "junjo-backend",
+});
+```
+
+Setting `issuer` makes the `iss` claim required. Setting `audience` makes the `aud` claim required, and the JWT's `aud` (which can itself be a string or an array) must contain the configured value.
+
+## Clock tolerance
+
+JWT issuers and verifiers can drift by a second or two; tolerate it:
+
+```ts
+jwtAdapter({
+  key: SECRET,
+  algorithm: "HS256",
+  clockToleranceSeconds: 5,
+});
+```
+
+The default is strict (`0`). Tighten this only if you control both clocks; widen it cautiously since a wider window enlarges the replay surface for a stolen-but-expired token.
+
+## Security notes
+
+- **The adapter pins the algorithm.** A token signed with a different algorithm than the configured one is rejected, even if the signing key would technically validate it. This avoids the well-known "alg=none" and "RS256-as-HS256" attacks.
+- **JWKS endpoints are not supported in V1.** Rotate keys by deploying a new adapter with the new public key. If you need JWKS support, build a small wrapper that fetches the JWKS, picks the matching key by `kid`, and constructs a `jwtAdapter` per-request - or wait for the V2 helper.
+- **`HS256` shares the signing key with verifiers.** Anyone holding the secret can issue valid tokens. Prefer `RS256` or `ES256` for any deployment where the secret would have to live in multiple machines.

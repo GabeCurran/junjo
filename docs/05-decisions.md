@@ -1725,3 +1725,56 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The `WebhooksApi` constructor changing from `()` to `(http: HttpClient)` is a breaking change to anyone instantiating it directly; in practice, the only instantiation site is the `Junjo` constructor, so the impact is internal.
 
 **Trade:** sub-namespacing on existing classes is a less common pattern than promoting siblings to the top level. We accept the inconsistency for the namespace ergonomics.
+
+### Phase 6.1 jwtAdapter wraps `jose` as a runtime dependency of `@junjo/sdk`
+
+**Decision:** the `jwtAdapter(opts)` implementation lives in `packages/sdk/src/adapters/jwt.ts` and uses `jose` (added as a regular dependency in `packages/sdk/package.json`, version `^6.2.3`). The adapter supports HMAC-SHA256 (`HS256`) plus the two asymmetric algorithms (`RS256`, `ES256`); for the asymmetric paths, the `key` option is a PEM-encoded SPKI public key. Configuration errors (empty key, unsupported algorithm, malformed PEM) throw `JunjoError({ code: "invalid_config" })`; legitimate verification failures (bad signature, expired, wrong `iss`/`aud`, missing claim) return `null` so the caller can branch uniformly on "session not authorized."
+
+**Rationale:**
+- VISION explicitly specifies `jose` as the JWT library for Phase 6.1 ("validates JWTs using `jose` (small, standards-compliant). Add as dep."). It is a pure-ESM library that runs identically in Node 20+ and modern browsers via Web Crypto, which matches the runtime portability story the rest of the SDK already commits to (see iter 027 / 031 decisions on Web Crypto over `node:crypto`). Hand-rolling JWT verification across three algorithms with claim validation is a security-sensitive path; "let `jose` do it" is the right call.
+- `jose` ships a tiny core (~13 KB minified for the JWT verify subset) with zero transitive deps. Tree-shaking lets browser bundles drop the unused JWS / JWE / JWK helpers.
+- Rather than installing `jose` as a peer dependency, we install it as a regular dependency: every consumer who imports `@junjo/sdk/adapters` paths through the JWT adapter today, and a peer dep would force every dev to install `jose` themselves for a single one-line import. The Clerk and Supabase adapters (Phase 6.2 / 6.3) WILL be peer deps because their packages are large and their use is opt-in.
+
+**Trade:** the SDK package now installs `jose` even for consumers who only use Junjo for groups/permissions and never instantiate an auth adapter. The cost is small (~80 KB unminified) and the alternative (peer dep) trades one annoyance for another (devs forget to install it, the import fails at runtime). If the install size becomes a concern, the JWT adapter can move behind a `?optional` peer dep later, but that needs an SDK release with a deprecation notice.
+
+### jwtAdapter pins the verifying algorithm
+
+**Decision:** `jwtAdapter(opts)` requires `algorithm` (one of `"HS256"`, `"RS256"`, `"ES256"`); the verifier's `jwtVerify` call passes `algorithms: [opts.algorithm]` so a JWT signed with any other algorithm is rejected even if the key would technically validate it.
+
+**Rationale:**
+- The "alg=none" attack and the "RS256-as-HS256" key-confusion attack are both well-known JWT footguns when the verifier accepts the token's self-declared algorithm. Pinning the algorithm at adapter-construction time is the standard defense; it is one of the core selling points of using `jose` over hand-rolling.
+- Devs who legitimately rotate algorithms (e.g., migrating from RS256 to ES256) deploy two adapters during the transition and try them in sequence (caller-side; not a concern for the SDK).
+
+**Trade:** an issuer that legitimately mints both `HS256` and `RS256` tokens for the same audience requires two `jwtAdapter` instances on the receiving side. Acceptable; the alternative (allowing every algorithm the key supports) is the bug pattern this decision exists to prevent.
+
+### jwtAdapter returns `null` on every verification failure; throws only on misconfiguration
+
+**Decision:** `verifyToken(token)` returns `null` for: missing/empty/non-string tokens, malformed three-segment JWS, signature mismatch, expired tokens, future `nbf`, wrong `iss`, wrong/missing `aud`, missing or non-string user-id claim. The adapter throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable: empty `key`, unsupported `algorithm`, malformed PEM block.
+
+**Rationale:**
+- The `AuthAdapter` interface is `verifyToken(token): Promise<{ userId } | null>`; the contract is "valid token -> userId, invalid -> null." Throwing on every parse failure would force every caller to wrap calls in try/catch and re-translate the error to the same null-vs-userId boolean.
+- Configuration errors are a different category. They mean the deployed code cannot work for ANY token, ever; surfacing them at call time as `JunjoError("invalid_config")` makes them loud and correlated to a specific adapter instance.
+- The PEM-import error path is lazy (deferred to first `verifyToken` call) so the constructor stays synchronous. The promise is cached so a misconfigured adapter throws on every call rather than silently degrading.
+
+**Trade:** an SDK consumer who wants to surface "the token was expired" vs "the token signature was wrong" to end users cannot get that distinction from `verifyToken`'s return value alone. We accept that gap because the auth-adapter pathway feeds into Junjo's permission resolver, which only cares about "is this a valid user id." If a future use case needs verbose-failure-mode reporting, a second method (e.g., `inspectToken`) can be added additively without breaking the interface.
+
+### jwtAdapter takes PEM SPKI for asymmetric algorithms; no JWKS endpoint support in V1
+
+**Decision:** for `RS256` and `ES256`, the `key` option must be a PEM-encoded SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs (the `jose.createRemoteJWKSet` pathway) are NOT supported in V1; key rotation requires deploying a new adapter instance with the new public key.
+
+**Rationale:**
+- A surprisingly large fraction of JWT issuers in the small-game-developer niche either issue HS256 (shared secret) or hand out a static public key in their dashboard. JWKS rotation is more of an enterprise-auth concern and rarely matters for the V1 demographic.
+- Adding JWKS support means adding a network fetch with caching, retry, and TTL semantics into the adapter constructor. That is a meaningful surface area expansion that we punt to Phase 6.4 (or whenever a real user asks for it).
+- Devs who NEED JWKS support can build a thin wrapper: fetch the JWKS, pick the matching key by `kid`, construct a `jwtAdapter` per-request. Documented in the adapter's docs page.
+
+**Trade:** providers that rotate signing keys frequently (Auth0 with rotating keysets, AWS Cognito) require a redeploy on every rotation. Acceptable for V1; the V2 helper or a second `jwtAdapterWithJwks` factory can land additively.
+
+### `auth/` is a new top-level docs section; only `jwt.mdx` ships in this iteration
+
+**Decision:** new `apps/docs/pages/auth/` directory with a per-adapter `*.mdx` page. `_meta.json` lists `jwt` for now; `clerk.mdx` and `supabase.mdx` will land alongside Phase 6.2 and 6.3. The top-level `pages/_meta.json` adds `"auth": "Auth"` between `api` and the not-yet-existing webhooks section.
+
+**Rationale:**
+- VISION's documentation discipline table explicitly maps "new auth adapter" to `apps/docs/pages/auth/<adapter>.mdx`. Following the prescribed shape.
+- A separate `auth/` section (not a sub-page of SDK) is the right semantic placement: auth adapters are framework-shaped helpers that bridge the dev's existing identity provider to Junjo's `AuthAdapter` interface. They are not SDK methods on the `Junjo` instance.
+
+**Trade:** none. The structure parallels how Stripe, Clerk, and Supabase document framework integrations (separate top-level section, per-framework page).
