@@ -1,4 +1,4 @@
-# 01 — Product
+# 01 - Product
 
 ## One-liner
 
@@ -28,7 +28,7 @@ The competitive landscape:
 | Pragma | Full game backend, B2B AAA | Enterprise-only, not for indies |
 | Roblox `DataStoreService` | Native key-value storage | No real-time, no cross-server queries, no admin UI |
 
-**The wedge:** none of these address game-design-level concepts like guilds, parties, hierarchical ranks, role-based permissions, group-to-group relationships, and audit logs as first-class primitives. Every dev re-implements them from scratch. Junjo provides exactly that layer — and nothing else.
+**The wedge:** none of these address game-design-level concepts like guilds, parties, hierarchical ranks, role-based permissions, group-to-group relationships, and audit logs as first-class primitives. Every dev re-implements them from scratch. Junjo provides exactly that layer - and nothing else.
 
 ## The honest "why us"
 

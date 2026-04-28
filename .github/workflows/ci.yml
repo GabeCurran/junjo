@@ -21,6 +21,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Style check (no em-dashes, no emoji)
+        run: npm run check:style
+
       - name: Lint + format check
         run: npx biome check .
 

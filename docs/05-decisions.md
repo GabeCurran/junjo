@@ -1,4 +1,4 @@
-# 05 — Decisions log
+# 05 - Decisions log
 
 Running list of every meaningful decision made during scoping, with rationale. Add entries as new decisions are made; don't edit old ones (mark as "superseded by …" if a decision is reversed).
 
@@ -11,15 +11,15 @@ Running list of every meaningful decision made during scoping, with rationale. A
 **Decision:** the product is named **Junjo** (Japanese 順序, "order/sequence").
 
 **Considered alternatives:**
-- Lubeo (Latin "I command") — harder to pronounce, less memorable
-- Jubeo (Latin variant) — same problem
-- Aufgabe (German "task") — too consonant-heavy for international devs
+- Lubeo (Latin "I command") - harder to pronounce, less memorable
+- Jubeo (Latin variant) - same problem
+- Aufgabe (German "task") - too consonant-heavy for international devs
 
 **Why Junjo wins:** short, catchy, semantically maps to "proper order" which is what role/permission systems enforce. Slightly Japanese-loanword-flavored which fits the gaming aesthetic.
 
 **Caveats:**
-- Existing dev at `junjo.dev` is unrelated — different person, no collaboration. Worth noting for SEO confusion risk.
-- npm package `junjo` is taken — we'll use scoped packages: `@junjo/sdk`, `@junjo/react`, `@junjo/roblox`. Need to register the `@junjo` org on npm, or fall back to `@junjo-dev`.
+- Existing dev at `junjo.dev` is unrelated - different person, no collaboration. Worth noting for SEO confusion risk.
+- npm package `junjo` is taken - we'll use scoped packages: `@junjo/sdk`, `@junjo/react`, `@junjo/roblox`. Need to register the `@junjo` org on npm, or fall back to `@junjo-dev`.
 - Domain: `junjo.io` is available. Register before announcing anywhere.
 
 ### Backend stack: Node + TypeScript + Postgres + Prisma
@@ -27,10 +27,10 @@ Running list of every meaningful decision made during scoping, with rationale. A
 **Decision:** Node + TypeScript + Postgres + Prisma. Same as PokeDnD.
 
 **Rationale:**
-- Gabe's strongest stack — fastest iteration
+- Gabe's strongest stack - fastest iteration
 - PokeDnD (547 commits, real-time multiplayer, complex domain) proves this stack handles the workload
 - Postgres + Prisma migration story is mature and well-understood
-- When/if revenue justifies it, hot-path Go rewrite is an option — premature now
+- When/if revenue justifies it, hot-path Go rewrite is an option - premature now
 
 ### Backend framework: TBD (Hono vs Fastify)
 
@@ -63,12 +63,12 @@ Running list of every meaningful decision made during scoping, with rationale. A
 
 ### V1 SDKs: TypeScript + Roblox/Luau
 
-**Decision:** ship two SDKs at V1 launch — `@junjo/sdk` (TS, Node + browser) and `junjo-roblox` (Luau).
+**Decision:** ship two SDKs at V1 launch - `@junjo/sdk` (TS, Node + browser) and `junjo-roblox` (Luau).
 
 **Deferred:**
-- Unity / C# (V2) — Unity Asset Store packaging is real work; wait for V1 traction signal
-- Godot / GDScript (V3) — smaller market
-- Unreal / C++ — never unless validated
+- Unity / C# (V2) - Unity Asset Store packaging is real work; wait for V1 traction signal
+- Godot / GDScript (V3) - smaller market
+- Unreal / C++ - never unless validated
 
 **Why TS + Roblox first:**
 - TS = Gabe's strongest language + biggest indie web audience (Three.js, Phaser)
@@ -95,7 +95,7 @@ Running list of every meaningful decision made during scoping, with rationale. A
 **Why all-at-once:** Gabe wants this to be a polished passion project, not a scrappy MVP. Accepts the longer time-to-launch.
 
 **Risk:** scope creep + never shipping is the killer of 80% of side projects. **Mitigation:**
-- Strict feature freeze 1 month before launch — no new features after that
+- Strict feature freeze 1 month before launch - no new features after that
 - Real internal dogfooding via mobarena-roblox during development
 - Use Revelations as a second dogfood target if it makes sense (TS SDK)
 - Monthly progress check-in to prevent indefinite drift
@@ -125,7 +125,7 @@ Running list of every meaningful decision made during scoping, with rationale. A
 - Vitest for tests in every package
 - Biome for lint + format (replaces ESLint + Prettier)
 - GitHub Actions for CI
-- `release-please` for versioning (or Changesets — TBD)
+- `release-please` for versioning (or Changesets - TBD)
 
 ### Validation strategy: skipped
 
@@ -181,7 +181,7 @@ Running list of every meaningful decision made during scoping, with rationale. A
 
 **Decision:** `packages/sdk` (publishes `@junjo/sdk`), `packages/react` (publishes `@junjo/react`), `packages/sdk-roblox` (Roblox marketplace + GitHub release; not on npm).
 
-**Why:** TS is the canonical SDK, so no language suffix. Same pattern as Stripe (`stripe` on npm = the Node/TS SDK; `stripe-go`, `stripe-python` get explicit suffixes). Roblox is the outlier because it isn't on npm — different distribution channel justifies the suffix.
+**Why:** TS is the canonical SDK, so no language suffix. Same pattern as Stripe (`stripe` on npm = the Node/TS SDK; `stripe-go`, `stripe-python` get explicit suffixes). Roblox is the outlier because it isn't on npm - different distribution channel justifies the suffix.
 
 **Supersedes:** the earlier `packages/sdk-ts` reference in `README.md`. README updated this date.
 

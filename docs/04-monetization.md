@@ -1,20 +1,20 @@
-# 04 — Monetization
+# 04 - Monetization
 
 ## Model: open-core
 
 The dominant pattern for dev tools at this layer (Supabase, Sentry, PostHog, Nakama, Colyseus all do versions of it):
 
-- **Free OSS SDK + Docker server image** — MIT license. Devs can `npm install @junjo/sdk` and self-host the server against any Postgres they own.
-- **Paid managed cloud** — we host the server, the database, the dashboards. Devs get free tier + paid tiers.
+- **Free OSS SDK + Docker server image** - MIT license. Devs can `npm install @junjo/sdk` and self-host the server against any Postgres they own.
+- **Paid managed cloud** - we host the server, the database, the dashboards. Devs get free tier + paid tiers.
 
 ## Why devs will pay for cloud even though OSS exists
 
 - They don't want to run, monitor, scale, or back up another Postgres
 - GDPR compliance, audit log retention, SOC2 (eventually) handled by us
-- Cross-game shared identity layer (only available in cloud — see [docs/02-scope.md](./02-scope.md))
+- Cross-game shared identity layer (only available in cloud - see [docs/02-scope.md](./02-scope.md))
 - Admin + analytics dashboards (cloud only)
 - Premium SDK features (advanced webhooks, bulk operations, scheduled events)
-- Support — fast bug fixes, integration help
+- Support - fast bug fixes, integration help
 
 ## Pricing tiers (proposed; tune after launch)
 
@@ -26,7 +26,7 @@ The dominant pattern for dev tools at this layer (Supabase, Sentry, PostHog, Nak
 | **Pro** | $500/mo | 10 games · 100K MAM · cross-game identity · audit log retention 1yr · Slack/Discord integration · 24h support |
 | **Enterprise** | Custom | Unlimited · dedicated infra · SLA · invoicing · SOC2 reports |
 
-These are starting points — adjust based on actual cost-to-serve and competitor pricing once we have data.
+These are starting points - adjust based on actual cost-to-serve and competitor pricing once we have data.
 
 ## Cost-to-serve math
 
@@ -39,16 +39,16 @@ Rough estimate at scale:
 - Supabase free tier handles thousands of free-tier games
 - ~$25/mo Supabase Pro handles hundreds of paying customers' games
 - ~$200/mo Supabase Pro at low thousands of paying customers
-- SSE connections are cheap (long-lived but low bandwidth — most events are <1KB)
+- SSE connections are cheap (long-lived but low bandwidth - most events are <1KB)
 - Webhook retries: ~0 cost if we use Postgres-backed queue (no Redis needed)
 
 Target gross margin: 80%+ (industry standard for SaaS).
 
 ## Realistic revenue expectations
 
-**Year 1 (months 1-12):** $0-500/mo. Most months $0. The first paying customer probably comes ~6-9 months after launch. Gabe needs to be OK with this — it's a passion project that pays in skill-building and portfolio value first, revenue second.
+**Year 1 (months 1-12):** $0-500/mo. Most months $0. The first paying customer probably comes ~6-9 months after launch. Gabe needs to be OK with this - it's a passion project that pays in skill-building and portfolio value first, revenue second.
 
-**Year 2:** $500-5K/mo if positioning lands and Gabe ships consistently. This requires real marketing — Twitter presence, dev-tool blog posts, conference talks at gamedev meetups, sponsored episodes of game-dev podcasts, etc.
+**Year 2:** $500-5K/mo if positioning lands and Gabe ships consistently. This requires real marketing - Twitter presence, dev-tool blog posts, conference talks at gamedev meetups, sponsored episodes of game-dev podcasts, etc.
 
 **Year 3+:** depends entirely on whether Junjo finds 50+ paying customers. If it does, $5-25K/mo is plausible. If it doesn't, it stays a portfolio piece and a "this exists if you ever need it" tool.
 
@@ -56,7 +56,7 @@ Target gross margin: 80%+ (industry standard for SaaS).
 
 - **Pay-per-API-call billing.** Hated by indie devs. Predictable monthly tiers with usage caps work better.
 - **Per-CCU pricing.** Photon does this; it punishes devs whose games go viral. We charge by MAM (monthly active members) instead, which scales more predictably.
-- **Forced cloud-only model.** Self-host has to be a real, supported option — even if 90% of revenue comes from cloud. The OSS path is what builds the community.
+- **Forced cloud-only model.** Self-host has to be a real, supported option - even if 90% of revenue comes from cloud. The OSS path is what builds the community.
 - **Dual-license / commercial-license games.** Adds legal complexity, scares off indie devs, hard to enforce. MIT for everything OSS.
 
 ## Conflict-of-interest with future employer

@@ -1,4 +1,4 @@
-# 02 — Scope
+# 02 - Scope
 
 ## V1 (everything below ships before public launch)
 
@@ -6,10 +6,10 @@ Gabe explicitly chose **all-at-once** release model over phased shipping. Estima
 
 ### Core entities
 
-- **Group** — generic noun in the API. Devs set a `kind` string ("guild" / "clan" / "faction" / "party" / "crew" / etc.) for their UI display + analytics filtering. The SDK API never says the word "guild" anywhere.
-- **Member** — a user's relationship to a group. One user can be in many groups. Per-membership custom JSON metadata. Member notes (private "officer notes" + public "member notes").
-- **Role** — defined per group by the dev. Multi-role per member. Role hierarchy via a priority integer (higher = more authority). Default role on join. Optional role color for UI.
-- **Permission** — dev-defined keys per game ("invite_member", "edit_treasury", "claim_territory", etc.). Permissions assigned to roles. Member-level overrides supported (grant/revoke for a specific member regardless of their roles).
+- **Group** - generic noun in the API. Devs set a `kind` string ("guild" / "clan" / "faction" / "party" / "crew" / etc.) for their UI display + analytics filtering. The SDK API never says the word "guild" anywhere.
+- **Member** - a user's relationship to a group. One user can be in many groups. Per-membership custom JSON metadata. Member notes (private "officer notes" + public "member notes").
+- **Role** - defined per group by the dev. Multi-role per member. Role hierarchy via a priority integer (higher = more authority). Default role on join. Optional role color for UI.
+- **Permission** - dev-defined keys per game ("invite_member", "edit_treasury", "claim_territory", etc.). Permissions assigned to roles. Member-level overrides supported (grant/revoke for a specific member regardless of their roles).
 
 ### Group features
 
@@ -62,7 +62,7 @@ Gabe explicitly chose **all-at-once** release model over phased shipping. Estima
 - Inspect any group + members + roles
 - Manual permission overrides for support cases
 - Audit log viewer
-- Multi-game support — one dashboard, many games
+- Multi-game support - one dashboard, many games
 
 ### Analytics dashboard (cloud only)
 
@@ -105,7 +105,7 @@ These get punted to other tools or BYO:
 - **Authentication itself.** BYO. The whole point is composing with the dev's existing identity provider.
 - **Matchmaking.** Different product entirely.
 - **Leaderboards / achievements.** Could be V3 if real users ask. Don't build speculatively.
-- **Game-specific systems** — territory blocks, citadel buildings, faction power, guild XP. These belong in the dev's code; Junjo provides the structural primitives only.
+- **Game-specific systems** - territory blocks, citadel buildings, faction power, guild XP. These belong in the dev's code; Junjo provides the structural primitives only.
 
 ## Inspirations
 

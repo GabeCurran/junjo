@@ -1,8 +1,8 @@
-# 03 — Architecture
+# 03 - Architecture
 
 ## Pattern: API-first, thin native SDKs
 
-Same shape as Stripe, Auth0, Clerk, Supabase, Pusher, Twilio. The HTTP API is the source of truth. Every SDK is a thin client. Anyone can use raw HTTP if no SDK exists yet — that's the universal escape hatch.
+Same shape as Stripe, Auth0, Clerk, Supabase, Pusher, Twilio. The HTTP API is the source of truth. Every SDK is a thin client. Anyone can use raw HTTP if no SDK exists yet - that's the universal escape hatch.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -28,7 +28,7 @@ Same shape as Stripe, Auth0, Clerk, Supabase, Pusher, Twilio. The HTTP API is th
 ## Backend
 
 - **Language:** TypeScript on Node (matches Gabe's strongest stack; PokeDnD pattern reused)
-- **Framework:** Hono or Fastify (TBD — both lightweight and fast)
+- **Framework:** Hono or Fastify (TBD - both lightweight and fast)
 - **Database:** Postgres only. Cloud uses Supabase or Neon. Self-host accepts `DATABASE_URL`.
 - **ORM:** Prisma (matches PokeDnD pattern; schema-first; great DX for migrations)
 - **Real-time:** Server-Sent Events. SSE hubs in `globalThis` for in-process broadcast. Cloud deploys as single-instance for V1 (same shape as PokeDnD on Railway).
@@ -132,7 +132,7 @@ local allowed = junjo:can(player.UserId, group.id, "invite_member")
 
 ## Auth adapter pattern
 
-The single most important design decision. Auth is BYO — Junjo never replaces it.
+The single most important design decision. Auth is BYO - Junjo never replaces it.
 
 ```ts
 interface AuthAdapter {
@@ -151,7 +151,7 @@ const myAdapter: AuthAdapter = {
 };
 ```
 
-The dev's existing identity provider remains the source of truth for users. Junjo just accepts whatever `userId` the adapter returns and treats it as an opaque string. No passwords, no email-verification flows, no OAuth — those all stay in the dev's auth provider.
+The dev's existing identity provider remains the source of truth for users. Junjo just accepts whatever `userId` the adapter returns and treats it as an opaque string. No passwords, no email-verification flows, no OAuth - those all stay in the dev's auth provider.
 
 This is *the* lesson from Gabe's Ory experience: do one thing well, compose with everything else.
 
@@ -179,17 +179,17 @@ junjo/
 │   │   │   └── schema.prisma
 │   │   ├── package.json
 │   │   └── Dockerfile
-│   ├── sdk/                  (@junjo/sdk — TS client)
+│   ├── sdk/                  (@junjo/sdk - TS client)
 │   │   ├── src/
 │   │   ├── package.json
 │   │   └── tsconfig.json
-│   ├── react/                (@junjo/react — React hooks)
+│   ├── react/                (@junjo/react - React hooks)
 │   │   ├── src/
 │   │   └── package.json
 │   ├── sdk-roblox/           (Luau client; published to Roblox marketplace + GitHub)
 │   │   ├── src/
 │   │   └── README.md
-│   └── shared/               (@junjo/shared — types shared between server + sdk)
+│   └── shared/               (@junjo/shared - types shared between server + sdk)
 │       ├── src/
 │       └── package.json
 ├── apps/
@@ -197,7 +197,7 @@ junjo/
 │   │   ├── app/
 │   │   ├── components/
 │   │   └── package.json
-│   └── docs/                 (docs site — Docusaurus or Nextra)
+│   └── docs/                 (docs site - Docusaurus or Nextra)
 ├── examples/
 │   ├── webgame-threejs/      (example: Three.js browser game using Junjo)
 │   └── roblox-mobarena/      (example: linked or copied from mobarena-roblox)

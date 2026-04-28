@@ -11,6 +11,7 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
+    "check:style": "node scripts/check-style.mjs",
     "typecheck": "npm run build -w @junjo/shared && npm run typecheck --workspaces --if-present",
     "changeset": "changeset",
     "version-packages": "changeset version",
