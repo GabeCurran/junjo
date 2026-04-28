@@ -1778,3 +1778,57 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - A separate `auth/` section (not a sub-page of SDK) is the right semantic placement: auth adapters are framework-shaped helpers that bridge the dev's existing identity provider to Junjo's `AuthAdapter` interface. They are not SDK methods on the `Junjo` instance.
 
 **Trade:** none. The structure parallels how Stripe, Clerk, and Supabase document framework integrations (separate top-level section, per-framework page).
+
+### clerkAdapter takes a function-shaped `verifyToken` option, not the Clerk client
+
+**Decision:** `clerkAdapter(opts)` takes `{ verifyToken: (token: string) => Promise<payload>, userIdClaim?: string }`. The dev wires `@clerk/backend`'s standalone `verifyToken` into `opts.verifyToken`, pre-bound to their secret key (and optionally their audience / authorized parties). The adapter does not import `@clerk/backend` directly; the package stays a peer dep, not a regular dep.
+
+**Rationale:**
+- `@clerk/backend` v1+ exposes `verifyToken` as a standalone function, not as a method on a client object. Modeling the adapter input as "the Clerk client with a `.verifyToken` method" (the original stub's `ClerkLike` shape) didn't match the real package's API surface.
+- A function-shaped option lets the dev decide which Clerk-specific options to bind (audience, authorized parties, JWT key from a custom key resolver). Re-exposing all of them on the adapter would lock Junjo to one specific `@clerk/backend` version.
+- VISION explicitly says "Wraps `@clerk/backend` (peer dep, not direct dep, so users without Clerk don't pay the install cost)." The dev installs `@clerk/backend` themselves; the adapter is six lines of glue code in their app.
+
+**Trade:** the dev writes two extra lines of integration code (the wrapping function literal). Acceptable; it is the same shape every Clerk integration uses with Express, Next.js middleware, etc.
+
+### clerkAdapter throw-vs-null contract matches jwtAdapter
+
+**Decision:** `clerkAdapter`'s `verifyToken` returns `null` for every legitimate verification failure: empty/non-string token; the wrapped Clerk verifier throws (any error); the wrapped verifier resolves with `null` or `undefined`; the configured user-id claim is missing, non-string, or empty. It throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable (`opts.verifyToken` is not a function).
+
+**Rationale:**
+- Mirrors `jwtAdapter` (Phase 6.1 decision) so the throw-vs-null contract is consistent across every built-in adapter. Devs can safely uniformly treat `null` as "session not authorized" without per-adapter branching.
+- Catching arbitrary errors from the wrapped verifier is a deliberate trade. Network errors against Clerk's JWKS endpoint, programmer errors in the wrapper, and "token signature mismatch" all collapse to `null` here. Documented in the failure-mode section of `apps/docs/pages/auth/clerk.mdx`. The alternative (re-throwing programmer errors) would force every caller to wrap calls in try/catch, which defeats the purpose of the adapter contract.
+- Logging hooks for the swallowed errors are deferred to V2 (not in scope; would require an opt-in `onError` callback on the options bag).
+
+**Trade:** a programmer error inside the user's `verifyToken` wrapper (e.g., a typo in their secret key env var) silently appears as "user not authenticated" rather than crashing on first call. The dev sees the symptom (no users authenticate) before they see the cause. We accept this; the alternative is leaking stack traces from a function we don't own.
+
+### clerkAdapter exposes `userIdClaim` for parity with jwtAdapter
+
+**Decision:** the adapter accepts an optional `userIdClaim` (defaults to `"sub"`). Devs using a custom Clerk session-token template that puts an internal id under a different claim (e.g., `app_user_id`) can override the read path without writing a custom adapter.
+
+**Rationale:**
+- Clerk's session templates let you forward arbitrary claims into the JWT; many production apps use them to embed an internal database id alongside Clerk's `user_2abc...` id.
+- Parity with `jwtAdapter`'s `userIdClaim` keeps the adapter mental model uniform. A dev who has used `jwtAdapter` will reach for the same option name on `clerkAdapter` and find it.
+- The cost is one line of indirection (`payload[userIdClaim]` instead of `payload.sub`); zero runtime cost in the default path.
+
+**Trade:** none meaningful. The default behavior is unchanged from "read `sub`."
+
+### clerkAdapter does not surface Clerk's audience / authorizedParties options
+
+**Decision:** Clerk-specific verification options (`audience`, `authorizedParties`, custom JWT key, etc.) are configured on the `verifyToken` wrapper that the dev passes in, not on the adapter's options bag. The adapter only sees the resolved payload.
+
+**Rationale:**
+- These options live in `@clerk/backend`'s API surface and evolve across major versions. Re-exposing them on the adapter would either pin Junjo to one Clerk version or churn the adapter every release.
+- The dev already controls the wrapper function; binding their own audience there is the natural place. The doc page makes this explicit with a code example.
+- Keeps the adapter API minimal and forward-compatible.
+
+**Trade:** the adapter cannot, on its own, enforce that the dev configured an audience. A misconfigured wrapper (e.g., omitting `audience` when their auth setup requires it) silently passes verification. Acceptable; this same trade exists with any wrapped library, and the cost of re-exposing the full Clerk options surface in the adapter is high.
+
+### `apps/docs/pages/auth/_meta.json` adds `clerk` after `jwt`
+
+**Decision:** the `auth/` section's nav order is `jwt` then `clerk`. Supabase will land alongside Phase 6.3 in the same alphabetical-by-default-with-jwt-first order.
+
+**Rationale:**
+- `jwt` is the most general adapter (covers any provider that mints JWTs); presenting it first surfaces the broadest applicable answer to "which adapter do I want?"
+- Provider-specific adapters (Clerk, Supabase) are alphabetical underneath. As more land, this ordering scales without re-shuffling existing entries.
+
+**Trade:** none. Pure docs nav choice.

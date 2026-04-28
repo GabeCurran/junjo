@@ -1,3 +1,4 @@
 {
-  "jwt": "jwtAdapter"
+  "jwt": "jwtAdapter",
+  "clerk": "clerkAdapter"
 }
