@@ -54,35 +54,28 @@ function useMutation<TData, TError = Error, TVariables = void, TContext = unknow
 
 The `onMutate -> onError` rollback pattern is how `useMutation` supports optimistic UI. Inside `onMutate`, snapshot the local state you are about to mutate and apply the optimistic change; return the snapshot as the context. If `mutationFn` rejects, `onError` receives that snapshot and restores it.
 
+When you are mutating the roster from `useMembers`, prefer its `applyOptimistic` helper - it owns the snapshot lifecycle for you and returns a rollback closure:
+
 ```tsx
 function KickWithRollback({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
   const junjo = useJunjo();
-  const { members, refetch } = useMembers(groupId);
-  const [localMembers, setLocalMembers] = useState(members);
-  useEffect(() => setLocalMembers(members), [members]);
+  const { applyOptimistic } = useMembers(groupId);
 
-  const { mutate } = useMutation<void, Error, void, { snapshot: Member[] }>({
+  const { mutate } = useMutation<void, Error, void, { rollback: () => void }>({
     mutationFn: () => junjo.members.kick(groupId, userId),
-    onMutate: () => {
-      const snapshot = localMembers;
-      setLocalMembers((prev) => prev.filter((m) => m.userId !== userId));
-      return { snapshot };
-    },
-    onError: (_err, _vars, context) => {
-      if (context !== undefined) setLocalMembers(context.snapshot);
-    },
-    onSettled: () => {
-      void refetch();
-    },
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => prev.filter((m) => m.userId !== userId)),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
   });
 
   return <button type="button" onClick={() => mutate()}>Kick</button>;
 }
 ```
 
-The dominant SSE path is still authoritative: a successful `kick` emits a `member.left` event that `useMembers` already handles, so the local state ends up consistent without `refetch` in most cases. The optimistic helper just makes the UI flip *immediately* on click.
+For state that does not have a hook-level helper (e.g., `useGroup` and `useInvitations` until Phase 7.5c), the explicit snapshot pattern still applies: hold the prior value in `useState` (or a ref), apply the optimistic mutation in `onMutate`, return the snapshot as the context, and restore it from `onError`.
 
-A future Phase 7.5 wave will fold this pattern into the existing list hooks (so the snapshot copy + setter become unnecessary). Today, you wire the wrapper yourself.
+The dominant SSE path is still authoritative: a successful `kick` emits a `member.left` event that `useMembers` already handles, so the local state stays consistent. The optimistic helper just makes the UI flip *immediately* on click.
 
 ## Lifecycle and ordering
 

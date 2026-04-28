@@ -10,6 +10,8 @@ export interface UseMembersOptions {
   limit?: number;
 }
 
+export type MemberUpdater = (prev: Member[]) => Member[];
+
 export interface UseMembersResult {
   members: Member[];
   loading: boolean;
@@ -18,6 +20,7 @@ export interface UseMembersResult {
   error: Error | null;
   refetch: () => Promise<void>;
   fetchMore: () => Promise<void>;
+  applyOptimistic: (updater: MemberUpdater) => () => void;
 }
 
 interface State {
@@ -38,7 +41,9 @@ type Action =
   | { type: "fetch_more_success"; members: Member[]; hasMore: boolean }
   | { type: "fetch_more_error"; error: Error }
   | { type: "stream_error"; error: Error }
-  | { type: "event"; event: JunjoEvent; matches: MemberMatcher };
+  | { type: "event"; event: JunjoEvent; matches: MemberMatcher }
+  | { type: "optimistic_apply"; updater: MemberUpdater }
+  | { type: "optimistic_rollback"; snapshot: Member[] };
 
 const INITIAL_STATE: State = {
   members: [],
@@ -81,6 +86,14 @@ function reducer(state: State, action: Action): State {
       return { ...state, error: action.error };
     case "event":
       return applyEvent(state, action.event, action.matches);
+    case "optimistic_apply": {
+      const next = action.updater(state.members);
+      if (next === state.members) return state;
+      return { ...state, members: next };
+    }
+    case "optimistic_rollback":
+      if (action.snapshot === state.members) return state;
+      return { ...state, members: action.snapshot };
   }
 }
 
@@ -133,6 +146,17 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
   );
   const matchesRef = useRef(matches);
   matchesRef.current = matches;
+
+  const membersRef = useRef(state.members);
+  membersRef.current = state.members;
+
+  const applyOptimistic = useCallback((updater: MemberUpdater): (() => void) => {
+    const snapshot = membersRef.current;
+    dispatch({ type: "optimistic_apply", updater });
+    return () => {
+      dispatch({ type: "optimistic_rollback", snapshot });
+    };
+  }, []);
 
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
@@ -237,5 +261,6 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
     error: state.error,
     refetch,
     fetchMore,
+    applyOptimistic,
   };
 }

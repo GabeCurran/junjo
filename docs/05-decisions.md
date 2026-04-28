@@ -2245,3 +2245,48 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The `useCallback` for `mutate` and `mutateAsync` does NOT depend on the options, so they have stable identities across renders. This avoids breaking memoization in consumer components.
 
 **Trade:** if a consumer wants the latest callback to run on the most recent mutation, they must call `mutate` after the re-render. Almost never matters; mutations are fire-once-per-click in practice.
+
+### Phase 7.5b: `useMembers` exposes `applyOptimistic(updater): rollback`, not named per-mutation helpers
+
+**Decision:** Phase 7.5b adds one method to `UseMembersResult`: `applyOptimistic(updater: (prev: Member[]) => Member[]): () => void`. It dispatches an `optimistic_apply` reducer action that runs the updater and returns a closure that dispatches `optimistic_rollback` with the snapshot captured at call time. No `kickMember` / `assignRole` / `removeRole` / `inviteMember` named helpers ship in V1.
+
+**Rationale:**
+- The roadmap calls out three optimistic mutations (kick, invite, role assignment) that share one pattern: snapshot, mutate locally, restore on error. A single primitive covers all three plus arbitrary custom mutations against the local roster.
+- Named helpers would force a return-shape decision for each (do they expose `useMutation`-style status? do they swallow errors? do they take the SDK call inline?) which is premature when the consumer's `useMutation` already owns that contract cleanly.
+- Stays composable with the existing Phase 7.5a primitive: consumers wire `applyOptimistic` from `onMutate` (returning the rollback closure as part of the typed `TContext`) and call it from `onError`. The docs page shows kick + role assignment patterns inline.
+- Keeps the result type small. Adding three named helpers would balloon `UseMembersResult` and entrench API decisions before we know whether consumers actually want them.
+
+**Trade:** consumers writing the kick mutation type out the snapshot wiring themselves (one onMutate + one onError line). Acceptable - the example is in the docs; the wiring is fire-once-per-feature, not fire-once-per-call.
+
+### `applyOptimistic` snapshot-and-restore semantics: rollback restores to the exact pre-update array; intermediate SSE events are lost on rollback
+
+**Decision:** the rollback closure stores `state.members` as it was when `applyOptimistic` was called and restores it verbatim on dispatch. SSE events that arrived between `applyOptimistic` and the rollback are dropped on rollback. The reducer collapses identical-reference rollback snapshots back to the same state to skip the React re-render.
+
+**Rationale:**
+- This is React Query's mutation-rollback contract. Consumers familiar with React Query expect it.
+- Computing the inverse of an arbitrary updater is impossible without forcing the consumer to provide an inverse function, which would double the API surface and is harder to reason about.
+- The mutation window is short (typically ms to a few seconds). The probability of an unrelated SSE event landing inside that window is small in practice; even when it happens, the next `refetch` reconciles.
+- Documented in the user-facing page with the recommendation to call `refetch()` from `onError` after `rollback()` for UI that is sensitive to it.
+
+**Trade:** an SSE event that fires during a doomed mutation is lost on rollback. Acceptable for V1. A future iteration could ship an "apply on top of latest" rollback semantics if multi-tenant high-throughput consumers report it as a real problem.
+
+### `applyOptimistic` is provided as a stable callback reference across renders
+
+**Decision:** `applyOptimistic` is wrapped in `useCallback` with no dependencies (the snapshot is captured at *invocation* via a ref, not via the callback's closure). This means the same function identity persists across renders, so consumer code can pass it through `useMutation`'s `onMutate` without forcing remounts of the mutation hook on every render.
+
+**Rationale:**
+- `useMutation`'s callbacks are read through `optionsRef`, which is updated on every render; but a stable `applyOptimistic` reference keeps the mutation's `useCallback` identities stable too, so memoized child components do not re-render unnecessarily.
+- The members snapshot lives in a ref (`membersRef.current = state.members`) that is read at the moment `applyOptimistic` is called, not when the callback was created. This is the standard "read latest state from a ref inside a stable callback" idiom.
+
+**Trade:** the snapshot read is implicit (consumers cannot inspect what was captured). Acceptable - the rollback closure is the only thing that uses the snapshot, and it captures it as a parameter.
+
+### Concurrent overlapping `applyOptimistic` calls get LIFO rollback semantics
+
+**Decision:** if two mutations call `applyOptimistic` concurrently (mutation A first, then mutation B), each captures its own snapshot. If A rolls back later, it restores to the state-at-A's-call, which discards B's still-applied optimistic update. Mutations rolling back in different order to their `applyOptimistic` calls can therefore overwrite each other's state.
+
+**Rationale:**
+- Same as the snapshot-restore contract above: this is React Query's mutation-rollback behavior.
+- Tracking a stack of pending optimistic updates and re-applying the survivors on rollback is significantly more complex and changes the mental model from "pure state restore" to "ordered overlay merge"; not worth shipping in V1.
+- In practice, simultaneous mutations against the same roster are rare; the common case is single-mutation-at-a-time button clicks. The doc page documents this trade.
+
+**Trade:** apps that genuinely run multiple concurrent optimistic mutations (e.g. bulk-kick UI) will see weirdness on partial failure. Mitigation: call `refetch()` from `onSettled` to reconcile. Documented.

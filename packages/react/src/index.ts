@@ -5,7 +5,12 @@ export { useGroup } from "./useGroup.js";
 export type { UseGroupResult } from "./useGroup.js";
 export { useCan } from "./useCan.js";
 export { useMembers } from "./useMembers.js";
-export type { UseMembersOptions, UseMembersResult, UseMembersStatus } from "./useMembers.js";
+export type {
+  MemberUpdater,
+  UseMembersOptions,
+  UseMembersResult,
+  UseMembersStatus,
+} from "./useMembers.js";
 export { useInvitations } from "./useInvitations.js";
 export type {
   UseInvitationsOptions,

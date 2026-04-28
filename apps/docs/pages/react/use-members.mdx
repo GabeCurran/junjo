@@ -44,6 +44,7 @@ interface UseMembersResult {
   error: Error | null;
   refetch: () => Promise<void>;
   fetchMore: () => Promise<void>;
+  applyOptimistic: (updater: (prev: Member[]) => Member[]) => () => void;
 }
 ```
 
@@ -56,6 +57,7 @@ interface UseMembersResult {
 | `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
 | `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
 | `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+| `applyOptimistic` | Applies an updater to the local `members` array immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
 
 ## Status filter
 
@@ -94,6 +96,78 @@ The hook never throws; errors land in `result.error`. Three sources:
 - **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect in V1; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
 
 If `useMembers` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Optimistic updates
+
+`applyOptimistic(updater)` lets a mutation flip the local roster *before* the server confirms. It runs `updater(state.members)` and replaces `members` with the result; it returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation) so the snapshot lives inside the mutation's `context`:
+
+```tsx
+import { useJunjo, useMembers, useMutation } from "@junjo/react";
+
+function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useMembers(groupId);
+
+  const { mutate, isPending } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.kick(groupId, userId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => prev.filter((m) => m.userId !== userId)),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()} disabled={isPending}>Kick</button>;
+}
+```
+
+The same shape covers role assignment:
+
+```tsx
+function AssignRoleButton({
+  groupId,
+  userId,
+  roleId,
+}: {
+  groupId: GroupId;
+  userId: UserId;
+  roleId: RoleId;
+}) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useMembers(groupId);
+
+  const { mutate } = useMutation<Member, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.assignRole(groupId, userId, roleId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) =>
+        prev.map((m) =>
+          m.userId === userId && !m.roles.includes(roleId)
+            ? { ...m, roles: [...m.roles, roleId] }
+            : m,
+        ),
+      ),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Assign</button>;
+}
+```
+
+### How the snapshot interacts with SSE events
+
+After `applyOptimistic` runs, the hook keeps applying SSE events on top of the optimistic state. A successful `kick` emits a `member.left` for the same user; the reducer's `member.left` handler is idempotent, so the optimistic removal is preserved without flicker. A successful `assignRole` emits a `role.changed` whose `added` array is filtered against the existing roles, so the optimistic role addition is preserved.
+
+### Rollback restores the pre-update snapshot exactly
+
+The rollback closure stores the `members` array as it was when `applyOptimistic` was called, and restores it verbatim. If unrelated SSE events arrived between the optimistic update and the rollback, those changes are dropped on rollback. In practice this is rare (the mutation window is short) and the next `refetch` reconciles. If your UI is sensitive to it, call `refetch()` from `onError` after `rollback()`.
+
+### Concurrent overlapping mutations
+
+Multiple in-flight mutations rolling back in arbitrary order get LIFO snapshot-restore semantics: each rollback restores to the snapshot taken at *its* `applyOptimistic` call. Rolling back an earlier mutation can therefore overwrite the optimistic state of a later one. This matches React Query's mutation rollback behavior. The mitigation is the same: rollbacks are rare on short mutation windows, and `refetch` reconciles divergence.
+
+### `applyOptimistic` does not call the SDK
+
+The hook only mutates local state; the network request is whatever you put in `mutationFn`. This is by design: any mutation (kick, invite, role assignment, custom server route) can wire optimistic UI through the same primitive without the hook needing per-method support.
 
 ## Composing with `useGroup`
 
