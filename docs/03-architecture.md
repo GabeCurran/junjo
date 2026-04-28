@@ -50,6 +50,19 @@ The `packages/server/src/` tree:
 - `seed.ts` - importable helpers `createGame(name, prisma?)` and `createApiKey(gameId, prisma?)`. Used by tests and the `db:seed` CLI. The Prisma client is optional so callers can pass a client bound to `TEST_DATABASE_URL` or fall back to the singleton from `db.ts`.
 - `seed.cli.ts` - thin CLI wrapper around `seed.ts`. Wired up as `npm run db:seed` for local-dev key issuance; prints the plaintext API key once and disconnects.
 - `routes/` - per-resource route modules. Each module exports a `<resource>Router(prisma)` factory that returns a fresh `Hono` sub-app, plus a sibling `<resource>.schema.ts` of co-located Zod schemas. `app.ts` wires them under the `/v1` namespace. As of Phase 1.1: `routes/groups.ts` (`POST /v1/groups`).
+- `softDelete.ts` - the soft-delete retention constant (7 days), `sweepHardDeletes(prisma, opts?)` (the actual delete query), and `startHardDeleteSweeper(prisma, opts?)` (the in-process scheduler). The runnable entry point (`index.ts`) is the only caller of `startHardDeleteSweeper`; tests exercise `sweepHardDeletes` directly without ever starting a timer.
+
+### Background sweeps
+
+Soft-deleted Groups whose `softDeletedAt` is older than 7 days are removed by an in-process `setInterval` running inside the same Node process as the API. The interval is one hour; the sweeper is started by `startHardDeleteSweeper(prisma)` from `index.ts` after the HTTP server starts and stopped on `SIGINT` / `SIGTERM`. The handle is `unref`'d so the timer never keeps the process alive on its own.
+
+We picked an in-process `setInterval` over a separate worker process or an external cron because:
+
+- The sweep is a single `prisma.group.deleteMany({ where: { softDeletedAt: { lt: cutoff } } })` query. A separate process would add deployment surface (a second container, a second image, a second restart policy) for one query an hour. Bad trade at V1.
+- Self-hosters get the sweep "for free" by running the same `junjo-server` Docker image they already run for the API. No second cron container to forget.
+- `sweepHardDeletes` is exported separately from the scheduler so tests call it directly with a fixed `now`. The timer never fires during tests.
+
+Trade: if the API is scaled horizontally to multiple instances later, every instance will run the sweep. The deleteMany is idempotent (rows already gone are silently skipped) so correctness is fine, but the work is duplicated. When that becomes a real scaling concern, factor the sweeper into a separate worker process with a `SELECT FOR UPDATE SKIP LOCKED` lease pattern. Keep the function signature stable so the scheduling layer is the only thing that changes.
 
 The `packages/server/prisma/` tree:
 

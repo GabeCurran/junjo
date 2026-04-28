@@ -89,12 +89,16 @@ export class GroupsApi {
   }
 
   // Soft delete with a 7-day undo window. Pass `hard: true` to bypass.
-  async delete(_id: GroupId, _opts?: { hard?: boolean }): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async delete(id: GroupId, opts?: { hard?: boolean }): Promise<void> {
+    const path = opts?.hard
+      ? `/v1/groups/${encodeURIComponent(id)}?hard=true`
+      : `/v1/groups/${encodeURIComponent(id)}`;
+    await this.http.delete<unknown>(path);
   }
 
-  async restore(_id: GroupId): Promise<Group> {
-    throw NOT_IMPLEMENTED;
+  async restore(id: GroupId): Promise<Group> {
+    const wire = await this.http.post<WireGroup>(`/v1/groups/${encodeURIComponent(id)}/restore`);
+    return deserializeGroup(wire);
   }
 
   // ------ Membership ------

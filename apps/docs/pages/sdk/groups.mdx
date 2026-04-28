@@ -153,6 +153,62 @@ updated.updatedAt;  // Date - bumped only when something actually changed
 
 - [`PATCH /v1/groups/:id`](/api/groups) - the underlying HTTP route.
 
+## `delete(id, opts?)` - shipped
+
+Soft-deletes a group. The group disappears from `get` / `list` immediately but the row stays in Postgres for 7 days; call `restore(id)` within the window to undo. Pass `{ hard: true }` to skip the grace period and remove the row immediately (this also removes the group's audit history via cascade).
+
+```ts
+await junjo.groups.delete("grp_xyz" as GroupId);
+
+await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `hard` | boolean | `false` | When `true`, hard-deletes immediately. When `false` (or omitted), soft-deletes; the row is hard-deleted by the server's background sweeper after 7 days. |
+
+### Returns
+
+`Promise<void>`. The server returns the soft-deleted group (or `204` for a hard delete) but the SDK discards the body in both cases. A second `delete()` on an already-soft-deleted group is idempotent.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (also for cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`DELETE /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+
+## `restore(id)` - shipped
+
+Restores a soft-deleted group within the 7-day undo window. Returns the restored `Group`. Idempotent on a live group (returns the unchanged group, no audit entry). Throws `restore_window_expired` (HTTP 410) if the group was soft-deleted more than 7 days ago and is on its way out.
+
+```ts
+const group = await junjo.groups.restore("grp_xyz" as GroupId);
+group.softDeletedAt; // null
+```
+
+### Returns
+
+`Group` - the restored row, with timestamps deserialized to `Date`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `restore_window_expired` | 410 | The group's `softDeletedAt` is older than 7 days; the background sweeper is about to (or already did) hard-delete it. |
+| `not_found` | 404 | No group with that id in the calling game (cross-game and hard-deleted ids also return 404). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/restore`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`delete`, `restore`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+The invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

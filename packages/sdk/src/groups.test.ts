@@ -446,3 +446,134 @@ describe("groups.update", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+describe("groups.delete", () => {
+  it("DELETEs /v1/groups/:id with no query when soft-deleting", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(req.method).toBe("DELETE");
+      expect(url.pathname).toBe("/v1/groups/grp_1");
+      expect(url.search).toBe("");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({ ...wireFixture, softDeletedAt: "2026-04-28T05:00:00.000Z" }, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.groups.delete("grp_1" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result).toBeUndefined();
+  });
+
+  it("appends ?hard=true when opts.hard is true", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1");
+      expect(url.searchParams.get("hard")).toBe("true");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.delete("grp_1" as GroupId, { hard: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.delete("grp_missing" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("encodes the group id in the URL", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash");
+      return new Response(null, { status: 204 });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.delete("has/slash" as GroupId, { hard: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("groups.restore", () => {
+  it("POSTs /v1/groups/:id/restore and returns the deserialized group", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(req.method).toBe("POST");
+      expect(url.pathname).toBe("/v1/groups/grp_1/restore");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBeNull();
+      expect(await req.text()).toBe("");
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.restore("grp_1" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(group.id).toBe("grp_1");
+    expect(group.softDeletedAt).toBeNull();
+    expect(group.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("throws JunjoError when the restore window has expired", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        { code: "restore_window_expired", status: 410, message: "restore window expired" },
+        410,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.restore("grp_old" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "restore_window_expired",
+      status: 410,
+    });
+  });
+
+  it("encodes the group id in the URL", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/restore");
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.restore("has/slash" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});

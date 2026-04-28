@@ -202,6 +202,7 @@ export type AuditAction =
   | "group.created"
   | "group.updated"
   | "group.deleted"
+  | "group.restored"
   | "group.relationship.set"
   | "group.relationship.cleared"
   | "member.invited"

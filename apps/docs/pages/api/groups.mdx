@@ -237,3 +237,79 @@ A no-op PATCH (every supplied field already matches the stored value) succeeds w
 | `bad_request` | 400 | Empty body, invalid field value, malformed JSON. |
 | `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id`
+
+Soft-deletes a group by stamping `softDeletedAt` with the current time. The group disappears from `GET` and `LIST` responses immediately but the row stays in Postgres for 7 days so it can be restored. After 7 days an in-process sweeper hard-deletes the row (and its cascade-related rows). Pass `?hard=true` to bypass the soft-delete grace and remove the row immediately.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `hard` | `"true"` | absent | Any other value (or absence) keeps the soft-delete path. Only the literal string `"true"` triggers hard delete. |
+
+### Response
+
+- Soft delete on a live group: `200 OK` with the now-soft-deleted `Group` body (`softDeletedAt` populated). Writes one `group.deleted` audit entry in the same transaction.
+- Soft delete on an already soft-deleted group: `200 OK` with the existing group body, `softDeletedAt` left at its prior value, **no second audit entry**, no timestamp bump. Idempotent.
+- Hard delete: `204 No Content`. Cascade rules remove related rows, including the group's audit history. No audit entry is written (it would be cascade-deleted anyway).
+
+### Audit log (soft delete only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.deleted` |
+| `groupId` | the deleted group id |
+| `targetId` | the deleted group id |
+| `actorUserId` | `null` |
+| `payload` | `{ kind: "soft", softDeletedAt: <iso>, retentionDays: 7 }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/restore`
+
+Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Idempotent on a live group; returns `410 Gone` if the soft-delete is older than 7 days (the row may be on the next sweep tick or already gone).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Response
+
+- Restore inside the window: `200 OK` with the restored `Group` body (`softDeletedAt: null`). Writes one `group.restored` audit entry.
+- Restore on a live (not soft-deleted) group: `200 OK` with the existing group body, no audit entry. Idempotent.
+
+### Audit log (restore inside window only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.restored` |
+| `groupId` | the restored group id |
+| `targetId` | the restored group id |
+| `actorUserId` | `null` |
+| `payload` | `{ previousSoftDeletedAt: <iso> }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `restore_window_expired` | 410 | The group's `softDeletedAt` is older than 7 days. The row may be hard-deleted soon (or already). |
+| `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). Hard-deleted rows return 404 because the row is gone. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### Background sweeper
+
+Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron in V1; see `docs/03-architecture.md` (Background sweeps) for the rationale.

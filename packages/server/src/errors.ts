@@ -22,4 +22,6 @@ export const Errors = {
   invalidApiKey: (msg = "invalid API key") => new JunjoError("invalid_api_key", 401, msg),
   badRequest: (msg = "bad request") => new JunjoError("bad_request", 400, msg),
   permissionDenied: (msg = "permission denied") => new JunjoError("permission_denied", 403, msg),
+  restoreWindowExpired: (msg = "restore window expired") =>
+    new JunjoError("restore_window_expired", 410, msg),
 };

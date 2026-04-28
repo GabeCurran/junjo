@@ -1,6 +1,7 @@
 import type { Group, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
+import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
 
 interface WireGroup {
@@ -226,6 +227,103 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         },
       });
 
+      return result;
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.id, status: "active" },
+    });
+    return c.json(serializeGroup(updated, memberCount));
+  });
+
+  r.delete("/:id", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const hard = c.req.query("hard") === "true";
+
+    const existing = await prisma.group.findFirst({
+      where: { id, gameId },
+    });
+    if (!existing) throw Errors.notFound("group");
+
+    if (hard) {
+      await prisma.group.delete({ where: { id: existing.id } });
+      return c.body(null, 204);
+    }
+
+    if (existing.softDeletedAt) {
+      const memberCount = await prisma.groupMember.count({
+        where: { groupId: existing.id, status: "active" },
+      });
+      return c.json(serializeGroup(existing, memberCount));
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const result = await tx.group.update({
+        where: { id: existing.id },
+        data: { softDeletedAt: now },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: result.id,
+          actorUserId: null,
+          action: "group.deleted",
+          targetId: result.id,
+          payload: {
+            kind: "soft",
+            softDeletedAt: now.toISOString(),
+            retentionDays: SOFT_DELETE_RETENTION_DAYS,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.id, status: "active" },
+    });
+    return c.json(serializeGroup(updated, memberCount));
+  });
+
+  r.post("/:id/restore", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const existing = await prisma.group.findFirst({
+      where: { id, gameId },
+    });
+    if (!existing) throw Errors.notFound("group");
+
+    if (!existing.softDeletedAt) {
+      const memberCount = await prisma.groupMember.count({
+        where: { groupId: existing.id, status: "active" },
+      });
+      return c.json(serializeGroup(existing, memberCount));
+    }
+
+    const cutoff = new Date(Date.now() - SOFT_DELETE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    if (existing.softDeletedAt < cutoff) {
+      throw Errors.restoreWindowExpired(
+        `restore window of ${SOFT_DELETE_RETENTION_DAYS} days has expired`,
+      );
+    }
+
+    const previousSoftDeletedAt = existing.softDeletedAt.toISOString();
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.group.update({
+        where: { id: existing.id },
+        data: { softDeletedAt: null },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: result.id,
+          actorUserId: null,
+          action: "group.restored",
+          targetId: result.id,
+          payload: { previousSoftDeletedAt } as Prisma.InputJsonValue,
+        },
+      });
       return result;
     });
 

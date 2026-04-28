@@ -681,3 +681,253 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function deleteGroup(id: string, query = "", header: string = authHeader) {
+    const path = query ? `/v1/groups/${id}?${query}` : `/v1/groups/${id}`;
+    return app.request(path, {
+      method: "DELETE",
+      headers: { authorization: header },
+    });
+  }
+
+  async function seedGroup(
+    overrides: Partial<{ gameId: string; softDeletedAt: Date | null }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Doomed",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  it("soft-deletes a live group and writes a group.deleted audit entry", async () => {
+    const group = await seedGroup();
+    const res = await deleteGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.id).toBe(group.id);
+    expect(typeof body.softDeletedAt).toBe("string");
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.softDeletedAt).toBeInstanceOf(Date);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.deleted" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe(group.id);
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toMatchObject({ kind: "soft", retentionDays: 7 });
+  });
+
+  it("is idempotent on an already soft-deleted group (no second audit entry)", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date("2026-04-27T00:00:00Z") });
+    const res = await deleteGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { softDeletedAt: string };
+    expect(body.softDeletedAt).toBe("2026-04-27T00:00:00.000Z");
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.softDeletedAt?.toISOString()).toBe("2026-04-27T00:00:00.000Z");
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.deleted" },
+    });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("hard-deletes when ?hard=true is set, including the group's audit history", async () => {
+    const group = await seedGroup();
+    await prisma.auditEntry.create({
+      data: {
+        groupId: group.id,
+        action: "group.created",
+        targetId: group.id,
+        payload: {},
+      },
+    });
+
+    const res = await deleteGroup(group.id, "hard=true");
+    expect(res.status).toBe(204);
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored).toBeNull();
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("hard-deletes a group that was already soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date("2026-04-20T00:00:00Z") });
+    const res = await deleteGroup(group.id, "hard=true");
+    expect(res.status).toBe(204);
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored).toBeNull();
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await deleteGroup("ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await deleteGroup(group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}`, { method: "DELETE" });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/restore", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function restoreGroup(id: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${id}/restore`, {
+      method: "POST",
+      headers: { authorization: header },
+    });
+  }
+
+  async function seedGroup(
+    overrides: Partial<{ gameId: string; softDeletedAt: Date | null }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Phoenix",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  it("restores a soft-deleted group within the 7-day window", async () => {
+    const softDeletedAt = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    const group = await seedGroup({ softDeletedAt });
+    const res = await restoreGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; softDeletedAt: string | null };
+    expect(body.id).toBe(group.id);
+    expect(body.softDeletedAt).toBeNull();
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.softDeletedAt).toBeNull();
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.restored" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe(group.id);
+    expect(entry.payload).toMatchObject({ previousSoftDeletedAt: softDeletedAt.toISOString() });
+  });
+
+  it("is idempotent on a non-deleted group (no audit entry)", async () => {
+    const group = await seedGroup();
+    const res = await restoreGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { softDeletedAt: string | null };
+    expect(body.softDeletedAt).toBeNull();
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.restored" },
+    });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("rejects restore on a group whose soft-delete is older than 7 days", async () => {
+    const softDeletedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const group = await seedGroup({ softDeletedAt });
+    const res = await restoreGroup(group.id);
+    expect(res.status).toBe(410);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("restore_window_expired");
+    expect(body.message).toMatch(/7 days/);
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.softDeletedAt).toEqual(softDeletedAt);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await restoreGroup("ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id, softDeletedAt: new Date() });
+    const res = await restoreGroup(group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await app.request(`/v1/groups/${group.id}/restore`, { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+});
