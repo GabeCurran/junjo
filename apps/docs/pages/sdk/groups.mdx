@@ -113,6 +113,46 @@ do {
 
 - [`GET /v1/groups`](/api/groups) - the underlying HTTP route.
 
+## `update(id, input)` - shipped
+
+Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
+
+```ts
+const updated = await junjo.groups.update("grp_xyz" as GroupId, {
+  name: "Crimson Lions",
+  visibility: "public",
+});
+
+updated.name;       // "Crimson Lions"
+updated.visibility; // "public"
+updated.updatedAt;  // Date - bumped only when something actually changed
+```
+
+### Input
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | 1-120 characters. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | |
+| `metadata` | object | **Replaces the existing metadata wholesale**, not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
+| `defaultRoleId` | `RoleId \| null` | Pass `null` to clear; pass a string to set. |
+
+### Returns
+
+`Group` - the updated row, with timestamps deserialized to `Date`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, and leaves `updatedAt` unchanged.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty input, invalid field, malformed body. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). Thrown, not converted to `null`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PATCH /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`update`, `delete`, `restore`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`delete`, `restore`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

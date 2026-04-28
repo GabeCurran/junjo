@@ -83,8 +83,9 @@ export class GroupsApi {
     };
   }
 
-  async update(_id: GroupId, _input: UpdateGroupInput): Promise<Group> {
-    throw NOT_IMPLEMENTED;
+  async update(id: GroupId, input: UpdateGroupInput): Promise<Group> {
+    const wire = await this.http.patch<WireGroup>(`/v1/groups/${encodeURIComponent(id)}`, input);
+    return deserializeGroup(wire);
   }
 
   // Soft delete with a 7-day undo window. Pass `hard: true` to bypass.

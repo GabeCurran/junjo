@@ -19,3 +19,16 @@ export const listGroupsQuery = z.object({
 });
 
 export type ListGroupsQuery = z.infer<typeof listGroupsQuery>;
+
+export const updateGroupBody = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    visibility: z.enum(VISIBILITY).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    defaultRoleId: z.string().min(1).nullable().optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: "at least one field is required",
+  });
+
+export type UpdateGroupBody = z.infer<typeof updateGroupBody>;

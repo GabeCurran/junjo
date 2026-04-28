@@ -333,3 +333,116 @@ describe("groups.list", () => {
     });
   });
 });
+
+describe("groups.update", () => {
+  it("PATCHes /v1/groups/:id with the auth header and a JSON body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PATCH");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ name: "Renamed" });
+      return jsonResponse({ ...wireFixture, name: "Renamed" }, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.update("grp_1" as GroupId, { name: "Renamed" });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(group.name).toBe("Renamed");
+    expect(group.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("forwards null defaultRoleId verbatim", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ defaultRoleId: null });
+      return jsonResponse({ ...wireFixture, defaultRoleId: null }, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.update("grp_1" as GroupId, { defaultRoleId: null });
+    expect(group.defaultRoleId).toBeNull();
+  });
+
+  it("forwards a multi-field input verbatim and deserializes the result", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({
+        name: "Iron Hand",
+        visibility: "public",
+        metadata: { motto: "Together" },
+        defaultRoleId: "role_xyz",
+      });
+      return jsonResponse(
+        {
+          ...wireFixture,
+          name: "Iron Hand",
+          visibility: "public",
+          metadata: { motto: "Together" },
+          defaultRoleId: "role_xyz",
+        },
+        200,
+      );
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.update("grp_1" as GroupId, {
+      name: "Iron Hand",
+      visibility: "public",
+      metadata: { motto: "Together" },
+      defaultRoleId: "role_xyz" as RoleId,
+    });
+    expect(group.name).toBe("Iron Hand");
+    expect(group.visibility).toBe("public");
+    expect(group.metadata).toEqual({ motto: "Together" });
+    expect(group.defaultRoleId).toBe("role_xyz");
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.update("grp_missing" as GroupId, { name: "x" }),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+
+  it("encodes the group id in the URL", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash");
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.update("has/slash" as GroupId, { name: "x" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});

@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { type Prisma, PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
@@ -448,6 +448,236 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups", () => {
 
   it("rejects requests without an API key", async () => {
     const res = await app.request("/v1/groups", { method: "GET" });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function patchGroup(id: string, body: unknown, header: string = authHeader) {
+    return app.request(`/v1/groups/${id}`, {
+      method: "PATCH",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  async function seedGroup(
+    overrides: Partial<{
+      gameId: string;
+      name: string;
+      visibility: string;
+      metadata: Record<string, unknown>;
+      defaultRoleId: string | null;
+      softDeletedAt: Date;
+    }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: overrides.name ?? "Test Group",
+        visibility: overrides.visibility ?? "invite-only",
+        metadata: (overrides.metadata ?? {}) as Prisma.InputJsonValue,
+        defaultRoleId: overrides.defaultRoleId ?? null,
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  it("updates a single field and returns the updated group", async () => {
+    const group = await seedGroup({ name: "Old Name" });
+    const res = await patchGroup(group.id, { name: "New Name" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.id).toBe(group.id);
+    expect(body.name).toBe("New Name");
+    expect(body.visibility).toBe("invite-only");
+
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.name).toBe("New Name");
+  });
+
+  it("updates multiple fields in one call", async () => {
+    const group = await seedGroup({
+      name: "Old Name",
+      visibility: "invite-only",
+      metadata: { motto: "Old" },
+      defaultRoleId: "role_old",
+    });
+    const res = await patchGroup(group.id, {
+      name: "New Name",
+      visibility: "public",
+      metadata: { motto: "New" },
+      defaultRoleId: "role_new",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      name: "New Name",
+      visibility: "public",
+      metadata: { motto: "New" },
+      defaultRoleId: "role_new",
+    });
+  });
+
+  it("clears defaultRoleId when set to null", async () => {
+    const group = await seedGroup({ defaultRoleId: "role_keep" });
+    const res = await patchGroup(group.id, { defaultRoleId: null });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { defaultRoleId: string | null };
+    expect(body.defaultRoleId).toBeNull();
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.defaultRoleId).toBeNull();
+  });
+
+  it("replaces metadata wholesale rather than merging", async () => {
+    const group = await seedGroup({ metadata: { motto: "old", banner: "url" } });
+    const res = await patchGroup(group.id, { metadata: { tagline: "new" } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { metadata: Record<string, unknown> };
+    expect(body.metadata).toEqual({ tagline: "new" });
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.metadata).toEqual({ tagline: "new" });
+  });
+
+  it("writes a group.updated audit entry whose payload contains only changed fields", async () => {
+    const group = await seedGroup({
+      name: "Before",
+      visibility: "invite-only",
+      defaultRoleId: "role_keep",
+    });
+    const res = await patchGroup(group.id, {
+      name: "After",
+      visibility: "invite-only",
+      defaultRoleId: "role_keep",
+    });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.updated" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe(group.id);
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toEqual({
+      before: { name: "Before" },
+      after: { name: "After" },
+    });
+  });
+
+  it("writes no audit entry when the patch is a no-op", async () => {
+    const group = await seedGroup({ name: "Same", visibility: "invite-only" });
+    const beforeUpdatedAt = group.updatedAt.toISOString();
+    const res = await patchGroup(group.id, { name: "Same", visibility: "invite-only" });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "group.updated" },
+    });
+    expect(entries).toHaveLength(0);
+    const stored = await prisma.group.findUnique({ where: { id: group.id } });
+    expect(stored?.updatedAt.toISOString()).toBe(beforeUpdatedAt);
+  });
+
+  it("returns the active member count in the response", async () => {
+    const group = await seedGroup();
+    const userA = await prisma.junjoUser.create({ data: {} });
+    const userB = await prisma.junjoUser.create({ data: {} });
+    const userC = await prisma.junjoUser.create({ data: {} });
+    await prisma.groupMember.createMany({
+      data: [
+        { groupId: group.id, junjoUserId: userA.id, status: "active" },
+        { groupId: group.id, junjoUserId: userB.id, status: "active" },
+        { groupId: group.id, junjoUserId: userC.id, status: "left" },
+      ],
+    });
+
+    const res = await patchGroup(group.id, { name: "Renamed" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { memberCount: number };
+    expect(body.memberCount).toBe(2);
+  });
+
+  it("rejects an empty body with 400", async () => {
+    const group = await seedGroup();
+    const res = await patchGroup(group.id, {});
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toMatch(/at least one field/);
+  });
+
+  it("rejects an invalid visibility value", async () => {
+    const group = await seedGroup();
+    const res = await patchGroup(group.id, { visibility: "open" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty name", async () => {
+    const group = await seedGroup();
+    const res = await patchGroup(group.id, { name: "" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed JSON body", async () => {
+    const group = await seedGroup();
+    const res = await patchGroup(group.id, "not json");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await patchGroup("ckxxxxxxxxxxxxxxxxxxxxxxxx", { name: "x" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await patchGroup(group.id, { name: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await patchGroup(group.id, { name: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+    });
     expect(res.status).toBe(401);
   });
 });

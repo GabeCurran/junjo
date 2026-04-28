@@ -1,7 +1,7 @@
 import type { Group, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
-import { createGroupBody, listGroupsQuery } from "./groups.schema.js";
+import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
 
 interface WireGroup {
   id: string;
@@ -161,6 +161,78 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     return c.json(serializeGroup(group, 0), 201);
+  });
+
+  r.patch("/:id", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = updateGroupBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const existing = await tx.group.findFirst({
+        where: { id, gameId, softDeletedAt: null },
+      });
+      if (!existing) throw Errors.notFound("group");
+
+      const before: Record<string, unknown> = {};
+      const after: Record<string, unknown> = {};
+      const data: Prisma.GroupUpdateInput = {};
+
+      if (body.name !== undefined && body.name !== existing.name) {
+        before.name = existing.name;
+        after.name = body.name;
+        data.name = body.name;
+      }
+      if (body.visibility !== undefined && body.visibility !== existing.visibility) {
+        before.visibility = existing.visibility;
+        after.visibility = body.visibility;
+        data.visibility = body.visibility;
+      }
+      if (body.metadata !== undefined) {
+        before.metadata = (existing.metadata ?? {}) as Prisma.InputJsonValue;
+        after.metadata = body.metadata;
+        data.metadata = body.metadata as Prisma.InputJsonValue;
+      }
+      if (body.defaultRoleId !== undefined && body.defaultRoleId !== existing.defaultRoleId) {
+        before.defaultRoleId = existing.defaultRoleId;
+        after.defaultRoleId = body.defaultRoleId;
+        data.defaultRoleId = body.defaultRoleId;
+      }
+
+      if (Object.keys(data).length === 0) {
+        return existing;
+      }
+
+      const result = await tx.group.update({
+        where: { id: existing.id },
+        data,
+      });
+
+      await tx.auditEntry.create({
+        data: {
+          groupId: result.id,
+          actorUserId: null,
+          action: "group.updated",
+          targetId: result.id,
+          payload: { before, after } as Prisma.InputJsonValue,
+        },
+      });
+
+      return result;
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.id, status: "active" },
+    });
+    return c.json(serializeGroup(updated, memberCount));
   });
 
   return r;

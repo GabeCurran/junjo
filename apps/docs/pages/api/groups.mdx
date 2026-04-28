@@ -160,3 +160,80 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
 |------|--------|------|
 | `bad_request` | 400 | `limit` invalid, `cursor` not found in this game, or `gameId` does not match the calling game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PATCH /v1/groups/:id`
+
+Partially updates a group. The body is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields included are touched. At least one field must be provided. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{
+  "name": "Crimson Lions",
+  "visibility": "public",
+  "metadata": { "motto": "Roar" },
+  "defaultRoleId": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | Optional. 1-120 characters. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | Optional. |
+| `metadata` | object | Optional. **Replaces the existing metadata wholesale**; not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
+| `defaultRoleId` | string \| null | Optional. Pass `null` to clear; pass a string to set. |
+
+An empty body, an unknown visibility value, an empty `name`, or a malformed JSON body all return `400 bad_request`.
+
+### Response
+
+`200 OK` with the updated `Group` body. `memberCount` is computed at request time from active members, just like `GET /v1/groups/:id`.
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Lions",
+  "visibility": "public",
+  "metadata": { "motto": "Roar" },
+  "defaultRoleId": null,
+  "memberCount": 42,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T06:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Audit log
+
+Writes one `group.updated` entry **only when at least one field actually changed**. The payload is a `{ before, after }` pair containing only the changed fields:
+
+```json
+{
+  "action": "group.updated",
+  "groupId": "ckxxx...",
+  "targetId": "ckxxx...",
+  "actorUserId": null,
+  "payload": {
+    "before": { "name": "Old Name", "visibility": "invite-only" },
+    "after": { "name": "New Name", "visibility": "public" }
+  }
+}
+```
+
+A no-op PATCH (every supplied field already matches the stored value) succeeds with `200 OK`, returns the unchanged group, and writes no audit entry. The `updatedAt` timestamp is also unchanged in that case. Metadata is treated as changed whenever it is provided, even when the new value is structurally equal to the stored one (deep equality across `jsonb` ordering is not attempted).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, invalid field value, malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
