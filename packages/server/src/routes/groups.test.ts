@@ -1206,3 +1206,246 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/invitations", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "Invitation", "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(
+    overrides: Partial<{ gameId: string; softDeletedAt: Date | null }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedInvite(
+    groupId: string,
+    overrides: Partial<{
+      code: string;
+      targetUserId: string | null;
+      roleId: string | null;
+      expiresAt: Date | null;
+      usedAt: Date | null;
+      usedByUserId: string | null;
+      createdAt: Date;
+    }> = {},
+  ) {
+    return prisma.invitation.create({
+      data: {
+        groupId,
+        code: overrides.code ?? Math.random().toString(36).slice(2, 18).padEnd(16, "0"),
+        targetUserId: overrides.targetUserId ?? null,
+        roleId: overrides.roleId ?? null,
+        expiresAt: overrides.expiresAt ?? null,
+        usedAt: overrides.usedAt ?? null,
+        usedByUserId: overrides.usedByUserId ?? null,
+        ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
+      },
+    });
+  }
+
+  function listInvites(groupId: string, query = "", header: string = authHeader) {
+    const path = query
+      ? `/v1/groups/${groupId}/invitations?${query}`
+      : `/v1/groups/${groupId}/invitations`;
+    return app.request(path, { method: "GET", headers: { authorization: header } });
+  }
+
+  it("returns an empty page when no invitations exist", async () => {
+    const group = await seedGroup();
+    const res = await listInvites(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: unknown[]; nextCursor: string | null };
+    expect(body.items).toEqual([]);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("returns invitations in createdAt desc order, default-excluding used and expired", async () => {
+    const group = await seedGroup();
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const future = new Date(Date.now() + 60 * 60 * 1000);
+    const t0 = new Date("2026-04-01T00:00:00Z");
+    const t1 = new Date("2026-04-02T00:00:00Z");
+    const t2 = new Date("2026-04-03T00:00:00Z");
+
+    await seedInvite(group.id, { code: "valid_b__________", createdAt: t1 });
+    await seedInvite(group.id, { code: "valid_a__________", createdAt: t2 });
+    await seedInvite(group.id, {
+      code: "expired__________",
+      createdAt: t0,
+      expiresAt: past,
+    });
+    await seedInvite(group.id, {
+      code: "used_____________",
+      createdAt: t0,
+      usedAt: new Date(),
+      usedByUserId: "user_alice",
+    });
+    await seedInvite(group.id, {
+      code: "future_expiry____",
+      createdAt: t0,
+      expiresAt: future,
+    });
+
+    const res = await listInvites(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: Array<{ code: string; createdAt: string }>;
+      nextCursor: string | null;
+    };
+    expect(body.items.map((i) => i.code)).toEqual([
+      "valid_a__________",
+      "valid_b__________",
+      "future_expiry____",
+    ]);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it("includes expired rows when includeExpired=true", async () => {
+    const group = await seedGroup();
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    await seedInvite(group.id, { code: "expired__________", expiresAt: past });
+    await seedInvite(group.id, { code: "live_____________" });
+
+    const res = await listInvites(group.id, "includeExpired=true");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: Array<{ code: string }> };
+    const codes = body.items.map((i) => i.code).sort();
+    expect(codes).toEqual(["expired__________", "live_____________"]);
+  });
+
+  it("includes used rows when includeUsed=true", async () => {
+    const group = await seedGroup();
+    await seedInvite(group.id, {
+      code: "used_____________",
+      usedAt: new Date(),
+      usedByUserId: "user_alice",
+    });
+    await seedInvite(group.id, { code: "live_____________" });
+
+    const res = await listInvites(group.id, "includeUsed=true");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: Array<{ code: string }> };
+    const codes = body.items.map((i) => i.code).sort();
+    expect(codes).toEqual(["live_____________", "used_____________"]);
+  });
+
+  it("paginates via cursor and limit", async () => {
+    const group = await seedGroup();
+    for (let i = 0; i < 5; i++) {
+      await seedInvite(group.id, {
+        code: `code_${i}__________`.slice(0, 16).padEnd(16, "0"),
+        createdAt: new Date(Date.UTC(2026, 0, 1 + i)),
+      });
+    }
+
+    const first = await listInvites(group.id, "limit=2");
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      items: Array<{ id: string; createdAt: string }>;
+      nextCursor: string | null;
+    };
+    expect(firstBody.items).toHaveLength(2);
+    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.id);
+
+    const second = await listInvites(group.id, `limit=2&cursor=${firstBody.nextCursor as string}`);
+    const secondBody = (await second.json()) as {
+      items: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(secondBody.items).toHaveLength(2);
+    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.id);
+    expect(secondBody.items.map((i) => i.id)).not.toEqual(firstBody.items.map((i) => i.id));
+
+    const third = await listInvites(group.id, `limit=2&cursor=${secondBody.nextCursor as string}`);
+    const thirdBody = (await third.json()) as {
+      items: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(thirdBody.items).toHaveLength(1);
+    expect(thirdBody.nextCursor).toBeNull();
+  });
+
+  it("rejects an out-of-range limit", async () => {
+    const group = await seedGroup();
+    const res = await listInvites(group.id, "limit=0");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects an unknown cursor", async () => {
+    const group = await seedGroup();
+    const res = await listInvites(group.id, "cursor=ckunknown");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects a cursor pointing at an invitation in another group", async () => {
+    const groupA = await seedGroup();
+    const groupB = await seedGroup();
+    const invB = await seedInvite(groupB.id);
+    const res = await listInvites(groupA.id, `cursor=${invB.id}`);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid includeExpired value", async () => {
+    const group = await seedGroup();
+    const res = await listInvites(group.id, "includeExpired=yes");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await listInvites("ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await listInvites(group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await listInvites(group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}/invitations`, { method: "GET" });
+    expect(res.status).toBe(401);
+  });
+});

@@ -1,0 +1,66 @@
+# Invitations
+
+Endpoints for working with invitations by `code` (rather than by group). Invitations are created via [`POST /v1/groups/:id/invitations`](/api/groups) and can be listed within a group via [`GET /v1/groups/:id/invitations`](/api/groups). The endpoints below operate on a single invitation by its code.
+
+## Wire format
+
+`Invitation` is the same shape returned by the create and list endpoints. Timestamps are ISO 8601 strings.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `groupId` | string | The group this invitation grants membership in. |
+| `code` | string | 16-character hex (8 random bytes). Server-generated, never caller-supplied. |
+| `roleId` | string \| null | Role to grant on accept; `null` if no role was specified. |
+| `targetUserId` | string \| null | External user id from the dev's auth provider, or `null` for an open-code invitation. |
+| `createdBy` | string \| null | Acting user id; `null` in V1 (no auth-adapter actor wired yet). |
+| `createdAt` | string | ISO 8601 timestamp. |
+| `expiresAt` | string \| null | When the code stops being redeemable; `null` if it never expires. |
+| `usedAt` | string \| null | Set when the invitation was redeemed (Phase 2.4). |
+| `usedBy` | string \| null | The user who redeemed it. |
+
+## `GET /v1/invitations/:code`
+
+Fetches an invitation by code. **Public**: no API key is required; the invite-acceptance UI on the dev's frontend can call this directly to render a preview before the user signs in.
+
+The route returns the full `Invitation` shape. To keep the API surface minimal and forward-compatible, the response is the same wire format as the create and list endpoints; the UI is responsible for picking the fields it wants to display.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. URL-decoded by the router; codes containing non-`[a-z0-9]` characters can be percent-encoded in the path. |
+
+### Response
+
+`200 OK` with an `Invitation` body. See "Wire format" above.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No invitation with that code, or the invitation's group is soft-deleted. |
+
+## `DELETE /v1/invitations/:code`
+
+Revokes an invitation. Requires an API key (the calling game must own the invitation's group).
+
+- **Unused invitations** are hard-deleted; a second revoke call against the same code returns `404 not_found`.
+- **Already-used invitations** (with `usedAt` set) are left in place to preserve the redemption history; the call returns `204 No Content`. Calling revoke on a used invitation is therefore idempotent: every call returns `204`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+
+### Response
+
+`204 No Content` (no body).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No invitation with that code in the calling game (cross-game codes also return 404; the row is not leaked). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

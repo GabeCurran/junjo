@@ -391,3 +391,56 @@ Every successful create writes one entry:
 | `bad_request` | 400 | Body fails validation, malformed JSON, malformed or non-positive `expiresIn`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/invitations`
+
+Lists invitations for a group, scoped to the calling game. Soft-deleted groups and groups belonging to a different game return `404 not_found`. Cursor-based pagination via the `Page<T>` envelope.
+
+By default the response excludes invitations that have already been used (`usedAt` set) or have expired (`expiresAt < now()`). Pass `includeUsed=true` and/or `includeExpired=true` to include them.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | `50` | 1-100 inclusive. Out-of-range values return `400`. |
+| `cursor` | string | none | The `nextCursor` from a prior response. Must point at an invitation in this group. |
+| `includeExpired` | `"true" \| "false"` | `false` | When `true`, expired invitations are included. |
+| `includeUsed` | `"true" \| "false"` | `false` | When `true`, used invitations (with `usedAt` set) are included. |
+
+### Response
+
+`200 OK` with a `Page<Invitation>` body. Items are sorted by `createdAt` desc with `id` desc as a tiebreaker. `nextCursor` is `null` when no further pages remain.
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "groupId": "ckyyy...",
+      "code": "abcd1234abcd1234",
+      "roleId": null,
+      "targetUserId": "user_alice",
+      "createdBy": null,
+      "createdAt": "2026-04-28T05:00:00.000Z",
+      "expiresAt": null,
+      "usedAt": null,
+      "usedBy": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

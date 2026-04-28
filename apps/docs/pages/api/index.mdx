@@ -24,6 +24,10 @@ A missing, malformed, or unrevoked-but-mismatched key returns:
 { "code": "invalid_api_key", "status": 401, "message": "..." }
 ```
 
+A small number of routes are intentionally **public**: the request reaches the handler without an API key check. These are limited to read paths the dev's frontend may want to call directly to render an invite-acceptance UI before the user signs in. Public routes are explicitly called out in the per-resource docs:
+
+- [`GET /v1/invitations/:code`](/api/invitations) - fetch an invitation preview by code.
+
 ## Error envelope
 
 Every error response uses the same JSON shape:

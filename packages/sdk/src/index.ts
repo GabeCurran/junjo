@@ -4,7 +4,6 @@ import type {
   CreateRoleInput,
   GameId,
   GroupId,
-  Invitation,
   JunjoEvent,
   ListAuditOptions,
   Member,
@@ -24,6 +23,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
+import { InvitationsApi } from "./invitations.js";
 
 // =====================================================================
 // Configuration
@@ -69,7 +69,7 @@ export class Junjo {
     this.groups = new GroupsApi(http, inviteBaseUrl);
     this.roles = new RolesApi();
     this.members = new MembersApi();
-    this.invitations = new InvitationsApi();
+    this.invitations = new InvitationsApi(http);
     this.audit = new AuditApi();
     this.webhooks = new WebhooksApi();
   }
@@ -199,27 +199,6 @@ export class MembersApi {
 }
 
 // =====================================================================
-// Invitations
-// =====================================================================
-
-export class InvitationsApi {
-  async list(
-    _groupId: GroupId,
-    _opts?: PageOptions & { includeExpired?: boolean; includeUsed?: boolean },
-  ): Promise<Page<Invitation>> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async get(_code: string): Promise<Invitation | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async revoke(_code: string): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
 // Audit
 // =====================================================================
 
@@ -269,6 +248,7 @@ export class WebhooksApi {
 
 export { JunjoError } from "./errors.js";
 export { GroupsApi } from "./groups.js";
+export { InvitationsApi } from "./invitations.js";
 
 export type {
   AuditEntry,

@@ -4,7 +4,7 @@ import { Errors } from "../errors.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
-import { createInvitationBody } from "./invitations.schema.js";
+import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
 
 interface WireGroup {
   id: string;
@@ -393,6 +393,75 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     return c.json(serializeInvitation(invitation), 201);
+  });
+
+  r.get("/:id/invitations", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const parsed = listInvitationsQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
+      includeExpired: c.req.query("includeExpired"),
+      includeUsed: c.req.query("includeUsed"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor, includeExpired, includeUsed } = parsed.data;
+
+    let cursorRow: { id: string; createdAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.invitation.findFirst({
+        where: { id: cursor, groupId: group.id },
+        select: { id: true, createdAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const now = new Date();
+    const conditions: Prisma.InvitationWhereInput[] = [];
+    if (!includeUsed) conditions.push({ usedAt: null });
+    if (!includeExpired) {
+      conditions.push({ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] });
+    }
+    if (cursorRow) {
+      conditions.push({
+        OR: [
+          { createdAt: { lt: cursorRow.createdAt } },
+          { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
+        ],
+      });
+    }
+
+    const where: Prisma.InvitationWhereInput = {
+      groupId: group.id,
+      ...(conditions.length > 0 ? { AND: conditions } : {}),
+    };
+
+    const invitations = await prisma.invitation.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = invitations.length > limit;
+    const sliced = hasMore ? invitations.slice(0, limit) : invitations;
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
+
+    return c.json({
+      items: sliced.map(serializeInvitation),
+      nextCursor,
+    });
   });
 
   return r;
