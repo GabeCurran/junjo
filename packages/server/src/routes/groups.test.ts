@@ -2272,3 +2272,389 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id/members/:userId", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    overrides: Partial<{
+      status: "active" | "left" | "kicked" | "invited";
+      metadata: Record<string, unknown>;
+      notesPublic: string | null;
+      notesPrivate: string | null;
+    }> = {},
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: {
+        groupId: groupIdValue,
+        junjoUserId: user.id,
+        status: overrides.status ?? "active",
+        metadata: (overrides.metadata ?? {}) as Prisma.InputJsonValue,
+        notesPublic: overrides.notesPublic ?? null,
+        notesPrivate: overrides.notesPrivate ?? null,
+      },
+    });
+    return { user, member };
+  }
+
+  function patchMember(groupId: string, userId: string, body: unknown, header = authHeader) {
+    return app.request(`/v1/groups/${groupId}/members/${userId}`, {
+      method: "PATCH",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  it("updates metadata and writes a member.metadata.updated audit entry", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", {
+      metadata: { joined: "2026-01-01" },
+    });
+
+    const res = await patchMember(group.id, "user_alice", {
+      metadata: { joined: "2026-01-01", rank: "officer" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: member.id,
+      groupId: group.id,
+      userId: "user_alice",
+      metadata: { joined: "2026-01-01", rank: "officer" },
+      notesPublic: null,
+      notesPrivate: null,
+    });
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.metadata).toEqual({ joined: "2026-01-01", rank: "officer" });
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.action).toBe("member.metadata.updated");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toEqual({
+      before: { metadata: { joined: "2026-01-01" } },
+      after: { metadata: { joined: "2026-01-01", rank: "officer" } },
+    });
+  });
+
+  it("replaces metadata wholesale rather than merging", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", {
+      metadata: { rank: "officer", banner: "blue" },
+    });
+
+    const res = await patchMember(group.id, "user_alice", { metadata: { rank: "recruit" } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { metadata: Record<string, unknown> };
+    expect(body.metadata).toEqual({ rank: "recruit" });
+  });
+
+  it("treats metadata as a change even when supplied unchanged", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", { metadata: { rank: "officer" } });
+
+    const res = await patchMember(group.id, "user_alice", { metadata: { rank: "officer" } });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.action).toBe("member.metadata.updated");
+  });
+
+  it("updates notesPublic alone and writes a member.notes.updated audit entry", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "great healer" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.notesPublic).toBe("great healer");
+    expect(body.notesPrivate).toBeNull();
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.notesPublic).toBe("great healer");
+    expect(stored?.notesPrivate).toBeNull();
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.action).toBe("member.notes.updated");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toEqual({
+      before: { notesPublic: null },
+      after: { notesPublic: "great healer" },
+    });
+  });
+
+  it("updates notesPrivate alone and writes a member.notes.updated audit entry", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+
+    const res = await patchMember(group.id, "user_alice", { notesPrivate: "do not promote" });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.payload).toEqual({
+      before: { notesPrivate: null },
+      after: { notesPrivate: "do not promote" },
+    });
+  });
+
+  it("clears notes when set to null", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", {
+      notesPublic: "great",
+      notesPrivate: "watch out",
+    });
+
+    const res = await patchMember(group.id, "user_alice", {
+      notesPublic: null,
+      notesPrivate: null,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notesPublic: unknown; notesPrivate: unknown };
+    expect(body.notesPublic).toBeNull();
+    expect(body.notesPrivate).toBeNull();
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.action).toBe("member.notes.updated");
+    expect(entry.payload).toEqual({
+      before: { notesPublic: "great", notesPrivate: "watch out" },
+      after: { notesPublic: null, notesPrivate: null },
+    });
+  });
+
+  it("only includes changed notes fields in the audit payload", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", {
+      notesPublic: "keep",
+      notesPrivate: "old",
+    });
+
+    const res = await patchMember(group.id, "user_alice", {
+      notesPublic: "keep",
+      notesPrivate: "new",
+    });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.payload).toEqual({
+      before: { notesPrivate: "old" },
+      after: { notesPrivate: "new" },
+    });
+  });
+
+  it("writes both metadata and notes audit entries when both are changed in one PATCH", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", { metadata: { rank: "recruit" } });
+
+    const res = await patchMember(group.id, "user_alice", {
+      metadata: { rank: "officer" },
+      notesPublic: "promoted",
+    });
+    expect(res.status).toBe(200);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(entries).toHaveLength(2);
+    const actions = entries.map((e) => e.action);
+    expect(actions).toContain("member.metadata.updated");
+    expect(actions).toContain("member.notes.updated");
+  });
+
+  it("writes no audit entry and does not bump anything on a fully no-op notes PATCH", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", {
+      notesPublic: "same",
+      notesPrivate: "same",
+    });
+
+    const res = await patchMember(group.id, "user_alice", {
+      notesPublic: "same",
+      notesPrivate: "same",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; notesPublic: string | null };
+    expect(body.id).toBe(member.id);
+    expect(body.notesPublic).toBe("same");
+
+    const entries = await prisma.auditEntry.count({ where: { groupId: group.id } });
+    expect(entries).toBe(0);
+  });
+
+  it("populates roles in the response", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await prisma.role.create({
+      data: { groupId: group.id, name: "officer", priority: 50 },
+    });
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "x" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([role.id]);
+  });
+
+  it("returns 200 and updates terminal-status members (left / kicked)", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", { status: "kicked" });
+
+    const res = await patchMember(group.id, "user_alice", { notesPrivate: "do not re-invite" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; notesPrivate: string | null };
+    expect(body.status).toBe("kicked");
+    expect(body.notesPrivate).toBe("do not re-invite");
+  });
+
+  it("rejects an empty body with 400", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await patchMember(group.id, "user_alice", {});
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toMatch(/at least one field/);
+  });
+
+  it("rejects notesPublic longer than 5000 characters", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "x".repeat(5001) });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects notesPrivate longer than 5000 characters", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await patchMember(group.id, "user_alice", { notesPrivate: "x".repeat(5001) });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed JSON body", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await patchMember(group.id, "user_alice", "not json");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const res = await patchMember(group.id, "user_unknown", { notesPublic: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await patchMember("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", { notesPublic: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    await seedMember(group.id, "user_alice");
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await patchMember(group.id, "user_alice", { notesPublic: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await app.request(`/v1/groups/${group.id}/members/user_alice`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ notesPublic: "x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("URL-decodes the userId path parameter", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "weird/user");
+
+    const res = await patchMember(group.id, "weird%2Fuser", { notesPublic: "ok" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { userId: string; notesPublic: string | null };
+    expect(body.userId).toBe("weird/user");
+    expect(body.notesPublic).toBe("ok");
+  });
+});

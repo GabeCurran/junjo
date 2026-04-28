@@ -18,7 +18,7 @@ import {
   loadMemberRoleIds,
   serializeMember,
 } from "./members.js";
-import { listMembersQuery } from "./members.schema.js";
+import { listMembersQuery, updateMemberBody } from "./members.schema.js";
 
 interface WireGroup {
   id: string;
@@ -696,6 +696,111 @@ export function groupsRouter(prisma: PrismaClient): Hono {
           } as Prisma.InputJsonValue,
         },
       });
+      return result;
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    return c.json(serializeMember(updated, userId, roleIds));
+  });
+
+  // Update member metadata and / or officer notes. Body is partial:
+  // `{ metadata?, notesPublic?, notesPrivate? }`. An empty body returns
+  // `400 bad_request`. Metadata replaces wholesale (no deep merge) and is
+  // always treated as a change when supplied (jsonb storage may not
+  // preserve key order, so a deep-equal check is unreliable; matches the
+  // `groups.update` precedent). Notes fields are diffed per-field against
+  // the stored row; a value equal to the stored one is a no-op for that
+  // field. The route writes up to two audit entries in the same
+  // transaction: `member.metadata.updated` when metadata is supplied, and
+  // `member.notes.updated` when at least one notes field actually changed.
+  // No audit entry is written for a fully no-op PATCH (notes-only PATCH
+  // where every supplied notes field equals the stored value).
+  // `actorUserId` is null in V1 (no auth-adapter actor wired); the dev's
+  // backend is the trusted layer behind the API key.
+  r.patch("/:id/members/:userId", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = updateMemberBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const data: Prisma.GroupMemberUpdateInput = {};
+    const metadataChanged = body.metadata !== undefined;
+    if (metadataChanged) {
+      data.metadata = body.metadata as Prisma.InputJsonValue;
+    }
+
+    const notesBefore: Record<string, string | null> = {};
+    const notesAfter: Record<string, string | null> = {};
+    if (body.notesPublic !== undefined && body.notesPublic !== member.notesPublic) {
+      notesBefore.notesPublic = member.notesPublic;
+      notesAfter.notesPublic = body.notesPublic;
+      data.notesPublic = body.notesPublic;
+    }
+    if (body.notesPrivate !== undefined && body.notesPrivate !== member.notesPrivate) {
+      notesBefore.notesPrivate = member.notesPrivate;
+      notesAfter.notesPrivate = body.notesPrivate;
+      data.notesPrivate = body.notesPrivate;
+    }
+    const notesChanged = Object.keys(notesAfter).length > 0;
+
+    if (Object.keys(data).length === 0) {
+      const roleIds = await loadMemberRoleIds(prisma, member.id);
+      return c.json(serializeMember(member, userId, roleIds));
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data,
+      });
+      if (metadataChanged) {
+        await tx.auditEntry.create({
+          data: {
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.metadata.updated",
+            targetId: userId,
+            payload: {
+              before: { metadata: (member.metadata ?? {}) as Prisma.InputJsonValue },
+              after: { metadata: body.metadata as Prisma.InputJsonValue },
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      if (notesChanged) {
+        await tx.auditEntry.create({
+          data: {
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.notes.updated",
+            targetId: userId,
+            payload: {
+              before: notesBefore,
+              after: notesAfter,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
       return result;
     });
 

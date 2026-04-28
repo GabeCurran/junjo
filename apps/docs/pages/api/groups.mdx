@@ -602,3 +602,55 @@ Lists the members of a group with cursor-based pagination. Returns rows in every
 | `bad_request` | 400 | `limit` out of range, or `cursor` does not point at a member of this group. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PATCH /v1/groups/:id/members/:userId`
+
+Updates a single member's metadata and / or officer notes. The body is partial: any subset of `{ metadata, notesPublic, notesPrivate }`. An empty body returns `400 bad_request`.
+
+The route writes up to two audit entries in one transaction depending on which subset of fields actually changed (see [Audit log](#audit-log) below). A fully no-op PATCH (notes-only PATCH where every supplied notes field equals the stored value) writes no audit entry, performs no DB update, and returns the unchanged member.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+
+### Request
+
+```json
+{
+  "metadata": { "rank": "officer" },
+  "notesPublic": "great healer",
+  "notesPrivate": "do not promote yet"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `metadata` | no | Object. Replaces wholesale (no deep merge). Always treated as a change when supplied. |
+| `notesPublic` | no | String up to 5000 characters, or `null` to clear. Diffed per-field; supplying the same value as stored is a no-op. |
+| `notesPrivate` | no | String up to 5000 characters, or `null` to clear. Same diff rule as `notesPublic`. |
+
+### Response
+
+`200 OK` with the post-state `Member` body (same wire format as the other member endpoints). Terminal-status members (`left`, `kicked`) can also be updated; the route does not gate on `status`.
+
+### Audit log
+
+Up to two entries are written, both with `actorUserId` set to `null` (V1 has no auth-adapter actor wired):
+
+| Action | When | Payload |
+|--------|------|---------|
+| `member.metadata.updated` | `metadata` was supplied in the body | `{ before: { metadata: <old> }, after: { metadata: <new> } }` |
+| `member.notes.updated` | At least one supplied notes field differed from the stored value | `{ before: <changed fields only>, after: <changed fields only> }` |
+
+`targetId` on each entry is the member's external user id.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, malformed JSON, notes longer than 5000 chars. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

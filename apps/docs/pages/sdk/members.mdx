@@ -2,7 +2,7 @@
 
 The members namespace operates on `Member` rows: a member is one user's relationship to one group. The same external user id can be a member of many groups within the same game; each membership is a separate `Member` row.
 
-The methods listed as **shipped** are real implementations. Other methods (`setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`) are stubbed and throw `not_implemented` until later phases.
+The methods listed as **shipped** are real implementations. Other methods (`assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`) are stubbed and throw `not_implemented` until later phases.
 
 ## `get(groupId, userId)` - shipped
 
@@ -130,3 +130,73 @@ for (const m of memberships) {
 ### See also
 
 - [`GET /v1/users/:userId/members`](/api/members) - the underlying HTTP route.
+
+## `setMetadata(groupId, userId, metadata)` - shipped
+
+Replaces a member's metadata wholesale. The supplied object replaces whatever was stored; there is no deep merge. Returns the updated `Member`.
+
+```ts
+const updated = await junjo.members.setMetadata(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { rank: "officer", joinedRaid: "2026-04-01" },
+);
+```
+
+The server treats every supplied metadata as a change (it does not deep-equal against the stored row, since jsonb does not reliably preserve key order). A PATCH that supplies the same metadata as the stored row still writes a `member.metadata.updated` audit entry. Pass an empty object (`{}`) to clear all keys.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / soft-deleted / cross-game, or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. Thrown. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+### See also
+
+- [`PATCH /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+
+## `setNotes(groupId, userId, input)` - shipped
+
+Updates the officer notes attached to a member. Both fields are diffed per-field against the stored row: supplying the same value as stored is a no-op for that field (no DB write, no audit entry, member returned unchanged).
+
+```ts
+await junjo.members.setNotes("grp_xyz" as GroupId, "user_alice" as UserId, {
+  notesPublic: "great healer",
+  notesPrivate: "do not promote yet",
+});
+```
+
+Notes are scoped per-member (not per-game). `notesPublic` is conventionally visible to other group members in the dev's UI; `notesPrivate` is officer-only ("don't promote, has been late on raids"). Junjo stores them verbatim and never branches on them.
+
+Pass `null` to either field to clear it. Omitting a field leaves it untouched.
+
+```ts
+// clear public notes; leave private notes alone
+await junjo.members.setNotes("grp_xyz" as GroupId, "user_alice" as UserId, {
+  notesPublic: null,
+});
+```
+
+### Input
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `notesPublic` | string \| null \| undefined | Up to 5000 chars. `null` clears. Omit to leave alone. |
+| `notesPrivate` | string \| null \| undefined | Same rules as `notesPublic`. |
+
+### Returns
+
+`Member` (the post-update wire format).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Input has neither `notesPublic` nor `notesPrivate`, or one of them is over 5000 characters. |
+| `not_found` | 404 | Group missing / soft-deleted / cross-game, or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PATCH /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.

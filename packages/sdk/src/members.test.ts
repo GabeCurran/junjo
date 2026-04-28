@@ -310,3 +310,180 @@ describe("members.listForUser", () => {
     await junjo.members.listForUser("weird/user" as UserId);
   });
 });
+
+describe("members.setMetadata", () => {
+  it("PATCHes /v1/groups/:id/members/:userId with the metadata body and auth header", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PATCH");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBe("application/json");
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ metadata: { rank: "officer" } });
+      return jsonResponse({
+        ...memberFixture,
+        metadata: { rank: "officer" },
+      });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.members.setMetadata("grp_1" as GroupId, "user_alice" as UserId, {
+      rank: "officer",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.metadata).toEqual({ rank: "officer" });
+    expect(member.joinedAt).toBeInstanceOf(Date);
+  });
+
+  it("sends an empty metadata object verbatim", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ metadata: {} });
+      return jsonResponse({ ...memberFixture, metadata: {} });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.setMetadata("grp_1" as GroupId, "user_alice" as UserId, {});
+  });
+
+  it("throws JunjoError on a non-2xx response", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no member" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.setMetadata("grp_1" as GroupId, "user_alice" as UserId, { x: 1 }),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "not_found" });
+  });
+
+  it("URL-encodes the group id and user id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members/weird%2Fuser");
+      return jsonResponse(memberFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.setMetadata("has/slash" as GroupId, "weird/user" as UserId, {});
+  });
+});
+
+describe("members.setNotes", () => {
+  it("PATCHes /v1/groups/:id/members/:userId with notesPublic alone", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PATCH");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice");
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ notesPublic: "great healer" });
+      return jsonResponse({ ...memberFixture, notesPublic: "great healer" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.members.setNotes("grp_1" as GroupId, "user_alice" as UserId, {
+      notesPublic: "great healer",
+    });
+    expect(member.notesPublic).toBe("great healer");
+    expect(member.notesPrivate).toBeNull();
+  });
+
+  it("PATCHes both notes fields when both are supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ notesPublic: "pub", notesPrivate: "priv" });
+      return jsonResponse({ ...memberFixture, notesPublic: "pub", notesPrivate: "priv" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.members.setNotes("grp_1" as GroupId, "user_alice" as UserId, {
+      notesPublic: "pub",
+      notesPrivate: "priv",
+    });
+  });
+
+  it("sends notesPublic: null verbatim to clear it", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ notesPublic: null });
+      return jsonResponse({ ...memberFixture, notesPublic: null });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.members.setNotes("grp_1" as GroupId, "user_alice" as UserId, {
+      notesPublic: null,
+    });
+  });
+
+  it("omits undefined fields from the body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({ notesPrivate: "x" });
+      expect("notesPublic" in body).toBe(false);
+      return jsonResponse({ ...memberFixture, notesPrivate: "x" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.members.setNotes("grp_1" as GroupId, "user_alice" as UserId, {
+      notesPrivate: "x",
+    });
+  });
+
+  it("throws JunjoError on a non-2xx response", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "too long" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.setNotes("grp_1" as GroupId, "user_alice" as UserId, { notesPublic: "x" }),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes the group id and user id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members/weird%2Fuser");
+      return jsonResponse(memberFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.setNotes("has/slash" as GroupId, "weird/user" as UserId, {
+      notesPublic: "x",
+    });
+  });
+});

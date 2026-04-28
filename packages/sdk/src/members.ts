@@ -93,15 +93,26 @@ export class MembersApi {
   }
 
   async setMetadata(
-    _groupId: GroupId,
-    _userId: UserId,
-    _metadata: Record<string, unknown>,
+    groupId: GroupId,
+    userId: UserId,
+    metadata: Record<string, unknown>,
   ): Promise<Member> {
-    throw NOT_IMPLEMENTED;
+    const wire = await this.http.patch<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      { metadata },
+    );
+    return deserializeMember(wire);
   }
 
-  async setNotes(_groupId: GroupId, _userId: UserId, _input: SetMemberNotesInput): Promise<Member> {
-    throw NOT_IMPLEMENTED;
+  async setNotes(groupId: GroupId, userId: UserId, input: SetMemberNotesInput): Promise<Member> {
+    const body: Record<string, string | null> = {};
+    if (input.notesPublic !== undefined) body.notesPublic = input.notesPublic;
+    if (input.notesPrivate !== undefined) body.notesPrivate = input.notesPrivate;
+    const wire = await this.http.patch<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      body,
+    );
+    return deserializeMember(wire);
   }
 
   async assignRole(_groupId: GroupId, _userId: UserId, _roleId: RoleId): Promise<Member> {
