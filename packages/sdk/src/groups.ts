@@ -200,12 +200,22 @@ export class GroupsApi {
     await this.http.post<unknown>(`/v1/invitations/${encodeURIComponent(code)}/decline`, body);
   }
 
-  async leave(_groupId: GroupId): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async leave(groupId: GroupId, userId: UserId): Promise<Member> {
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/leave`,
+      { userId },
+    );
+    return deserializeMember(wire);
   }
 
-  async kick(_groupId: GroupId, _userId: UserId, _opts?: { reason?: string }): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async kick(groupId: GroupId, userId: UserId, opts?: { reason?: string }): Promise<Member> {
+    const body: Record<string, string> = {};
+    if (opts?.reason !== undefined) body.reason = opts.reason;
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/kick`,
+      body,
+    );
+    return deserializeMember(wire);
   }
 
   // ------ Real-time ------

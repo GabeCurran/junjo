@@ -32,3 +32,18 @@ export const updateGroupBody = z
   });
 
 export type UpdateGroupBody = z.infer<typeof updateGroupBody>;
+
+export const leaveGroupBody = z.object({
+  userId: z.string().min(1),
+});
+
+export type LeaveGroupBody = z.infer<typeof leaveGroupBody>;
+
+export const kickMemberBody = z
+  .object({
+    reason: z.string().max(500).nullable().optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export type KickMemberBody = z.infer<typeof kickMemberBody>;

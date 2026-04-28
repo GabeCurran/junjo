@@ -30,3 +30,20 @@ export async function findOrCreateJunjoUser(
   });
   return user.id;
 }
+
+// Read-only counterpart for routes that operate on an existing user
+// (leave, kick, future member.get). Returns null when no ExternalIdentity
+// row exists for the (gameId, externalUserId) pair, which the caller
+// translates into a 404 on the consuming resource (e.g. "member" not
+// "user", since the user might exist for other purposes).
+export async function findJunjoUserId(
+  client: IdentityClient,
+  gameId: string,
+  externalUserId: string,
+): Promise<string | null> {
+  const row = await client.externalIdentity.findUnique({
+    where: { gameId_externalUserId: { gameId, externalUserId } },
+    select: { junjoUserId: true },
+  });
+  return row?.junjoUserId ?? null;
+}

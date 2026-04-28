@@ -424,6 +424,77 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 - [`POST /v1/invitations/:code/decline`](/api/invitations) - the underlying HTTP route.
 
+## `leave(groupId, userId)` - shipped
+
+Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
+
+```ts
+const member = await junjo.groups.leave("grp_xyz" as GroupId, "user_alice" as UserId);
+member.status;  // "left"
+```
+
+The `userId` is the dev's external user id. As with `acceptInvitation`, V1's trust boundary is the dev's backend: the route doesn't authenticate the leaver itself, it trusts the API-key holder to identify them.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to leave. |
+| `userId` | `UserId` | The leaver's external user id. Must already be a member. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows (empty in V1).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `userId` or malformed JSON. |
+| `not_found` | 404 | The group is unknown / soft-deleted / cross-game, OR the user has no `ExternalIdentity` for this game, OR the user has no `GroupMember` row in this group. The three causes collapse into one code so existence is not leaked. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/leave`](/api/groups) - the underlying HTTP route.
+
+## `kick(groupId, userId, opts?)` - shipped
+
+Removes a member from the group on the dev backend's behalf. Returns the post-state `Member` (status `"kicked"`). Idempotent on already-kicked members; non-active states (`left`, `invited`) are returned unchanged with no audit entry.
+
+```ts
+const member = await junjo.groups.kick(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { reason: "violated guild rules" },
+);
+member.status; // "kicked"
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group. |
+| `userId` | `UserId` | The kicked user's external id. |
+| `opts.reason` | string | Optional. Up to 500 characters. Lands on the `member.kicked` audit entry's payload; `null` when omitted. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `reason` longer than 500 characters. |
+| `not_found` | 404 | Same collapsed-existence semantics as `leave`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/members/:userId/kick`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`bulkInvite`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`bulkInvite`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

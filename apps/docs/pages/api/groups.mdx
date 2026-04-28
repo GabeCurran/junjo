@@ -444,3 +444,108 @@ By default the response excludes invitations that have already been used (`usedA
 | `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/leave`
+
+Voluntarily removes a member from a group. The body's `userId` is the dev's external user id (the one returned by the configured auth provider). Only an `active` member is transitioned; any other state is returned unchanged with no audit entry, so calling leave on an already-left or kicked member is idempotent.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{ "userId": "user_alice" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | The dev's external user id. Must already have an `ExternalIdentity` row for the calling game and a `GroupMember` row in this group. |
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` reflects the member's current `MemberRole` rows (empty in V1 until Phase 3.2 wires role assignment).
+
+```json
+{
+  "id": "ckxxx...",
+  "groupId": "ckyyy...",
+  "userId": "user_alice",
+  "status": "left",
+  "roles": [],
+  "metadata": {},
+  "notesPublic": null,
+  "notesPrivate": null,
+  "joinedAt": "2026-04-28T05:00:00.000Z"
+}
+```
+
+For an idempotent call (member already in `left`, `kicked`, or `invited` state) the response body is the unchanged member; the `status` field tells the caller what happened.
+
+### Audit log (active -> left transition only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.left` |
+| `groupId` | the group id |
+| `targetId` | the leaver's external user id |
+| `actorUserId` | the leaver's resolved JunjoUser id (the user is the actor of their own departure) |
+| `payload` | `{ memberId, reason: "left" }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `userId` or malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. The three cases share one error code so existence is not leaked. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/kick`
+
+Removes a member from a group on the dev backend's behalf. Only an `active` member is transitioned to `kicked`; any other state is returned unchanged with no audit entry, so a second kick (or a kick on a left member) is idempotent.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The kicked user's external id (the one the dev's auth provider returns). |
+
+### Request
+
+The body is optional; an empty body, `{}`, and `{ "reason": null }` are all accepted.
+
+```json
+{ "reason": "violated guild rules" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `reason` | no | Free-form string up to 500 characters, or `null`, or omitted. Lands on the audit `payload`. |
+
+### Response
+
+`200 OK` with the post-state `Member` body. Shape is identical to `POST /v1/groups/:id/leave`'s response.
+
+For an idempotent call (member already kicked, or in `left`/`invited` state) the response body is the unchanged member; the `status` field tells the caller what happened.
+
+### Audit log (active -> kicked transition only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.kicked` |
+| `groupId` | the group id |
+| `targetId` | the kicked user's external id |
+| `actorUserId` | `null` (V1 has no auth-adapter actor wired; the dev's backend is the trusted layer behind the API key) |
+| `payload` | `{ memberId, reason }` where `reason` is the body's value, or `null` when omitted |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

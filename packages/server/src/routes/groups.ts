@@ -1,10 +1,18 @@
 import type { Group, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
+import { findJunjoUserId } from "../identity.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
-import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
+import {
+  createGroupBody,
+  kickMemberBody,
+  leaveGroupBody,
+  listGroupsQuery,
+  updateGroupBody,
+} from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
+import { loadMemberRoleIds, serializeMember } from "./members.js";
 
 interface WireGroup {
   id: string;
@@ -462,6 +470,127 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       items: sliced.map(serializeInvitation),
       nextCursor,
     });
+  });
+
+  // The user identified by `userId` voluntarily leaves the group. Only
+  // transitions an active member to "left"; non-active rows are returned
+  // unchanged with no audit entry, so a leaver who is already-left or
+  // already-kicked sees an idempotent 200 with their current state. A
+  // user with no `ExternalIdentity` for this game collapses with the
+  // "member row missing" case to 404 (existence is not leaked).
+  r.post("/:id/leave", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = leaveGroupBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { userId } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    if (member.status !== "active") {
+      const roleIds = await loadMemberRoleIds(prisma, member.id);
+      return c.json(serializeMember(member, userId, roleIds));
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data: { status: "left", leftAt: new Date() },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: junjoUserId,
+          action: "member.left",
+          targetId: userId,
+          payload: {
+            memberId: result.id,
+            reason: "left",
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    return c.json(serializeMember(updated, userId, roleIds));
+  });
+
+  // The dev's backend kicks a member out of the group. Only transitions
+  // an active member to "kicked"; non-active rows are returned unchanged
+  // with no audit entry. The optional `reason` lands on the audit
+  // `payload`. `actorUserId` is null in V1 (no auth-adapter actor wired);
+  // the kicker's identity is the dev's backend itself, which is the
+  // trusted layer behind the API key.
+  r.post("/:id/members/:userId/kick", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = kickMemberBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const reasonValue = parsed.data.reason ?? null;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    if (member.status !== "active") {
+      const roleIds = await loadMemberRoleIds(prisma, member.id);
+      return c.json(serializeMember(member, userId, roleIds));
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data: { status: "kicked", leftAt: new Date() },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.kicked",
+          targetId: userId,
+          payload: {
+            memberId: result.id,
+            reason: reasonValue,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    return c.json(serializeMember(updated, userId, roleIds));
   });
 
   return r;

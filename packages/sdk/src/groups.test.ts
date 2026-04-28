@@ -1164,3 +1164,143 @@ describe("groups.declineInvitation", () => {
     ).rejects.toMatchObject({ name: "JunjoError", code: "permission_denied" });
   });
 });
+
+describe("groups.leave", () => {
+  const leftFixture = { ...memberFixture, status: "left" };
+
+  it("POSTs /v1/groups/:id/leave with the userId in the body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/leave");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ userId: "user_alice" });
+      return jsonResponse(leftFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.groups.leave("grp_1" as GroupId, "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.status).toBe("left");
+    expect(member.userId).toBe("user_alice");
+    expect(member.joinedAt).toBeInstanceOf(Date);
+  });
+
+  it("URL-encodes the group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/leave");
+      return jsonResponse(leftFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.leave("has/slash" as GroupId, "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("throws JunjoError on 404 not_found", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "member not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.leave("grp_1" as GroupId, "user_unknown" as UserId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+});
+
+describe("groups.kick", () => {
+  const kickedFixture = { ...memberFixture, status: "kicked" };
+
+  it("POSTs /v1/groups/:id/members/:userId/kick with the reason in the body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members/user_alice/kick");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ reason: "trolling" });
+      return jsonResponse(kickedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.groups.kick("grp_1" as GroupId, "user_alice" as UserId, {
+      reason: "trolling",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.status).toBe("kicked");
+    expect(member.userId).toBe("user_alice");
+    expect(member.joinedAt).toBeInstanceOf(Date);
+  });
+
+  it("POSTs an empty body when no reason is supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({});
+      return jsonResponse(kickedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.kick("grp_1" as GroupId, "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("URL-encodes the group id and user id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members/weird%2Fuser/kick");
+      return jsonResponse(kickedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.kick("has/slash" as GroupId, "weird/user" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("throws JunjoError on 404 not_found", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "member not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.kick("grp_1" as GroupId, "user_unknown" as UserId, { reason: "x" }),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "not_found",
+      status: 404,
+    });
+  });
+});

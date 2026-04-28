@@ -1,4 +1,21 @@
-import type { GroupMember } from "@prisma/client";
+import type { GroupMember, Prisma, PrismaClient } from "@prisma/client";
+
+type MembersClient = PrismaClient | Prisma.TransactionClient;
+
+// Loads the role ids for a member. Centralized so the leave / kick / get
+// paths emit the same wire shape; Phase 3.2 (role assignment) will add
+// the writers that populate `MemberRole`. Until then this query returns
+// an empty array.
+export async function loadMemberRoleIds(
+  client: MembersClient,
+  groupMemberId: string,
+): Promise<string[]> {
+  const rows = await client.memberRole.findMany({
+    where: { groupMemberId },
+    select: { roleId: true },
+  });
+  return rows.map((r) => r.roleId);
+}
 
 export interface WireMember {
   id: string;

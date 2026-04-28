@@ -1449,3 +1449,437 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/invitations", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/leave", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    status: "active" | "left" | "kicked" | "invited" = "active",
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status },
+    });
+    return { user, member };
+  }
+
+  function postLeave(groupId: string, body: unknown, header = authHeader) {
+    return app.request(`/v1/groups/${groupId}/leave`, {
+      method: "POST",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  it("transitions an active member to left and writes a member.left audit entry", async () => {
+    const group = await seedGroup();
+    const { user, member } = await seedMember(group.id, "user_alice", "active");
+
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: member.id,
+      groupId: group.id,
+      userId: "user_alice",
+      status: "left",
+      roles: [],
+      metadata: {},
+      notesPublic: null,
+      notesPrivate: null,
+    });
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("left");
+    expect(stored?.leftAt).not.toBeNull();
+
+    const audit = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(audit).toHaveLength(1);
+    const [entry] = audit;
+    if (!entry) throw new Error("expected audit entry");
+    expect(entry.action).toBe("member.left");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBe(user.id);
+    expect(entry.payload).toMatchObject({ memberId: member.id, reason: "left" });
+  });
+
+  it("returns the member roles populated from MemberRole rows", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "active");
+    const role = await prisma.role.create({
+      data: { groupId: group.id, name: "officer", priority: 50 },
+    });
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([role.id]);
+  });
+
+  it("is idempotent on an already-left member (no audit, leftAt unchanged)", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "left");
+    const originalLeftAt = new Date("2026-01-01T00:00:00Z");
+    await prisma.groupMember.update({
+      where: { id: member.id },
+      data: { leftAt: originalLeftAt },
+    });
+
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("left");
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("left");
+    expect(stored?.leftAt?.toISOString()).toBe(originalLeftAt.toISOString());
+    const audit = await prisma.auditEntry.count({ where: { groupId: group.id } });
+    expect(audit).toBe(0);
+  });
+
+  it("is idempotent on a kicked member (does not transition kicked to left)", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "kicked");
+
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("kicked");
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("kicked");
+    const audit = await prisma.auditEntry.count({ where: { groupId: group.id } });
+    expect(audit).toBe(0);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const res = await postLeave(group.id, { userId: "user_unknown" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await postLeave("ckxxxxxxxxxxxxxxxxxxxxxxxx", { userId: "user_alice" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    await seedMember(group.id, "user_alice", "active");
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await postLeave(group.id, { userId: "user_alice" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a body missing userId", async () => {
+    const group = await seedGroup();
+    const res = await postLeave(group.id, {});
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}/leave`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: "user_alice" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/kick", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    status: "active" | "left" | "kicked" | "invited" = "active",
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status },
+    });
+    return { user, member };
+  }
+
+  function postKick(
+    groupId: string,
+    userId: string,
+    body: unknown = undefined,
+    header = authHeader,
+  ) {
+    return app.request(`/v1/groups/${groupId}/members/${userId}/kick`, {
+      method: "POST",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  it("transitions an active member to kicked and writes a member.kicked audit entry with reason", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "active");
+
+    const res = await postKick(group.id, "user_alice", { reason: "trolling" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: member.id,
+      groupId: group.id,
+      userId: "user_alice",
+      status: "kicked",
+      roles: [],
+      metadata: {},
+      notesPublic: null,
+      notesPrivate: null,
+    });
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("kicked");
+    expect(stored?.leftAt).not.toBeNull();
+
+    const audit = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(audit).toHaveLength(1);
+    const [entry] = audit;
+    if (!entry) throw new Error("expected audit entry");
+    expect(entry.action).toBe("member.kicked");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toMatchObject({ memberId: member.id, reason: "trolling" });
+  });
+
+  it("stores reason as null when the body is omitted", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", "active");
+
+    const res = await postKick(group.id, "user_alice");
+    expect(res.status).toBe(200);
+
+    const audit = await prisma.auditEntry.findMany({ where: { groupId: group.id } });
+    expect(audit).toHaveLength(1);
+    const [entry] = audit;
+    if (!entry) throw new Error("expected audit entry");
+    expect(entry.payload).toMatchObject({ reason: null });
+  });
+
+  it("returns the member roles populated from MemberRole rows", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "active");
+    const role = await prisma.role.create({
+      data: { groupId: group.id, name: "officer", priority: 50 },
+    });
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await postKick(group.id, "user_alice", { reason: null });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([role.id]);
+  });
+
+  it("is idempotent on an already-kicked member (no audit, leftAt unchanged)", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "kicked");
+    const originalLeftAt = new Date("2026-01-01T00:00:00Z");
+    await prisma.groupMember.update({
+      where: { id: member.id },
+      data: { leftAt: originalLeftAt },
+    });
+
+    const res = await postKick(group.id, "user_alice", { reason: "again" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("kicked");
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("kicked");
+    expect(stored?.leftAt?.toISOString()).toBe(originalLeftAt.toISOString());
+    const audit = await prisma.auditEntry.count({ where: { groupId: group.id } });
+    expect(audit).toBe(0);
+  });
+
+  it("is idempotent on a left member (does not transition left to kicked)", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "left");
+
+    const res = await postKick(group.id, "user_alice", { reason: "late" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("left");
+
+    const stored = await prisma.groupMember.findUnique({ where: { id: member.id } });
+    expect(stored?.status).toBe("left");
+    const audit = await prisma.auditEntry.count({ where: { groupId: group.id } });
+    expect(audit).toBe(0);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+
+    const res = await postKick(group.id, "user_alice", { reason: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const res = await postKick(group.id, "user_unknown", { reason: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await postKick("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", { reason: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    await seedMember(group.id, "user_alice", "active");
+    const res = await postKick(group.id, "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await postKick(group.id, "user_alice");
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a reason longer than 500 characters", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", "active");
+    const res = await postKick(group.id, "user_alice", { reason: "x".repeat(501) });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice", "active");
+    const res = await app.request(`/v1/groups/${group.id}/members/user_alice/kick`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("URL-decodes the userId path parameter", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "weird/user", "active");
+
+    const res = await postKick(group.id, "weird%2Fuser", { reason: "ok" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { userId: string; status: string };
+    expect(body.userId).toBe("weird/user");
+    expect(body.status).toBe("kicked");
+  });
+});
