@@ -3,6 +3,8 @@ import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
+import { generateInvitationCode, serializeInvitation } from "./invitations.js";
+import { inviteByUserIdBody } from "./invitations.schema.js";
 
 interface WireGroup {
   id: string;
@@ -331,6 +333,54 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       where: { groupId: updated.id, status: "active" },
     });
     return c.json(serializeGroup(updated, memberCount));
+  });
+
+  r.post("/:id/invitations", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = inviteByUserIdBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const invitation = await prisma.$transaction(async (tx) => {
+      const created = await tx.invitation.create({
+        data: {
+          groupId: group.id,
+          code: generateInvitationCode(),
+          roleId: body.roleId ?? null,
+          targetUserId: body.targetUserId,
+          createdByUserId: null,
+        },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.invited",
+          targetId: body.targetUserId,
+          payload: {
+            invitationId: created.id,
+            code: created.code,
+            targetUserId: body.targetUserId,
+            roleId: body.roleId ?? null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return created;
+    });
+
+    return c.json(serializeInvitation(invitation), 201);
   });
 
   return r;

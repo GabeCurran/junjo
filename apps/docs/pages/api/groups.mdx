@@ -313,3 +313,72 @@ Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Id
 ### Background sweeper
 
 Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron in V1; see `docs/03-architecture.md` (Background sweeps) for the rationale.
+
+## `POST /v1/groups/:id/invitations`
+
+Creates a direct-user invitation. The recipient is the dev's external user id (the one returned by the configured auth adapter). The server picks a unique 16-character hex code; future endpoints (`GET /v1/invitations/:code`, accept/decline) read invitations by that code.
+
+Soft-deleted groups and groups belonging to a different game return `404 not_found` (existence is not leaked across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{
+  "targetUserId": "user_alice",
+  "roleId": "role_officer"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `targetUserId` | yes | The external user id from the dev's auth provider. Stored verbatim; the server does not require a corresponding `JunjoUser` row at invite time. |
+| `roleId` | no | The role the invited user will be granted on accept. Not validated against the group's roles in V1; that arrives with Phase 3. |
+
+A missing `targetUserId`, an empty string, or a malformed JSON body all return `400 bad_request`.
+
+### Response
+
+`201 Created` with an `Invitation` body. Timestamps are ISO 8601 strings.
+
+```json
+{
+  "id": "ckxxx...",
+  "groupId": "ckyyy...",
+  "code": "abcd1234abcd1234",
+  "roleId": "role_officer",
+  "targetUserId": "user_alice",
+  "createdBy": null,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "expiresAt": null,
+  "usedAt": null,
+  "usedBy": null
+}
+```
+
+`createdBy` is `null` in V1 because no auth-adapter actor is wired yet on this code path; the field parallels `AuditEntry.actorUserId` and will populate once Phase 2.4 (`acceptInvitation`) and Phase 6 (auth adapters) land.
+
+### Audit log
+
+Every successful create writes one entry:
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.invited` |
+| `groupId` | the group id |
+| `targetId` | the invited `targetUserId` |
+| `actorUserId` | `null` |
+| `payload` | `{ invitationId, code, targetUserId, roleId }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation, malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

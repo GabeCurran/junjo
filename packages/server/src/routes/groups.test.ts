@@ -931,3 +931,178 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/restore", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "Invitation", "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function postInvite(groupId: string, body: unknown, header: string = authHeader) {
+    return app.request(`/v1/groups/${groupId}/invitations`, {
+      method: "POST",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  async function seedGroup(
+    overrides: Partial<{ gameId: string; softDeletedAt: Date | null }> = {},
+  ) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  it("creates a direct-user invitation with a generated code", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { targetUserId: "user_alice" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      groupId: group.id,
+      targetUserId: "user_alice",
+      roleId: null,
+      createdBy: null,
+      usedAt: null,
+      usedBy: null,
+      expiresAt: null,
+    });
+    expect(typeof body.id).toBe("string");
+    expect(typeof body.code).toBe("string");
+    expect(body.code as string).toMatch(/^[a-f0-9]{16}$/);
+    expect(typeof body.createdAt).toBe("string");
+
+    const stored = await prisma.invitation.findUnique({ where: { id: body.id as string } });
+    expect(stored?.groupId).toBe(group.id);
+    expect(stored?.targetUserId).toBe("user_alice");
+    expect(stored?.createdByUserId).toBeNull();
+    expect(stored?.code).toBe(body.code);
+  });
+
+  it("forwards an optional roleId verbatim", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, {
+      targetUserId: "user_bob",
+      roleId: "role_officer",
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { roleId: string | null };
+    expect(body.roleId).toBe("role_officer");
+
+    const stored = await prisma.invitation.findFirst({ where: { groupId: group.id } });
+    expect(stored?.roleId).toBe("role_officer");
+  });
+
+  it("writes a member.invited audit entry per call", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, {
+      targetUserId: "user_carol",
+      roleId: "role_x",
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; code: string };
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "member.invited" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe("user_carol");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toMatchObject({
+      invitationId: body.id,
+      code: body.code,
+      targetUserId: "user_carol",
+      roleId: "role_x",
+    });
+  });
+
+  it("generates a unique code per call", async () => {
+    const group = await seedGroup();
+    const codes = new Set<string>();
+    for (let i = 0; i < 5; i++) {
+      const res = await postInvite(group.id, { targetUserId: `user_${i}` });
+      const body = (await res.json()) as { code: string };
+      codes.add(body.code);
+    }
+    expect(codes.size).toBe(5);
+  });
+
+  it("rejects a body missing targetUserId", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { roleId: "role_x" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects an empty targetUserId", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { targetUserId: "" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed JSON body", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, "not json");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const res = await postInvite("ckxxxxxxxxxxxxxxxxxxxxxxxx", { targetUserId: "user_x" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await postInvite(group.id, { targetUserId: "user_x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await postInvite(group.id, { targetUserId: "user_x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}/invitations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ targetUserId: "user_x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});

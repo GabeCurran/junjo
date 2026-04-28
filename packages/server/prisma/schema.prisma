@@ -240,7 +240,9 @@ model Invitation {
   roleId          String?
   // null = open code/link invite. Set = direct push to a specific user.
   targetUserId    String?
-  createdByUserId String
+  // null when issued by the server itself (no auth-adapter actor wired yet
+  // in V1; parallels AuditEntry.actorUserId).
+  createdByUserId String?
   createdAt       DateTime  @default(now())
   expiresAt       DateTime?
   usedAt          DateTime?

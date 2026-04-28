@@ -209,6 +209,46 @@ group.softDeletedAt; // null
 
 - [`POST /v1/groups/:id/restore`](/api/groups) - the underlying HTTP route.
 
+## `inviteByUserId(groupId, userId, opts?)` - shipped
+
+Creates a direct-user invitation. The recipient is identified by the external user id from the dev's auth provider (the same id `whoami` will return). The server generates a unique 16-character hex code; subsequent endpoints (accept, decline, get-by-code) read invitations by the code.
+
+```ts
+const invitation = await junjo.groups.inviteByUserId(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { roleId: "role_officer" as RoleId }, // optional
+);
+
+invitation.code;          // "abcd1234abcd1234"
+invitation.targetUserId;  // "user_alice"
+invitation.roleId;        // "role_officer"
+invitation.createdBy;     // null in V1 (no auth-adapter actor wired)
+invitation.createdAt;     // Date
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `roleId` | `RoleId` | none | The role to grant when the invitation is accepted. Not validated against the group's roles in V1; Phase 3 wires that. |
+
+### Returns
+
+`Invitation` with timestamps deserialized to `Date`. `createdBy` is `null` in V1 because no acting user is resolved on this path yet; the field will populate once auth adapters and the `acceptInvitation` flow land.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing `targetUserId`, malformed body. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). Thrown, not converted to `null`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-The invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`inviteByCode`, `inviteByLink`, `bulkInvite`, `acceptInvitation`, `declineInvitation`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

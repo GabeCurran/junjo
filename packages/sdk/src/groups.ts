@@ -8,6 +8,7 @@ import type {
   GroupRelationshipType,
   GroupVisibility,
   Invitation,
+  InvitationId,
   JunjoEvent,
   Member,
   Page,
@@ -20,6 +21,34 @@ import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 
 const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
+
+export interface WireInvitation {
+  id: string;
+  groupId: string;
+  code: string;
+  roleId: string | null;
+  targetUserId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  usedAt: string | null;
+  usedBy: string | null;
+}
+
+export function deserializeInvitation(w: WireInvitation): Invitation {
+  return {
+    id: w.id as InvitationId,
+    groupId: w.groupId as GroupId,
+    code: w.code,
+    roleId: w.roleId === null ? null : (w.roleId as RoleId),
+    targetUserId: w.targetUserId === null ? null : (w.targetUserId as UserId),
+    createdBy: w.createdBy === null ? null : (w.createdBy as UserId),
+    createdAt: new Date(w.createdAt),
+    expiresAt: w.expiresAt === null ? null : new Date(w.expiresAt),
+    usedAt: w.usedAt === null ? null : new Date(w.usedAt),
+    usedBy: w.usedBy === null ? null : (w.usedBy as UserId),
+  };
+}
 
 export interface WireGroup {
   id: string;
@@ -104,11 +133,17 @@ export class GroupsApi {
   // ------ Membership ------
 
   async inviteByUserId(
-    _groupId: GroupId,
-    _userId: UserId,
-    _opts?: { roleId?: RoleId },
+    groupId: GroupId,
+    userId: UserId,
+    opts?: { roleId?: RoleId },
   ): Promise<Invitation> {
-    throw NOT_IMPLEMENTED;
+    const body: { targetUserId: string; roleId?: string } = { targetUserId: userId };
+    if (opts?.roleId !== undefined) body.roleId = opts.roleId;
+    const wire = await this.http.post<WireInvitation>(
+      `/v1/groups/${encodeURIComponent(groupId)}/invitations`,
+      body,
+    );
+    return deserializeInvitation(wire);
   }
 
   async inviteByCode(_groupId: GroupId, _input?: CreateInvitationInput): Promise<Invitation> {

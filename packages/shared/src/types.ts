@@ -181,7 +181,9 @@ export interface Invitation {
   // null = open invite (anyone with the code/link). Set = direct push
   // to a specific user.
   targetUserId: UserId | null;
-  createdBy: UserId;
+  // null when issued by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels AuditEntry.actorUserId).
+  createdBy: UserId | null;
   createdAt: Date;
   expiresAt: Date | null;
   usedAt: Date | null;
