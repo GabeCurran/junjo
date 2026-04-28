@@ -80,8 +80,22 @@ export function deserializeGroup(w: WireGroup): Group {
   };
 }
 
+// Builds the open-code invite body. Drops `targetUserId`: the open-code
+// path is by definition not addressed to a specific user, so silently
+// passing one in via the shared `CreateInvitationInput` shape would be a
+// programmer error masquerading as a feature.
+function buildOpenInviteBody(input?: CreateInvitationInput): Record<string, string> {
+  const body: Record<string, string> = {};
+  if (input?.roleId !== undefined) body.roleId = input.roleId;
+  if (input?.expiresIn !== undefined) body.expiresIn = input.expiresIn;
+  return body;
+}
+
 export class GroupsApi {
-  constructor(private readonly http: HttpClient) {}
+  constructor(
+    private readonly http: HttpClient,
+    private readonly inviteBaseUrl: string,
+  ) {}
 
   async create(input: CreateGroupInput): Promise<Group> {
     const wire = await this.http.post<WireGroup>("/v1/groups", input);
@@ -146,15 +160,21 @@ export class GroupsApi {
     return deserializeInvitation(wire);
   }
 
-  async inviteByCode(_groupId: GroupId, _input?: CreateInvitationInput): Promise<Invitation> {
-    throw NOT_IMPLEMENTED;
+  async inviteByCode(groupId: GroupId, input?: CreateInvitationInput): Promise<Invitation> {
+    const wire = await this.http.post<WireInvitation>(
+      `/v1/groups/${encodeURIComponent(groupId)}/invitations`,
+      buildOpenInviteBody(input),
+    );
+    return deserializeInvitation(wire);
   }
 
   async inviteByLink(
-    _groupId: GroupId,
-    _input?: CreateInvitationInput,
+    groupId: GroupId,
+    input?: CreateInvitationInput,
   ): Promise<{ invitation: Invitation; url: string }> {
-    throw NOT_IMPLEMENTED;
+    const invitation = await this.inviteByCode(groupId, input);
+    const url = `${this.inviteBaseUrl}/invite/${encodeURIComponent(invitation.code)}`;
+    return { invitation, url };
   }
 
   async bulkInvite(

@@ -3,8 +3,8 @@ import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { createGroupBody, listGroupsQuery, updateGroupBody } from "./groups.schema.js";
-import { generateInvitationCode, serializeInvitation } from "./invitations.js";
-import { inviteByUserIdBody } from "./invitations.schema.js";
+import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
+import { createInvitationBody } from "./invitations.schema.js";
 
 interface WireGroup {
   id: string;
@@ -339,7 +339,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
     const json = await c.req.json().catch(() => null);
-    const parsed = inviteByUserIdBody.safeParse(json);
+    const parsed = createInvitationBody.safeParse(json);
     if (!parsed.success) {
       const issues = parsed.error.issues
         .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
@@ -348,19 +348,30 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     }
     const body = parsed.data;
 
+    let expiresAt: Date | null = null;
+    if (body.expiresIn !== undefined) {
+      const ms = parseDurationMs(body.expiresIn);
+      if (ms === null) throw Errors.badRequest("expiresIn must be a positive duration");
+      expiresAt = new Date(Date.now() + ms);
+    }
+
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
     });
     if (!group) throw Errors.notFound("group");
+
+    const targetUserId = body.targetUserId ?? null;
+    const roleId = body.roleId ?? null;
 
     const invitation = await prisma.$transaction(async (tx) => {
       const created = await tx.invitation.create({
         data: {
           groupId: group.id,
           code: generateInvitationCode(),
-          roleId: body.roleId ?? null,
-          targetUserId: body.targetUserId,
+          roleId,
+          targetUserId,
           createdByUserId: null,
+          expiresAt,
         },
       });
       await tx.auditEntry.create({
@@ -368,12 +379,13 @@ export function groupsRouter(prisma: PrismaClient): Hono {
           groupId: group.id,
           actorUserId: null,
           action: "member.invited",
-          targetId: body.targetUserId,
+          targetId: targetUserId,
           payload: {
             invitationId: created.id,
             code: created.code,
-            targetUserId: body.targetUserId,
-            roleId: body.roleId ?? null,
+            targetUserId,
+            roleId,
+            expiresAt: expiresAt ? expiresAt.toISOString() : null,
           } as Prisma.InputJsonValue,
         },
       });

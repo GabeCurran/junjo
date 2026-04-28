@@ -1056,18 +1056,118 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
     expect(codes.size).toBe(5);
   });
 
-  it("rejects a body missing targetUserId", async () => {
+  it("creates an open-code invitation when targetUserId is omitted", async () => {
     const group = await seedGroup();
-    const res = await postInvite(group.id, { roleId: "role_x" });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { code: string };
-    expect(body.code).toBe("bad_request");
+    const res = await postInvite(group.id, {});
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      groupId: group.id,
+      targetUserId: null,
+      roleId: null,
+      createdBy: null,
+      usedAt: null,
+      usedBy: null,
+      expiresAt: null,
+    });
+    expect(body.code as string).toMatch(/^[a-f0-9]{16}$/);
+
+    const stored = await prisma.invitation.findUnique({ where: { id: body.id as string } });
+    expect(stored?.targetUserId).toBeNull();
+    expect(stored?.expiresAt).toBeNull();
+  });
+
+  it("creates an open-code invitation with a roleId", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { roleId: "role_recruit" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { roleId: string | null; targetUserId: string | null };
+    expect(body.roleId).toBe("role_recruit");
+    expect(body.targetUserId).toBeNull();
+  });
+
+  it("computes expiresAt from a duration string", async () => {
+    const group = await seedGroup();
+    const before = Date.now();
+    const res = await postInvite(group.id, { expiresIn: "7d" });
+    const after = Date.now();
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { expiresAt: string | null; id: string };
+    expect(body.expiresAt).not.toBeNull();
+    const expiresMs = new Date(body.expiresAt as string).getTime();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    expect(expiresMs).toBeGreaterThanOrEqual(before + sevenDaysMs);
+    expect(expiresMs).toBeLessThanOrEqual(after + sevenDaysMs);
+
+    const stored = await prisma.invitation.findUnique({ where: { id: body.id } });
+    expect(stored?.expiresAt).not.toBeNull();
+    expect(stored?.expiresAt?.getTime()).toBe(expiresMs);
+  });
+
+  it("supports s, m, h, and d duration units", async () => {
+    const group = await seedGroup();
+    const cases: Array<{ input: string; ms: number }> = [
+      { input: "30s", ms: 30 * 1000 },
+      { input: "5m", ms: 5 * 60 * 1000 },
+      { input: "2h", ms: 2 * 60 * 60 * 1000 },
+      { input: "1d", ms: 24 * 60 * 60 * 1000 },
+    ];
+    for (const { input, ms } of cases) {
+      const before = Date.now();
+      const res = await postInvite(group.id, { expiresIn: input });
+      const after = Date.now();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { expiresAt: string | null };
+      const t = new Date(body.expiresAt as string).getTime();
+      expect(t).toBeGreaterThanOrEqual(before + ms);
+      expect(t).toBeLessThanOrEqual(after + ms);
+    }
+  });
+
+  it("audits an open-code invitation with targetId null and expiresAt in payload", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { roleId: "role_recruit", expiresIn: "1h" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; code: string; expiresAt: string };
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "member.invited" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBeNull();
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toMatchObject({
+      invitationId: body.id,
+      code: body.code,
+      targetUserId: null,
+      roleId: "role_recruit",
+      expiresAt: body.expiresAt,
+    });
   });
 
   it("rejects an empty targetUserId", async () => {
     const group = await seedGroup();
     const res = await postInvite(group.id, { targetUserId: "" });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed expiresIn string", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { expiresIn: "soon" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects a non-positive expiresIn", async () => {
+    const group = await seedGroup();
+    const res = await postInvite(group.id, { expiresIn: "0d" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toMatch(/positive/);
   });
 
   it("rejects a malformed JSON body", async () => {

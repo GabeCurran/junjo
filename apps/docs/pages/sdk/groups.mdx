@@ -249,6 +249,95 @@ invitation.createdAt;     // Date
 
 - [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
 
+## `inviteByCode(groupId, input?)` - shipped
+
+Creates an open-code invitation (no targeted user). Anyone with the returned `code` can accept. Pair with `expiresIn` to make it a short-lived link.
+
+```ts
+const invitation = await junjo.groups.inviteByCode("grp_xyz" as GroupId, {
+  roleId: "role_recruit" as RoleId, // optional
+  expiresIn: "7d",                   // optional, see below
+});
+
+invitation.code;          // "abcd1234abcd1234"
+invitation.targetUserId;  // null (open-code invitation)
+invitation.expiresAt;     // Date | null
+```
+
+### Input
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `roleId` | `RoleId` | none | The role to grant on accept. Not validated against the group's roles in V1. |
+| `expiresIn` | string | none | Duration string. `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`. Examples: `30s`, `15m`, `2h`, `7d`. The server stamps `expiresAt = now() + expiresIn`. |
+| `targetUserId` | `UserId` | ignored | Silently dropped from the request body. Use `inviteByUserId` for direct invitations. |
+
+### Returns
+
+`Invitation` with timestamps deserialized to `Date`. `targetUserId` is `null`. `createdBy` is `null` in V1.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body, malformed or non-positive `expiresIn`. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+
+## `inviteByLink(groupId, input?)` - shipped
+
+Convenience wrapper around `inviteByCode` that also returns a URL the dev's frontend can hand to players. The URL is built locally in the SDK from the configured `inviteBaseUrl` (or `baseUrl` if `inviteBaseUrl` is unset) and the server-generated invitation `code`:
+
+```
+${inviteBaseUrl}/invite/${code}
+```
+
+The server does not generate the URL and does not host the page at that path. The dev's frontend is responsible for the route at `/invite/:code` (it typically calls `acceptInvitation(code)` once the user lands there).
+
+```ts
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY,
+  baseUrl: "https://api.junjo.io",
+  inviteBaseUrl: "https://app.mygame.com", // your frontend's origin
+});
+
+const { invitation, url } = await junjo.groups.inviteByLink("grp_xyz" as GroupId, {
+  roleId: "role_recruit" as RoleId,
+  expiresIn: "7d",
+});
+
+share(url); // https://app.mygame.com/invite/abcd1234abcd1234
+```
+
+### Configuration
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `JunjoConfig.inviteBaseUrl` | `baseUrl` | Origin (or path prefix) where your frontend handles the `/invite/:code` route. Trailing slashes are trimmed. |
+
+### Input
+
+Same as `inviteByCode(groupId, input?)`. `targetUserId` is silently dropped.
+
+### Returns
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `invitation` | `Invitation` | Same value `inviteByCode` returns. |
+| `url` | string | `${inviteBaseUrl}/invite/${encodeURIComponent(code)}`. |
+
+### Errors
+
+Same as `inviteByCode`. `inviteByLink` does not add any error cases of its own; the URL is constructed only after the underlying request succeeds.
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`inviteByCode`, `inviteByLink`, `bulkInvite`, `acceptInvitation`, `declineInvitation`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`bulkInvite`, `acceptInvitation`, `declineInvitation`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

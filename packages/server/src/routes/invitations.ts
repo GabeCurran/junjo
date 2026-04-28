@@ -33,3 +33,24 @@ export function serializeInvitation(inv: Invitation): WireInvitation {
 export function generateInvitationCode(): string {
   return randomBytes(8).toString("hex");
 }
+
+const DURATION_MULTIPLIERS: Record<string, number> = {
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+
+// Parses "7d", "1h", "30m", "45s" into milliseconds. Caller has already
+// run the format-regex via Zod; this function only handles arithmetic.
+// Returns `null` if the value is non-positive (the regex permits "0d").
+export function parseDurationMs(value: string): number | null {
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) return null;
+  const n = Number(match[1]);
+  const unit = match[2] as keyof typeof DURATION_MULTIPLIERS;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const mult = DURATION_MULTIPLIERS[unit];
+  if (mult === undefined) return null;
+  return n * mult;
+}

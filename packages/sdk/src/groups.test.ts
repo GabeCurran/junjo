@@ -728,3 +728,187 @@ describe("groups.inviteByUserId", () => {
     expect(invitation.roleId).toBe("role_officer");
   });
 });
+
+describe("groups.inviteByCode", () => {
+  const openInviteFixture = { ...inviteFixture, targetUserId: null };
+
+  it("POSTs to /v1/groups/:id/invitations with an empty body when no input is supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/invitations");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({});
+      return jsonResponse(openInviteFixture, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const invitation = await junjo.groups.inviteByCode("grp_1" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(invitation.targetUserId).toBeNull();
+    expect(invitation.code).toBe("abcd1234abcd1234");
+    expect(invitation.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("forwards roleId and expiresIn", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ roleId: "role_recruit", expiresIn: "7d" });
+      return jsonResponse(
+        {
+          ...openInviteFixture,
+          roleId: "role_recruit",
+          expiresAt: "2026-05-05T05:00:00.000Z",
+        },
+        201,
+      );
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const invitation = await junjo.groups.inviteByCode("grp_1" as GroupId, {
+      roleId: "role_recruit" as RoleId,
+      expiresIn: "7d",
+    });
+    expect(invitation.roleId).toBe("role_recruit");
+    expect(invitation.expiresAt).toBeInstanceOf(Date);
+  });
+
+  it("drops targetUserId from the body even when supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ roleId: "role_recruit" });
+      expect(payload.targetUserId).toBeUndefined();
+      return jsonResponse({ ...openInviteFixture, roleId: "role_recruit" }, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const invitation = await junjo.groups.inviteByCode("grp_1" as GroupId, {
+      targetUserId: "user_x" as UserId,
+      roleId: "role_recruit" as RoleId,
+    });
+    expect(invitation.targetUserId).toBeNull();
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "expiresIn: bad format" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.inviteByCode("grp_1" as GroupId, { expiresIn: "soon" }),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "bad_request", status: 400 });
+  });
+
+  it("encodes the group id in the URL", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/invitations");
+      return jsonResponse(openInviteFixture, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.inviteByCode("has/slash" as GroupId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("groups.inviteByLink", () => {
+  const openInviteFixture = { ...inviteFixture, targetUserId: null };
+
+  it("returns the invitation and a URL built from the invite base URL", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse(openInviteFixture, 201));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      inviteBaseUrl: "https://app.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.groups.inviteByLink("grp_1" as GroupId);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.invitation.code).toBe("abcd1234abcd1234");
+    expect(result.invitation.targetUserId).toBeNull();
+    expect(result.url).toBe("https://app.example.test/invite/abcd1234abcd1234");
+  });
+
+  it("falls back to baseUrl when inviteBaseUrl is unset", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse(openInviteFixture, 201));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const { url } = await junjo.groups.inviteByLink("grp_1" as GroupId);
+    expect(url).toBe("https://api.example.test/invite/abcd1234abcd1234");
+  });
+
+  it("strips trailing slashes from inviteBaseUrl when building the URL", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse(openInviteFixture, 201));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      inviteBaseUrl: "https://app.example.test///",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const { url } = await junjo.groups.inviteByLink("grp_1" as GroupId);
+    expect(url).toBe("https://app.example.test/invite/abcd1234abcd1234");
+  });
+
+  it("URL-encodes the invitation code in the link", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ ...openInviteFixture, code: "weird/code" }, 201),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      inviteBaseUrl: "https://app.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const { url } = await junjo.groups.inviteByLink("grp_1" as GroupId);
+    expect(url).toBe("https://app.example.test/invite/weird%2Fcode");
+  });
+
+  it("forwards roleId and expiresIn to the underlying request", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ roleId: "role_recruit", expiresIn: "1h" });
+      return jsonResponse({ ...openInviteFixture, roleId: "role_recruit" }, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      inviteBaseUrl: "https://app.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const { invitation } = await junjo.groups.inviteByLink("grp_1" as GroupId, {
+      roleId: "role_recruit" as RoleId,
+      expiresIn: "1h",
+    });
+    expect(invitation.roleId).toBe("role_recruit");
+  });
+});

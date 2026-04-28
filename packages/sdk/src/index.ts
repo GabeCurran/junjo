@@ -32,6 +32,11 @@ import { HttpClient } from "./http.js";
 export interface JunjoConfig {
   apiKey: string;
   baseUrl?: string;
+  // Base URL used to build invite-link URLs from `inviteByLink`. The dev's
+  // frontend handles the actual UI at `${inviteBaseUrl}/invite/${code}`.
+  // Defaults to `baseUrl`; set this to your frontend's origin when the
+  // frontend lives at a different host than the API.
+  inviteBaseUrl?: string;
   authAdapter?: AuthAdapter;
   fetch?: typeof fetch;
 }
@@ -54,12 +59,14 @@ export class Junjo {
 
   constructor(config: JunjoConfig) {
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
+    const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
     const http = new HttpClient({
       apiKey: config.apiKey,
-      baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
+      baseUrl,
       fetch: fetchImpl,
     });
-    this.groups = new GroupsApi(http);
+    const inviteBaseUrl = (config.inviteBaseUrl ?? baseUrl).replace(/\/+$/, "");
+    this.groups = new GroupsApi(http, inviteBaseUrl);
     this.roles = new RolesApi();
     this.members = new MembersApi();
     this.invitations = new InvitationsApi();
