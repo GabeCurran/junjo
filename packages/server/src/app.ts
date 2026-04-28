@@ -4,7 +4,12 @@ import { prisma as defaultPrisma } from "./db.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { groupsRouter } from "./routes/groups.js";
-import { deleteInvitationByCodeHandler, getInvitationByCodeHandler } from "./routes/invitations.js";
+import {
+  acceptInvitationByCodeHandler,
+  declineInvitationByCodeHandler,
+  deleteInvitationByCodeHandler,
+  getInvitationByCodeHandler,
+} from "./routes/invitations.js";
 
 export interface CreateAppOptions {
   prisma?: PrismaClient;
@@ -41,6 +46,8 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma));
   v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
+  v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma));
+  v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
   app.route("/v1", v1);
 
   return app;

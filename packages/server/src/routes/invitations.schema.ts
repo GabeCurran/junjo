@@ -26,3 +26,18 @@ export const listInvitationsQuery = z.object({
 });
 
 export type ListInvitationsQuery = z.infer<typeof listInvitationsQuery>;
+
+export const acceptInvitationBody = z.object({
+  userId: z.string().min(1),
+});
+
+export type AcceptInvitationBody = z.infer<typeof acceptInvitationBody>;
+
+export const declineInvitationBody = z
+  .object({
+    userId: z.string().min(1).optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export type DeclineInvitationBody = z.infer<typeof declineInvitationBody>;

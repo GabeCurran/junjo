@@ -19,6 +19,7 @@ import type {
 } from "@junjo/shared";
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import { type WireMember, deserializeMember } from "./members.js";
 
 const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
 
@@ -185,12 +186,18 @@ export class GroupsApi {
     throw NOT_IMPLEMENTED;
   }
 
-  async acceptInvitation(_code: string): Promise<Member> {
-    throw NOT_IMPLEMENTED;
+  async acceptInvitation(code: string, userId: UserId): Promise<Member> {
+    const wire = await this.http.post<WireMember>(
+      `/v1/invitations/${encodeURIComponent(code)}/accept`,
+      { userId },
+    );
+    return deserializeMember(wire);
   }
 
-  async declineInvitation(_code: string): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async declineInvitation(code: string, opts?: { userId?: UserId }): Promise<void> {
+    const body: Record<string, string> = {};
+    if (opts?.userId !== undefined) body.userId = opts.userId;
+    await this.http.post<unknown>(`/v1/invitations/${encodeURIComponent(code)}/decline`, body);
   }
 
   async leave(_groupId: GroupId): Promise<void> {

@@ -912,3 +912,255 @@ describe("groups.inviteByLink", () => {
     expect(invitation.roleId).toBe("role_recruit");
   });
 });
+
+interface WireMemberSnapshot {
+  id: string;
+  groupId: string;
+  userId: string;
+  status: string;
+  roles: string[];
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;
+}
+
+const memberFixture: WireMemberSnapshot = {
+  id: "mem_1",
+  groupId: "grp_1",
+  userId: "user_alice",
+  status: "active",
+  roles: [],
+  metadata: {},
+  notesPublic: null,
+  notesPrivate: null,
+  joinedAt: "2026-04-28T06:00:00.000Z",
+};
+
+function emptyResponse(status: number): Response {
+  return new Response(null, { status });
+}
+
+describe("groups.acceptInvitation", () => {
+  it("POSTs /v1/invitations/:code/accept with the userId in the body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/invitations/abcd1234abcd1234/accept");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ userId: "user_alice" });
+      return jsonResponse(memberFixture, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.groups.acceptInvitation("abcd1234abcd1234", "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.id).toBe("mem_1");
+    expect(member.groupId).toBe("grp_1");
+    expect(member.userId).toBe("user_alice");
+    expect(member.status).toBe("active");
+    expect(member.roles).toEqual([]);
+    expect(member.joinedAt).toBeInstanceOf(Date);
+    expect(member.joinedAt.toISOString()).toBe(memberFixture.joinedAt);
+  });
+
+  it("URL-encodes the invitation code", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/invitations/weird%2Fcode/accept");
+      return jsonResponse(memberFixture, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.acceptInvitation("weird/code", "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("throws JunjoError on invitation_used (410)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        { code: "invitation_used", status: 410, message: "invitation already used" },
+        410,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.acceptInvitation("usedcode", "user_alice" as UserId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "invitation_used",
+      status: 410,
+    });
+  });
+
+  it("throws JunjoError on invitation_expired (410)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "invitation_expired", status: 410, message: "invitation expired" }, 410),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.acceptInvitation("expiredcode", "user_alice" as UserId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "invitation_expired",
+    });
+  });
+
+  it("throws JunjoError on already_member (409)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        { code: "already_member", status: 409, message: "user is already a member" },
+        409,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.acceptInvitation("seatfilled", "user_alice" as UserId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "already_member",
+      status: 409,
+    });
+  });
+
+  it("throws JunjoError on permission_denied (403)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        {
+          code: "permission_denied",
+          status: 403,
+          message: "this invitation is for a different user",
+        },
+        403,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.acceptInvitation("directcode", "user_bob" as UserId),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "permission_denied" });
+  });
+});
+
+describe("groups.declineInvitation", () => {
+  it("POSTs /v1/invitations/:code/decline with the userId when supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/invitations/abcd1234abcd1234/decline");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ userId: "user_alice" });
+      return emptyResponse(204);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const result = await junjo.groups.declineInvitation("abcd1234abcd1234", {
+      userId: "user_alice" as UserId,
+    });
+    expect(result).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("POSTs an empty body when no userId is supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({});
+      return emptyResponse(204);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.declineInvitation("abcd1234abcd1234");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("URL-encodes the invitation code", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/invitations/weird%2Fcode/decline");
+      return emptyResponse(204);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.declineInvitation("weird/code");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("throws JunjoError on invitation_used (410)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        { code: "invitation_used", status: 410, message: "invitation already used" },
+        410,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.declineInvitation("usedcode")).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "invitation_used",
+    });
+  });
+
+  it("throws JunjoError on permission_denied (403) when the userId does not match a direct invite", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse(
+        {
+          code: "permission_denied",
+          status: 403,
+          message: "this invitation is for a different user",
+        },
+        403,
+      ),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      junjo.groups.declineInvitation("directcode", { userId: "user_bob" as UserId }),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "permission_denied" });
+  });
+});

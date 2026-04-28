@@ -338,6 +338,92 @@ Same as `inviteByCode`. `inviteByLink` does not add any error cases of its own; 
 
 - [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
 
+## `acceptInvitation(code, userId)` - shipped
+
+Redeems an invitation: creates a `GroupMember` for the supplied user and marks the invitation used. Returns the new `Member` with `joinedAt` deserialized to a `Date`.
+
+```ts
+const member = await junjo.groups.acceptInvitation(
+  "abcd1234abcd1234",
+  "user_alice" as UserId,
+);
+
+member.id;       // MemberId (branded string)
+member.groupId;  // GroupId (branded string)
+member.userId;   // "user_alice" (the same external id passed in)
+member.status;   // "active"
+member.joinedAt; // Date
+```
+
+The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). In V1 the dev's backend is the trusted layer: it authenticates the player itself and tells Junjo who is accepting.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+| `userId` | `UserId` | The external user id. For direct invitations, must match the invitation's `targetUserId`. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` is `[]` in V1 (Phase 3.2 wires role assignment from the invitation's `roleId`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation. |
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the supplied `userId` does not match. |
+| `not_found` | 404 | No invitation with that code in the calling game (also for soft-deleted groups). |
+| `already_member` | 409 | The user is already in the group. |
+| `invitation_expired` | 410 | `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed or declined. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/invitations/:code/accept`](/api/invitations) - the underlying HTTP route.
+
+## `declineInvitation(code, opts?)` - shipped
+
+Burns an invitation without joining the group. The row is marked used (so it can never be redeemed) and no member is created. Returns `void`.
+
+```ts
+await junjo.groups.declineInvitation("abcd1234abcd1234", {
+  userId: "user_alice" as UserId, // optional
+});
+
+// or anonymously:
+await junjo.groups.declineInvitation("abcd1234abcd1234");
+```
+
+The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the invitation so audit traces can answer "who burned this code". When omitted, the row's `usedByUserId` is left `null`.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+| `opts.userId` | `UserId` | Optional. For direct invitations, must match the invitation's `targetUserId` if supplied. |
+
+### Returns
+
+`Promise<void>`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the supplied `userId` does not match. |
+| `not_found` | 404 | No invitation with that code in the calling game (also for soft-deleted groups). |
+| `invitation_expired` | 410 | `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed or declined. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/invitations/:code/decline`](/api/invitations) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`bulkInvite`, `acceptInvitation`, `declineInvitation`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`bulkInvite`, `leave`, `kick`, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

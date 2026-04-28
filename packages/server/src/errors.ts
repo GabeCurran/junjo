@@ -24,4 +24,8 @@ export const Errors = {
   permissionDenied: (msg = "permission denied") => new JunjoError("permission_denied", 403, msg),
   restoreWindowExpired: (msg = "restore window expired") =>
     new JunjoError("restore_window_expired", 410, msg),
+  invitationExpired: (msg = "invitation expired") => new JunjoError("invitation_expired", 410, msg),
+  invitationUsed: (msg = "invitation already used") => new JunjoError("invitation_used", 410, msg),
+  alreadyMember: (msg = "user is already a member of this group") =>
+    new JunjoError("already_member", 409, msg),
 };

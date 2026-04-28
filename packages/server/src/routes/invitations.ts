@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
-import type { Invitation, PrismaClient } from "@prisma/client";
+import type { Invitation, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
+import { findOrCreateJunjoUser } from "../identity.js";
+import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
+import { serializeMember } from "./members.js";
 
 export interface WireInvitation {
   id: string;
@@ -93,6 +96,137 @@ export function deleteInvitationByCodeHandler(prisma: PrismaClient): Handler {
       return c.body(null, 204);
     }
     await prisma.invitation.delete({ where: { id: invitation.id } });
+    return c.body(null, 204);
+  };
+}
+
+// Loads an invitation by code and runs the precondition checks shared by
+// accept and decline: invitation exists, the group hasn't been
+// soft-deleted, the row isn't already used, the row hasn't expired. The
+// loader is parameterized over the gameId enforcement (404 on cross-game
+// codes) so the existence of an invitation in another game stays hidden.
+async function loadRedemptionTarget(
+  prisma: PrismaClient,
+  code: string | undefined,
+  gameId: string,
+): Promise<Invitation> {
+  if (!code) throw Errors.notFound("invitation");
+  const invitation = await prisma.invitation.findUnique({
+    where: { code },
+    include: { group: { select: { gameId: true, softDeletedAt: true } } },
+  });
+  if (!invitation || invitation.group.gameId !== gameId) {
+    throw Errors.notFound("invitation");
+  }
+  if (invitation.group.softDeletedAt) throw Errors.notFound("invitation");
+  if (invitation.usedAt) throw Errors.invitationUsed();
+  if (invitation.expiresAt && invitation.expiresAt < new Date()) {
+    throw Errors.invitationExpired();
+  }
+  return invitation;
+}
+
+// Authed route handler: accept an invitation by code. Creates a
+// `GroupMember` for the supplied external user id (find-or-creating the
+// underlying JunjoUser via ExternalIdentity), marks the invitation used,
+// and writes a `member.joined` audit entry. All four writes happen inside
+// one transaction. For direct invitations (`targetUserId` set), the body
+// userId must match; mismatches return 403 to keep direct invites pinned
+// to their target.
+export function acceptInvitationByCodeHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const code = c.req.param("code");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = acceptInvitationBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { userId } = parsed.data;
+
+    const invitation = await loadRedemptionTarget(prisma, code, gameId);
+    if (invitation.targetUserId && invitation.targetUserId !== userId) {
+      throw Errors.permissionDenied("this invitation is for a different user");
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const junjoUserId = await findOrCreateJunjoUser(tx, gameId, userId);
+
+      const existing = await tx.groupMember.findUnique({
+        where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
+      });
+      if (existing) throw Errors.alreadyMember();
+
+      const member = await tx.groupMember.create({
+        data: {
+          groupId: invitation.groupId,
+          junjoUserId,
+          status: "active",
+        },
+      });
+
+      await tx.invitation.update({
+        where: { id: invitation.id },
+        data: { usedAt: new Date(), usedByUserId: junjoUserId },
+      });
+
+      await tx.auditEntry.create({
+        data: {
+          groupId: invitation.groupId,
+          actorUserId: junjoUserId,
+          action: "member.joined",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            invitationId: invitation.id,
+            code: invitation.code,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return member;
+    });
+
+    return c.json(serializeMember(result, userId), 201);
+  };
+}
+
+// Authed route handler: decline an invitation by code. Marks the
+// invitation used (so it can never be redeemed) and writes nothing else;
+// no member is created, no audit entry is written. Body is optional;
+// when present, the supplied userId is recorded as `usedByUserId` (after
+// resolving to a JunjoUser) so audits answer "who burned this code".
+// Direct invitations only allow the target user to decline.
+export function declineInvitationByCodeHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const code = c.req.param("code");
+    const gameId = c.var.gameId;
+    const raw = await c.req.json().catch(() => null);
+    const parsed = declineInvitationBody.safeParse(raw ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { userId } = parsed.data;
+
+    const invitation = await loadRedemptionTarget(prisma, code, gameId);
+    if (invitation.targetUserId && userId && invitation.targetUserId !== userId) {
+      throw Errors.permissionDenied("this invitation is for a different user");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const junjoUserId = userId ? await findOrCreateJunjoUser(tx, gameId, userId) : null;
+      await tx.invitation.update({
+        where: { id: invitation.id },
+        data: { usedAt: new Date(), usedByUserId: junjoUserId },
+      });
+    });
+
     return c.body(null, 204);
   };
 }
