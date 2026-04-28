@@ -1,4 +1,4 @@
-import type { GroupId, RoleId } from "@junjo/shared";
+import type { GameId, GroupId, RoleId } from "@junjo/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
@@ -243,5 +243,93 @@ describe("groups.get", () => {
 
     await junjo.groups.get("has/slash" as GroupId);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("groups.list", () => {
+  it("GETs /v1/groups with no query when no options are provided", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(req.method).toBe("GET");
+      expect(url.pathname).toBe("/v1/groups");
+      expect(url.search).toBe("");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBeNull();
+      return jsonResponse({ items: [wireFixture], nextCursor: null }, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const page = await junjo.groups.list();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(page.nextCursor).toBeNull();
+    expect(page.items).toHaveLength(1);
+    const [first] = page.items;
+    if (!first) throw new Error("expected one item");
+    expect(first.id).toBe("grp_1");
+    expect(first.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("forwards limit, cursor, and gameId as query parameters", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups");
+      expect(url.searchParams.get("limit")).toBe("25");
+      expect(url.searchParams.get("cursor")).toBe("grp_xyz");
+      expect(url.searchParams.get("gameId")).toBe("game_1");
+      return jsonResponse({ items: [], nextCursor: null }, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.list({
+      limit: 25,
+      cursor: "grp_xyz",
+      gameId: "game_1" as GameId,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("returns a Page with deserialized items and the server's nextCursor", async () => {
+    const second = { ...wireFixture, id: "grp_2", name: "Iron Hand" };
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ items: [wireFixture, second], nextCursor: "grp_2" }, 200),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const page = await junjo.groups.list({ limit: 2 });
+
+    expect(page.items).toHaveLength(2);
+    expect(page.items.map((i) => i.id)).toEqual(["grp_1", "grp_2"]);
+    expect(page.items[0]?.createdAt).toBeInstanceOf(Date);
+    expect(page.nextCursor).toBe("grp_2");
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "limit: too big" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.list({ limit: 999 })).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "bad_request",
+      status: 400,
+    });
   });
 });

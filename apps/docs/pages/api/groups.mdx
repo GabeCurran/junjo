@@ -114,3 +114,49 @@ Fetches a single group by id. Soft-deleted groups and groups belonging to a diff
 |------|--------|------|
 | `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups`
+
+Lists groups for the calling game, newest-first. Cursor-based pagination via the `Page<T>` envelope.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | `50` | 1-100 inclusive. Out-of-range values return `400`. |
+| `cursor` | string | none | The `nextCursor` from a prior response. Must point at a group in the calling game; soft-deleted is fine, the cursor row is used purely as a sort position. |
+| `gameId` | string | the calling game | Optional. If provided, must equal the calling key's game id; mismatches return `400`. |
+
+### Response
+
+`200 OK` with a `Page<Group>` body. Items are sorted by `createdAt` desc with `id` desc as a tiebreaker so pagination is deterministic even when many groups share a timestamp. `nextCursor` is `null` when no further pages remain.
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "gameId": "ckyyy...",
+      "kind": "guild",
+      "name": "Crimson Wolves",
+      "visibility": "invite-only",
+      "metadata": {},
+      "defaultRoleId": null,
+      "memberCount": 42,
+      "createdAt": "2026-04-28T05:00:00.000Z",
+      "updatedAt": "2026-04-28T05:00:00.000Z",
+      "softDeletedAt": null
+    }
+  ],
+  "nextCursor": "ckxxx..."
+}
+```
+
+`memberCount` per item is the count of `GroupMember` rows in `status = "active"`, computed at request time via a single batched `groupBy` query (no N+1).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` invalid, `cursor` not found in this game, or `gameId` does not match the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

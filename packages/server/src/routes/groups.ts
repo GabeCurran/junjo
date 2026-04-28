@@ -1,7 +1,7 @@
 import type { Group, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
-import { createGroupBody } from "./groups.schema.js";
+import { createGroupBody, listGroupsQuery } from "./groups.schema.js";
 
 interface WireGroup {
   id: string;
@@ -35,6 +35,74 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
 
 export function groupsRouter(prisma: PrismaClient): Hono {
   const r = new Hono();
+
+  r.get("/", async (c) => {
+    const gameId = c.var.gameId;
+    const parsed = listGroupsQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
+      gameId: c.req.query("gameId"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor, gameId: filterGameId } = parsed.data;
+    if (filterGameId !== undefined && filterGameId !== gameId) {
+      throw Errors.badRequest("gameId must match the calling game");
+    }
+
+    let cursorRow: { id: string; createdAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.group.findFirst({
+        where: { id: cursor, gameId },
+        select: { id: true, createdAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const where: Prisma.GroupWhereInput = {
+      gameId,
+      softDeletedAt: null,
+      ...(cursorRow
+        ? {
+            OR: [
+              { createdAt: { lt: cursorRow.createdAt } },
+              { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
+            ],
+          }
+        : {}),
+    };
+
+    const groups = await prisma.group.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = groups.length > limit;
+    const sliced = hasMore ? groups.slice(0, limit) : groups;
+
+    const counts =
+      sliced.length === 0
+        ? []
+        : await prisma.groupMember.groupBy({
+            by: ["groupId"],
+            where: { groupId: { in: sliced.map((g) => g.id) }, status: "active" },
+            _count: { _all: true },
+          });
+    const countMap = new Map(counts.map((c) => [c.groupId, c._count._all]));
+
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
+
+    return c.json({
+      items: sliced.map((g) => serializeGroup(g, countMap.get(g.id) ?? 0)),
+      nextCursor,
+    });
+  });
 
   r.get("/:id", async (c) => {
     const id = c.req.param("id");

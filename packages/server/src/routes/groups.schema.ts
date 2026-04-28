@@ -11,3 +11,11 @@ export const createGroupBody = z.object({
 });
 
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
+
+export const listGroupsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().min(1).optional(),
+  gameId: z.string().min(1).optional(),
+});
+
+export type ListGroupsQuery = z.infer<typeof listGroupsQuery>;

@@ -68,6 +68,51 @@ group.memberCount; // active member count, computed server-side
 
 - [`GET /v1/groups/:id`](/api/groups) - the underlying HTTP route.
 
+## `list(opts?)` - shipped
+
+Returns a single page of groups for the calling game, sorted newest-first. Pagination is cursor-based: pass the `nextCursor` from the previous response to fetch the next page. When `nextCursor` is `null`, the page is the last one.
+
+```ts
+let cursor: string | null | undefined;
+do {
+  const page = await junjo.groups.list({ limit: 50, cursor: cursor ?? undefined });
+  for (const group of page.items) {
+    console.log(group.name, group.memberCount);
+  }
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | number | `50` | 1-100 inclusive. |
+| `cursor` | string | undefined | The `nextCursor` from a previous `list` call. Must point at a group in the calling game (soft-deleted is fine). |
+| `gameId` | `GameId` | the calling game | Optional. Must equal the calling key's game; cross-game queries return `400`. Provided for forward-compatibility with cloud-only admin tooling. |
+
+### Returns
+
+`Page<Group>`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items` | `Group[]` | Up to `limit` groups, sorted by `createdAt` desc with `id` desc as a tiebreaker. |
+| `nextCursor` | string \| null | The id of the last item, or `null` if this is the last page. |
+
+`memberCount` per group is the count of `GroupMember` rows in `status = "active"`, computed at request time.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` out of range, non-integer, unknown `cursor`, or `gameId` does not match the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`update`, `delete`, `restore`, `list`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`update`, `delete`, `restore`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

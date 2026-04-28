@@ -69,6 +69,20 @@ export class GroupsApi {
     }
   }
 
+  async list(opts?: PageOptions & { gameId?: GameId }): Promise<Page<Group>> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
+    if (opts?.gameId !== undefined) params.set("gameId", opts.gameId);
+    const qs = params.toString();
+    const path = qs ? `/v1/groups?${qs}` : "/v1/groups";
+    const wire = await this.http.get<{ items: WireGroup[]; nextCursor: string | null }>(path);
+    return {
+      items: wire.items.map(deserializeGroup),
+      nextCursor: wire.nextCursor,
+    };
+  }
+
   async update(_id: GroupId, _input: UpdateGroupInput): Promise<Group> {
     throw NOT_IMPLEMENTED;
   }
@@ -79,10 +93,6 @@ export class GroupsApi {
   }
 
   async restore(_id: GroupId): Promise<Group> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async list(_opts?: PageOptions & { gameId?: GameId }): Promise<Page<Group>> {
     throw NOT_IMPLEMENTED;
   }
 
