@@ -1262,3 +1262,84 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - The server's `serializeGroup` helper centralizes the wire shape; downstream Prisma->wire conversions (groups.list, get, create, update, delete, restore, the new setParent) all flow through it and gain the field uniformly.
 
 **Trade:** existing SDK test fixtures had to be widened (`parentGroupId: null` added to the snapshot). Trivial one-line update; caught at type-check time.
+
+### Phase 5.1 splits: 5.1a hub + SSE endpoint, 5.1b mutation publishing, 5.1c SDK subscribe
+
+**Decision:** the original Phase 5.1 bullet ("SSE event hub + `groups.subscribe`") is split across three iterations. 5.1a (this iteration) ships the in-process `EventHub` and the `GET /v1/events/:groupId` SSE endpoint with a 30s heartbeat. 5.1b wires `eventHub.publish(event)` calls into every mutation route that owns one of the `JunjoEvent` cases. 5.1c ships the SDK `groups.subscribe()` wrapper.
+
+**Rationale:**
+- The hub abstraction is independently testable: hub unit tests exercise the pub/sub semantics without any HTTP, and SSE integration tests drive the hub directly via `hub.publish(...)` to feed the stream. Splitting at this seam keeps the iteration well-scoped.
+- Wiring publishing into ~12 mutation routes (group.updated, group.deleted, member.joined, member.left, member.invited, role.created, role.changed, role.deleted, permission.granted, permission.revoked, group.relationship.changed) is mechanical but lengthy; it deserves its own commit so the diff is readable.
+- The SDK subscribe path needs an SSE parser, abort-on-cleanup, and reconnect semantics that each warrant their own thinking; bundling them with the server-side hub would make the iteration unfocused.
+- The phase-3.x precedent (3.1 roles CRUD, then 3.2 assign/remove, then 3.3 grant/revoke, then 3.4 overrides, then 3.5 check) shows the loop comfortably digesting incremental phase splits.
+
+**Trade:** PROGRESS.md grows three sub-checkboxes under one VISION bullet. Iteration 5.1b lands no new SDK surface (server-only); iteration 5.1c lands no new server surface (SDK-only). Acceptable: the original phase bullet stays unchanged in VISION.md, just split into sub-tasks in PROGRESS.
+
+### `EventHub` is in-process and per-`groupId`; cross-process distribution is deferred
+
+**Decision:** the V1 event hub lives in a single Node process. `EventHub.subscribe(groupId, listener)` and `EventHub.publish(event)` operate on an in-memory `Map<groupId, Set<listener>>`. Two server processes do not share state. Events that arrive while no subscriber is connected are dropped (no buffering, no replay).
+
+**Rationale:**
+- Single-process is the only deployment topology V1 actually supports today (the Phase 5.3 webhook worker is also in-process). Adding a transport-level bus pre-need would mean bringing a Redis or NATS dependency before there is a real horizontal-scale story.
+- The transient drop semantic is the right behavior for the SSE consumer: live UX reads from the stream while a player is online, and the durable counterparts (audit.list in Phase 5.2, webhooks in Phase 5.3) cover everything that needs to survive a disconnect or a process restart.
+- The `EventHub` interface is small enough that a Redis pub/sub or Postgres `LISTEN`/`NOTIFY` adapter can plug in behind the same shape later. The seam is preserved.
+- Listener errors are swallowed: a misbehaving subscriber cannot starve the others. Hub consumers are responsible for their own observability (no central error reporting belongs in the bus).
+
+**Trade:** horizontally-scaled deployments will need the transport adapter before SSE is reliable across instances. We accept the V1 limit and document it in `apps/docs/pages/api/events.mdx` so devs who hit it can plan around it (typically: deploy a single API instance, scale the webhook delivery worker separately).
+
+### SSE wire format: `event:`, `data:` (JSON), `id:`; heartbeat is `:heartbeat`
+
+**Decision:** each `JunjoEvent` is emitted as one SSE frame:
+
+```
+event: <type>
+data: <JSON.stringify(event)>
+id: <event.id>
+
+```
+
+The full `JunjoEvent` payload (including its discriminator `type` and its id) goes in `data:` as a JSON object. The `event:` line mirrors the discriminator for easier client-side switch statements; the `id:` line mirrors the event id for SSE's `lastEventId` mechanism. Heartbeats are SSE comments: a single `:heartbeat\n\n` frame, sent every 30 seconds.
+
+**Rationale:**
+- Putting the full payload in `data:` lets a client that ignores `event:` and `id:` still drive on the JSON's own `type` field, which is the source of truth in the shared `JunjoEvent` union. Clients that branch on `event:` get a slight ergonomic win.
+- `JSON.stringify` automatically renders `Date` fields (`occurredAt`, nested `joinedAt`, etc.) as ISO 8601 strings. The wire format matches every other Junjo route's `Date`-as-ISO convention without a separate serializer.
+- 30-second heartbeats are conservative enough to clear most reverse-proxy idle timeouts (60s is common, 90s for ALB). A shorter interval would burn bandwidth for no benefit; longer risks a connection drop on aggressively-tuned proxies.
+- The `:heartbeat` comment is invisible to a compliant SSE client (per the W3C spec, lines starting with `:` are ignored). The string `heartbeat` after the colon is purely for human-readable wire dumps.
+
+**Trade:** `id:` is included in every frame even though the V1 server does not honor `lastEventId` on reconnect. That is deliberate: the field is cheap to emit, and doing so now keeps the protocol forward-compatible when replay-on-reconnect lands.
+
+### SSE endpoint 404-collapses missing / cross-game / soft-deleted groups synchronously
+
+**Decision:** before opening any stream, the SSE handler runs the standard existence check (`prisma.group.findFirst({ id, gameId, softDeletedAt: null })`) and throws `Errors.notFound("group")` on miss. The 404 fires through the normal error middleware as a JSON error envelope; only after the group is verified live does the handler call `streamSSE(c, ...)` and upgrade to the event stream.
+
+**Rationale:**
+- Mirrors every other group-scoped read path. A bad request is much easier to debug as a `404 not_found` than as an empty stream that never delivers.
+- Existence is not leaked: cross-game groups and soft-deleted groups collapse into the same `not_found` envelope as a fully missing id.
+- Synchronous failure means the response carries the standard JSON body, not an SSE frame. Clients can branch on `response.headers.get("content-type")` to distinguish a stream from a structured error.
+- Validating before subscribing also avoids a race where the handler subscribes the listener and then errors out, leaving an orphan subscription. The order is: validate -> subscribe -> stream -> deregister-on-abort.
+
+**Trade:** none. The latency cost of one extra `findFirst` is negligible compared to the lifetime of an SSE connection.
+
+### Heartbeat lives in `routes/events.ts` and uses `stream.write(":heartbeat\\n\\n")`, not `writeSSE`
+
+**Decision:** the heartbeat comment is written via the lower-level `stream.write(...)` rather than via Hono's `writeSSE(...)` SSE-message helper. The handler runs its own `setInterval` (period = `heartbeatIntervalMs`, default 30s) inside the `streamSSE` callback; the interval is `unref`'d so it never keeps the Node process alive on its own, and `clearInterval` runs in the callback's `finally` block when the stream closes.
+
+**Rationale:**
+- Hono's `SSEMessage` shape (`{ data, event, id, retry }`) does not have a "comment" field. Writing a `:heartbeat\n\n` frame requires the raw `stream.write` escape hatch.
+- The heartbeat is not data the consumer should see as an event. Going through `writeSSE` would inject an `event:` or `data:` line that compliant clients would interpret as a payload.
+- An in-handler `setInterval` is the simplest fit: the listener is per-connection, the interval lifetime is exactly the stream's lifetime, and `unref` plus `clearInterval` in `finally` keeps the timer's lifecycle tied to the stream's.
+- A write failure on the heartbeat is treated as a stream-aborted signal: the handler trips its `closed` flag, deregisters from the hub, and exits the read loop. This matches the behavior on `stream.onAbort`.
+
+**Trade:** none. The `setInterval`-per-connection model is the same shape Hono's own SSE examples use; for a single-process V1 with O(N) live connections it is not a performance concern.
+
+### `createApp({ events: { hub, heartbeatIntervalMs } })` is the test seam for SSE
+
+**Decision:** `createApp(opts)` accepts an `events` sub-object with optional `hub` and `heartbeatIntervalMs` fields. Production calls `createApp()` without args and gets the module-level `eventHub` singleton plus the 30s heartbeat. Tests pass a fresh `EventHub` per test file plus a tiny heartbeat interval (e.g. 30ms) when they need to observe heartbeat behavior without sleeping.
+
+**Rationale:**
+- A fresh hub per test file isolates pub/sub state across test runs without needing a `beforeEach(() => hub.clear())` chant. Tests that DO want the singleton can import it and use it directly.
+- The heartbeat interval is the only piece of the route's behavior that is wall-clock dependent; tests need it dialed down to milliseconds to stay fast. Threading the value through `createApp` keeps the production singleton untouched.
+- The seam is narrow: only the SSE route's options object grows. `createApp` does not gain a generic plug-in mechanism. If future routes need similar test seams (e.g. webhook delivery's retry interval) they can add their own sub-objects.
+
+**Trade:** the `CreateAppOptions` type grows a new optional field. Acceptable; the existing fields (`prisma`, `apiKeyStore`) follow the same per-feature opt-in shape.
+

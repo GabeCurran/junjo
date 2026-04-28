@@ -1,8 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { prisma as defaultPrisma } from "./db.js";
+import type { EventHub } from "./eventHub.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
+import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
 import {
   acceptInvitationByCodeHandler,
@@ -23,6 +25,12 @@ import {
 export interface CreateAppOptions {
   prisma?: PrismaClient;
   apiKeyStore?: ApiKeyStore;
+  // Test seam for the SSE route: tests pass a fresh hub plus a tiny
+  // heartbeat interval so they can observe heartbeats without sleeping.
+  events?: {
+    hub?: EventHub;
+    heartbeatIntervalMs?: number;
+  };
 }
 
 // Builds a fresh Hono app per call so tests can boot one server per file
@@ -65,6 +73,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
+  v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   app.route("/v1", v1);
 
   return app;
