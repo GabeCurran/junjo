@@ -187,6 +187,25 @@ Running list of every meaningful decision made during scoping, with rationale. A
 
 ---
 
+## 2026-04-28
+
+### Server test fixture: `TEST_DATABASE_URL` env var (not testcontainers)
+
+**Decision:** server-side tests that need a database read a connection string from `TEST_DATABASE_URL`. Tests fail fast with a clear error if the env var is unset. We do NOT depend on `testcontainers` for V1.
+
+**Rationale:**
+- Docker is not a guaranteed dependency on Windows dev machines or in the current overnight loop runner. Hard-requiring it would block iterations whenever Docker Desktop is not running.
+- A single shared local Postgres (the dev brings up however they like - Docker, Postgres.app, Supabase local, etc.) is meaningfully faster per test run than spinning up a fresh container.
+- The cost of swapping in `testcontainers` later is small: it would replace the env-var resolution inside `packages/server/src/testdb.ts` and nothing else.
+
+**Trade:** developers must set `TEST_DATABASE_URL` once locally. A short-lived setup pain in exchange for not coupling the test step to Docker.
+
+**Caveats:**
+- Tests truncate / reset the schema between files. Anyone pointing this env var at a database with real data will lose it. The README warns about that.
+- Revisit when there is a second human running tests regularly, or when isolation across parallel test suites becomes a real problem.
+
+---
+
 ## Open questions
 
 - Initial domain: `junjo.io` only, or also grab `junjo.gg` (gaming TLD) as redirect?
