@@ -163,7 +163,7 @@ interface UpdateWebhookEndpointInput {
   format?: WebhookEndpointFormat;
 }
 
-type WebhookEndpointFormat = "junjo" | "discord";
+type WebhookEndpointFormat = "junjo" | "discord" | "slack";
 ```
 
 ### `endpoints.create(input)`
@@ -182,13 +182,20 @@ If `secret` is omitted (the common case), the server generates a 32-byte base64u
 
 `events` defaults to `[]` (match-all). Pass a non-empty array to filter to specific event types; unknown event types are rejected with a 400.
 
-`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api/webhooks-discord) before POSTing - the URL is then a Discord webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (Discord receives the delivery directly).
+`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api/webhooks-discord) or `"slack"` to produce a [Slack Block Kit message](../api/webhooks-slack) before POSTing - the URL is then a provider-issued webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (the provider receives the delivery directly).
 
 ```ts
 // Pipe Junjo events to a Discord channel
 await junjo.webhooks.endpoints.create({
   url: "https://discord.com/api/webhooks/123/abc...",
   format: "discord",
+  events: ["member.joined", "member.left", "group.deleted"],
+});
+
+// Pipe the same events to a Slack channel
+await junjo.webhooks.endpoints.create({
+  url: "https://hooks.slack.com/services/T0/B0/abc...",
+  format: "slack",
   events: ["member.joined", "member.left", "group.deleted"],
 });
 ```

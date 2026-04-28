@@ -21,9 +21,9 @@ export const WEBHOOK_EVENT_TYPES = [
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];
 
 // Wire formats the worker can serialize a JunjoEvent into. "junjo" is the
-// raw JunjoEvent JSON with HMAC headers; "discord" is a Discord embed
-// payload. Slack and other targets land here in later phases.
-export const WEBHOOK_FORMATS = ["junjo", "discord"] as const;
+// raw JunjoEvent JSON with HMAC headers; "discord" and "slack" are
+// target-shaped payloads delivered to provider-issued webhook URLs.
+export const WEBHOOK_FORMATS = ["junjo", "discord", "slack"] as const;
 
 export type WebhookFormatString = (typeof WEBHOOK_FORMATS)[number];
 

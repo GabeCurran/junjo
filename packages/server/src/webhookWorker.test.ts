@@ -547,4 +547,83 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       expect(row.attemptCount).toBe(1);
     });
   });
+
+  describe("deliverOne (slack format)", () => {
+    async function enqueueSlackDelivery(): Promise<string> {
+      await makeEndpoint({
+        url: "https://hooks.slack.com/services/T0/B0/abc",
+        format: "slack",
+      });
+      const event = makeGroupUpdatedEvent(gameId, groupId);
+      const ids = await enqueueWebhookDeliveries(prisma, event);
+      expect(ids).toHaveLength(1);
+      return ids[0] as string;
+    }
+
+    it("posts a Slack Block Kit payload instead of the raw JunjoEvent", async () => {
+      const id = await enqueueSlackDelivery();
+      const { fetcher, calls } = makeFetcher([{ ok: true, status: 200 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome).toEqual({ status: "delivered", httpStatus: 200 });
+      const call = calls[0];
+      expect(call?.url).toBe("https://hooks.slack.com/services/T0/B0/abc");
+      const body = JSON.parse(call?.init.body ?? "") as {
+        text?: unknown;
+        blocks?: Array<{ type: string }>;
+      };
+      expect(typeof body.text).toBe("string");
+      expect(Array.isArray(body.blocks)).toBe(true);
+      const types = body.blocks?.map((b) => b.type) ?? [];
+      expect(types).toContain("header");
+      expect(types).toContain("section");
+      expect(types).toContain("context");
+    });
+
+    it("omits all x-junjo-* headers and the HMAC signature on a Slack delivery", async () => {
+      const id = await enqueueSlackDelivery();
+      const { fetcher, calls } = makeFetcher([{ ok: true, status: 200 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      await deliverOne(prisma, id, fetcher, () => now);
+
+      const headers = calls[0]?.init.headers ?? {};
+      expect(headers["content-type"]).toBe("application/json");
+      expect(headers["x-junjo-event"]).toBeUndefined();
+      expect(headers["x-junjo-event-id"]).toBeUndefined();
+      expect(headers["x-junjo-delivery-id"]).toBeUndefined();
+      expect(headers["x-junjo-timestamp"]).toBeUndefined();
+      expect(headers["x-junjo-signature"]).toBeUndefined();
+    });
+
+    it("retries Slack deliveries on 5xx with the same backoff as junjo format", async () => {
+      const id = await enqueueSlackDelivery();
+      const { fetcher } = makeFetcher([{ ok: false, status: 502 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome.status).toBe("pending");
+      const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id } });
+      expect(row.attemptCount).toBe(1);
+      expect(row.responseStatus).toBe(502);
+      const expectedNext = new Date(now.getTime() + WEBHOOK_BACKOFF_MS[0]);
+      expect(row.nextAttemptAt?.toISOString()).toBe(expectedNext.toISOString());
+    });
+
+    it("treats Slack 4xx as terminal failure (e.g. 404 invalid webhook URL)", async () => {
+      const id = await enqueueSlackDelivery();
+      const { fetcher } = makeFetcher([{ ok: false, status: 404 }]);
+      const now = new Date("2026-04-28T12:30:00.000Z");
+
+      const outcome = await deliverOne(prisma, id, fetcher, () => now);
+
+      expect(outcome.status).toBe("failed");
+      const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe("failed");
+      expect(row.attemptCount).toBe(1);
+    });
+  });
 });

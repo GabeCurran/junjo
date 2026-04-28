@@ -102,7 +102,7 @@ Each endpoint carries:
 
 - `url` - destination for the POST. Must use `https://` or `http://`.
 - `events` - array of event types this endpoint subscribes to. **Empty array means match-all** (the friendly default for "I want everything"). Non-empty array filters to the listed types; unknown event types are rejected at create / update time.
-- `format` - wire format applied at delivery time. Defaults to `"junjo"` (raw `JunjoEvent` JSON with HMAC headers). `"discord"` produces a [Discord embed payload](./webhooks-discord.mdx) and skips the HMAC headers (Discord webhooks authenticate via URL token, not signed headers).
+- `format` - wire format applied at delivery time. Defaults to `"junjo"` (raw `JunjoEvent` JSON with HMAC headers). `"discord"` produces a [Discord embed payload](./webhooks-discord.mdx) and `"slack"` produces a [Slack Block Kit message](./webhooks-slack.mdx); both skip the HMAC headers (those targets authenticate via URL token, not signed headers).
 - `disabledAt` - when set, the endpoint is muted: matching events do not enqueue deliveries to it.
 - `secret` - the HMAC signing key. Stored in recoverable form so the worker can sign requests; surfaced exactly once on `POST /v1/webhooks` and never again. Persist it on creation. The signing path is skipped for non-`junjo` formats, but the column still stores the secret in case the dev rotates the format back later.
 
@@ -116,7 +116,7 @@ Each endpoint carries:
 | `gameId` | string | Always equals the calling game's id. |
 | `url` | string | Destination. |
 | `events` | `string[]` | Subset of [`JunjoEventType`](./events.mdx). Empty array = match-all. |
-| `format` | `"junjo" \| "discord"` | Wire format applied at delivery time. See [Discord format](./webhooks-discord.mdx). Defaults to `"junjo"`. |
+| `format` | `"junjo" \| "discord" \| "slack"` | Wire format applied at delivery time. See [Discord format](./webhooks-discord.mdx) and [Slack format](./webhooks-slack.mdx). Defaults to `"junjo"`. |
 | `createdAt` | ISO 8601 | |
 | `disabledAt` | ISO 8601 \| null | |
 
@@ -131,7 +131,7 @@ Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server ge
 | `url` | Required. Must parse as `http://` or `https://`. Max 2000 chars. |
 | `events` | Optional. Each entry must be a valid `JunjoEventType`; unknown types return 400. |
 | `secret` | Optional. 16-256 chars. |
-| `format` | Optional. `"junjo"` or `"discord"`. Unknown values return 400. |
+| `format` | Optional. One of `"junjo"`, `"discord"`, or `"slack"`. Unknown values return 400. |
 
 Errors:
 

@@ -370,10 +370,10 @@ export interface WebhookSignatureHeaders {
 }
 
 // Wire format the worker applies at delivery time. "junjo" (the default)
-// posts the raw JunjoEvent JSON with HMAC headers; "discord" posts a
-// Discord embed payload and skips the HMAC (Discord webhooks
+// posts the raw JunjoEvent JSON with HMAC headers; "discord" and "slack"
+// post target-shaped payloads and skip the HMAC (those targets
 // authenticate via URL token, not headers).
-export type WebhookEndpointFormat = "junjo" | "discord";
+export type WebhookEndpointFormat = "junjo" | "discord" | "slack";
 
 export interface WebhookEndpoint {
   id: WebhookEndpointId;

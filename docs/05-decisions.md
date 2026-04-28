@@ -2376,3 +2376,58 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The typical event has tiny field values (user ids, group ids, role names). The cap only kicks in for `role.changed` events with very large `added` / `removed` arrays - rare in practice but possible.
 
 **Trade:** very-long role lists get a `…` suffix instead of full enumeration. Acceptable - the Discord page is for at-a-glance activity, not a complete audit log (which lives at `audit.list`).
+
+### Phase 9.2: Slack added to the closed `WebhookEndpointFormat` enum
+
+**Decision:** `"slack"` is a third value in the `WebhookEndpointFormat` union, sitting alongside `"junjo"` and `"discord"`. The schema-side enum (`WEBHOOK_FORMATS` in `routes/webhooks.schema.ts`) and the Postgres `format` column accept it, the worker dispatches to `formatJunjoEventForSlack` when it sees the value, and the existing `format` field on `CreateWebhookEndpointInput` / `UpdateWebhookEndpointInput` carries it without API surface change. No schema migration: the column already exists with a string default and no enum constraint.
+
+**Rationale:**
+- Phase 9.1 explicitly anticipated this: "Slack lands as `format: "slack"` in Phase 9.2 with the same shape (no schema change, just a new enum value and a sibling `slackFormatter.ts`)."
+- Both Discord and Slack incoming-webhook URLs follow the same auth model (URL is the secret), share the same retry semantics, and target the same use case (channel-side activity feed). Treating them as siblings rather than as a deeper format taxonomy keeps the enum closed and the worker code linear.
+- A test that previously used `format: "slack"` as the unknown-format placeholder broke and was migrated to `format: "teams"` (still rejected by the enum). Documented in the iteration log.
+
+**Trade:** the closed-enum stance still holds. A future `"teams"` (Microsoft Teams) or `"webhook-shape-X"` will be one decision entry plus one formatter module. Devs needing arbitrary outbound shapes still run their own relay.
+
+### Phase 9.2: Slack uses Block Kit (`blocks` array) plus a top-level `text` fallback
+
+**Decision:** the formatter emits `{ text, blocks: [...] }` per Slack incoming-webhook payload spec. `text` is a one-line summary used as the mobile push notification preview and old-client fallback; `blocks` is a Block Kit array with a `header` block, a `section` block carrying the summary, a `section` block of two-column field pairs (each is a single `mrkdwn` text element with a bolded label, a literal newline, then the value), and a `context` block carrying the Junjo event id and `occurredAt`.
+
+**Rationale:**
+- Block Kit is Slack's recommended message shape and what Slack's own first-party integrations use. Pure-`text` posts are visually flat in modern Slack clients; Block Kit gets the polished, scannable layout.
+- The `text` fallback is required: without it, Slack logs a warning and mobile push notifications show "an empty message". One extra string is cheap.
+- The four-block structure (header / summary / fields / context) matches what Stripe, Linear, and GitHub send to Slack for similar event-feed use cases. Familiar to devs, easy for them to filter on.
+
+**Trade:** the `blocks` payload is more bytes than a pure-`text` post. Negligible (Slack's 40 KB cap is many orders of magnitude away). Block Kit does not yet support all formatting niceties of Discord embeds (no per-block color stripe, no embed thumbnails) - acceptable for V1.
+
+### Phase 9.2: Slack field values truncated at 2000 chars; section text at 3000 chars
+
+**Decision:** the formatter caps each `mrkdwn` field at 2000 chars and each section text block at 3000 chars, with a single-character ellipsis suffix on truncation. These are Slack's documented per-component limits.
+
+**Rationale:**
+- Slack rejects payloads exceeding the per-component caps with a 400. The retry policy treats 400 as terminal failure (`failed` immediately, no retry), which is the wrong behavior for a Junjo bug spilling oversized data.
+- Slack's caps differ from Discord's (2000 / 3000 vs Discord's 1024 / 4096). The formatter uses Slack's numbers directly rather than a shared cross-formatter constant.
+- The cap only triggers for `role.changed` with very large `added` / `removed` lists; the typical event flows through verbatim.
+
+**Trade:** very-long role lists get a `…` suffix. Same deal as Discord - the Slack page is for at-a-glance activity, not a complete audit log.
+
+### Phase 9.2: Slack delivery skips HMAC headers (matches Discord stance)
+
+**Decision:** when `endpoint.format === "slack"`, the worker writes `content-type: application/json` and nothing else. No `x-junjo-*` headers, no HMAC computation. The `secret` column is unused on the Slack delivery path but kept stored.
+
+**Rationale:**
+- Slack incoming-webhook URLs (`https://hooks.slack.com/services/T<workspace>/B<bot>/<token>`) are themselves the auth token. Same threat model as Discord: a leaked URL is a leaked secret.
+- Slack ignores unknown headers; sending `x-junjo-*` would only leak Junjo-internal metadata into Slack's request logs.
+- Receivers of `format: "slack"` are by definition Slack (or a Slack-shaped consumer); they don't run `junjo.webhooks.verify`.
+- Mirrors the Phase 9.1 Discord stance, so the worker has a uniform "skip headers for non-junjo formats" branch instead of a per-provider exception list.
+
+**Trade:** identical to Discord's. Documented on the user-facing Slack page.
+
+### Phase 9.2: Slack formatter is forward-compatible against unknown event types
+
+**Decision:** `formatJunjoEventForSlack` switches on `payload.type`. Unknown types fall through to a generic message with title `Junjo event: <type>` and fields carrying the type and event id.
+
+**Rationale:**
+- Same rationale as the Discord formatter's forward-compat: a rolling deploy that adds a new `JunjoEventType` should not crash the Slack delivery path.
+- Slack does not have a per-event "color category" like Discord embeds, so the unknown-type branch is visually identical to a known-type message except for the title and fields. No grey-vs-red color signal needed.
+
+**Trade:** new event types ship to Slack without per-type customization until the formatter ships an updated mapping. Same as Discord; documented in the user-facing Slack page.

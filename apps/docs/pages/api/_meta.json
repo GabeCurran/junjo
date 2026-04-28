@@ -8,5 +8,6 @@
   "audit": "Audit",
   "events": "Events",
   "webhooks": "Webhooks",
-  "webhooks-discord": "Webhooks (Discord)"
+  "webhooks-discord": "Webhooks (Discord)",
+  "webhooks-slack": "Webhooks (Slack)"
 }

@@ -91,10 +91,22 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(stored?.format).toBe("discord");
     });
 
+    it("creates a slack-format endpoint and persists format", async () => {
+      const res = await jsonRequest("POST", "/v1/webhooks", {
+        url: "https://hooks.slack.com/services/T0/B0/abc",
+        format: "slack",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as WireWebhookEndpointWithSecret;
+      expect(body.format).toBe("slack");
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
+      expect(stored?.format).toBe("slack");
+    });
+
     it("rejects an unknown format on create", async () => {
       const res = await jsonRequest("POST", "/v1/webhooks", {
         url: "https://dev.example.com/hook",
-        format: "slack",
+        format: "teams",
       });
       expect(res.status).toBe(400);
       expect(await prisma.webhookEndpoint.count()).toBe(0);
@@ -362,9 +374,19 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(stored?.format).toBe("discord");
     });
 
-    it("rejects an unknown format on update", async () => {
+    it("switches format from junjo to slack", async () => {
       const ep = await seedEndpoint();
       const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, { format: "slack" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as WireWebhookEndpoint;
+      expect(body.format).toBe("slack");
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
+      expect(stored?.format).toBe("slack");
+    });
+
+    it("rejects an unknown format on update", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, { format: "teams" });
       expect(res.status).toBe(400);
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
       expect(stored?.format).toBe("junjo");

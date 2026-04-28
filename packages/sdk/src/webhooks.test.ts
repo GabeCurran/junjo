@@ -511,6 +511,27 @@ describe("WebhookEndpointsApi.create", () => {
     expect(created.format).toBe("discord");
   });
 
+  it("forwards the format field when set to slack", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        url: "https://hooks.slack.com/services/T0/B0/abc",
+        format: "slack",
+      });
+      return jsonResponse({ ...wireEndpointWithSecret, format: "slack" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://hooks.slack.com/services/T0/B0/abc",
+      format: "slack",
+    });
+    expect(created.format).toBe("slack");
+  });
+
   it("propagates JunjoError on a 400 response", async () => {
     const fetchMock = endpointFetch(async () =>
       jsonResponse({ code: "bad_request", status: 400, message: "url is required" }, 400),

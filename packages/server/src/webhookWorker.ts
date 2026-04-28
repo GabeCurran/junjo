@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { formatJunjoEventForDiscord } from "./discordFormatter.js";
+import { formatJunjoEventForSlack } from "./slackFormatter.js";
 
 // Backoff schedule between attempts. After attempt N fails (and the
 // failure is retriable), wait `WEBHOOK_BACKOFF_MS[N - 1]` before
@@ -107,16 +108,20 @@ export async function deliverOne(
   const eventId = typeof payload?.id === "string" ? payload.id : "";
   const eventType = typeof payload?.type === "string" ? payload.type : "";
 
-  // Format-specific wire shape. "discord" produces an embed payload and
-  // omits the HMAC headers (Discord webhooks authenticate via URL token,
-  // not signed headers - and Discord ignores unknown headers anyway, so
-  // sending them would be both useless and noisy). "junjo" stays on the
-  // raw JunjoEvent JSON with the canonical signed-header set; receivers
-  // running `junjo.webhooks.verify` need every header in this map.
+  // Format-specific wire shape. "discord" and "slack" produce
+  // target-shaped payloads and omit the HMAC headers (those targets
+  // authenticate via URL token, not signed headers - and they ignore
+  // unknown headers anyway, so sending the `x-junjo-*` set would be
+  // both useless and noisy). "junjo" stays on the raw JunjoEvent JSON
+  // with the canonical signed-header set; receivers running
+  // `junjo.webhooks.verify` need every header in this map.
   let body: string;
   let headers: Record<string, string>;
   if (delivery.endpoint.format === "discord") {
     body = JSON.stringify(formatJunjoEventForDiscord(payload ?? {}));
+    headers = { "content-type": "application/json" };
+  } else if (delivery.endpoint.format === "slack") {
+    body = JSON.stringify(formatJunjoEventForSlack(payload ?? {}));
     headers = { "content-type": "application/json" };
   } else {
     body = JSON.stringify(delivery.payload);
