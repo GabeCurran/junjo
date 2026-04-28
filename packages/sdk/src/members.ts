@@ -115,12 +115,18 @@ export class MembersApi {
     return deserializeMember(wire);
   }
 
-  async assignRole(_groupId: GroupId, _userId: UserId, _roleId: RoleId): Promise<Member> {
-    throw NOT_IMPLEMENTED;
+  async assignRole(groupId: GroupId, userId: UserId, roleId: RoleId): Promise<Member> {
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+    );
+    return deserializeMember(wire);
   }
 
-  async removeRole(_groupId: GroupId, _userId: UserId, _roleId: RoleId): Promise<Member> {
-    throw NOT_IMPLEMENTED;
+  async removeRole(groupId: GroupId, userId: UserId, roleId: RoleId): Promise<Member> {
+    const wire = await this.http.delete<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+    );
+    return deserializeMember(wire);
   }
 
   async overridePermission(

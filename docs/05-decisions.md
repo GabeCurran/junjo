@@ -898,3 +898,60 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - The dev who wants the canonical "default role" sets `Group.defaultRoleId` via `groups.update`. The dev who wants the tag sets `Role.isDefault` via `roles.update`. The two are independent.
 
 **Trade:** the surface area is slightly larger (two fields, two paths) but each carries clear meaning. The docs spell out the relationship so a dev does not get confused.
+
+### `members.assignRole` and `removeRole` carry the role id in the path, not the body
+
+**Decision:** the role-assignment routes are `POST /v1/groups/:id/members/:userId/roles/:roleId` and the matching `DELETE`. The role id lives in the path, alongside the group id and the user id. The body is empty.
+
+**Rationale:**
+- The triple `(groupId, userId, roleId)` uniquely identifies the join row. Putting it all in the path makes the URL itself a stable identifier for the assignment, which composes nicely with HTTP cache-control, audit-log filtering ("show me everything that touched `/v1/groups/X/members/Y/roles/Z`"), and SDK ergonomics (`junjo.members.assignRole(g, u, r)` is one positional call).
+- The alternative (`POST /v1/groups/:id/members/:userId/roles` with `{ roleId }` body) reads the same on the wire but loses the URL-as-identifier property. It also forces the SDK to pass a body where none is needed.
+- The shape is parallel to Phase 3.4 `POST /v1/groups/:id/members/:userId/permissions/:permission` for permission overrides; choosing the same pattern now keeps the surface internally consistent.
+
+**Trade:** if a future "bulk assign" use case surfaces (assign 5 roles to a member in one call), it will not fit the per-role URL shape. Document a separate `POST /v1/groups/:id/members/:userId/roles/bulk` route at that point; do not retrofit the single-role URL.
+
+### `role_group_mismatch` (400) is the explicit error for cross-group role assignment
+
+**Decision:** when `assignRole` is called with a role id that exists but belongs to a different group than the member, the route returns `400 role_group_mismatch`. A role id that does not exist at all returns `404 not_found`.
+
+**Rationale:**
+- VISION explicitly calls out "can't assign role from a different group" as a tested case in Phase 3.2. The two failure modes (role exists but wrong group; role doesn't exist) are semantically different, and they call for different status codes:
+  - Cross-group: the dev passed a programmer-error roleId that's wrong *for this context*. 400 with a code that names the cause is the right answer.
+  - Missing: standard "resource not found", 404.
+- A single status (e.g. all 404 with a generic message) would force the dev to guess which case they hit. The split is explicit and debuggable.
+- Returning 400 also distinguishes this case from the existing collapsed-existence-pattern 404s used everywhere else (group missing / soft-deleted / cross-game / no-ExternalIdentity / no-GroupMember). The dev can branch on the code to decide whether to retry, fix their code, or surface the error to a human.
+
+**Trade:** the route now has two failure paths to think about. The complexity is a one-time cost; the debuggability is recurring.
+
+### `assignRole` and `removeRole` are idempotent (no-op when already in target state)
+
+**Decision:** assigning a role the member already has, or removing a role the member doesn't have, returns the unchanged member with no audit entry written and no DB write. The HTTP status is `200 OK` in both cases (not 201 / 204).
+
+**Rationale:**
+- Idempotency makes role-assignment retryable. A network blip between the dev's backend and Junjo doesn't have to surface as a "duplicate role assignment" error if the second call is functionally a no-op. This matches the precedent set by `groups.delete`, `groups.restore`, `invitations.revoke`, `groups.leave`, `groups.kick`, and the metadata / notes diff in `members.setMetadata` / `setNotes`.
+- Skipping the audit entry on a no-op keeps the audit log honest: a "role.assigned" entry implies the role *was* assigned; if it was already assigned, no new event happened, so no event row.
+- Returning 200 with the unchanged member (rather than 201 or 304) means the SDK signature is uniform: `assignRole(...): Promise<Member>` always returns the post-state member. The caller doesn't have to branch on status to know what happened.
+
+**Trade:** a dev who *wants* to know whether the call was a real change versus a no-op can't tell from the response alone. Mitigation: the audit log is the source of truth for "did this really happen"; if the dev needs to know whether to fire a downstream effect, they should inspect the audit log (or, post-Phase 5, subscribe to the SSE / webhook stream).
+
+### `removeRole` does not validate the role's existence
+
+**Decision:** `removeRole` does not look up the role separately. It just checks for a `MemberRole` row at `(groupMemberId, roleId)`. If the row doesn't exist, the route is a no-op regardless of why (role doesn't exist at all, role belongs to a different group, role exists in this group but isn't assigned to this member).
+
+**Rationale:**
+- The `MemberRole` join row is the only state that matters for "does this member have this role?". A missing row means "no", and the answer is the same regardless of whether the missing-ness is because the role doesn't exist, the role is from another group, or the role exists here but isn't assigned. Querying the role separately would add a query for no semantic benefit.
+- Keeping the route maximally idempotent: `DELETE` on a resource that doesn't exist should be a no-op (per HTTP convention). The route already returns 200 with the unchanged member on the "role exists in this group but isn't assigned" case; extending the same behavior to the "role doesn't exist" case keeps the contract uniform.
+- The SDK shape is unchanged: `removeRole(g, u, r): Promise<Member>` always resolves to the post-state member. No 404 to handle.
+
+**Trade:** a dev who calls `removeRole` with a typo in the role id will not get an error. Mitigation: the audit log is empty (no `role.unassigned` entry), and the returned member's `roles` array is unchanged. If the dev expected the role to be there before the remove and the post-state shows it wasn't, they have a clear signal that something is off.
+
+### `assignRole` and `removeRole` accept members in any status
+
+**Decision:** the lifecycle gate (active / left / kicked / invited) is *not* enforced by the role-assignment routes. A member in any status can have roles assigned or removed.
+
+**Rationale:**
+- This matches the precedent set by `members.setMetadata` and `members.setNotes`: those routes also accept terminal-status members, leaving the lifecycle gate to `leave` / `kick`. Role assignment is conceptually similar metadata-on-a-member work; the same precedent applies.
+- A dev's UI that displays a kicked member's role history (e.g. "this user was an Officer at the time of kick") is easier to build if the role assignments persist after the kick. Stripping roles automatically on kick would require a join-row cleanup that the schema doesn't currently model and that would lose audit information.
+- Phase 3.5's `can()` check is the place where status matters: a kicked member has no permissions in the group regardless of which roles they nominally still have. The role join rows are bookkeeping; the live permission resolution is in `can()`.
+
+**Trade:** the dev's UI may show "Officer" next to a kicked member's name unless the dev filters explicitly. Mitigation: the `Member.status` field is on the wire; the dev can branch on it. Phase 3.5 will document this expectation in the `can()` doc.

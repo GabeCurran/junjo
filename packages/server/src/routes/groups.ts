@@ -989,6 +989,121 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     return c.json({ invited: toCreate.length, skipped, errors: errorList });
   });
 
+  // Assign a role to a member. Idempotent: assigning a role the member
+  // already has returns the unchanged member with no audit entry. The
+  // role must belong to the same group as the member (cross-group
+  // assignment returns `400 role_group_mismatch`); a role that does not
+  // exist at all returns `404`. Group / member existence collapses into
+  // a single 404 to match the leave / kick / patch-member precedent.
+  // `actorUserId` is null in V1 (no auth-adapter actor wired).
+  r.post("/:id/members/:userId/roles/:roleId", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const roleId = c.req.param("roleId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const role = await prisma.role.findUnique({
+      where: { id: roleId },
+      select: { id: true, groupId: true },
+    });
+    if (!role) throw Errors.notFound("role");
+    if (role.groupId !== group.id) throw Errors.roleGroupMismatch();
+
+    const existing = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    if (existing) {
+      const roleIds = await loadMemberRoleIds(prisma, member.id);
+      return c.json(serializeMember(member, userId, roleIds));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.memberRole.create({
+        data: { groupMemberId: member.id, roleId: role.id },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "role.assigned",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            roleId: role.id,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, member.id);
+    return c.json(serializeMember(member, userId, roleIds));
+  });
+
+  // Remove a role from a member. Idempotent: if the member does not have
+  // the role assigned (whether the role exists in another group, exists
+  // but is unassigned, or does not exist at all) the route returns the
+  // unchanged member with no audit entry. Group / member existence
+  // collapses into a single 404 like the assign path.
+  r.delete("/:id/members/:userId/roles/:roleId", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const roleId = c.req.param("roleId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const existing = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId } },
+    });
+    if (!existing) {
+      const roleIds = await loadMemberRoleIds(prisma, member.id);
+      return c.json(serializeMember(member, userId, roleIds));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.memberRole.delete({
+        where: { groupMemberId_roleId: { groupMemberId: member.id, roleId } },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "role.unassigned",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            roleId,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, member.id);
+    return c.json(serializeMember(member, userId, roleIds));
+  });
+
   // Create a role inside the group. Body: `{ name, priority, color?,
   // isDefault? }`. `name` is unique per group (the schema enforces it; a
   // duplicate returns 409 via Prisma's unique-constraint failure handled

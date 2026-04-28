@@ -1,4 +1,4 @@
-import type { GameId, GroupId, MemberId, UserId } from "@junjo/shared";
+import type { GameId, GroupId, MemberId, RoleId, UserId } from "@junjo/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
@@ -485,5 +485,159 @@ describe("members.setNotes", () => {
     await junjo.members.setNotes("has/slash" as GroupId, "weird/user" as UserId, {
       notesPublic: "x",
     });
+  });
+});
+
+describe("members.assignRole", () => {
+  it("POSTs /v1/groups/:groupId/members/:userId/roles/:roleId with the auth header and no body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/roles/role_1");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBeNull();
+      const text = await req.text();
+      expect(text).toBe("");
+      return jsonResponse({ ...memberFixture, roles: ["role_1"] });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.members.assignRole(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "role_1" as RoleId,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.roles).toEqual(["role_1"]);
+    expect(member.joinedAt).toBeInstanceOf(Date);
+  });
+
+  it("throws JunjoError on role_group_mismatch (400)", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "role_group_mismatch", status: 400, message: "wrong group" }, 400),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.assignRole("grp_1" as GroupId, "user_alice" as UserId, "role_2" as RoleId),
+    ).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "role_group_mismatch",
+      status: 400,
+    });
+  });
+
+  it("throws JunjoError on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no role" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.assignRole("grp_1" as GroupId, "user_alice" as UserId, "ghost" as RoleId),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes group id, user id, and role id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/groups/has%2Fslash/members/weird%2Fuser/roles/role%2Fa",
+      );
+      return jsonResponse(memberFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.assignRole(
+      "has/slash" as GroupId,
+      "weird/user" as UserId,
+      "role/a" as RoleId,
+    );
+  });
+});
+
+describe("members.removeRole", () => {
+  it("DELETEs /v1/groups/:groupId/members/:userId/roles/:roleId with the auth header", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/roles/role_1");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({ ...memberFixture, roles: [] });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.members.removeRole(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "role_1" as RoleId,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(member.roles).toEqual([]);
+    expect(member.joinedAt).toBeInstanceOf(Date);
+  });
+
+  it("returns the member when the server reports a no-op (still 200)", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse({ ...memberFixture, roles: [] }));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const member = await junjo.members.removeRole(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      "role_x" as RoleId,
+    );
+    expect(member.roles).toEqual([]);
+  });
+
+  it("throws JunjoError on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "no member" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.members.removeRole("grp_1" as GroupId, "user_alice" as UserId, "role_1" as RoleId),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("URL-encodes group id, user id, and role id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/groups/has%2Fslash/members/weird%2Fuser/roles/role%2Fa",
+      );
+      return jsonResponse(memberFixture);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.members.removeRole(
+      "has/slash" as GroupId,
+      "weird/user" as UserId,
+      "role/a" as RoleId,
+    );
   });
 });

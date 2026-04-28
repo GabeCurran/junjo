@@ -719,3 +719,74 @@ One `member.invited` audit entry is written per created invitation, all in the s
 | `bad_request` | 400 | More than 1000 rows in one request, or `roleId=` empty. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/roles/:roleId`
+
+Assigns a role to a member. Idempotent: assigning a role the member already has returns the unchanged member with no audit entry written. The role must belong to the same group as the member; cross-group assignment returns `400 role_group_mismatch`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+| `roleId` | string | The role id. URL-decoded by the router. |
+
+### Request
+
+No body. The route ignores any body that is sent.
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` includes the newly assigned role id alongside any existing role ids. Members in any status (`active`, `left`, `kicked`, `invited`) can be assigned roles; the route does not gate on `status` (matches the metadata / notes precedent).
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `role.assigned` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, roleId }` |
+
+A no-op (the role was already assigned) does not write an audit entry.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | The role exists but belongs to a different group (`role_group_mismatch`). |
+| `not_found` | 404 | The group / member / role does not exist (the four cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group; no `Role` row at all). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id/members/:userId/roles/:roleId`
+
+Removes a role from a member. Idempotent: if the member does not have the role assigned, returns the unchanged member with no audit entry written. A role that does not exist or belongs to a different group is treated identically to "not assigned"; both are no-ops.
+
+### Path parameters
+
+Same as `POST /v1/groups/:id/members/:userId/roles/:roleId`.
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` excludes the removed role id; other role assignments are preserved.
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `role.unassigned` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, roleId }` |
+
+A no-op (the role was not assigned) does not write an audit entry.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The role's existence is *not* validated; an unknown role id collapses to a no-op. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

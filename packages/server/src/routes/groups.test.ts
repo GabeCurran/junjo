@@ -3004,3 +3004,522 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
     expect(body.errors).toEqual([{ row: 2, reason: "userId exceeds 255 characters" }]);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/roles/:roleId", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    status: "active" | "left" | "kicked" | "invited" = "active",
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status },
+    });
+    return { user, member };
+  }
+
+  async function seedRole(groupIdValue: string, name = "Officer", priority = 80) {
+    return prisma.role.create({
+      data: { groupId: groupIdValue, name, priority },
+    });
+  }
+
+  function assignRole(
+    groupId: string,
+    userId: string,
+    roleId: string,
+    header: string = authHeader,
+  ) {
+    return app.request(`/v1/groups/${groupId}/members/${userId}/roles/${roleId}`, {
+      method: "POST",
+      headers: { authorization: header },
+    });
+  }
+
+  it("creates a MemberRole row and returns the member with the role attached", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+
+    const res = await assignRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: member.id,
+      groupId: group.id,
+      userId: "user_alice",
+      status: "active",
+      roles: [role.id],
+    });
+
+    const stored = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    expect(stored).not.toBeNull();
+  });
+
+  it("writes a role.assigned audit entry per call", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+
+    await assignRole(group.id, "user_alice", role.id);
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "role.assigned" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toEqual({ memberId: member.id, roleId: role.id });
+  });
+
+  it("is idempotent on already-assigned role (no second audit entry, no extra MemberRole row)", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+
+    const first = await assignRole(group.id, "user_alice", role.id);
+    expect(first.status).toBe(200);
+    const second = await assignRole(group.id, "user_alice", role.id);
+    expect(second.status).toBe(200);
+    const body = (await second.json()) as { roles: string[] };
+    expect(body.roles).toEqual([role.id]);
+
+    const memberRoles = await prisma.memberRole.findMany({
+      where: { groupMemberId: member.id },
+    });
+    expect(memberRoles).toHaveLength(1);
+    const entries = await prisma.auditEntry.findMany({
+      where: { action: "role.assigned" },
+    });
+    expect(entries).toHaveLength(1);
+  });
+
+  it("supports multiple roles on a single member", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const officer = await seedRole(group.id, "Officer", 80);
+    const recruiter = await seedRole(group.id, "Recruiter", 50);
+
+    await assignRole(group.id, "user_alice", officer.id);
+    const res = await assignRole(group.id, "user_alice", recruiter.id);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles.sort()).toEqual([officer.id, recruiter.id].sort());
+  });
+
+  it("returns 400 role_group_mismatch when the role belongs to a different group", async () => {
+    const groupA = await seedGroup();
+    const groupB = await seedGroup();
+    await seedMember(groupA.id, "user_alice");
+    const otherRole = await seedRole(groupB.id);
+
+    const res = await assignRole(groupA.id, "user_alice", otherRole.id);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("role_group_mismatch");
+
+    const stored = await prisma.memberRole.findMany({});
+    expect(stored).toHaveLength(0);
+  });
+
+  it("returns 404 when the role does not exist", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const res = await assignRole(group.id, "user_alice", "ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const otherGroup = await seedGroup();
+    const role = await seedRole(otherGroup.id);
+    const res = await assignRole("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    const res = await assignRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+    const stored = await prisma.memberRole.findMany({ where: { groupMemberId: member.id } });
+    expect(stored).toHaveLength(0);
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId: otherGame.id, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+    await prisma.groupMember.create({
+      data: { groupId: group.id, junjoUserId: user.id, status: "active" },
+    });
+    const role = await seedRole(group.id);
+
+    const res = await assignRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const role = await seedRole(group.id);
+    const res = await assignRole(group.id, "user_unknown", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+    const role = await seedRole(group.id);
+    const res = await assignRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("allows assignment to a non-active member", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice", "kicked");
+    const role = await seedRole(group.id);
+
+    const res = await assignRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[]; status: string };
+    expect(body.roles).toEqual([role.id]);
+    expect(body.status).toBe("kicked");
+
+    const stored = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    expect(stored).not.toBeNull();
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    const res = await app.request(`/v1/groups/${group.id}/members/user_alice/roles/${role.id}`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("URL-decodes the userId path parameter", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "weird/user");
+    const role = await seedRole(group.id);
+
+    const res = await assignRole(group.id, "weird%2Fuser", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { userId: string; roles: string[] };
+    expect(body.userId).toBe("weird/user");
+    expect(body.roles).toEqual([role.id]);
+
+    const stored = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    expect(stored).not.toBeNull();
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id/members/:userId/roles/:roleId", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  async function seedMember(
+    groupIdValue: string,
+    externalUserId: string,
+    status: "active" | "left" | "kicked" | "invited" = "active",
+  ) {
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: groupIdValue, junjoUserId: user.id, status },
+    });
+    return { user, member };
+  }
+
+  async function seedRole(groupIdValue: string, name = "Officer", priority = 80) {
+    return prisma.role.create({
+      data: { groupId: groupIdValue, name, priority },
+    });
+  }
+
+  function removeRole(
+    groupId: string,
+    userId: string,
+    roleId: string,
+    header: string = authHeader,
+  ) {
+    return app.request(`/v1/groups/${groupId}/members/${userId}/roles/${roleId}`, {
+      method: "DELETE",
+      headers: { authorization: header },
+    });
+  }
+
+  it("deletes the MemberRole row and returns the member with the role removed", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await removeRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([]);
+
+    const stored = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    expect(stored).toBeNull();
+  });
+
+  it("writes a role.unassigned audit entry per call", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    await removeRole(group.id, "user_alice", role.id);
+    const entries = await prisma.auditEntry.findMany({
+      where: { groupId: group.id, action: "role.unassigned" },
+    });
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    if (!entry) throw new Error("expected one audit entry");
+    expect(entry.targetId).toBe("user_alice");
+    expect(entry.actorUserId).toBeNull();
+    expect(entry.payload).toEqual({ memberId: member.id, roleId: role.id });
+  });
+
+  it("preserves other role assignments on the same member", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "user_alice");
+    const officer = await seedRole(group.id, "Officer", 80);
+    const recruiter = await seedRole(group.id, "Recruiter", 50);
+    await prisma.memberRole.createMany({
+      data: [
+        { groupMemberId: member.id, roleId: officer.id },
+        { groupMemberId: member.id, roleId: recruiter.id },
+      ],
+    });
+
+    const res = await removeRole(group.id, "user_alice", officer.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([recruiter.id]);
+  });
+
+  it("is a no-op when the member does not have the role assigned (no audit entry)", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+
+    const res = await removeRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([]);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { action: "role.unassigned" },
+    });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("is a no-op when the role does not exist at all", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+
+    const res = await removeRole(group.id, "user_alice", "ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([]);
+
+    const entries = await prisma.auditEntry.findMany({
+      where: { action: "role.unassigned" },
+    });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("is a no-op when the role belongs to a different group", async () => {
+    const groupA = await seedGroup();
+    const groupB = await seedGroup();
+    await seedMember(groupA.id, "user_alice");
+    const otherRole = await seedRole(groupB.id);
+
+    const res = await removeRole(groupA.id, "user_alice", otherRole.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roles: string[] };
+    expect(body.roles).toEqual([]);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const otherGroup = await seedGroup();
+    const role = await seedRole(otherGroup.id);
+    const res = await removeRole("ckxxxxxxxxxxxxxxxxxxxxxxxx", "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const { member } = await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await removeRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+    const stored = await prisma.memberRole.findUnique({
+      where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
+    });
+    expect(stored).not.toBeNull();
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId: otherGame.id, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+    const member = await prisma.groupMember.create({
+      data: { groupId: group.id, junjoUserId: user.id, status: "active" },
+    });
+    const role = await seedRole(group.id);
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await removeRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the user has no ExternalIdentity for this game", async () => {
+    const group = await seedGroup();
+    const role = await seedRole(group.id);
+    const res = await removeRole(group.id, "user_unknown", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when no GroupMember row exists for the user", async () => {
+    const group = await seedGroup();
+    const user = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: user.id, externalUserId: "user_alice" },
+    });
+    const role = await seedRole(group.id);
+    const res = await removeRole(group.id, "user_alice", role.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    await seedMember(group.id, "user_alice");
+    const role = await seedRole(group.id);
+    const res = await app.request(`/v1/groups/${group.id}/members/user_alice/roles/${role.id}`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("URL-decodes the userId path parameter", async () => {
+    const group = await seedGroup();
+    const { member } = await seedMember(group.id, "weird/user");
+    const role = await seedRole(group.id);
+    await prisma.memberRole.create({
+      data: { groupMemberId: member.id, roleId: role.id },
+    });
+
+    const res = await removeRole(group.id, "weird%2Fuser", role.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { userId: string; roles: string[] };
+    expect(body.userId).toBe("weird/user");
+    expect(body.roles).toEqual([]);
+  });
+});

@@ -32,4 +32,6 @@ export const Errors = {
     new JunjoError("role_has_members", 409, msg),
   roleNameTaken: (msg = "another role in this group already has that name") =>
     new JunjoError("role_name_taken", 409, msg),
+  roleGroupMismatch: (msg = "role does not belong to this group") =>
+    new JunjoError("role_group_mismatch", 400, msg),
 };
