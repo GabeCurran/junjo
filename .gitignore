@@ -92,3 +92,6 @@ TODO.local.md
 .codeium/
 .continue/
 .windsurfrules
+
+# Personal overnight automation loop (orchestrator, vision, runs, summaries)
+.loop/
