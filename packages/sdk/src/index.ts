@@ -1,16 +1,12 @@
 import type {
   AuditEntry,
   AuthAdapter,
-  CreateRoleInput,
   GroupId,
   JunjoEvent,
   ListAuditOptions,
   Page,
   PermissionCheckResult,
   PermissionKey,
-  Role,
-  RoleId,
-  UpdateRoleInput,
   UserId,
   WebhookSignatureHeaders,
 } from "@junjo/shared";
@@ -19,6 +15,7 @@ import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
+import { RolesApi } from "./roles.js";
 
 // =====================================================================
 // Configuration
@@ -62,7 +59,7 @@ export class Junjo {
     });
     const inviteBaseUrl = (config.inviteBaseUrl ?? baseUrl).replace(/\/+$/, "");
     this.groups = new GroupsApi(http, inviteBaseUrl);
-    this.roles = new RolesApi();
+    this.roles = new RolesApi(http);
     this.members = new MembersApi(http);
     this.invitations = new InvitationsApi(http);
     this.audit = new AuditApi();
@@ -89,40 +86,6 @@ export class Junjo {
   // Resolve a player session token to a Junjo user id. Calls the
   // configured auth adapter and the cross-game identity layer (cloud).
   async whoami(_token: string): Promise<{ userId: UserId } | null> {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
-// Roles
-// =====================================================================
-
-export class RolesApi {
-  async create(_groupId: GroupId, _input: CreateRoleInput): Promise<Role> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async get(_id: RoleId): Promise<Role | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async update(_id: RoleId, _input: UpdateRoleInput): Promise<Role> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async delete(_id: RoleId): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async list(_groupId: GroupId): Promise<Role[]> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async grantPermission(_roleId: RoleId, _permission: PermissionKey): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async revokePermission(_roleId: RoleId, _permission: PermissionKey): Promise<void> {
     throw NOT_IMPLEMENTED;
   }
 }
@@ -179,6 +142,7 @@ export { JunjoError } from "./errors.js";
 export { GroupsApi } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
 export { MembersApi } from "./members.js";
+export { RolesApi } from "./roles.js";
 
 export type {
   AuditEntry,

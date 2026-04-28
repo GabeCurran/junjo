@@ -1,0 +1,195 @@
+# Roles
+
+A `Role` is a named bundle of authority within one group. Roles carry a `priority` (higher = more authority), an optional color, a flag indicating whether they should be auto-assigned to new members, and (in Phase 3.3) a list of permission keys.
+
+The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/roles`) live on this page; so do the by-id routes (`GET /v1/roles/:id`, `PATCH /v1/roles/:id`, `DELETE /v1/roles/:id`).
+
+## Wire format
+
+`Role` is the shape returned by every endpoint that emits it. Timestamps are ISO 8601 strings.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `groupId` | string | The group this role belongs to. |
+| `name` | string | 1-64 characters. Unique within the group. |
+| `priority` | number | Integer. Higher = more authority. Used by the SDK's "can-act-on" helpers. |
+| `color` | string \| null | A 7-character hex color (e.g. `"#ff5050"`) if present, null otherwise. |
+| `isDefault` | boolean | A per-role flag the dev can set; multiple roles in a group may carry it. The single canonical "default role" lives on `Group.defaultRoleId`. |
+| `permissions` | string[] | Permission keys granted to this role. Always `[]` in V1 until Phase 3.3 wires `roles.grantPermission` / `revokePermission`. |
+| `createdAt` | string | ISO 8601 timestamp. |
+
+## `POST /v1/groups/:id/roles`
+
+Creates a new role inside the named group. Writes a `role.created` audit entry in the same transaction.
+
+### Request
+
+```json
+{
+  "name": "Officer",
+  "priority": 80,
+  "color": "#ff5050",
+  "isDefault": false
+}
+```
+
+| Field | Required | Default | Notes |
+|-------|----------|---------|-------|
+| `name` | yes | | 1-64 characters. Unique within the group. |
+| `priority` | yes | | Integer. Negative values are allowed (treat as "deprioritized"). |
+| `color` | no | `null` | If present, must match `^#[0-9a-fA-F]{6}$`. |
+| `isDefault` | no | `false` | Per-role tag. Multiple roles in one group can carry it. |
+
+`permissions` is intentionally not part of the create body in Phase 3.1; Phase 3.3 will introduce `POST /v1/roles/:id/permissions` as the dedicated grant route.
+
+### Response
+
+`201 Created` with a `Role` body. `permissions` is always `[]` on a freshly created role.
+
+### Audit log
+
+One `role.created` entry, written in the same transaction:
+
+```json
+{
+  "groupId": "<groupId>",
+  "actorUserId": null,
+  "action": "role.created",
+  "targetId": "<roleId>",
+  "payload": {
+    "name": "Officer",
+    "priority": 80,
+    "color": "#ff5050",
+    "isDefault": false
+  }
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing required fields, name out of range, priority not an integer, color not a 7-char hex, or malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `role_name_taken` | 409 | Another role in the same group already has that name. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/roles`
+
+Lists every role in a group. Returns a bare array (no pagination wrapper); roles are conventionally a small list (10s, not 1000s).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with a `Role[]` body. Items are ordered by `priority` desc with `id` desc as a tiebreaker, so the highest-authority roles appear first. Permissions are batch-loaded for the page.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/roles/:id`
+
+Fetches a single role by `Role.id`. Scoped to the calling game (a role whose group belongs to a different game returns 404 to avoid leaking existence). A soft-deleted group also 404s.
+
+### Response
+
+`200 OK` with a `Role` body.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No role with that id, or the role's group belongs to a different game, or the role's group is soft-deleted. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PATCH /v1/roles/:id`
+
+Updates one or more fields on an existing role. The body is partial: any subset of `{ name, priority, color, isDefault }`. Empty body returns `400`.
+
+Each field is diffed per-field against the stored row. Only fields whose new value differs from stored go into the update statement and the audit `payload`. A no-op PATCH (every supplied value equals the stored one) skips the DB write entirely, returns the unchanged role, and writes no audit entry.
+
+### Request
+
+```json
+{
+  "priority": 90,
+  "color": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | 1-64 chars. Unique within the group; renaming to an existing name returns 409. |
+| `priority` | number | Integer. |
+| `color` | string \| null | 7-char hex; pass `null` to clear. |
+| `isDefault` | boolean | |
+
+### Response
+
+`200 OK` with the updated `Role` body. `permissions` is loaded fresh.
+
+### Audit log
+
+One `role.updated` entry per non-noop PATCH, with `payload: { before, after }` containing only the changed fields:
+
+```json
+{
+  "action": "role.updated",
+  "targetId": "<roleId>",
+  "payload": {
+    "before": { "priority": 80, "color": "#ff5050" },
+    "after": { "priority": 90, "color": null }
+  }
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, invalid color, name out of range, or priority not an integer. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `role_name_taken` | 409 | Renaming to a name already used by another role in the same group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/roles/:id`
+
+Hard-deletes a role. Roles do not have a soft-delete window in V1.
+
+If any `MemberRole` rows reference the role, the request returns `409 role_has_members` and the role is preserved. The caller must reassign affected members (or remove the assignment) before deleting.
+
+On success, writes a `role.deleted` audit entry containing the deleted row's snapshot:
+
+```json
+{
+  "action": "role.deleted",
+  "targetId": "<roleId>",
+  "payload": {
+    "name": "Officer",
+    "priority": 80,
+    "color": "#ff5050",
+    "isDefault": false
+  }
+}
+```
+
+### Response
+
+`204 No Content` on success.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `role_has_members` | 409 | The role has at least one `MemberRole` assignment. Reassign first. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

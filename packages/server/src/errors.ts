@@ -28,4 +28,8 @@ export const Errors = {
   invitationUsed: (msg = "invitation already used") => new JunjoError("invitation_used", 410, msg),
   alreadyMember: (msg = "user is already a member of this group") =>
     new JunjoError("already_member", 409, msg),
+  roleHasMembers: (msg = "role has members assigned; reassign them before deleting") =>
+    new JunjoError("role_has_members", 409, msg),
+  roleNameTaken: (msg = "another role in this group already has that name") =>
+    new JunjoError("role_name_taken", 409, msg),
 };

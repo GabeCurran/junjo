@@ -832,3 +832,69 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - Bulk-invite is the only V1 caller of `postRaw`. If a future surface needs raw uploads (file imports, image attachments), the same helper can support them; if no other caller appears, the helper stays a tiny dedicated leaf.
 
 **Trade:** the `HttpClient` now has two POST methods. The naming distinction (`post` vs `postRaw`) is unambiguous and matches conventions like `node-fetch`'s `body` vs raw stream patterns.
+
+### Role create + list are group-scoped; get / update / delete are by-id only
+
+**Decision:** `roles.create` and `roles.list` live under `/v1/groups/:id/roles` (the group is part of the path). `roles.get`, `roles.update`, and `roles.delete` live under `/v1/roles/:id` (no group in the path). The VISION line "(except by-id get/update/delete which can also be `/v1/roles/:roleId`)" is read as "the by-id forms are the canonical placement", not "both forms exist."
+
+**Rationale:**
+- Role ids are globally unique cuids, so a group prefix in the by-id paths would force a redundant lookup with no actual scoping benefit. The by-id handler still enforces "calling-game scope" by joining through `Role.group.gameId`; it does not need the group id from the path to do so.
+- `create` and `list` *do* need the group prefix because the create body would otherwise carry a `groupId` field (worse: a footgun if it disagreed with the path), and `list` is naturally group-scoped.
+- One canonical path per operation keeps the routing table small and the SDK methods simple. When `roles.update(id, ...)` only takes an id, the SDK does not need a `groupId` parameter the dev would have to remember to thread through.
+
+**Trade:** a dev who only has a `(groupId, roleName)` pair and wants to update the role must first call `roles.list(groupId)` to map the name to an id. That is rare in practice; UIs typically already carry the role id once they have rendered the role list.
+
+### Group-scoped role routes (`POST /:id/roles`, `GET /:id/roles`) live inline in `groupsRouter`
+
+**Decision:** the create and list routes for roles are added directly to `routes/groups.ts` (`groupsRouter`) rather than mounted as a separate sub-router. The wire-format helpers (`serializeRole`, `loadRolePermissionKeys`, `batchLoadRolePermissionKeys`) plus the by-id handlers live in `routes/roles.ts`.
+
+**Rationale:**
+- This matches the established Phase 2 pattern: `routes/members.ts` exports helpers (`serializeMember`, `loadMemberRoleIds`, `batchLoadMemberRoleIds`, `batchLoadExternalUserIds`) that are consumed by inline routes in `routes/groups.ts` (`/:id/members`, `/:id/members/:userId`, `PATCH /:id/members/:userId`); the standalone handler factories (`getMemberByIdHandler`, `listMembersForUserHandler`) live in `routes/members.ts` and are registered in `app.ts`.
+- Mounting a separate sub-router at `/groups/:groupId/roles` collides with the existing `v1.route("/groups", groupsRouter(prisma))` mount; Hono's match-and-fallthrough semantics across sibling sub-apps with overlapping prefixes are easy to get wrong. Inlining sidesteps the question.
+- The route logic is small (two handlers, ~50 lines total) and consumes the same `prisma.group.findFirst({ id, gameId, softDeletedAt: null })` lookup the rest of `groupsRouter` already does. Centralizing it keeps the lookup pattern in one place.
+
+**Trade:** `groupsRouter` keeps growing. When it gets unwieldy (>1000 lines), factor it. Today's split is fine.
+
+### Role `name` is unique within a group; duplicates return `role_name_taken`
+
+**Decision:** `Role` has a `@@unique([groupId, name])` constraint in the Prisma schema. The create route pre-checks for a duplicate name and returns `409 role_name_taken` if one exists; the update route does the same when renaming. The same name is allowed across different groups.
+
+**Rationale:**
+- The schema's unique constraint already enforces this at the storage layer; without an explicit pre-check, a duplicate would surface as a `P2002` (Prisma's unique-violation error code) which the error middleware would render as a 500 (an unhelpful answer for a programmer error).
+- `409 Conflict` is the right status: the request is well-formed but conflicts with current state. `role_name_taken` is more specific than the generic `bad_request` and lets callers branch.
+- The same role name across different groups is fine because role ids are still unique. The dev's UI typically scopes role names to a single group anyway ("Officer of guild X" vs "Officer of guild Y" are distinct from the dev's perspective).
+
+**Trade:** a TOCTOU race exists between the pre-check and the create transaction (two concurrent requests could both pass the check then race on the unique-constraint at insert time). The race is rare and the failure mode is benign: one request gets a 500 from `P2002`, the other gets a 201. If it becomes a real product issue, wrapping the create in `try/catch` and translating `P2002` to `role_name_taken` is the fix.
+
+### Role `permissions` are not part of `roles.create` in V1
+
+**Decision:** Phase 3.1 ships role CRUD only. The SDK `CreateRoleInput` type still carries a `permissions?: PermissionKey[]` field for forward-compatibility, but the SDK strips it from the request body before sending. The server's `createRoleBody` Zod schema does not list `permissions` (Zod silently strips unknown fields by default). Phase 3.3 (`roles.grantPermission` / `revokePermission`) is the dedicated path for populating role permissions.
+
+**Rationale:**
+- VISION's Phase 3.1 bullets list role CRUD only. Phase 3.3 explicitly owns the grant / revoke routes and the `permission.granted` / `permission.revoked` audit actions. Squeezing permissions into 3.1 would cross-cut the phase boundary and force the audit-action conventions for Phase 3.3 to land prematurely.
+- Keeping `permissions` on `CreateRoleInput` (rather than removing it from the type) means the dev's existing TypeScript code does not regress when 3.3 lands. The SDK's drop-the-field behavior is a soft compromise: it does not throw on the field being present, but it does not deliver on it either.
+- The alternative (server rejects the field with a 400) was considered but rejected: it would force every dev who set up a role with permissions to refactor every call site once Phase 3.3 lands. The silent drop is more forgiving; the docs are explicit about it.
+
+**Trade:** a dev who reads only the type signature and not the docs may be surprised that their `permissions` array did not stick. Mitigation: the SDK page documents the silent-drop explicitly, and the server's `Role` response shape always returns `permissions: []` on a fresh role, so a follow-up `roles.get` confirms what was actually persisted.
+
+### `roles.delete` blocks on assigned members; no soft-delete window for roles
+
+**Decision:** deleting a role with at least one `MemberRole` assignment returns `409 role_has_members`. The role is preserved; the caller must reassign affected members (or remove the assignment) before the delete succeeds. There is no soft-delete window for roles; they are hard-deleted on success.
+
+**Rationale:**
+- VISION specifies the `role_has_members` error code explicitly ("Cannot delete a role if it has members assigned (error `role_has_members`); caller must reassign first"). The behavior matches: explicit blocker rather than silent cascade-to-null.
+- A soft-delete window for roles would add a `softDeletedAt` column on `Role` and complicate every read path (the list, the get, the can() check) with "filter out soft-deleted." Roles are conventionally low-cardinality and high-stability; the cost of getting deletion wrong is recoverable by re-creating the role with the same name.
+- Hard-delete writes a `role.deleted` audit entry containing the row's snapshot at the time of delete (`name, priority, color, isDefault`). A future "undelete" could read the audit log to reconstruct, if the need ever surfaces.
+
+**Trade:** a dev who wants "soft" semantics for roles (so a renamed role does not break member.role assignments) needs to manage that themselves: rename the role rather than delete-and-recreate. Documented in the SDK page.
+
+### `Role.isDefault` is a per-role tag, decoupled from `Group.defaultRoleId`
+
+**Decision:** `Role.isDefault` is a boolean on each role; multiple roles in a group may carry it. `Group.defaultRoleId` is a single canonical FK to one role (the "default role for new members"). The two are stored independently; setting one does not affect the other.
+
+**Rationale:**
+- The schema has both fields. `Group.defaultRoleId` is the natural place for "which role gets auto-assigned to new members" because there is exactly one such role per group at any time. `Role.isDefault` is a more general tag the dev can use however they want (e.g. "this role is part of the default starter set" for a multi-default UX).
+- Coupling them ("setting Role.isDefault=true automatically sets Group.defaultRoleId") would lose information (the dev could not tag two roles as default for a future multi-default UI) and would make the `roles.update` audit log noisy with cross-resource changes.
+- The dev who wants the canonical "default role" sets `Group.defaultRoleId` via `groups.update`. The dev who wants the tag sets `Role.isDefault` via `roles.update`. The two are independent.
+
+**Trade:** the surface area is slightly larger (two fields, two paths) but each carries clear meaning. The docs spell out the relationship so a dev does not get confused.

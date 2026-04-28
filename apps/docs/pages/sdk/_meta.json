@@ -2,5 +2,6 @@
   "index": "Overview",
   "groups": "groups",
   "invitations": "invitations",
-  "members": "members"
+  "members": "members",
+  "roles": "roles"
 }

@@ -20,6 +20,8 @@ import {
   serializeMember,
 } from "./members.js";
 import { listMembersQuery, updateMemberBody } from "./members.schema.js";
+import { batchLoadRolePermissionKeys, serializeRole } from "./roles.js";
+import { createRoleBody } from "./roles.schema.js";
 
 // `groups.bulkInvite` request limits. Each non-empty line in the body is
 // one userId; lines beyond `BULK_INVITE_MAX_ROWS` (counting empty rows)
@@ -985,6 +987,93 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     return c.json({ invited: toCreate.length, skipped, errors: errorList });
+  });
+
+  // Create a role inside the group. Body: `{ name, priority, color?,
+  // isDefault? }`. `name` is unique per group (the schema enforces it; a
+  // duplicate returns 409 via Prisma's unique-constraint failure handled
+  // by the error middleware). `color` must be a 7-character hex if present.
+  // `isDefault` is a per-role tag; multiple roles in a group can be tagged
+  // default. The single canonical default for a group lives on
+  // `Group.defaultRoleId` and is set via `groups.update`.
+  r.post("/:id/roles", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = createRoleBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const duplicate = await prisma.role.findUnique({
+      where: { groupId_name: { groupId: group.id, name: body.name } },
+      select: { id: true },
+    });
+    if (duplicate) throw Errors.roleNameTaken();
+
+    const role = await prisma.$transaction(async (tx) => {
+      const created = await tx.role.create({
+        data: {
+          groupId: group.id,
+          name: body.name,
+          priority: body.priority,
+          color: body.color ?? null,
+          isDefault: body.isDefault ?? false,
+        },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "role.created",
+          targetId: created.id,
+          payload: {
+            name: created.name,
+            priority: created.priority,
+            color: created.color,
+            isDefault: created.isDefault,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return created;
+    });
+
+    return c.json(serializeRole(role, []), 201);
+  });
+
+  // List the roles in a group. Returns a bare `Role[]` (no pagination
+  // wrapper); roles are conventionally a small list (10s, not 1000s).
+  // Sorted by `priority desc, id desc` so the highest-authority roles
+  // appear first.
+  r.get("/:id/roles", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const roles = await prisma.role.findMany({
+      where: { groupId: group.id },
+      orderBy: [{ priority: "desc" }, { id: "desc" }],
+    });
+    if (roles.length === 0) return c.json([]);
+
+    const permissionMap = await batchLoadRolePermissionKeys(
+      prisma,
+      roles.map((r2) => r2.id),
+    );
+    return c.json(roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? [])));
   });
 
   return r;

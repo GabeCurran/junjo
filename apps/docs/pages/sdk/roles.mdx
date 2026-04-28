@@ -1,0 +1,153 @@
+# `junjo.roles`
+
+The roles namespace operates on `Role` rows: a role is one named bundle of authority within a single group. The same role name (e.g. "Officer") is unique within a group, but the same name can exist across different groups.
+
+The methods listed as **shipped** are real implementations. `grantPermission` and `revokePermission` are stubbed and throw `not_implemented` until Phase 3.3.
+
+## `create(groupId, input)` - shipped
+
+Creates a new role inside a group. Returns the created `Role`.
+
+```ts
+const officer = await junjo.roles.create("grp_xyz" as GroupId, {
+  name: "Officer",
+  priority: 80,
+  color: "#ff5050",
+  isDefault: false,
+});
+```
+
+### Input
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | yes | 1-64 chars. Unique within the group. |
+| `priority` | number | yes | Integer; higher = more authority. |
+| `color` | string | no | 7-char hex (`#rrggbb`). |
+| `isDefault` | boolean | no | Per-role tag; defaults to `false`. |
+| `permissions` | string[] | no | **Silently dropped in V1**: Phase 3.3 will populate role permissions via the grant / revoke routes. The field stays on `CreateRoleInput` for forward-compatibility, but the SDK strips it before sending. |
+
+### Returns
+
+`Role`. `permissions` is always `[]` on a fresh role.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing required fields, name out of range, priority not an integer, or color not a 7-char hex. |
+| `not_found` | 404 | No group with that id in the calling game. |
+| `role_name_taken` | 409 | Another role in the same group already has that name. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/roles`](/api/roles) - the underlying HTTP route.
+
+## `get(id)` - shipped
+
+Fetches a single role by `Role.id`. Returns `Role | null`: the SDK turns the server's `404 not_found` response into `null`. Other errors throw `JunjoError`.
+
+```ts
+const role = await junjo.roles.get("role_xyz" as RoleId);
+if (!role) return;
+role.priority;
+role.color;
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+`404 not_found` is converted to `null`; it is not thrown.
+
+### See also
+
+- [`GET /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+
+## `list(groupId)` - shipped
+
+Returns every role in the group as a bare `Role[]`, ordered by `priority` desc with `id` desc as a tiebreaker.
+
+```ts
+const roles = await junjo.roles.list("grp_xyz" as GroupId);
+for (const role of roles) {
+  console.log(role.name, role.priority);
+}
+```
+
+Roles in V1 are a small list per group (10s, not 1000s); pagination is not provided. If the dev's role count grows past that, this method will gain pagination as an additive change.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups/:id/roles`](/api/roles) - the underlying HTTP route.
+
+## `update(id, input)` - shipped
+
+Updates one or more fields on a role. The input is partial: pass only the fields you want to change. An empty input returns `400` from the server.
+
+```ts
+const updated = await junjo.roles.update("role_xyz" as RoleId, {
+  priority: 90,
+  color: null, // clear color
+});
+```
+
+Each field is diffed per-field against the stored row; supplying the same value as stored is a no-op for that field (no DB write, no audit entry). A fully-no-op PATCH returns the unchanged role.
+
+### Input
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | 1-64 chars. Renaming to a name already used in the group returns 409. |
+| `priority` | number | Integer. |
+| `color` | string \| null | 7-char hex; pass `null` to clear. |
+| `isDefault` | boolean | |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, invalid color, or other validation failure. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `role_name_taken` | 409 | Renaming to a name already used by another role in the same group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PATCH /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+
+## `delete(id)` - shipped
+
+Hard-deletes a role. Roles do not have a soft-delete window. Resolves to `void` on success.
+
+```ts
+await junjo.roles.delete("role_xyz" as RoleId);
+```
+
+If the role has any member assignments, the call throws `JunjoError` with `code: "role_has_members"`. Reassign affected members (or remove the assignment) before deleting.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `role_has_members` | 409 | The role has at least one `MemberRole` assignment. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`DELETE /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+
+## Other methods (stubbed)
+
+`grantPermission` and `revokePermission` are stubbed and throw `not_implemented` in V1. They land in Phase 3.3 of the roadmap (roles permissions surface).
