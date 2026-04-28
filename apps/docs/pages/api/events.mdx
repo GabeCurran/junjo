@@ -54,6 +54,40 @@ The `data:` payload is one JSON object per event. The shape is the `JunjoEvent` 
 
 The `event:` line is the `JunjoEvent.type` discriminator (`member.joined`, `member.left`, `group.updated`, ...). The `id:` line is the event's stable id; SSE clients expose this via `lastEventId` for resume-after-disconnect logic, though the V1 server does not currently replay missed events on reconnect (see [Limitations](#limitations) below).
 
+### Which mutations publish
+
+The server emits an event after every mutation that changes a group's externally-visible state. The full mapping:
+
+| Route | Event type | Notes |
+|-------|------------|-------|
+| `PATCH /v1/groups/:id` | `group.updated` | No-op PATCHes (every supplied field already matches) emit nothing. |
+| `DELETE /v1/groups/:id` | `group.deleted` | Both soft and hard delete emit the same event. Idempotent calls on already-deleted groups emit nothing. |
+| `POST /v1/groups/:id/restore` | `group.updated` | Re-emits the post-restore group. Restoring a live group emits nothing. |
+| `PUT /v1/groups/:id/parent` | `group.updated` | Carries the post-state group with the new `parentGroupId`. Idempotent calls (parent unchanged) emit nothing. |
+| `POST /v1/groups/:id/invitations` | `member.invited` | One event per created invitation. |
+| `POST /v1/groups/:id/bulk-invite` | `member.invited` | One event per created invitation in input order; rows that were skipped (duplicate / already-member / already-pending) emit nothing. |
+| `POST /v1/invitations/:code/accept` | `member.joined` | The `member` payload carries the newly-active row. |
+| `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
+| `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
+| `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
+| `DELETE /v1/roles/:id` | `role.deleted` | |
+| `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Idempotent calls (already assigned) emit nothing. |
+| `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Idempotent calls emit nothing. |
+| `POST /v1/roles/:id/permissions` | `permission.granted` | Idempotent calls (already granted) emit nothing. |
+| `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` | Idempotent calls emit nothing. |
+| `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
+| `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. |
+
+The following mutations do **not** publish events in V1:
+
+- `POST /v1/groups` (group creation) - no `group.created` event in the V1 union.
+- `PATCH /v1/groups/:id/members/:userId` (`setMetadata` / `setNotes`) - no `member.metadata.updated` / `member.notes.updated` events in the V1 union.
+- `PATCH /v1/roles/:id` (role property edits) - no `role.updated` event in the V1 union (`role.changed` is per-member assignment, not role-property edits).
+- `POST /v1/groups/:id/members/:userId/permissions/:permission` and the matching `DELETE` (member-level overrides) - no override event in the V1 union.
+- `POST /v1/invitations/:code/decline`, `DELETE /v1/invitations/:code` - no event for invitation decline / revoke.
+
+A future minor-version bump may add events for these cases without breaking the existing union.
+
 ### Errors
 
 | code | status | when |

@@ -1,6 +1,17 @@
+import type {
+  GameId,
+  GroupId,
+  PermissionGrantedEvent,
+  PermissionKey,
+  PermissionRevokedEvent,
+  RoleDeletedEvent,
+  RoleId,
+} from "@junjo/shared";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
+import type { EventHub } from "../eventHub.js";
+import { publishEvent } from "../events.js";
 import { permissionCache } from "../permissionCache.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
@@ -175,7 +186,7 @@ export function updateRoleByIdHandler(prisma: PrismaClient): Handler {
 // first sight per game (one upsert inside the same transaction); revoking
 // the permission later does not unregister the def, since the registry is
 // a "known keys" catalog for the dashboard / SDK validators.
-export function grantPermissionHandler(prisma: PrismaClient): Handler {
+export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -224,6 +235,14 @@ export function grantPermissionHandler(prisma: PrismaClient): Handler {
     });
     permissionCache.invalidateGroup(role.groupId);
 
+    publishEvent<PermissionGrantedEvent>(hub, {
+      type: "permission.granted",
+      gameId: gameId as GameId,
+      groupId: role.groupId as GroupId,
+      roleId: role.id as RoleId,
+      permission: permission as PermissionKey,
+    });
+
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
   };
@@ -233,7 +252,7 @@ export function grantPermissionHandler(prisma: PrismaClient): Handler {
 // the role does not have returns the unchanged role with no audit entry.
 // The `PermissionDef` registry is preserved (revoke does not "forget" the
 // key for the game).
-export function revokePermissionHandler(prisma: PrismaClient): Handler {
+export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
     const permission = c.req.param("permission");
@@ -270,12 +289,20 @@ export function revokePermissionHandler(prisma: PrismaClient): Handler {
     });
     permissionCache.invalidateGroup(role.groupId);
 
+    publishEvent<PermissionRevokedEvent>(hub, {
+      type: "permission.revoked",
+      gameId: gameId as GameId,
+      groupId: role.groupId as GroupId,
+      roleId: role.id as RoleId,
+      permission: permission as PermissionKey,
+    });
+
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
   };
 }
 
-export function deleteRoleByIdHandler(prisma: PrismaClient): Handler {
+export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -306,6 +333,13 @@ export function deleteRoleByIdHandler(prisma: PrismaClient): Handler {
       });
     });
     permissionCache.invalidateGroup(existing.groupId);
+
+    publishEvent<RoleDeletedEvent>(hub, {
+      type: "role.deleted",
+      gameId: gameId as GameId,
+      groupId: existing.groupId as GroupId,
+      roleId: existing.id as RoleId,
+    });
 
     return c.body(null, 204);
   };

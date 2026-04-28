@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { prisma as defaultPrisma } from "./db.js";
-import type { EventHub } from "./eventHub.js";
+import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { subscribeEventsHandler } from "./routes/events.js";
@@ -38,6 +38,7 @@ export interface CreateAppOptions {
 // client; tests can substitute a fake.
 export function createApp(opts: CreateAppOptions = {}): Hono {
   const prisma = opts.prisma ?? defaultPrisma;
+  const hub = opts.events?.hub ?? defaultHub;
   const store: ApiKeyStore = opts.apiKeyStore ?? {
     findByPrefix: async (prefix) =>
       prisma.apiKey.findUnique({
@@ -61,17 +62,17 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.get("/invitations/:code", getInvitationByCodeHandler(prisma));
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
-  v1.route("/groups", groupsRouter(prisma));
+  v1.route("/groups", groupsRouter(prisma, hub));
   v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
-  v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma));
+  v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma, hub));
   v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
   v1.get("/members/:id", getMemberByIdHandler(prisma));
   v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
   v1.get("/roles/:id", getRoleByIdHandler(prisma));
   v1.patch("/roles/:id", updateRoleByIdHandler(prisma));
-  v1.delete("/roles/:id", deleteRoleByIdHandler(prisma));
-  v1.post("/roles/:id/permissions", grantPermissionHandler(prisma));
-  v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma));
+  v1.delete("/roles/:id", deleteRoleByIdHandler(prisma, hub));
+  v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
+  v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   app.route("/v1", v1);

@@ -1,6 +1,28 @@
+import type {
+  GameId,
+  GroupDeletedEvent,
+  GroupId,
+  GroupRelationshipChangedEvent,
+  GroupUpdatedEvent,
+  MemberInvitedEvent,
+  MemberLeftEvent,
+  RoleChangedEvent,
+  RoleCreatedEvent,
+  RoleId,
+  UserId,
+} from "@junjo/shared";
 import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
+import type { EventHub } from "../eventHub.js";
+import {
+  publishEvent,
+  toPublicGroup,
+  toPublicGroupRelationship,
+  toPublicInvitation,
+  toPublicMember,
+  toPublicRole,
+} from "../events.js";
 import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
@@ -110,7 +132,7 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
   };
 }
 
-export function groupsRouter(prisma: PrismaClient): Hono {
+export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   const r = new Hono();
 
   r.get("/", async (c) => {
@@ -285,7 +307,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       }
 
       if (Object.keys(data).length === 0) {
-        return existing;
+        return { row: existing, changed: false };
       }
 
       const result = await tx.group.update({
@@ -303,13 +325,21 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         },
       });
 
-      return result;
+      return { row: result, changed: true };
     });
 
     const memberCount = await prisma.groupMember.count({
-      where: { groupId: updated.id, status: "active" },
+      where: { groupId: updated.row.id, status: "active" },
     });
-    return c.json(serializeGroup(updated, memberCount));
+    if (updated.changed) {
+      publishEvent<GroupUpdatedEvent>(hub, {
+        type: "group.updated",
+        gameId: gameId as GameId,
+        groupId: updated.row.id as GroupId,
+        group: toPublicGroup(updated.row, memberCount),
+      });
+    }
+    return c.json(serializeGroup(updated.row, memberCount));
   });
 
   r.delete("/:id", async (c) => {
@@ -324,6 +354,11 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     if (hard) {
       await prisma.group.delete({ where: { id: existing.id } });
+      publishEvent<GroupDeletedEvent>(hub, {
+        type: "group.deleted",
+        gameId: existing.gameId as GameId,
+        groupId: existing.id as GroupId,
+      });
       return c.body(null, 204);
     }
 
@@ -358,6 +393,11 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
+    });
+    publishEvent<GroupDeletedEvent>(hub, {
+      type: "group.deleted",
+      gameId: updated.gameId as GameId,
+      groupId: updated.id as GroupId,
     });
     return c.json(serializeGroup(updated, memberCount));
   });
@@ -405,6 +445,12 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
+    });
+    publishEvent<GroupUpdatedEvent>(hub, {
+      type: "group.updated",
+      gameId: updated.gameId as GameId,
+      groupId: updated.id as GroupId,
+      group: toPublicGroup(updated, memberCount),
     });
     return c.json(serializeGroup(updated, memberCount));
   });
@@ -466,6 +512,12 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       return created;
     });
 
+    publishEvent<MemberInvitedEvent>(hub, {
+      type: "member.invited",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      invitation: toPublicInvitation(invitation),
+    });
     return c.json(serializeInvitation(invitation), 201);
   });
 
@@ -699,6 +751,13 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    publishEvent<MemberLeftEvent>(hub, {
+      type: "member.left",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      reason: "left",
+    });
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
@@ -760,6 +819,13 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    publishEvent<MemberLeftEvent>(hub, {
+      type: "member.left",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      reason: "kicked",
+    });
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
@@ -964,7 +1030,8 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       return c.json({ invited: 0, skipped, errors: errorList });
     }
 
-    await prisma.$transaction(async (tx) => {
+    const createdInvitations = await prisma.$transaction(async (tx) => {
+      const all: Awaited<ReturnType<typeof tx.invitation.create>>[] = [];
       for (const row of toCreate) {
         const created = await tx.invitation.create({
           data: {
@@ -976,6 +1043,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
             expiresAt: null,
           },
         });
+        all.push(created);
         await tx.auditEntry.create({
           data: {
             groupId: group.id,
@@ -993,7 +1061,17 @@ export function groupsRouter(prisma: PrismaClient): Hono {
           },
         });
       }
+      return all;
     });
+
+    for (const inv of createdInvitations) {
+      publishEvent<MemberInvitedEvent>(hub, {
+        type: "member.invited",
+        gameId: gameId as GameId,
+        groupId: group.id as GroupId,
+        invitation: toPublicInvitation(inv),
+      });
+    }
 
     return c.json({ invited: toCreate.length, skipped, errors: errorList });
   });
@@ -1057,6 +1135,15 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     });
     permissionCache.invalidateGroup(group.id);
 
+    publishEvent<RoleChangedEvent>(hub, {
+      type: "role.changed",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      added: [role.id as RoleId],
+      removed: [],
+    });
+
     const roleIds = await loadMemberRoleIds(prisma, member.id);
     return c.json(serializeMember(member, userId, roleIds));
   });
@@ -1110,6 +1197,15 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       });
     });
     permissionCache.invalidateGroup(group.id);
+
+    publishEvent<RoleChangedEvent>(hub, {
+      type: "role.changed",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      added: [],
+      removed: [roleId as RoleId],
+    });
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
     return c.json(serializeMember(member, userId, roleIds));
@@ -1362,6 +1458,12 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       return created;
     });
 
+    publishEvent<RoleCreatedEvent>(hub, {
+      type: "role.created",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      role: toPublicRole(role, []),
+    });
     return c.json(serializeRole(role, []), 201);
   });
 
@@ -1432,6 +1534,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const result = await prisma.$transaction(async (tx) => {
       let primary: GroupRelationship | null = null;
+      const changed: GroupRelationship[] = [];
       for (const dir of directions) {
         const existing = await tx.groupRelationship.findUnique({
           where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
@@ -1447,6 +1550,7 @@ export function groupsRouter(prisma: PrismaClient): Hono {
           update: { type, since: new Date() },
         });
         if (dir.aId === a) primary = upserted;
+        changed.push(upserted);
 
         const auditPayload: Record<string, unknown> = {
           groupAId: dir.aId,
@@ -1473,10 +1577,20 @@ export function groupsRouter(prisma: PrismaClient): Hono {
         if (!reloaded) throw new Error("relationship row missing after no-op upsert");
         primary = reloaded;
       }
-      return primary;
+      return { primary, changed };
     });
 
-    return c.json(serializeGroupRelationship(result));
+    for (const rel of result.changed) {
+      publishEvent<GroupRelationshipChangedEvent>(hub, {
+        type: "group.relationship.changed",
+        gameId: gameId as GameId,
+        groupId: rel.groupAId as GroupId,
+        otherGroupId: rel.groupBId as GroupId,
+        relationship: toPublicGroupRelationship(rel),
+      });
+    }
+
+    return c.json(serializeGroupRelationship(result.primary));
   });
 
   // Clear the directed relationship from group A to group B. Idempotent:
@@ -1510,7 +1624,8 @@ export function groupsRouter(prisma: PrismaClient): Hono {
     const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
     if (mutual) directions.push({ aId: b, bId: a });
 
-    await prisma.$transaction(async (tx) => {
+    const cleared = await prisma.$transaction(async (tx) => {
+      const removed: Array<{ aId: string; bId: string }> = [];
       for (const dir of directions) {
         const existing = await tx.groupRelationship.findUnique({
           where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
@@ -1534,8 +1649,20 @@ export function groupsRouter(prisma: PrismaClient): Hono {
             } as Prisma.InputJsonValue,
           },
         });
+        removed.push({ aId: dir.aId, bId: dir.bId });
       }
+      return removed;
     });
+
+    for (const dir of cleared) {
+      publishEvent<GroupRelationshipChangedEvent>(hub, {
+        type: "group.relationship.changed",
+        gameId: gameId as GameId,
+        groupId: dir.aId as GroupId,
+        otherGroupId: dir.bId as GroupId,
+        relationship: null,
+      });
+    }
 
     return c.body(null, 204);
   });
@@ -1669,6 +1796,12 @@ export function groupsRouter(prisma: PrismaClient): Hono {
 
     const memberCount = await prisma.groupMember.count({
       where: { groupId: updated.id, status: "active" },
+    });
+    publishEvent<GroupUpdatedEvent>(hub, {
+      type: "group.updated",
+      gameId: gameId as GameId,
+      groupId: updated.id as GroupId,
+      group: toPublicGroup(updated, memberCount),
     });
     return c.json(serializeGroup(updated, memberCount));
   });

@@ -1343,3 +1343,81 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the `CreateAppOptions` type grows a new optional field. Acceptable; the existing fields (`prisma`, `apiKeyStore`) follow the same per-feature opt-in shape.
 
+### Phase 5.1b: mutation routes publish via a shared `publishEvent` helper after commit
+
+**Decision:** every mutation route that has a corresponding case in the shared `JunjoEvent` union calls `publishEvent<E>(hub, payload)` after its database transaction commits. The helper lives in `packages/server/src/events.ts` and stamps a fresh `id` (24-char hex from `node:crypto`) and `occurredAt` (`new Date()`) onto the supplied payload before pushing it through the hub. Mutations whose audit action has no event-union counterpart (`groups.create`, `members.setMetadata` / `setNotes`, `roles.update`, `members.overridePermission` / `clearPermissionOverride`, `invitations.decline` / `revoke`) publish nothing; the audit log is the durable record for those.
+
+**Rationale:**
+- After-commit publish matches the precedent set by `permissionCache.invalidateGroup`: we never publish from inside the transaction so a rollback cannot stream a phantom event to subscribers.
+- A single helper keeps the publish contract uniform: every route says "build the payload, hand it to `publishEvent`," and the helper handles the id and timestamp. Inlining the construction at every callsite was rejected because it would scatter the id-generation policy across 11 mutation handlers.
+- The 24-char hex id is generated server-side without a database round-trip; randomness is sufficient since events are short-lived (they live only as long as a subscriber holds the connection in V1).
+- Strictly tying "event in union" to "route publishes" keeps the SDK's `JunjoEvent` discriminator complete: a consumer that switches over every `type` is guaranteed to handle every event the server can emit. Adding a new event later (e.g. `role.updated`) is an additive minor-version bump.
+
+**Trade:** publishing happens after the transaction, so a process crash between commit and publish loses the event for live SSE subscribers. The audit log (Phase 5.2) and webhook delivery (Phase 5.3) are the durable counterparts; the SSE wire is explicitly best-effort. Documented in `apps/docs/pages/api/events.mdx` under "Limitations."
+
+### Brand-cast converters live in `events.ts`, separate from `serializeGroup` etc.
+
+**Decision:** `events.ts` exports a parallel family of `toPublicGroup`, `toPublicMember`, `toPublicRole`, `toPublicInvitation`, `toPublicGroupRelationship` converters that turn a Prisma row into the `@junjo/shared` public type. These are NOT the same as the `serializeGroup` / `serializeMember` / etc. helpers in `routes/groups.ts` and `routes/members.ts`, which produce the wire-format types (`WireGroup` etc.) used in HTTP response bodies.
+
+**Rationale:**
+- `JunjoEvent` payloads are typed against the shared public types (`Group` with `Date` fields and branded ids), not the wire types (`WireGroup` with ISO strings). `JSON.stringify` later renders the Dates as ISO strings on the SSE wire, so the eventual on-the-wire shape matches the response-body shape, but the in-process type is the public one.
+- Keeping the converters in `events.ts` (a shared module) instead of re-exporting from per-route modules avoids a circular dependency: `events.ts` cannot import from `routes/groups.ts` because `groups.ts` already imports from `events.ts` to call `publishEvent`.
+- The converters are tiny (one-line brand casts plus the join columns the public type carries: `memberCount` for `Group`, `roles` for `Member`, `permissions` for `Role`); duplicating them is cheaper than a shared module gymnastics.
+
+**Trade:** there are now two parallel serialization layers, wire (string dates, no brands) and public (Date, branded). They will both need maintenance when the underlying schema changes; the cost is roughly five lines of code per type per change.
+
+### Hub is threaded into route factories via `createApp`, not pulled from the singleton inline
+
+**Decision:** `createApp(opts)` resolves the hub once (`opts.events?.hub ?? eventHub`) and passes it explicitly to every router / handler factory that publishes events: `groupsRouter(prisma, hub)`, `acceptInvitationByCodeHandler(prisma, hub)`, `deleteRoleByIdHandler(prisma, hub)`, `grantPermissionHandler(prisma, hub)`, `revokePermissionHandler(prisma, hub)`. Read-only and no-event handlers (`getInvitationByCodeHandler`, `updateRoleByIdHandler`, `getMemberByIdHandler`, etc.) keep their original `(prisma)` signature.
+
+**Rationale:**
+- Tests need to swap the hub: `createApp({ events: { hub: customHub } })` is the established Phase 5.1a seam, and threading the same hub through to mutation routes lets event-publishing tests subscribe to the custom hub without colliding with the module singleton.
+- Production wires the singleton in one place (`app.ts`) and never reaches into module state from inside a route handler. This matches the `prisma` and `apiKeyStore` patterns: dependencies cross the boundary at `createApp`, not via global imports.
+- Adding `hub` only to the routes that need it keeps signatures minimal; `getRoleByIdHandler(prisma)` stays unchanged because it never publishes.
+
+**Trade:** five factory signatures change in this iteration. Acceptable: `app.ts` is the only caller of these factories, so the blast radius is bounded.
+
+### Idempotent / no-op routes do not publish
+
+**Decision:** every route that already short-circuits on a no-op (matching-value PATCHes, already-deleted soft-delete, already-assigned role, already-granted permission, type-equal relationship set, missing-row relationship clear, leave / kick on already-non-active members) skips the `publishEvent` call too. The publish is gated on the same "actually changed" predicate as the audit-entry write, so the audit log and the event stream agree.
+
+**Rationale:**
+- Audit and events are siblings: a row in the audit log corresponds to an emitted event (when the union has a case) or to nothing (when it does not). Publishing on no-op would create "phantom" events with no audit row to back them, breaking the dashboard's audit-derived event log.
+- SSE consumers writing optimistic UI logic should be able to trust that "I got an event" implies "something changed." A flood of no-op events would force every consumer to deep-compare to the prior state.
+- The bulk-invite route that creates zero invitations also publishes zero events; this falls out of the "one event per created row" loop naturally.
+
+**Trade:** none. Every existing test that exercises the idempotent path already asserts on no audit entry; this iteration adds the parallel "no event" assertion in `eventPublishing.test.ts`.
+
+### `role.changed` covers role-assignment changes only; role-property edits emit nothing
+
+**Decision:** the `RoleChangedEvent` (type `role.changed`) fires from `assignRole` (`added: [roleId]`) and `removeRole` (`removed: [roleId]`). `updateRoleByIdHandler` (`PATCH /v1/roles/:id` for renames / priority / color / isDefault edits) does not publish any event in V1.
+
+**Rationale:**
+- The shared `JunjoEvent` union has no `role.updated` case. The discriminator's name (`role.changed`) initially looks like it might cover role-property edits, but the payload (`{ userId, added, removed }`) makes clear it is per-member assignment, not per-role.
+- Adding a new event type for role property edits is an additive minor-version bump that can land separately when there is a concrete consumer (the dashboard's "who changed officer color" feed, for example).
+- Leaving the event off keeps Phase 5.1b's diff small and prevents an SDK change in this iteration; `@junjo/shared` stays at its current event union.
+
+**Trade:** consumers who want a live signal for role property edits will need to read the audit log (`role.updated` is in the `AuditAction` union) until a follow-up adds the event.
+
+### `group.deleted` fires for both soft and hard delete
+
+**Decision:** the `DELETE /v1/groups/:id` route emits `GroupDeletedEvent` whether the deletion is soft (default) or hard (`?hard=true`). The event payload carries only `{ groupId, gameId }` with no flag distinguishing the two paths.
+
+**Rationale:**
+- Consumer logic is the same in both cases: stop showing the group, drop cached memberships, close any open SSE streams. The hard-vs-soft distinction lives on the database side and matters only for the 7-day undo window.
+- The `JunjoEvent` shape (`{ id, gameId, groupId, occurredAt, type: "group.deleted" }`) has no extension point for a hard / soft flag without changing the shared type. Keeping the wire identical avoids that change.
+- A soft-deleted-then-restored group emits `group.updated` on restore, which is what consumers need to re-show the group.
+
+**Trade:** consumers that care about the hard-vs-soft distinction (a niche audit dashboard) need to read the audit log instead of the event stream. Acceptable.
+
+### Restore emits `group.updated`, not a dedicated `group.restored` event
+
+**Decision:** `POST /v1/groups/:id/restore` publishes a `GroupUpdatedEvent` carrying the post-restore group (with `softDeletedAt: null`). The shared `AuditAction` union has a dedicated `group.restored` action, but the `JunjoEvent` union does not have a corresponding `GroupRestoredEvent` type.
+
+**Rationale:**
+- A consumer's "reconcile after this event" logic is identical to a normal `group.updated`: re-render the group's metadata, re-mount its row in the directory listing. The discriminator string is the only piece that differs.
+- Adding `GroupRestoredEvent` to the union for parity with the audit log is forward-compatible (additive minor-version bump). Skipping it for V1 keeps the union shorter and the SDK switch statements smaller.
+- The `group.updated` event already carries the full post-state group, so a consumer can detect a restore by checking whether the prior state was soft-deleted (if it cares).
+
+**Trade:** consumers that need to distinguish "restored from soft delete" from "renamed" need to read the audit log, where `group.restored` is a distinct action. Acceptable for V1.
+

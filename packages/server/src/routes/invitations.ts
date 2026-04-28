@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
+import type { GameId, GroupId, MemberJoinedEvent, UserId } from "@junjo/shared";
 import type { Invitation, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
+import type { EventHub } from "../eventHub.js";
+import { publishEvent, toPublicMember } from "../events.js";
 import { findOrCreateJunjoUser } from "../identity.js";
 import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
 import { serializeMember } from "./members.js";
@@ -133,7 +136,7 @@ async function loadRedemptionTarget(
 // one transaction. For direct invitations (`targetUserId` set), the body
 // userId must match; mismatches return 403 to keep direct invites pinned
 // to their target.
-export function acceptInvitationByCodeHandler(prisma: PrismaClient): Handler {
+export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const code = c.req.param("code");
     const gameId = c.var.gameId;
@@ -188,6 +191,14 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient): Handler {
       });
 
       return member;
+    });
+
+    publishEvent<MemberJoinedEvent>(hub, {
+      type: "member.joined",
+      gameId: gameId as GameId,
+      groupId: invitation.groupId as GroupId,
+      userId: userId as UserId,
+      member: toPublicMember(result, userId, []),
     });
 
     return c.json(serializeMember(result, userId), 201);
