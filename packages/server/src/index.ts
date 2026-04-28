@@ -1,13 +1,21 @@
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
+import { createApp } from "./app.js";
+import { disconnectPrisma } from "./db.js";
+import { loadEnv } from "./env.js";
 
-const app = new Hono();
+const env = loadEnv();
+const app = createApp();
 
-app.get("/", (c) => c.json({ name: "junjo-server", version: "0.0.0" }));
-app.get("/healthz", (c) => c.text("ok"));
-
-const port = Number(process.env.PORT ?? 8787);
-
-serve({ fetch: app.fetch, port }, (info) => {
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   console.log(`junjo-server listening on http://localhost:${info.port}`);
 });
+
+const shutdown = async (signal: string) => {
+  console.log(`junjo-server shutting down (${signal})`);
+  server.close();
+  await disconnectPrisma();
+  process.exit(0);
+};
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));

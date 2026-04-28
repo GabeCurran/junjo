@@ -35,6 +35,20 @@ Same shape as Stripe, Auth0, Clerk, Supabase, Pusher, Twilio. The HTTP API is th
 - **Webhooks:** queued via Postgres advisory locks for ordering. HMAC-signed. Exponential-backoff retries up to 24 hours.
 - **Auth verification:** all requests carry an API key (server-to-server) plus an end-user token (player session). The API key identifies the game; the end-user token is verified via the configured auth adapter.
 
+### Server file layout
+
+The `packages/server/src/` tree:
+
+- `index.ts` - runnable entry point. Loads env, builds the app via `createApp()`, calls `serve()`, and registers SIGINT/SIGTERM handlers that disconnect Prisma cleanly.
+- `app.ts` - exports `createApp(opts?)`. Builds a fresh Hono app per call, mounts middleware, and routes everything game-scoped under `/v1`. Tests use the same factory to boot a per-file app instance with injected fakes.
+- `db.ts` - Prisma client singleton. Cached on `globalThis` outside production so `tsx watch` does not leak connections on hot reload. Exports `disconnectPrisma()`.
+- `env.ts` - Zod-validated env loader. `loadEnv()` accepts an env object (defaults to `process.env`) and throws a single readable error listing every missing or invalid var.
+- `errors.ts` - the server-side `JunjoError` class plus a small `Errors.*` factory for the canonical error codes (`not_found`, `invalid_api_key`, `bad_request`, `permission_denied`).
+- `apiKey.ts` - API-key crypto: scrypt hash and verify, key generation, and the `prefix.secret` parser. Used by the apiKey middleware and (later) the seed helper.
+- `middleware/error.ts` - Hono `onError` handler. Renders `JunjoError` as JSON; logs anything else and returns the generic 500 envelope.
+- `middleware/apiKey.ts` - extracts the `Authorization: Bearer prefix.secret` header, verifies the secret, and populates `c.var.gameId`. Accepts an injected `ApiKeyStore` rather than the full Prisma client so the middleware can be tested without a live database.
+- `routes/` - per-resource route modules (added as features land in Phase 1 and beyond).
+
 ## SDKs (V1)
 
 ### `@junjo/sdk` (TypeScript)

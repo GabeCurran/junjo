@@ -22,7 +22,11 @@ The Prisma schema lives at `prisma/schema.prisma`. Migrations live at `prisma/mi
 |------|----------|-------|
 | `DATABASE_URL` | yes (runtime) | Postgres connection string used by the running server. |
 | `TEST_DATABASE_URL` | yes (for DB-backed tests) | Postgres connection string used by Vitest tests that touch the database. Leave unset to skip those tests; non-DB tests still run. |
-| `PORT` | no | HTTP listen port. Defaults to `8787`. |
+| `PORT` | no | HTTP listen port. Defaults to `8787`. Must be a positive integer. |
+| `NODE_ENV` | no | One of `development`, `test`, `production`. Defaults to `development`. Controls the Prisma client globalThis cache (only enabled outside production). |
+| `JUNJO_BASE_URL` | no | Public base URL of this server. Used when building links (e.g., invitation share URLs). Optional during local dev. |
+
+`loadEnv()` in `src/env.ts` validates every variable above through a Zod schema; missing or malformed values throw a single readable error at startup.
 
 ## Running tests
 

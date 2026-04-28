@@ -1,0 +1,55 @@
+# HTTP API overview
+
+The Junjo server exposes a REST API over HTTP, an SSE event stream, and a webhook dispatcher. Cloud and self-host run the exact same binary; the only difference is who hosts the Postgres database.
+
+This page describes the shared conventions every resource route follows. Per-resource pages (groups, members, roles, ...) document only the routes themselves.
+
+## Versioning
+
+All resource routes are mounted under `/v1`. The unversioned root (`/`) and `/healthz` are infrastructure-only and are not part of the API contract.
+
+## Authentication
+
+Every `/v1/*` request must include an API key in the `Authorization` header:
+
+```
+Authorization: Bearer <prefix>.<secret>
+```
+
+API keys are issued as `prefix.secret` strings. The prefix is shown to you in the dashboard (or printed by the seed helper for local dev) and identifies the key for lookup. The secret is the part you must keep private; it is hashed on the server with scrypt and is not recoverable if you lose it. Rotate by issuing a new key and revoking the old one.
+
+A missing, malformed, or unrevoked-but-mismatched key returns:
+
+```json
+{ "code": "invalid_api_key", "status": 401, "message": "..." }
+```
+
+## Error envelope
+
+Every error response uses the same JSON shape:
+
+```json
+{
+  "code": "<snake_case_code>",
+  "status": <http_status>,
+  "message": "<human-readable explanation>"
+}
+```
+
+The SDK preserves this shape on the `JunjoError` it throws, so callers can branch on `error.code` rather than parsing messages.
+
+Reserved codes the server returns today:
+
+| code | status | meaning |
+|------|--------|---------|
+| `invalid_api_key` | 401 | API key missing, malformed, unknown, or revoked. |
+| `bad_request` | 400 | Body or query failed Zod validation. |
+| `permission_denied` | 403 | Caller lacks permission to perform the action. |
+| `not_found` | 404 | Resource does not exist (or is soft-deleted). |
+| `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
+
+Per-resource pages may introduce additional codes; those are listed alongside the routes that raise them.
+
+## Server bootstrap
+
+The runnable entry point is `packages/server/src/index.ts`. It loads env via `loadEnv()`, builds the Hono app via `createApp()`, and registers SIGINT/SIGTERM handlers that disconnect Prisma cleanly. Tests boot the same `createApp()` factory with injected fakes so each test file owns an isolated app instance. See `docs/03-architecture.md` for the full file-layout rationale.

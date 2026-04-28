@@ -204,6 +204,35 @@ Running list of every meaningful decision made during scoping, with rationale. A
 - Tests truncate / reset the schema between files. Anyone pointing this env var at a database with real data will lose it. The README warns about that.
 - Revisit when there is a second human running tests regularly, or when isolation across parallel test suites becomes a real problem.
 
+### API key format: `prefix.secret`, scrypt-hashed at rest
+
+**Decision:** API keys are issued as `{prefix}.{secret}`. The prefix is stored in plaintext (and indexed) for O(1) lookup; the secret is hashed with Node's built-in `scrypt` and stored as `scrypt$<salt-b64>$<key-b64>`. The plaintext secret is shown to the developer once, at issuance, and is never recoverable from the database.
+
+**Rationale:**
+- A database leak should not be sufficient to act as the developer. Plaintext secrets fail that bar.
+- `scrypt` is built into Node's `crypto`, so this adds no new dependency. `argon2` and `bcrypt` would both pull in native bindings.
+- The `prefix.secret` split lets the lookup path be exactly one indexed query plus one scrypt verify. Trying every row is not on the table.
+- The stored format is self-describing (`scrypt$...`) so a future move to argon2 or a parameter bump can coexist with old hashes.
+
+**Trade:** scrypt CPU cost is non-trivial per request (single-digit ms). Acceptable for an API-key path that is hit once per request and is also a candidate for caching later if it shows up in profiles.
+
+### Server middleware uses dependency-injected stores
+
+**Decision:** server middleware that needs to talk to the database accepts a small store interface, not the full `PrismaClient`. Production wiring (in `createApp()`) builds the store from the singleton client; tests inject an in-memory fake.
+
+**Rationale:**
+- Phase 0.2 ships before Phase 0.3 (the first migration), so middleware tests cannot rely on a live schema yet. DI lets the logic be tested today and rewired tomorrow when the migration lands.
+- Even after migrations land, the fake-store path stays useful for fast unit tests that do not need to exercise SQL.
+- The interface is intentionally narrow (one or two methods per middleware) so the cost of keeping it in sync is small.
+
+**Pattern:** see `packages/server/src/middleware/apiKey.ts` (`ApiKeyStore`) and `packages/server/src/app.ts` (default wiring).
+
+### Server `createApp()` factory returns a fresh Hono app per call
+
+**Decision:** the runnable entry point (`src/index.ts`) calls a `createApp(opts?)` factory exported from `src/app.ts` rather than constructing the app at module load. Tests call the same factory to boot a per-file app instance.
+
+**Rationale:** lets each test file own its own Hono instance, its own middleware wiring, and its own injected stores without globals leaking across files. Matches the "Server tests use a real Postgres test database... one container per test run" convention in `VISION.md` while leaving room for the in-memory fake-store path described above.
+
 ---
 
 ## Open questions
