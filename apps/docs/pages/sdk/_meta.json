@@ -4,5 +4,6 @@
   "invitations": "invitations",
   "members": "members",
   "roles": "roles",
-  "permissions": "permissions"
+  "permissions": "permissions",
+  "audit": "audit"
 }

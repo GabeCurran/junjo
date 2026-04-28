@@ -1,10 +1,7 @@
 import type {
-  AuditEntry,
   AuthAdapter,
   GroupId,
   JunjoEvent,
-  ListAuditOptions,
-  Page,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,
@@ -12,6 +9,7 @@ import type {
   UserId,
   WebhookSignatureHeaders,
 } from "@junjo/shared";
+import { AuditApi } from "./audit.js";
 import { JunjoError } from "./errors.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
@@ -71,7 +69,7 @@ export class Junjo {
     this.roles = new RolesApi(this.http);
     this.members = new MembersApi(this.http);
     this.invitations = new InvitationsApi(this.http);
-    this.audit = new AuditApi();
+    this.audit = new AuditApi(this.http);
     this.webhooks = new WebhooksApi();
   }
 
@@ -114,16 +112,6 @@ export class Junjo {
 }
 
 // =====================================================================
-// Audit
-// =====================================================================
-
-export class AuditApi {
-  async list(_groupId: GroupId, _opts?: ListAuditOptions): Promise<Page<AuditEntry>> {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
 // Webhooks
 // =====================================================================
 
@@ -161,6 +149,7 @@ export class WebhooksApi {
 // Re-exports for ergonomics
 // =====================================================================
 
+export { AuditApi } from "./audit.js";
 export { JunjoError } from "./errors.js";
 export { GroupsApi } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
@@ -168,12 +157,14 @@ export { MembersApi } from "./members.js";
 export { RolesApi } from "./roles.js";
 
 export type {
+  AuditAction,
   AuditEntry,
   AuthAdapter,
   Group,
   GroupId,
   Invitation,
   JunjoEvent,
+  ListAuditOptions,
   Member,
   PermissionCheckResult,
   PermissionKey,

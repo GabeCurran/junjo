@@ -1464,3 +1464,47 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the caller has to `res.body?.getReader()` themselves and handle the `body === null` case. Marginal; the alternative (a wrapper that returns the reader directly) loses the headers.
 
+### Phase 5.2: `audit.list` paginates by `before` (timestamp), not by opaque cursor
+
+**Decision:** `GET /v1/groups/:id/audit` accepts `?limit&before&actions[]`. `before` is an exclusive ISO 8601 timestamp filter; entries with `createdAt < before` are returned. `Page<AuditEntry>.nextCursor` is set to the ISO `createdAt` of the last item when more pages exist (otherwise `null`); the consumer feeds it back as `before` for the next page. This matches the VISION spec verbatim and the public `ListAuditOptions { before?: Date }` shape in `@junjo/shared`.
+
+**Rationale:**
+- Timestamp pagination is what audit log consumers naturally want: "give me everything that happened before this point in time." Opaque cursor objects don't compose with the dev's mental model ("show me audit entries from yesterday" -> `before = yesterday`).
+- `Page.nextCursor` stays a `string | null` to match the cross-resource `Page<T>` shape; the SDK consumer treats it as opaque and reflects it back without parsing.
+- A composite `(timestamp, id)` cursor would be more strictly correct (no skip on duplicate-millisecond entries), but adding a `cursor` query parameter would deviate from the VISION spec and double the surface for a rare edge case. Audit entries are written one per transaction, so collisions are uncommon enough to be a documented eventually-consistent property.
+
+**Trade:** if two audit entries share `createdAt` to the millisecond (rare), the page boundary may skip one of them on the next call (since `before` is exclusive). Documented in `apps/docs/pages/api/audit.mdx` and `sdk/audit.mdx`.
+
+### Audit action filter validated against an enum, not pass-through
+
+**Decision:** the `?actions=` filter values are validated against the `AUDIT_ACTIONS` const list in `routes/audit.schema.ts`. Unknown values return `400 bad_request`. The list mirrors the `AuditAction` union in `@junjo/shared` and is kept in lockstep by hand.
+
+**Rationale:**
+- A typo in `?actions=members.invtied` should fail loudly, not silently match nothing. A 400 is the right shape for "you sent an invalid filter value"; a silent zero-row response would mask consumer bugs.
+- Validating means the server owns the enum: if a future iteration adds a new `AuditAction`, the schema needs an explicit update. Forcing the touchpoint is cheap (one line) and avoids drift between the type union and the runtime check.
+- Pass-through (accept any string) would let consumers query for actions that simply don't exist yet, which is forward-compatible-but-confusing. Better to opt-in to new actions when they ship.
+
+**Trade:** every new `AuditAction` requires an `AUDIT_ACTIONS` array entry. Acceptable: it's right next to where the action is written.
+
+### `routes/audit.ts` is a handler-only module; the route lives inline in `groupsRouter`
+
+**Decision:** the audit list route (`GET /v1/groups/:id/audit`) is registered inline inside `groupsRouter` in `routes/groups.ts`; the handler logic itself (`listAuditForGroup(c, prisma, groupId)`) and the wire-format helper (`serializeAuditEntry`) live in `routes/audit.ts`. There is no `auditRouter` factory and no standalone-handler factory.
+
+**Rationale:**
+- The route is group-scoped (the path is `/v1/groups/:id/audit`), so it belongs in `groupsRouter` for routing-table coherence; `app.ts` already mounts `groupsRouter` at `/v1/groups` with the apiKey middleware.
+- The handler is non-trivial enough (parsing, validation, querying, serialization) that it deserves its own module. Inlining the whole thing in `groups.ts` would push it over comfortable read length.
+- The shape mirrors `routes/relationships.ts` (helper-only) more than `routes/invitations.ts` or `routes/members.ts` (mixed router + standalone handlers); both are valid patterns in the codebase.
+
+**Trade:** the `groups.ts` import list grows by one (`listAuditForGroup`). Marginal cost.
+
+### `audit.list` lives on `junjo.audit`, not `junjo.groups.audit`
+
+**Decision:** the SDK method is `junjo.audit.list(groupId, opts?)`, on a top-level `audit` namespace, mirroring the typed stub that has lived in `index.ts` since the SDK first landed. It is not nested under `junjo.groups.audit(groupId)` even though every audit list call is group-scoped.
+
+**Rationale:**
+- The stub was already on `junjo.audit`; moving it would be a breaking API surface change. The stub never threw a useful error, but the namespace was reserved.
+- `audit` is a cross-cutting concern that future iterations will extend (e.g., `junjo.audit.export()`, `junjo.audit.search()` if those land in the cloud-only phase). A dedicated namespace gives those methods a home that doesn't bloat `groups`.
+- The first parameter being a `groupId` is consistent with `junjo.members.list(groupId, opts)`, `junjo.invitations.list(groupId, opts)`, etc; not every group-scoped read lives on `junjo.groups`.
+
+**Trade:** the URL path (`/v1/groups/:id/audit`) and the SDK shape (`junjo.audit.list(groupId)`) don't directly mirror each other. The lookup-from-URL-to-method takes one extra hop. Acceptable given the cross-cutting nature.
+

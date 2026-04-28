@@ -26,6 +26,7 @@ import {
 import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
+import { listAuditForGroup } from "./audit.js";
 import {
   MAX_PARENT_DEPTH,
   bulkInviteQuery,
@@ -1834,6 +1835,11 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const countMap = new Map(counts.map((row) => [row.groupId, row._count._all]));
 
     return c.json(children.map((g) => serializeGroup(g, countMap.get(g.id) ?? 0)));
+  });
+
+  r.get("/:id/audit", async (c) => {
+    const id = c.req.param("id");
+    return listAuditForGroup(c, prisma, id);
   });
 
   return r;
