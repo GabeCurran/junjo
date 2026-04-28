@@ -44,9 +44,11 @@ The `packages/server/src/` tree:
 - `db.ts` - Prisma client singleton. Cached on `globalThis` outside production so `tsx watch` does not leak connections on hot reload. Exports `disconnectPrisma()`.
 - `env.ts` - Zod-validated env loader. `loadEnv()` accepts an env object (defaults to `process.env`) and throws a single readable error listing every missing or invalid var.
 - `errors.ts` - the server-side `JunjoError` class plus a small `Errors.*` factory for the canonical error codes (`not_found`, `invalid_api_key`, `bad_request`, `permission_denied`).
-- `apiKey.ts` - API-key crypto: scrypt hash and verify, key generation, and the `prefix.secret` parser. Used by the apiKey middleware and (later) the seed helper.
+- `apiKey.ts` - API-key crypto: scrypt hash and verify, key generation, and the `prefix.secret` parser. Used by the apiKey middleware and the seed helper.
 - `middleware/error.ts` - Hono `onError` handler. Renders `JunjoError` as JSON; logs anything else and returns the generic 500 envelope.
 - `middleware/apiKey.ts` - extracts the `Authorization: Bearer prefix.secret` header, verifies the secret, and populates `c.var.gameId`. Accepts an injected `ApiKeyStore` rather than the full Prisma client so the middleware can be tested without a live database.
+- `seed.ts` - importable helpers `createGame(name, prisma?)` and `createApiKey(gameId, prisma?)`. Used by tests and the `db:seed` CLI. The Prisma client is optional so callers can pass a client bound to `TEST_DATABASE_URL` or fall back to the singleton from `db.ts`.
+- `seed.cli.ts` - thin CLI wrapper around `seed.ts`. Wired up as `npm run db:seed` for local-dev key issuance; prints the plaintext API key once and disconnects.
 - `routes/` - per-resource route modules (added as features land in Phase 1 and beyond).
 
 The `packages/server/prisma/` tree:

@@ -17,7 +17,8 @@
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
-    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed"
+    "db:reset": "prisma migrate reset --force --skip-generate --skip-seed",
+    "db:seed": "tsx src/seed.cli.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

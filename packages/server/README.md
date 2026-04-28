@@ -23,6 +23,7 @@ The Prisma schema lives at `prisma/schema.prisma`. Committed migrations live at 
 | `npm run db:migrate` | Applies any pending committed migrations against `DATABASE_URL`. This is the production / deploy path; it never writes new migrations. |
 | `npm run db:migrate:dev` | Compares the schema to the database, generates a new migration if needed, applies it, and regenerates the Prisma client. Use this whenever you edit `prisma/schema.prisma`. |
 | `npm run db:reset` | Drops the schema, reapplies every committed migration, and skips seeding. Used by tests to start from a known-empty state. Destructive: do not point at a database with real data. |
+| `npm run db:seed` | Creates one Game and one API key against `DATABASE_URL`, prints both to stdout. The full API key value is shown exactly once; it cannot be recovered later. Optional flag: `npm run db:seed -- --name "My Game"`. |
 | `npm run prisma:format` | `prisma format` against `prisma/schema.prisma`. Also runs as part of the verify gate. |
 | `npm run prisma:generate` | One-shot regenerate of the Prisma client. Normally unnecessary because `postinstall` handles it. |
 
@@ -61,4 +62,13 @@ Run the test suite:
 npm test --workspace @junjo/server
 ```
 
-Tests that import from `src/testdb.ts` will throw a clear error if `TEST_DATABASE_URL` is unset. Tests that do not need the database (pure unit tests) keep running regardless.
+Tests that import from `src/testdb.ts` will throw a clear error if `TEST_DATABASE_URL` is unset. Tests that exercise the schema directly (currently `seed.test.ts`) use `describe.skipIf(!process.env.TEST_DATABASE_URL)` so they no-op cleanly when the env var is absent and run end-to-end against the migrated database when it is set. Tests that do not need the database (pure unit tests) keep running regardless.
+
+### Seed helpers
+
+`src/seed.ts` exports two helpers used by tests and the `db:seed` CLI:
+
+- `createGame(name, prisma?)` inserts a `Game` row and returns it.
+- `createApiKey(gameId, prisma?)` generates a fresh `prefix.secret` pair, stores the hashed secret, and returns `{ apiKey, raw }` so the caller can use the plaintext once before it disappears.
+
+Both accept an optional `PrismaClient` (default: the singleton from `src/db.ts`) so tests can pass a client bound to `TEST_DATABASE_URL`.
