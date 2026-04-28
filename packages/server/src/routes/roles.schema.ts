@@ -1,8 +1,15 @@
 import { z } from "zod";
 
 export const ROLE_NAME_MAX_LENGTH = 64;
+export const PERMISSION_KEY_MAX_LENGTH = 128;
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const HEX_COLOR_MESSAGE = "must be a 7-character hex color (e.g. #ff5050)";
+
+export const grantPermissionBody = z.object({
+  permission: z.string().min(1).max(PERMISSION_KEY_MAX_LENGTH),
+});
+
+export type GrantPermissionBody = z.infer<typeof grantPermissionBody>;
 
 export const createRoleBody = z.object({
   name: z.string().min(1).max(ROLE_NAME_MAX_LENGTH),

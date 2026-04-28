@@ -955,3 +955,70 @@ Decline shares `invitation_expired` and `invitation_used` (it cannot trigger `al
 - Phase 3.5's `can()` check is the place where status matters: a kicked member has no permissions in the group regardless of which roles they nominally still have. The role join rows are bookkeeping; the live permission resolution is in `can()`.
 
 **Trade:** the dev's UI may show "Officer" next to a kicked member's name unless the dev filters explicitly. Mitigation: the `Member.status` field is on the wire; the dev can branch on it. Phase 3.5 will document this expectation in the `can()` doc.
+
+### `roles.grantPermission` and `revokePermission` carry the permission as a path param on revoke and a body field on grant
+
+**Decision:** `POST /v1/roles/:id/permissions` takes the permission key in a JSON body (`{ "permission": "..." }`); `DELETE /v1/roles/:id/permissions/:permission` takes it as a path parameter. The two routes are intentionally asymmetric: the body form for grant, the path form for revoke.
+
+**Rationale:**
+- VISION specifies the asymmetric shape: "`POST /v1/roles/:roleId/permissions` with `{ permission }` (creates `RolePermission` row); `DELETE /v1/roles/:roleId/permissions/:permission`". I considered "harmonizing" both to body or both to path, but each shape is locally optimal.
+- Grant carries a body so the route can reject empty / oversized keys at validation time before any DB work. A path-param grant would force the same validation but do it manually inside the handler (not unreasonable, but the JSON body path already runs the same Zod check used elsewhere).
+- Revoke does not need a body: the path identifies the join row uniquely. Forcing a body for `DELETE` would also disagree with the convention used by `invitations.revoke` (`DELETE /v1/invitations/:code`) and `roles.delete` (`DELETE /v1/roles/:id`).
+- The SDK signatures are uniform: `grantPermission(roleId, permission)` and `revokePermission(roleId, permission)` are both `(string, string) -> Role`. The wire-format asymmetry is invisible to the dev.
+
+**Trade:** a dev who reads the route table without reading the docs may be briefly confused that the two routes mirror in shape but not in body / path placement. Mitigation: the API page documents both shapes inline; the SDK page hides it behind one method per direction.
+
+### Permission key cap: 1-128 characters
+
+**Decision:** permission keys are validated server-side at 1-128 characters. Empty keys and keys over 128 chars return `400 bad_request`.
+
+**Rationale:**
+- VISION leaves the cap unspecified. 128 is comfortably more than the role `name` cap (64) because permission keys conventionally use namespaced patterns ("guild.invite_member", "territory.claim", "treasury.read") that naturally run longer than role names.
+- The cap matters because permission keys land in `PermissionDef.key` (indexed via the `@@unique([gameId, key])` constraint) and on the wire as path parameters in the revoke route. A multi-kilobyte key would bloat indexes, request URLs, and audit-log payloads.
+- 128 is small enough to forbid pathological inputs and large enough that no reasonable convention will run into it.
+
+**Trade:** a dev who chooses to hash a permission key into a long opaque token (rare but possible) may hit the cap. Mitigation: the dev can pre-hash to a shorter representation; this decision can also be revisited additively (raising the cap later is non-breaking).
+
+### `roles.grantPermission` is idempotent (no-op when already granted)
+
+**Decision:** granting a permission key the role already has returns the unchanged role with no audit entry written and no DB write. The HTTP status is `200 OK`. Same shape as `members.assignRole`, `groups.delete`, `groups.restore`, `invitations.revoke`, `groups.leave`, `groups.kick`.
+
+**Rationale:**
+- Consistency with the rest of the surface. Idempotent grant means a network blip / retry does not surface as a duplicate-key error; the dev's backend can safely re-issue without special-casing.
+- Skipping the audit entry on no-op keeps the audit log honest: a `permission.granted` row implies the grant *happened*; a duplicate row would lie.
+- Returning 200 with the unchanged role (rather than 201 / 304) means the SDK signature is uniform: `grantPermission(...): Promise<Role>` always returns the post-state role.
+
+**Trade:** a dev who wants to know whether the call was a real change versus a no-op can't tell from the response alone. Mitigation: inspect the audit log (or, post-Phase 5, subscribe to the SSE / webhook stream).
+
+### `roles.revokePermission` is idempotent (no-op when not granted)
+
+**Decision:** revoking a permission key the role does not have (or that does not exist on this game at all) returns the unchanged role with no audit entry. The route does not 404 on "permission not found"; it just returns the post-state.
+
+**Rationale:**
+- Mirrors the `members.removeRole` precedent ("`removeRole` does not validate the role's existence"): the join-row state is the only state that matters. A missing `RolePermission` row means "no", regardless of whether the missing-ness is because the key is unregistered, registered but never granted to this role, or registered and previously revoked.
+- HTTP convention: `DELETE` on a resource that does not exist should be a no-op.
+- The SDK shape stays uniform: `revokePermission(...): Promise<Role>` always resolves to the post-state role.
+
+**Trade:** a dev who calls `revokePermission` with a typo in the key will not get an error. Mitigation: the audit log is empty (no `permission.revoked` entry) and the returned role's `permissions` array is unchanged. If the dev expected the key to be there before the revoke, they have a clear signal.
+
+### `PermissionDef` is auto-registered on first grant; revoke does not unregister
+
+**Decision:** the first time a permission key is granted on a given game (across all roles), the route upserts a `PermissionDef (gameId, key)` row inside the same transaction as the `RolePermission` insert. Revoking the last grant of that key from any role does *not* delete the `PermissionDef` row; the registry preserves "every key this game has ever used" as a catalog for dashboards and SDK validators.
+
+**Rationale:**
+- VISION specifies: "The `permission` string is registered into `PermissionDef` automatically the first time it's used per game". The auto-register pattern keeps the dev experience friction-free: no separate "register this key" call, no surprising 404 the first time you grant a brand-new key.
+- The upsert (rather than findUnique-then-create) collapses two queries into one and is robust against concurrent first-grants of the same key (Postgres serializes at the unique constraint).
+- Not unregistering on revoke matches the Stripe / Auth0 catalog pattern: once a key has appeared, it stays in the registry. The dashboard's "permissions for this game" list should include keys that are currently revoked but were once used; a dev can re-grant without losing history. Auto-cleanup would also race with concurrent grants.
+
+**Trade:** the `PermissionDef` table grows monotonically per game. For a dev who experiments with many one-off keys during development, this list will accumulate. If it becomes a real product concern, an admin endpoint can prune unused keys; we do not need it for V1.
+
+### `grantPermission` and `revokePermission` return the updated `Role` instead of `void`
+
+**Decision:** both methods return `Promise<Role>` (containing the post-state `permissions` array). The original stubs in the SDK declared `Promise<void>`; the return type changes as part of shipping the methods.
+
+**Rationale:**
+- Returning the post-state lets the dev render the new permissions list without a follow-up `roles.get`. The same pattern is used by `members.assignRole` / `removeRole` (returns `Member`), `groups.update` (returns `Group`), `roles.update` (returns `Role`), and so on.
+- The wire is already an HTTP 200 with a JSON body in both directions; returning the body to the caller costs nothing.
+- V1 is not yet released, so the stub-to-real type change is safe. The shared `@junjo/shared` types do not pin the return type: `RolesApi`'s signature lives in the SDK package, where this is an additive enrichment.
+
+**Trade:** a dev who consciously wants to ignore the return value still can (`await junjo.roles.grantPermission(...)` discards it). The richer return type is opt-in.

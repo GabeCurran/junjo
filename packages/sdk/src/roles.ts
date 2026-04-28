@@ -9,8 +9,6 @@ import type {
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 
-const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
-
 export interface WireRole {
   id: string;
   groupId: string;
@@ -90,11 +88,18 @@ export class RolesApi {
     return wire.map(deserializeRole);
   }
 
-  async grantPermission(_roleId: RoleId, _permission: PermissionKey): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async grantPermission(roleId: RoleId, permission: PermissionKey): Promise<Role> {
+    const wire = await this.http.post<WireRole>(
+      `/v1/roles/${encodeURIComponent(roleId)}/permissions`,
+      { permission },
+    );
+    return deserializeRole(wire);
   }
 
-  async revokePermission(_roleId: RoleId, _permission: PermissionKey): Promise<void> {
-    throw NOT_IMPLEMENTED;
+  async revokePermission(roleId: RoleId, permission: PermissionKey): Promise<Role> {
+    const wire = await this.http.delete<WireRole>(
+      `/v1/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}`,
+    );
+    return deserializeRole(wire);
   }
 }

@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
-import { updateRoleBody } from "./roles.schema.js";
+import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
 export interface WireRole {
   id: string;
@@ -165,6 +165,110 @@ export function updateRoleByIdHandler(prisma: PrismaClient): Handler {
 
     const permissions = await loadRolePermissionKeys(prisma, updated.id);
     return c.json(serializeRole(updated, permissions));
+  };
+}
+
+// Grant a permission key to a role. Idempotent: granting a permission the
+// role already has returns the unchanged role with no audit entry and no
+// DB write. The permission key is auto-registered into `PermissionDef` on
+// first sight per game (one upsert inside the same transaction); revoking
+// the permission later does not unregister the def, since the registry is
+// a "known keys" catalog for the dashboard / SDK validators.
+export function grantPermissionHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = grantPermissionBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { permission } = parsed.data;
+
+    const role = await loadScopedRole(prisma, id, gameId);
+
+    const existing = await prisma.rolePermission.findUnique({
+      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    });
+    if (existing) {
+      const permissions = await loadRolePermissionKeys(prisma, role.id);
+      return c.json(serializeRole(role, permissions));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.permissionDef.upsert({
+        where: { gameId_key: { gameId, key: permission } },
+        create: { gameId, key: permission },
+        update: {},
+      });
+      await tx.rolePermission.create({
+        data: { roleId: role.id, permissionKey: permission },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "permission.granted",
+          targetId: role.id,
+          payload: {
+            roleId: role.id,
+            permission,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    const permissions = await loadRolePermissionKeys(prisma, role.id);
+    return c.json(serializeRole(role, permissions));
+  };
+}
+
+// Revoke a permission key from a role. Idempotent: revoking a permission
+// the role does not have returns the unchanged role with no audit entry.
+// The `PermissionDef` registry is preserved (revoke does not "forget" the
+// key for the game).
+export function revokePermissionHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const id = c.req.param("id");
+    const permission = c.req.param("permission");
+    const gameId = c.var.gameId;
+
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+
+    const role = await loadScopedRole(prisma, id, gameId);
+
+    const existing = await prisma.rolePermission.findUnique({
+      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    });
+    if (!existing) {
+      const permissions = await loadRolePermissionKeys(prisma, role.id);
+      return c.json(serializeRole(role, permissions));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.rolePermission.delete({
+        where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "permission.revoked",
+          targetId: role.id,
+          payload: {
+            roleId: role.id,
+            permission,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    const permissions = await loadRolePermissionKeys(prisma, role.id);
+    return c.json(serializeRole(role, permissions));
   };
 }
 

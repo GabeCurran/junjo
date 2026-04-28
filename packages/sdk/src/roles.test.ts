@@ -301,3 +301,96 @@ describe("roles.list", () => {
     await junjo.roles.list("has/slash" as GroupId);
   });
 });
+
+describe("roles.grantPermission", () => {
+  it("POSTs /v1/roles/:id/permissions with the auth header and JSON body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/roles/role_1/permissions");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toMatch(/application\/json/);
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ permission: "invite_member" });
+      return jsonResponse({ ...roleFixture, permissions: ["invite_member"] });
+    });
+    const junjo = newClient(fetchMock);
+    const role = await junjo.roles.grantPermission("role_1" as RoleId, "invite_member");
+    expect(role.permissions).toEqual(["invite_member"]);
+    expect(role.id).toBe("role_1");
+    expect(role.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("URL-encodes the role id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/roles/has%2Fslash/permissions");
+      return jsonResponse(roleFixture);
+    });
+    const junjo = newClient(fetchMock);
+    await junjo.roles.grantPermission("has/slash" as RoleId, "invite_member");
+  });
+
+  it("forwards the permission verbatim (no JSON-encoded path traversal)", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ permission: "scope:with-colon" });
+      return jsonResponse({ ...roleFixture, permissions: ["scope:with-colon"] });
+    });
+    const junjo = newClient(fetchMock);
+    await junjo.roles.grantPermission("role_1" as RoleId, "scope:with-colon");
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "" }, 404),
+    );
+    const junjo = newClient(fetchMock);
+    await expect(
+      junjo.roles.grantPermission("role_xyz" as RoleId, "invite_member"),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+});
+
+describe("roles.revokePermission", () => {
+  it("DELETEs /v1/roles/:id/permissions/:permission with the auth header", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      expect(new URL(req.url).pathname).toBe("/v1/roles/role_1/permissions/invite_member");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({ ...roleFixture, permissions: [] });
+    });
+    const junjo = newClient(fetchMock);
+    const role = await junjo.roles.revokePermission("role_1" as RoleId, "invite_member");
+    expect(role.permissions).toEqual([]);
+    expect(role.id).toBe("role_1");
+  });
+
+  it("returns the role unchanged when the server reports a no-op", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ ...roleFixture, permissions: ["kick_member"] }),
+    );
+    const junjo = newClient(fetchMock);
+    const role = await junjo.roles.revokePermission("role_1" as RoleId, "never_seen");
+    expect(role.permissions).toEqual(["kick_member"]);
+  });
+
+  it("URL-encodes the role id and the permission", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe(
+        "/v1/roles/has%2Fslash/permissions/scope%2Fwith-slash",
+      );
+      return jsonResponse(roleFixture);
+    });
+    const junjo = newClient(fetchMock);
+    await junjo.roles.revokePermission("has/slash" as RoleId, "scope/with-slash");
+  });
+
+  it("throws JunjoError on non-2xx responses", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "" }, 404),
+    );
+    const junjo = newClient(fetchMock);
+    await expect(
+      junjo.roles.revokePermission("role_xyz" as RoleId, "invite_member"),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+});

@@ -1,8 +1,8 @@
 # Roles
 
-A `Role` is a named bundle of authority within one group. Roles carry a `priority` (higher = more authority), an optional color, a flag indicating whether they should be auto-assigned to new members, and (in Phase 3.3) a list of permission keys.
+A `Role` is a named bundle of authority within one group. Roles carry a `priority` (higher = more authority), an optional color, a flag indicating whether they should be auto-assigned to new members, and a list of permission keys (populated via the grant / revoke routes documented below).
 
-The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/roles`) live on this page; so do the by-id routes (`GET /v1/roles/:id`, `PATCH /v1/roles/:id`, `DELETE /v1/roles/:id`).
+The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/roles`) live on this page; so do the by-id routes (`GET /v1/roles/:id`, `PATCH /v1/roles/:id`, `DELETE /v1/roles/:id`) and the permission-management routes (`POST /v1/roles/:id/permissions`, `DELETE /v1/roles/:id/permissions/:permission`).
 
 ## Wire format
 
@@ -16,7 +16,7 @@ The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/rol
 | `priority` | number | Integer. Higher = more authority. Used by the SDK's "can-act-on" helpers. |
 | `color` | string \| null | A 7-character hex color (e.g. `"#ff5050"`) if present, null otherwise. |
 | `isDefault` | boolean | A per-role flag the dev can set; multiple roles in a group may carry it. The single canonical "default role" lives on `Group.defaultRoleId`. |
-| `permissions` | string[] | Permission keys granted to this role. Always `[]` in V1 until Phase 3.3 wires `roles.grantPermission` / `revokePermission`. |
+| `permissions` | string[] | Permission keys granted to this role. Populated by the grant / revoke routes; `[]` on a freshly-created role. |
 | `createdAt` | string | ISO 8601 timestamp. |
 
 ## `POST /v1/groups/:id/roles`
@@ -41,7 +41,7 @@ Creates a new role inside the named group. Writes a `role.created` audit entry i
 | `color` | no | `null` | If present, must match `^#[0-9a-fA-F]{6}$`. |
 | `isDefault` | no | `false` | Per-role tag. Multiple roles in one group can carry it. |
 
-`permissions` is intentionally not part of the create body in Phase 3.1; Phase 3.3 will introduce `POST /v1/roles/:id/permissions` as the dedicated grant route.
+`permissions` is intentionally not part of the create body; the grant route (`POST /v1/roles/:id/permissions`, documented below) is the dedicated path for adding permission keys.
 
 ### Response
 
@@ -191,5 +191,85 @@ On success, writes a `role.deleted` audit entry containing the deleted row's sna
 | Code | Status | When |
 |------|--------|------|
 | `role_has_members` | 409 | The role has at least one `MemberRole` assignment. Reassign first. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/roles/:id/permissions`
+
+Grants a permission key to a role. The route is **idempotent**: granting a permission the role already has returns the unchanged role with no audit entry and no DB write.
+
+The first time a permission key is granted on a given game, it is auto-registered into `PermissionDef` (the per-game catalog of "known keys" the dashboard and SDK validators consult). Subsequent grants of the same key reuse the existing `PermissionDef` row; revoking the key later does not remove the def.
+
+### Request
+
+```json
+{ "permission": "invite_member" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `permission` | yes | 1-128 characters. Free-form string; the dev defines their own keys. |
+
+### Response
+
+`200 OK` with the updated `Role` body. `permissions` reflects the post-state and is sorted by key.
+
+### Audit log
+
+One `permission.granted` entry per non-noop grant:
+
+```json
+{
+  "action": "permission.granted",
+  "targetId": "<roleId>",
+  "payload": {
+    "roleId": "<roleId>",
+    "permission": "invite_member"
+  }
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, or malformed JSON. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/roles/:id/permissions/:permission`
+
+Revokes a permission key from a role. The route is **idempotent**: revoking a permission the role does not have returns the unchanged role with no audit entry. The `PermissionDef` registry is preserved (revoke does not "forget" the key for the game).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The role id. URL-decoded by the router. |
+| `permission` | string | The permission key. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with the updated `Role` body. `permissions` reflects the post-state.
+
+### Audit log
+
+One `permission.revoked` entry per non-noop revoke:
+
+```json
+{
+  "action": "permission.revoked",
+  "targetId": "<roleId>",
+  "payload": {
+    "roleId": "<roleId>",
+    "permission": "invite_member"
+  }
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
