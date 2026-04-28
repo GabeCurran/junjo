@@ -697,6 +697,58 @@ A group with no live children returns `[]`.
 
 - [`GET /v1/groups/:id/children`](/api/groups) - the underlying HTTP route.
 
-## Other methods (stubbed)
+## `subscribe(groupId, handler, opts?)` - shipped
 
-`subscribe` still exists on the type surface today but throws `JunjoError("not_implemented")` until Phase 5.1 ships. The shape is stable; it will fill in without breaking changes.
+Open a Server-Sent Events stream against `GET /v1/events/:groupId` and invoke `handler` once per delivered event, with `Date` fields rehydrated. Returns a `Subscription` whose `close()` aborts the underlying fetch and stops further handler invocations.
+
+```ts
+const sub = await junjo.groups.subscribe(
+  "grp_xyz" as GroupId,
+  (event) => {
+    if (event.type === "member.joined") {
+      console.log(`${event.userId} joined`, event.member);
+    }
+    if (event.type === "member.left") {
+      console.log(`${event.userId} left`, event.reason);
+    }
+  },
+  {
+    onError: (err) => console.error("subscription failed", err),
+  },
+);
+
+// later
+sub.close();
+```
+
+The promise resolves once the server has accepted the connection. Initial-handshake errors (`401 invalid_api_key`, `404 not_found`) reject the promise with `JunjoError`. Mid-stream errors (network drop, malformed frame, JSON parse failure) close the subscription and call `opts.onError`; reconnect by calling `subscribe` again.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to subscribe to. Must belong to the calling game and not be soft-deleted. |
+| `handler` | `(event: JunjoEvent) => void` | Called once per delivered event, in publication order. The `JunjoEvent` is fully deserialized: `Date` fields are `Date` instances, branded ids are typed. |
+| `opts.onError` | `(err: Error) => void` | Optional. Called with the underlying error after the subscription closes due to a streaming failure. Initial-handshake failures throw instead. |
+
+### Returns
+
+`Promise<Subscription>` where `Subscription` is `{ close: () => void }`. `close()` is idempotent; subsequent calls are no-ops.
+
+### Behavior
+
+- **Single group per stream.** One connection covers one group; subscribe to N groups with N calls.
+- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api/audit) (Phase 5.2) or webhooks (Phase 5.3) for durable propagation.
+- **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
+- **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The group is missing / soft-deleted / cross-game. Thrown from the awaited `subscribe()`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown from the awaited `subscribe()`. |
+
+### See also
+
+- [`GET /v1/events/:groupId`](/api/events) - the underlying HTTP route.

@@ -72,6 +72,36 @@ export class HttpClient {
     return this.parseResponse<T>(res);
   }
 
+  // GET a path expecting a streaming response (text/event-stream, etc.)
+  // and return the raw Response with its body still open. Non-2xx
+  // responses still throw the standard `JunjoError` envelope; the caller
+  // is responsible for reading the body via `res.body?.getReader()`.
+  async openStream(path: string, opts?: { signal?: AbortSignal }): Promise<Response> {
+    const url = `${this.baseUrl}${path}`;
+    const res = await this.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${this.apiKey}`,
+        accept: "text/event-stream",
+      },
+      signal: opts?.signal,
+    });
+    if (!res.ok) {
+      let parsed: ServerErrorBody = {};
+      try {
+        parsed = (await res.json()) as ServerErrorBody;
+      } catch {
+        parsed = {};
+      }
+      throw new JunjoError(
+        parsed.message ?? res.statusText ?? "request failed",
+        parsed.code ?? "internal",
+        parsed.status ?? res.status,
+      );
+    }
+    return res;
+  }
+
   private async parseResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
       let parsed: ServerErrorBody = {};

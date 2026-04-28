@@ -18,10 +18,20 @@ import type {
   UserId,
 } from "@junjo/shared";
 import { JunjoError } from "./errors.js";
+import { type WireJunjoEvent, deserializeEvent, parseSSEFrame } from "./events.js";
 import type { HttpClient } from "./http.js";
 import { type WireMember, deserializeMember } from "./members.js";
 
-const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
+export interface SubscribeOptions {
+  // Notified when a streaming error occurs after the connection is open
+  // (network drop, malformed frame, JSON parse failure). The subscription
+  // is closed before this fires; reconnect by calling `subscribe` again.
+  onError?: (err: Error) => void;
+}
+
+export interface Subscription {
+  close: () => void;
+}
 
 export interface WireGroupRelationship {
   groupAId: string;
@@ -248,8 +258,73 @@ export class GroupsApi {
 
   // ------ Real-time ------
 
-  subscribe(_groupId: GroupId, _handler: (event: JunjoEvent) => void): { close: () => void } {
-    throw NOT_IMPLEMENTED;
+  // Open an SSE stream against `GET /v1/events/:groupId` and call
+  // `handler` once per delivered event, with `Date` fields rehydrated.
+  // Returns a `Subscription` whose `close()` cancels the underlying
+  // fetch. Resolves after the server has accepted the connection (so
+  // 401 / 404 surface as a thrown `JunjoError` rather than via
+  // `onError`); mid-stream failures fire `onError` and end the stream.
+  async subscribe(
+    groupId: GroupId,
+    handler: (event: JunjoEvent) => void,
+    opts?: SubscribeOptions,
+  ): Promise<Subscription> {
+    const controller = new AbortController();
+    const res = await this.http.openStream(`/v1/events/${encodeURIComponent(groupId)}`, {
+      signal: controller.signal,
+    });
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new JunjoError("response has no body", "internal");
+    }
+
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      controller.abort();
+      reader.cancel().catch(() => undefined);
+    };
+
+    const reportError = (err: Error) => {
+      if (closed) return;
+      close();
+      opts?.onError?.(err);
+    };
+
+    void (async () => {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      try {
+        while (!closed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) buffer += decoder.decode(value, { stream: true });
+          let idx = buffer.indexOf("\n\n");
+          while (idx !== -1) {
+            const block = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const frame = parseSSEFrame(block);
+            if (frame?.data !== undefined) {
+              try {
+                const wire = JSON.parse(frame.data) as WireJunjoEvent;
+                handler(deserializeEvent(wire));
+              } catch (err) {
+                reportError(err instanceof Error ? err : new Error(String(err)));
+                return;
+              }
+            }
+            idx = buffer.indexOf("\n\n");
+          }
+        }
+      } catch (err) {
+        const name = (err as { name?: string } | null)?.name;
+        if (closed || name === "AbortError") return;
+        reportError(err instanceof Error ? err : new Error(String(err)));
+      }
+    })();
+
+    return { close };
   }
 
   // ------ Group relationships ------

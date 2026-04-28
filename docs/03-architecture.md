@@ -104,8 +104,9 @@ The `packages/sdk/src/` tree:
 
 - `index.ts` - the `Junjo` top-level class. Constructs the shared `HttpClient` from `JunjoConfig` and instantiates each sub-namespace class (`GroupsApi`, `RolesApi`, ...). Re-exports the public types from `@junjo/shared`.
 - `errors.ts` - the `JunjoError` class. Thrown by every method that talks to the server when the response is non-2xx; preserves the server envelope's `code`, `status`, and `message`.
-- `http.ts` - shared `HttpClient`. Thin wrapper around `fetch` that injects the `Authorization` header, JSON-encodes bodies, parses responses, and turns non-2xx responses into `JunjoError`. Each sub-namespace class receives one via constructor. The default fast-path methods (`get` / `post` / `patch` / `put` / `delete`) JSON-encode the body; a separate `postRaw(path, body, contentType)` skips JSON encoding for endpoints that take non-JSON bodies (currently only `bulkInvite`'s `text/csv` payload). Both paths share a private `parseResponse` helper so error handling is identical.
+- `http.ts` - shared `HttpClient`. Thin wrapper around `fetch` that injects the `Authorization` header, JSON-encodes bodies, parses responses, and turns non-2xx responses into `JunjoError`. Each sub-namespace class receives one via constructor. The default fast-path methods (`get` / `post` / `patch` / `put` / `delete`) JSON-encode the body and share the private `parseResponse` helper. `postRaw(path, body, contentType)` skips JSON encoding for endpoints that take non-JSON bodies (currently only `bulkInvite`'s `text/csv` payload) and reuses the same helper. `openStream(path, opts?)` does a streaming GET (used by `groups.subscribe()` for SSE) and returns the raw `Response` with its body still open; non-2xx responses still throw a `JunjoError` constructed from the same envelope shape, but successful responses are NOT consumed (the caller is responsible for `res.body?.getReader()`).
 - `<resource>.ts` - per-resource sub-namespace class plus its wire-format type and deserializer (e.g., `groups.ts` exports `GroupsApi`, `WireGroup`, and `deserializeGroup`). Wire types match the server's JSON exactly (timestamps as ISO strings); the deserializer rehydrates them into branded ids and `Date` instances at the boundary.
+- `events.ts` - SSE wire types (`WireJunjoEvent` and the per-event variants), `deserializeEvent(wire)` (rehydrates every nested `Date` and brand-casts every id), and `parseSSEFrame(block)` (parses one `event: / data: / id:` SSE block and skips comment-only frames). Consumed by `groups.ts`'s `subscribe()` method.
 - `adapters/` - built-in auth adapters (Clerk, Supabase, JWT). Distributed under the `@junjo/sdk/adapters` subpath export so callers without those backends do not pay the install cost.
 
 Core surface (sketch):
@@ -147,7 +148,7 @@ await junjo.groups.setRelationship(groupA.id, groupB.id, "ally");
 const rel = await junjo.groups.getRelationship(groupA.id, groupB.id);
 
 // Real-time subscription (SSE)
-const sub = junjo.groups.subscribe(group.id, (event) => {
+const sub = await junjo.groups.subscribe(group.id, (event) => {
   if (event.type === "member.joined") notifyChat(event);
 });
 sub.close();

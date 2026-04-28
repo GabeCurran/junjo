@@ -1421,3 +1421,46 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** consumers that need to distinguish "restored from soft delete" from "renamed" need to read the audit log, where `group.restored` is a distinct action. Acceptable for V1.
 
+### Phase 5.1c: SDK `groups.subscribe` is async; opens once, never auto-reconnects
+
+**Decision:** `subscribe(groupId, handler, opts?)` is `async` and resolves to a `Subscription` (`{ close: () => void }`). The promise resolves once the server has accepted the SSE handshake; initial-handshake errors (`401`, `404`) reject the promise with `JunjoError`. Mid-stream failures (network drop, malformed frame, JSON parse failure) close the subscription and call `opts.onError`; the SDK does not attempt to reconnect.
+
+**Rationale:**
+- Awaiting the handshake is the only ergonomic way to surface `401` / `404`. A sync constructor that hands errors back via a callback (browser `EventSource` style) would force every caller to wrap in their own promise to detect "did this connection actually open?" The async signature matches the rest of the SDK and lets callers `try { sub = await ... } catch (e: JunjoError)` for the common case.
+- No auto-reconnect because V1 has no replay-on-reconnect (per `apps/docs/pages/api/events.mdx` "Limitations"). A reconnect that silently drops events is worse than the SDK consumer making an explicit choice. Callers who want reconnect can build it on top: `onError` fires once per dropped connection, and `subscribe` can be called again to start a fresh stream.
+- The `Subscription` interface is intentionally minimal (`close()` only). A future `pause()` / `resume()` is additive; we don't need it for V1's use cases (live UX in dashboards, mobile clients).
+
+**Trade:** the original stub signature in the SDK was sync (`subscribe(...): { close }`). This iteration changes it to async (`Promise<Subscription>`). Acceptable: the method has been a `NOT_IMPLEMENTED` thrower since the SDK landed, no consumer has built against the sync shape.
+
+### SDK SSE wire-types live in `events.ts`, not in `groups.ts`
+
+**Decision:** the per-event wire types (`WireMemberJoinedEvent`, `WireGroupUpdatedEvent`, ...) plus the `WireJunjoEvent` discriminated union and the `deserializeEvent(wire)` function live in `packages/sdk/src/events.ts`. `groups.ts` imports them; the SSE parsing logic (`parseSSEFrame`) lives next to them.
+
+**Rationale:**
+- The wire types touch every other resource (`WireMember`, `WireRole`, `WireGroup`, `WireInvitation`, `WireGroupRelationship`). Putting them in `groups.ts` would force `groups.ts` to import from every other resource module, which it currently does not. Splitting them out keeps `groups.ts` focused on the groups REST surface.
+- `events.ts` mirrors the server's `events.ts` (which holds the `publishEvent` helper and brand-cast converters). Symmetry: each side has one module that owns the event-shape transformation between Prisma rows / wire JSON and the public types.
+- Future events that originate from non-group mutations (e.g., a global `webhook.delivered` if Phase 5.3 adds one) have a natural home without bloating `groups.ts`.
+
+**Trade:** one extra file in the SDK tree. Worth it for the import boundary.
+
+### `parseSSEFrame` lives in the SDK, not in a shared library
+
+**Decision:** the `parseSSEFrame(block)` helper that turns one SSE event block into `{ event?, data?, id? }` lives in `packages/sdk/src/events.ts`. We do not depend on a third-party SSE-parsing library and do not share the parser across packages.
+
+**Rationale:**
+- The parser is ~15 lines (split on `\n`, dispatch on prefix). Adding a dependency for that much code is a bad trade: it grows the install footprint of every SDK consumer for negligible benefit.
+- Existing libraries (`eventsource-parser`, `fetch-event-source`) target richer use cases (last-event-id replay, retry, connection state machines) that V1 does not need.
+- Keeping the parser in-house lets us evolve it alongside the wire format. If the server adds a new SSE field (e.g., `retry:`), we update one file.
+
+**Trade:** the parser is V1-shaped (no multi-line `data:` fan-out beyond the spec basics, no `retry:` honoring). When Phase 5.1d / 5.1e expands SSE semantics, the parser will need to grow.
+
+### `HttpClient.openStream(path)` returns the raw Response with body open
+**Decision:** the SDK's `HttpClient` grows a third method, `openStream(path, opts?): Promise<Response>`, parallel to `request` (JSON) and `postRaw` (non-JSON body). The method does a `GET` with the auth header, throws `JunjoError` on non-2xx (consuming the error body), and returns the `Response` with `body` still open on success. The caller is responsible for `res.body?.getReader()`.
+
+**Rationale:**
+- `subscribe()` needs three things from `HttpClient`: the `baseUrl`, the API key on every request, and the standard error envelope. Using a fresh `fetch` call inside `subscribe()` would duplicate all three. Exposing `openStream` keeps subscribe small.
+- The method returns the raw `Response` rather than a parsed body because SSE consumers stream forever; there is no "parse the response" step. Reusing the JSON-parsing `parseResponse` would consume the body and break the stream.
+- The signature is `Promise<Response>`, not `Promise<ReadableStream<Uint8Array>>`, so future call sites can read response headers (`content-type`, `last-event-id`, etc.) if they want.
+
+**Trade:** the caller has to `res.body?.getReader()` themselves and handle the `body === null` case. Marginal; the alternative (a wrapper that returns the reader directly) loses the headers.
+
