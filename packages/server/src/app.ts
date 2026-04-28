@@ -10,6 +10,7 @@ import {
   deleteInvitationByCodeHandler,
   getInvitationByCodeHandler,
 } from "./routes/invitations.js";
+import { getMemberByIdHandler, listMembersForUserHandler } from "./routes/members.js";
 
 export interface CreateAppOptions {
   prisma?: PrismaClient;
@@ -48,6 +49,8 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
   v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma));
   v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
+  v1.get("/members/:id", getMemberByIdHandler(prisma));
+  v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
   app.route("/v1", v1);
 
   return app;

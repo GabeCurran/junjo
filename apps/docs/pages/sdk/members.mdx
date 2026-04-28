@@ -1,0 +1,132 @@
+# `junjo.members`
+
+The members namespace operates on `Member` rows: a member is one user's relationship to one group. The same external user id can be a member of many groups within the same game; each membership is a separate `Member` row.
+
+The methods listed as **shipped** are real implementations. Other methods (`setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`) are stubbed and throw `not_implemented` until later phases.
+
+## `get(groupId, userId)` - shipped
+
+Fetches a single member by the dev's external user id within a group. Returns `Member | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (member)` without a try/catch. Other errors throw `JunjoError`.
+
+```ts
+const member = await junjo.members.get("grp_xyz" as GroupId, "user_alice" as UserId);
+if (!member) {
+  // not in this group (or the group is soft-deleted, or cross-game)
+  return;
+}
+member.status; // "active" | "left" | "kicked" | "invited"
+```
+
+The response includes members in any status; historical rows (`left`, `kicked`) are returned as well as active members.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+`404 not_found` is converted to `null`; it is not thrown.
+
+### See also
+
+- [`GET /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+
+## `getById(id)` - shipped
+
+Fetches a single member by the `Member.id` directly. Returns `Member | null` (404 -> null, other errors throw).
+
+```ts
+const member = await junjo.members.getById("mem_xyz" as MemberId);
+```
+
+Useful when you have already cached a member id (e.g. from a webhook event payload) and want to refresh the row.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+### See also
+
+- [`GET /v1/members/:id`](/api/members) - the underlying HTTP route.
+
+## `list(groupId, opts?)` - shipped
+
+Returns a single page of members in a group, sorted by `joinedAt` descending. Pagination is cursor-based; pass the `nextCursor` from the previous page to fetch the next.
+
+```ts
+let cursor: string | null | undefined;
+do {
+  const page = await junjo.members.list("grp_xyz" as GroupId, {
+    limit: 50,
+    cursor: cursor ?? undefined,
+  });
+  for (const member of page.items) {
+    console.log(member.userId, member.status);
+  }
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
+V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the caller filters client-side. A `?status=` filter can land later as an additive change.
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | number | `50` | 1-100 inclusive. |
+| `cursor` | string | undefined | The `nextCursor` from a previous `list` call. |
+
+### Returns
+
+`Page<Member>`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items` | `Member[]` | Up to `limit` members, ordered by `joinedAt` desc with `id` desc as a tiebreaker. |
+| `nextCursor` | string \| null | The id of the last item, or `null` if this is the last page. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` out of range, or `cursor` does not point at a member of this group. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups/:id/members`](/api/groups) - the underlying HTTP route.
+
+## `listForUser(userId, opts?)` - shipped
+
+Returns every membership a user has within the calling game. Returns a bare `Member[]` (no pagination wrapper) capped at 1000 rows. A user with no `ExternalIdentity` for this game returns `[]`.
+
+```ts
+const memberships = await junjo.members.listForUser("user_alice" as UserId);
+for (const m of memberships) {
+  console.log(m.groupId, m.status);
+}
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `gameId` | `GameId` | the calling game | Optional. Must equal the calling key's game; mismatches return `400`. Provided for forward-compatibility with cloud-only admin tooling. |
+
+### Returns
+
+`Member[]`. All rows carry the same `userId` (the value supplied to `listForUser`). Soft-deleted groups are excluded.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `gameId` does not match the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/users/:userId/members`](/api/members) - the underlying HTTP route.

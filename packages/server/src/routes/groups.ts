@@ -12,7 +12,13 @@ import {
 } from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
-import { loadMemberRoleIds, serializeMember } from "./members.js";
+import {
+  batchLoadExternalUserIds,
+  batchLoadMemberRoleIds,
+  loadMemberRoleIds,
+  serializeMember,
+} from "./members.js";
+import { listMembersQuery } from "./members.schema.js";
 
 interface WireGroup {
   id: string;
@@ -470,6 +476,110 @@ export function groupsRouter(prisma: PrismaClient): Hono {
       items: sliced.map(serializeInvitation),
       nextCursor,
     });
+  });
+
+  // List the members of a group (paginated). Returns rows in every
+  // status; the caller filters client-side. Active-only is the common
+  // case but historical rows (`left`, `kicked`) carry the audit story
+  // and a future `?status=` filter can add it as an additive change.
+  r.get("/:id/members", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const parsed = listMembersQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor } = parsed.data;
+
+    let cursorRow: { id: string; joinedAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.groupMember.findFirst({
+        where: { id: cursor, groupId: group.id },
+        select: { id: true, joinedAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const where: Prisma.GroupMemberWhereInput = {
+      groupId: group.id,
+      ...(cursorRow
+        ? {
+            OR: [
+              { joinedAt: { lt: cursorRow.joinedAt } },
+              { joinedAt: cursorRow.joinedAt, id: { lt: cursorRow.id } },
+            ],
+          }
+        : {}),
+    };
+
+    const members = await prisma.groupMember.findMany({
+      where,
+      orderBy: [{ joinedAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = members.length > limit;
+    const sliced = hasMore ? members.slice(0, limit) : members;
+
+    const idMap = await batchLoadExternalUserIds(
+      prisma,
+      gameId,
+      sliced.map((m) => m.junjoUserId),
+    );
+    const roleMap = await batchLoadMemberRoleIds(
+      prisma,
+      sliced.map((m) => m.id),
+    );
+
+    const items = [];
+    for (const m of sliced) {
+      const externalUserId = idMap.get(m.junjoUserId);
+      if (!externalUserId) continue;
+      items.push(serializeMember(m, externalUserId, roleMap.get(m.id) ?? []));
+    }
+
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
+
+    return c.json({ items, nextCursor });
+  });
+
+  // Fetch a single member by the dev's external `userId`. Scoped to the
+  // calling game; missing group / cross-game / soft-deleted-group / no
+  // ExternalIdentity / no GroupMember all collapse to 404 (matches the
+  // collapsed-existence pattern used by leave / kick).
+  r.get("/:id/members/:userId", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const roleIds = await loadMemberRoleIds(prisma, member.id);
+    return c.json(serializeMember(member, userId, roleIds));
   });
 
   // The user identified by `userId` voluntarily leaves the group. Only

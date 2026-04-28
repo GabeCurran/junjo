@@ -2,20 +2,14 @@ import type {
   AuditEntry,
   AuthAdapter,
   CreateRoleInput,
-  GameId,
   GroupId,
   JunjoEvent,
   ListAuditOptions,
-  Member,
-  MemberId,
-  MemberPermissionOverride,
   Page,
-  PageOptions,
   PermissionCheckResult,
   PermissionKey,
   Role,
   RoleId,
-  SetMemberNotesInput,
   UpdateRoleInput,
   UserId,
   WebhookSignatureHeaders,
@@ -24,6 +18,7 @@ import { JunjoError } from "./errors.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
 import { InvitationsApi } from "./invitations.js";
+import { MembersApi } from "./members.js";
 
 // =====================================================================
 // Configuration
@@ -68,7 +63,7 @@ export class Junjo {
     const inviteBaseUrl = (config.inviteBaseUrl ?? baseUrl).replace(/\/+$/, "");
     this.groups = new GroupsApi(http, inviteBaseUrl);
     this.roles = new RolesApi();
-    this.members = new MembersApi();
+    this.members = new MembersApi(http);
     this.invitations = new InvitationsApi(http);
     this.audit = new AuditApi();
     this.webhooks = new WebhooksApi();
@@ -133,72 +128,6 @@ export class RolesApi {
 }
 
 // =====================================================================
-// Members
-// =====================================================================
-
-export class MembersApi {
-  async get(_groupId: GroupId, _userId: UserId): Promise<Member | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async getById(_id: MemberId): Promise<Member | null> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async list(_groupId: GroupId, _opts?: PageOptions): Promise<Page<Member>> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async listForUser(_userId: UserId, _opts?: { gameId?: GameId }): Promise<Member[]> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async setMetadata(
-    _groupId: GroupId,
-    _userId: UserId,
-    _metadata: Record<string, unknown>,
-  ): Promise<Member> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async setNotes(_groupId: GroupId, _userId: UserId, _input: SetMemberNotesInput): Promise<Member> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async assignRole(_groupId: GroupId, _userId: UserId, _roleId: RoleId): Promise<Member> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async removeRole(_groupId: GroupId, _userId: UserId, _roleId: RoleId): Promise<Member> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async overridePermission(
-    _groupId: GroupId,
-    _userId: UserId,
-    _permission: PermissionKey,
-    _grant: boolean,
-  ): Promise<MemberPermissionOverride> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async clearPermissionOverride(
-    _groupId: GroupId,
-    _userId: UserId,
-    _permission: PermissionKey,
-  ): Promise<void> {
-    throw NOT_IMPLEMENTED;
-  }
-
-  async listPermissionOverrides(
-    _groupId: GroupId,
-    _userId: UserId,
-  ): Promise<MemberPermissionOverride[]> {
-    throw NOT_IMPLEMENTED;
-  }
-}
-
-// =====================================================================
 // Audit
 // =====================================================================
 
@@ -249,6 +178,7 @@ export class WebhooksApi {
 export { JunjoError } from "./errors.js";
 export { GroupsApi } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
+export { MembersApi } from "./members.js";
 
 export type {
   AuditEntry,

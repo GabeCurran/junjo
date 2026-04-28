@@ -549,3 +549,56 @@ For an idempotent call (member already kicked, or in `left`/`invited` state) the
 | `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members/:userId`
+
+Fetches a single member by the dev's external user id. Scoped to the calling game.
+
+The response includes members in any status (`active`, `left`, `kicked`, `invited`); historical members carry the audit story and the dev decides client-side whether to display them.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The dev's external user id. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with the same `Member` wire format documented under [`POST /v1/invitations/:code/accept`](/api/invitations).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members`
+
+Lists the members of a group with cursor-based pagination. Returns rows in every status; the caller filters client-side. (V1 does not yet expose a `?status=` filter; that can land as an additive change.)
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | integer | 50 | 1 to 100. |
+| `cursor` | string | none | The id of the last item from the previous page; the route looks it up to position the next page. |
+
+### Response
+
+`200 OK` with `{ items: Member[], nextCursor: string \| null }`. Items are ordered by `joinedAt` descending, with `id` descending as a tiebreaker.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` out of range, or `cursor` does not point at a member of this group. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
