@@ -4,5 +4,6 @@
   "use-group": "useGroup",
   "use-can": "useCan",
   "use-members": "useMembers",
-  "use-invitations": "useInvitations"
+  "use-invitations": "useInvitations",
+  "use-audit-log": "useAuditLog"
 }

@@ -2132,3 +2132,59 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Preserves the door for future invitation rotation (e.g. a code refresh) where the underlying invitation row would keep its id.
 
 **Trade:** none significant. Both fields are unique within a group; `id` is the safer long-term choice.
+
+
+### Phase 7.4 `useAuditLog` does not subscribe to SSE in V1; live updates are refetch-driven
+
+**Decision:** unlike `useGroup` / `useMembers` / `useInvitations`, `useAuditLog` does NOT open an SSE subscription. The hook fetches on mount, paginates via `fetchMore`, and refreshes via `refetch`. Live updates are refetch-driven only (consumers poll, drive `refetch` from their own mutations, or wait for a future `audit.created` event).
+
+**Rationale:**
+- Audit entries do not have a corresponding `JunjoEvent` payload that carries the audit-entry id. The server writes the id and the canonical payload shape inside the same transaction that emits the event, but it does not propagate the id to the event. So the hook cannot synthesize new entries from `member.joined` / `role.changed` / etc. without diverging from the server's recorded entries (different ids, possibly different payload shapes).
+- The alternative was "subscribe to events and on each event arrival fire a small first-page refetch to pick up new entries." Rejected: every event triggers a network call, which is a lot of load for a panel that may be rendered on every admin view; and merging a fresh first page with a partial paginated list is racy with `fetchMore`.
+- A future server-side `audit.created` event in the `JunjoEvent` union would carry the full server-shape entry and let the hook subscribe like the others. That is a roadmap-V1.X widening; the V1 hook ships with the simpler fetch-only contract and explicitly documents the limitation.
+
+**Trade:** the audit log can lag the server until the next `refetch`. Acceptable: audit log is a low-frequency view (admin panels, debug tools); consumers who need fresh data can poll, refresh manually, or wire `refetch` into their own mutations. Polling and on-mutation-refetch stay correct after a future `audit.created` event lands.
+
+### `useAuditLog` paginates by ISO timestamp cursor stored as a string and converted to Date for the SDK
+
+**Decision:** the hook stores `nextCursor` as a string (the server's ISO 8601 `createdAt` of the last page item) and converts to `Date` via `new Date(cursor)` when calling `audit.list({ before })`. Pagination is timestamp-based, not opaque-cursor-based.
+
+**Rationale:**
+- The server's audit-list endpoint (per iteration 028) paginates by `?before=<ISO>` rather than an opaque cursor; `Page<AuditEntry>.nextCursor` is the ISO `createdAt` of the last item.
+- Storing the cursor as a string keeps the React state shape JSON-serializable (debuggable in React DevTools); converting to `Date` happens at the SDK boundary where the typed `before: Date` lives.
+- Mirrors the SDK's own pagination example in `apps/docs/pages/sdk/audit.mdx`.
+
+**Trade:** if two entries share `createdAt` to millisecond precision the page boundary may skip them. Documented as eventually-consistent; matches the underlying SDK / server contract.
+
+### `useAuditLog` actions filter uses a sort-stable cache key
+
+**Decision:** the hook computes its dependency key for `actions` as `actions.slice().sort().join("|")`. Two `actions` arrays with the same membership but different reference (or different order) produce the same key and do NOT trigger a refetch; only a real membership change does.
+
+**Rationale:**
+- Order is irrelevant to the server (the `?actions=...&actions=...` query is interpreted as a set / OR-filter), so reordering should not be a refetch trigger.
+- Reference inequality on each render is the common case when consumers pass `["member.invited"]` inline; treating that as a refetch trigger would hammer the server every render.
+- The string key feeds a `useMemo` whose only dep is the key itself; the actual `actions` array passes through a ref to the SDK call, so the latest reference still reaches the network.
+
+**Trade:** a consumer who really wanted to force a refetch by passing a fresh array reference would not get one. Acceptable: that is what `refetch` is for.
+
+### `useAuditLog` does no client-side filtering; the server is the only filter
+
+**Decision:** unlike `useMembers` (client filter on `status`) or `useInvitations` (two-layer server + client filter), `useAuditLog` forwards the `actions` filter to the server verbatim and applies no client-side narrowing.
+
+**Rationale:**
+- The server's `?actions=` filter is exclusive (returns only matching entries), unlike the inclusive `includeExpired` / `includeUsed` flags on invitations. There is nothing for a client filter to clean up.
+- Audit entries are append-only and the visible list is bounded by the cursor; there is no live event stream to apply rules to.
+- Keeping the hook as "fetch and display" minimizes complexity; consumers wanting more sophisticated filtering can post-process `entries` themselves.
+
+**Trade:** none significant. The simplicity is the win.
+
+### `useAuditLog` empty `actions: []` is treated as no filter
+
+**Decision:** an empty array (`opts.actions = []`) is omitted from the wire call (the SDK never sees an `actions` key in the options bag). The result is identical to passing no `actions` at all: the server returns entries in every action category.
+
+**Rationale:**
+- Mirrors the SDK and server convention: empty array means "no filter" everywhere in the audit stack.
+- Avoids a degenerate `?actions=` query string that the server's Zod schema would currently accept but might reject in a future widening.
+- Lets consumers conditionally pass an array (e.g. `actions: filter || []`) without surprise behavior on an empty selection.
+
+**Trade:** consumers wanting to differentiate "no filter" from "filter to empty list" cannot. The latter is conceptually nonsensical (the audit log entries exist; an empty filter would always return zero entries) so this is the right choice.

@@ -12,3 +12,5 @@ export type {
   UseInvitationsResult,
   UseInvitationsStatus,
 } from "./useInvitations.js";
+export { useAuditLog } from "./useAuditLog.js";
+export type { UseAuditLogOptions, UseAuditLogResult } from "./useAuditLog.js";
