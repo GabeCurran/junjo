@@ -2188,3 +2188,60 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Lets consumers conditionally pass an array (e.g. `actions: filter || []`) without surprise behavior on an empty selection.
 
 **Trade:** consumers wanting to differentiate "no filter" from "filter to empty list" cannot. The latter is conceptually nonsensical (the audit log entries exist; an empty filter would always return zero entries) so this is the right choice.
+
+
+### Phase 7.5 splits across iterations: 7.5a generic mutation primitive, 7.5b/c per-list optimistic helpers
+
+**Decision:** Phase 7.5 ("Optimistic updates") is split mirroring the Phase 5.1 a/b/c precedent. 7.5a (this iteration) ships a generic `useMutation` primitive following React Query's `mutationFn` + `onMutate` (returns context) + `onError` (uses context to roll back) pattern. 7.5b/c will fold those snapshot + rollback wirings into the existing list hooks (`useMembers`, `useInvitations`, `useGroup`) directly.
+
+**Rationale:**
+- A full optimistic-updates layer touching all four list hooks plus a mutation flow is too much for one iteration.
+- A generic primitive is independently useful (consumers wire optimistic snapshots themselves today) and is the foundation any per-list helper builds on.
+- The React Query mutation API is the dominant convention in the React ecosystem; consumers familiar with it pick `useMutation` up immediately. New mental model would not have helped.
+- Splitting also gives Gabe a chance to redirect after seeing the primitive land before the per-list helpers are built; the per-list shape (where snapshot lives, how SSE reconciles vs optimistic) has more design surface than the primitive itself.
+
+**Trade:** consumers who want a one-line `useKickMember(...)` helper today still need to wire the snapshot themselves. The doc page shows the full pattern (`useMembers` snapshot via `useState` mirror, `onMutate` returns it, `onError` restores).
+
+### `useMutation` follows React Query's mutation API
+
+**Decision:** `useMutation<TData, TError, TVariables, TContext>({ mutationFn, onMutate?, onSuccess?, onError?, onSettled? })` returning `{ mutate, mutateAsync, status, data, error, isIdle, isPending, isSuccess, isError, reset }`. `onMutate(vars)` returns a `TContext` that threads through to `onSuccess`, `onError`, and `onSettled`.
+
+**Rationale:**
+- React Query's mutation API has been the dominant React-mutation pattern for ~5 years; consumers know it; documentation is widely available; the optimistic-update pattern (snapshot in onMutate, rollback in onError) is well-understood.
+- A four-state status (`idle` / `pending` / `success` / `error`) maps cleanly onto common UI patterns (button disabled while pending, error banner on error, etc.) without consumers having to derive booleans themselves.
+- Generic `TContext` is the only sane way to type an optimistic-snapshot pattern: consumers know what they snapshotted; the hook just threads it through.
+
+**Trade:** introduces a learning curve for anyone who does not know React Query. Acceptable; the API is small and the docs page covers the full lifecycle.
+
+### `useMutation` state transitions reflect only the mutation's outcome, not callbacks'
+
+**Decision:** if `mutationFn` resolves successfully, the state is `success` regardless of what `onSuccess` / `onSettled` do. An error thrown inside `onSuccess` propagates from `mutateAsync` but does NOT flip the state to `error`. Errors thrown inside `onError` are caught (the original `mutationFn` error still propagates from `mutateAsync`).
+
+**Rationale:**
+- The mutation either happened on the server or it did not. That outcome is what `status` should reflect; a buggy `onSuccess` callback should not retroactively make a successful mutation appear failed.
+- React Query has the same contract.
+- Errors thrown inside `onError` would be a "rollback failed during rollback" scenario; suppressing them keeps the chain clean and lets the original error reach the consumer.
+
+**Trade:** if a consumer relies on `useMutation` to report callback failures, they need to handle that in the callback itself. Acceptable: the consumer wrote the callback, they know what to do with its errors.
+
+### `useMutation` uses `safeCall` helper to call lifecycle callbacks without breaking the chain
+
+**Decision:** internal `safeCall(callback)` helper wraps each callback invocation in try/catch and returns the captured error (or `undefined`). The four lifecycle callbacks (`onSuccess`, `onError`, `onSettled`, `onSettled`-after-error) all run through `safeCall`, then the captured errors propagate from `mutateAsync` in priority order.
+
+**Rationale:**
+- Without `safeCall`, an error in `onSuccess` would skip `onSettled` (the contract says `onSettled` always runs).
+- Avoids deeply nested try/catch/finally that would obscure the lifecycle.
+- The `safeCall` return value (the error or undefined) lets `mutateAsync` decide which error to throw: `successErr` first (the user's explicit success-handler error), then `settledErr` (the cleanup error).
+
+**Trade:** the implementation is slightly less direct than try/catch/finally. Worth it for the cleanliness of the four-phase lifecycle.
+
+### `useMutation` snapshots options at call time via optionsRef; callbacks always see the *latest* render
+
+**Decision:** the hook stores its options in a `useRef` that is updated on every render. When `mutateAsync` is called, it reads `optionsRef.current` once and uses that snapshot for the entire lifecycle. A re-render between `mutate` and the eventual `onSuccess` does NOT redirect the in-flight mutation to the new callbacks; the captured snapshot wins.
+
+**Rationale:**
+- Predictability: the same `mutate(vars)` call always runs the same callback chain it started with. No surprise where a re-render mid-flight redirects state to a fresh component.
+- React Query has the same behavior (callbacks captured at call time).
+- The `useCallback` for `mutate` and `mutateAsync` does NOT depend on the options, so they have stable identities across renders. This avoids breaking memoization in consumer components.
+
+**Trade:** if a consumer wants the latest callback to run on the most recent mutation, they must call `mutate` after the re-render. Almost never matters; mutations are fire-once-per-click in practice.

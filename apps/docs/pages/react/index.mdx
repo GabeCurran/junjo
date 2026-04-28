@@ -21,6 +21,7 @@ npm install @junjo/sdk @junjo/react
 | [`useMembers`](/react/use-members) | shipped (Phase 7.4). Paginated roster with status filter and live event updates. |
 | [`useInvitations`](/react/use-invitations) | shipped (Phase 7.4). Paginated invitation list with status filter and live event updates. |
 | [`useAuditLog`](/react/use-audit-log) | shipped (Phase 7.4). Paginated audit log with action filter; refetch-driven (no SSE subscription in V1). |
-| Optimistic updates | Land in Phase 7.5. |
+| [`useMutation`](/react/use-mutation) | shipped (Phase 7.5a). Generic mutation primitive with `onMutate -> context -> onError` rollback hooks for optimistic updates. |
+| Per-list optimistic helpers | Land in Phase 7.5b/c. Will fold the snapshot + rollback wiring into `useMembers` / `useInvitations` / `useGroup`. |
 
 The remaining hooks build on the same provider, so wiring `JunjoProvider` once at your app's root is the only setup step you need today.

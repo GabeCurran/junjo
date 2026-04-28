@@ -14,3 +14,9 @@ export type {
 } from "./useInvitations.js";
 export { useAuditLog } from "./useAuditLog.js";
 export type { UseAuditLogOptions, UseAuditLogResult } from "./useAuditLog.js";
+export { useMutation } from "./useMutation.js";
+export type {
+  MutationStatus,
+  UseMutationOptions,
+  UseMutationResult,
+} from "./useMutation.js";
