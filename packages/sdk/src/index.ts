@@ -368,11 +368,13 @@ export class AuditApi {
 // =====================================================================
 
 // Express-compatible request shape, kept structural so we don't take
-// a runtime dependency on @types/express.
+// a runtime dependency on @types/express. Uint8Array (not Buffer)
+// because the SDK ships for browser too; Buffer extends Uint8Array
+// so Node callers passing a Buffer still typecheck.
 interface ExpressLikeRequest {
   headers: Record<string, string | string[] | undefined>;
   body: unknown;
-  rawBody?: Buffer | string;
+  rawBody?: Uint8Array | string;
 }
 interface ExpressLikeResponse {
   status(code: number): ExpressLikeResponse;
@@ -395,7 +397,7 @@ export class WebhooksApi {
   // Lower-level: verify a raw body + signature header pair. Throws on
   // failure. Use this if you're not on Express.
   verify(
-    _rawBody: string | Buffer,
+    _rawBody: string | Uint8Array,
     _headers: WebhookSignatureHeaders,
     _opts?: { tolerance?: number },
   ): JunjoEvent {
