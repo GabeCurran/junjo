@@ -1932,3 +1932,49 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the verify gate now installs jsdom + @testing-library/react on every fresh clone. Acceptable; the install completes in one digit seconds and the alternative (no React tests) defers a quality gate to morning review.
 
+
+### Phase 7.2 `useGroup` filters the initial roster to active members
+
+**Decision:** `useGroup(groupId)` returns only members whose `status === "active"`. Members with status `left`, `kicked`, or `invited` are filtered out of the initial fetch and never enter `members`. `member.left` events remove from the list; `member.joined` events add to it (and the server-emitted `event.member` always carries `status: "active"`).
+
+**Rationale:**
+- The hook's name is `useGroup`. The dominant consumer pattern is a roster panel that lists "people in the group right now," not a history view; serving `left`/`kicked` members would force every consumer to add a status filter at render time and would surprise readers who expect `members` to mean "current members."
+- The SDK's `members.list(groupId)` does not filter by status (per the iteration 015 decision: lists return rows in every status, no implicit `active` filter). Without client-side filtering in this hook, a member who left would still appear in the React tree until the next manual refetch.
+- The two SSE events the hook subscribes to (`member.joined` / `member.left`) describe transitions, not status snapshots. Treating them as roster mutations rather than status edits keeps the application semantics simple: joined => append, left => remove. No UI logic needs to inspect `member.status`.
+- A future consumer that needs the full status taxonomy (e.g., a "left this month" panel) is better served by a separate hook (`useMembers` is on the Phase 7.4 roadmap with explicit pagination, where a `status` filter belongs).
+
+**Trade:** an "invited" member who has not yet accepted will not appear in the roster. That matches the user-facing meaning of "invited" (not yet a member). Devs who need a "pending invitations" view should reach for the (Phase 7.4) `useInvitations` hook instead.
+
+### `useGroup` returns `Error | null` rather than `JunjoError | null`
+
+**Decision:** the `error` field on `UseGroupResult` is typed as `Error | null`, not `JunjoError | null`. Both fetch errors (which are `JunjoError`s thrown by the SDK) and streaming errors (which arrive via the subscription's `onError` callback as plain `Error`s) flow into the same field. Consumers narrow with `instanceof JunjoError` if they need the typed `code`, `status`, and `message`.
+
+**Rationale:**
+- `Subscription.onError` in `@junjo/sdk` is typed as `(err: Error) => void` (network drops, malformed-frame parse failures, JSON parse failures). Forcing the field to `JunjoError` would either drop information from those non-JunjoError errors or force an awkward wrap.
+- A single `error` field with a stable shape lets consumers render an error banner without branching on which subsystem failed. Consumers who care about the SDK's structured error envelope still get it via `instanceof`.
+- This matches React Query / SWR's convention (`error` typed at the upcast level, with provider-specific narrowing left to the consumer).
+
+**Trade:** TypeScript users who want `error.code` must narrow first. The instanceof check is a single line; acceptable.
+
+### `useGroup` keeps the snapshot intact when a streaming error fires
+
+**Decision:** when the subscription's `onError` fires (network drop, server-side stream close, mid-stream parse failure), the hook sets `error` but leaves `group` and `members` unchanged. The snapshot from the most recent successful fetch stays visible to the consumer. Calling `refetch` clears `error` and reopens the stream.
+
+**Rationale:**
+- The snapshot is still useful: it represents the state at the last fetch (or the last applied event before the stream broke). Clearing it would force every consumer to render an empty state on a transient drop, which is a worse UX than "the data you saw a moment ago plus a banner saying live updates have stopped."
+- The hook does not auto-reconnect (per the V1 SDK rule: `groups.subscribe` is a one-shot stream). Auto-reconnect with replay would require server-side cursor support that V1 does not have. Surfacing `error` puts the recovery decision in the consumer's hands; calling `refetch` is the documented path.
+- A separate "stream-only error" channel was considered (e.g., `streamError` distinct from `error`) but rejected because the recovery action is identical (call `refetch`) and a single field is simpler to consume.
+
+**Trade:** a consumer that wants to distinguish "stream broke" from "fetch broke" must keep its own bit of state derived from the prior `error` value. Acceptable; the typical UI shows the same banner either way.
+
+### `useGroup` uses a generation counter to discard stale fetches
+
+**Decision:** the hook holds a `useRef<number>` generation counter that increments on every fetch entry (initial mount and every `refetch`). When a fetch resolves, the result is dispatched only if its generation matches the current ref value. Otherwise the result is dropped silently.
+
+**Rationale:**
+- Three concurrency hazards exist without it: (1) mount fetch races with a `groupId` change that triggers a second fetch; (2) two `refetch` calls fired in quick succession resolve out of order; (3) StrictMode double-mount in development overlaps two fetches.
+- The pattern is established (it is the standard "abort-by-id" trick used widely in React data hooks) and adds ~3 lines.
+- It works alongside the unmount cancellation flag rather than replacing it: the unmount flag prevents post-unmount dispatches; the generation counter prevents stale dispatches across overlapping fetches within a single mount.
+
+**Trade:** a refetch that resolves after a `groupId` change is silently dropped. The user may briefly see stale data for the new group until the new fetch resolves. Acceptable; the alternative (cancellation via AbortSignal threaded through `groups.get` and `members.list`) would require widening the SDK signatures, which is not a V1 priority.
+

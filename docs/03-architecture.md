@@ -186,10 +186,11 @@ function GuildPanel({ groupId }) {
 
 The `packages/react/src/` tree:
 
-- `index.ts` - public exports. Re-exports `JunjoProvider`, `JunjoProviderProps`, and `useJunjo`. Future hooks (`useGroup`, `useCan`, etc.) land here as they ship.
+- `index.ts` - public exports. Re-exports `JunjoProvider`, `JunjoProviderProps`, `useJunjo`, `useGroup`, and `UseGroupResult`. Future hooks (`useCan`, etc.) land here as they ship.
 - `context.ts` - the module-private `JunjoContext` (a `React.Context<Junjo | null>`). Created with a `null` default so `useJunjo` can detect the "no provider in scope" case and throw a descriptive error rather than silently handing back a stub.
 - `JunjoProvider.tsx` - the provider component. Takes `{ client: Junjo, children }`; renders `<JunjoContext.Provider value={client}>`. Naming the prop `client` (not `value`) matches the convention set by Stripe's `<Elements stripe={...}>` and Apollo's `<ApolloProvider client={...}>`.
 - `useJunjo.ts` - the consumer hook. Reads from `JunjoContext` and throws when used outside a provider so descendants can rely on a non-null `Junjo` without their own null check.
+- `useGroup.ts` - snapshot + live-stream hook for a single group. Issues `groups.get` and `members.list` in parallel on mount, then opens an SSE subscription via `groups.subscribe` and applies `member.joined` / `member.left` / `role.changed` / `group.updated` / `group.deleted` events to local state via a `useReducer`. Filters the initial roster to active members (status `"active"`); the rationale is that a roster panel is the dominant consumer pattern and members in non-active states should not appear in it. Returns `{ group, members, loading, error, refetch }`. A monotonic generation counter scopes fetch results so groupId changes and overlapping `refetch` calls cannot cross-contaminate. Streaming errors land in `error` without clearing the snapshot; the snapshot stays useful and the consumer can call `refetch` to reset. Subscription cleanup handles the case where the component unmounts before `subscribe` resolves: a cancellation flag closes the subscription on resolution.
 
 The package depends on `@junjo/sdk` (regular dep, for the `Junjo` type) and declares `react` (^18 || ^19) as a peer dep. Tests run under Vitest with `environment: "jsdom"` and `@testing-library/react`; the vitest config (`packages/react/vitest.config.ts`) sets `esbuild.jsx: "automatic"` so `.tsx` test files transpile under the same JSX runtime as the source.
 

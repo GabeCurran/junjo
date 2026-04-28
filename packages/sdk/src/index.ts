@@ -117,6 +117,7 @@ export class Junjo {
 export { AuditApi } from "./audit.js";
 export { JunjoError } from "./errors.js";
 export { GroupsApi } from "./groups.js";
+export type { SubscribeOptions, Subscription } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
 export { MembersApi } from "./members.js";
 export { RolesApi } from "./roles.js";
