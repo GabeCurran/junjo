@@ -59,8 +59,14 @@ export class GroupsApi {
     return deserializeGroup(wire);
   }
 
-  async get(_id: GroupId): Promise<Group | null> {
-    throw NOT_IMPLEMENTED;
+  async get(id: GroupId): Promise<Group | null> {
+    try {
+      const wire = await this.http.get<WireGroup>(`/v1/groups/${encodeURIComponent(id)}`);
+      return deserializeGroup(wire);
+    } catch (err) {
+      if (err instanceof JunjoError && err.code === "not_found") return null;
+      throw err;
+    }
   }
 
   async update(_id: GroupId, _input: UpdateGroupInput): Promise<Group> {

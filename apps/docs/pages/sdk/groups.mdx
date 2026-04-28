@@ -43,6 +43,31 @@ group.softDeletedAt; // null
 
 - [`POST /v1/groups`](/api/groups) - the underlying HTTP route.
 
+## `get(id)` - shipped
+
+Fetches a single group by id. Returns `Group | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (group)` without a try/catch. Other errors (invalid API key, network failure, etc.) throw `JunjoError`.
+
+```ts
+const group = await junjo.groups.get("grp_xyz" as GroupId);
+if (!group) {
+  // not in this game, or soft-deleted
+  return;
+}
+group.memberCount; // active member count, computed server-side
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+`404 not_found` is converted to `null`; it is not thrown.
+
+### See also
+
+- [`GET /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+
 ## Other methods (stubbed)
 
-`get`, `update`, `delete`, `restore`, `list`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.
+`update`, `delete`, `restore`, `list`, the invitation helpers, the relationship helpers, and `subscribe` all exist on the type surface today but throw `JunjoError("not_implemented")` until their phase ships. The shape is stable; they will fill in without breaking changes.

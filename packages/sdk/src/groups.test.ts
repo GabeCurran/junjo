@@ -1,4 +1,4 @@
-import type { RoleId } from "@junjo/shared";
+import type { GroupId, RoleId } from "@junjo/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
@@ -168,6 +168,80 @@ describe("groups.create", () => {
       fetch: fetchMock as unknown as typeof fetch,
     });
     await junjo.groups.create({ kind: "guild", name: "x" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("groups.get", () => {
+  it("GETs /v1/groups/:id with the auth header and returns a Group", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      expect(req.headers.get("content-type")).toBeNull();
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.get("grp_1" as GroupId);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(group).not.toBeNull();
+    if (!group) throw new Error("expected group");
+    expect(group.id).toBe("grp_1");
+    expect(group.gameId).toBe("game_1");
+    expect(group.createdAt).toBeInstanceOf(Date);
+    expect(group.updatedAt).toBeInstanceOf(Date);
+    expect(group.softDeletedAt).toBeNull();
+  });
+
+  it("returns null on 404 not_found", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "group not found" }, 404),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.get("grp_missing" as GroupId);
+    expect(group).toBeNull();
+  });
+
+  it("throws JunjoError on non-404 errors", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "invalid_api_key", status: 401, message: "unknown API key" }, 401),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(junjo.groups.get("grp_1" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "invalid_api_key",
+      status: 401,
+    });
+  });
+
+  it("encodes the group id in the URL", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash");
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.groups.get("has/slash" as GroupId);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

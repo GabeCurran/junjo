@@ -36,6 +36,19 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
 export function groupsRouter(prisma: PrismaClient): Hono {
   const r = new Hono();
 
+  r.get("/:id", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: group.id, status: "active" },
+    });
+    return c.json(serializeGroup(group, memberCount));
+  });
+
   r.post("/", async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = createGroupBody.safeParse(json);

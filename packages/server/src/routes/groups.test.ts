@@ -19,7 +19,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
 
   beforeEach(async () => {
     await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "AuditEntry", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
     const game = await createGame("Test Game", prisma);
     gameId = game.id;
@@ -135,5 +135,120 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
     expect(ja.gameId).toBe(gameId);
     expect(jb.gameId).toBe(otherGame.id);
     expect(ja.gameId).not.toBe(jb.gameId);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function getGroup(id: string, header: string = authHeader) {
+    return app.request(`/v1/groups/${id}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
+    return prisma.group.create({
+      data: {
+        gameId: overrides.gameId ?? gameId,
+        kind: "guild",
+        name: "Test Group",
+        visibility: "invite-only",
+        metadata: {},
+        softDeletedAt: overrides.softDeletedAt ?? null,
+      },
+    });
+  }
+
+  it("returns the group when it exists in the calling game", async () => {
+    const group = await seedGroup();
+    const res = await getGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: group.id,
+      gameId,
+      kind: "guild",
+      name: "Test Group",
+      visibility: "invite-only",
+      metadata: {},
+      defaultRoleId: null,
+      memberCount: 0,
+      softDeletedAt: null,
+    });
+    expect(typeof body.createdAt).toBe("string");
+    expect(new Date(body.createdAt as string).toString()).not.toBe("Invalid Date");
+  });
+
+  it("counts only active members in memberCount", async () => {
+    const group = await seedGroup();
+    const userA = await prisma.junjoUser.create({ data: {} });
+    const userB = await prisma.junjoUser.create({ data: {} });
+    const userC = await prisma.junjoUser.create({ data: {} });
+    await prisma.groupMember.createMany({
+      data: [
+        { groupId: group.id, junjoUserId: userA.id, status: "active" },
+        { groupId: group.id, junjoUserId: userB.id, status: "active" },
+        { groupId: group.id, junjoUserId: userC.id, status: "left" },
+      ],
+    });
+
+    const res = await getGroup(group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { memberCount: number };
+    expect(body.memberCount).toBe(2);
+  });
+
+  it("returns 404 not_found when the group does not exist", async () => {
+    const res = await getGroup("ckxxxxxxxxxxxxxxxxxxxxxxxx");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const group = await seedGroup({ softDeletedAt: new Date() });
+    const res = await getGroup(group.id);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group belongs to a different game", async () => {
+    const otherGame = await createGame("Other Game", prisma);
+    const group = await seedGroup({ gameId: otherGame.id });
+    const res = await getGroup(group.id);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("rejects requests without an API key", async () => {
+    const group = await seedGroup();
+    const res = await app.request(`/v1/groups/${group.id}`, { method: "GET" });
+    expect(res.status).toBe(401);
   });
 });

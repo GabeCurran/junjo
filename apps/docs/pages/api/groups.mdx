@@ -77,3 +77,40 @@ Every successful create writes one entry:
 | `targetId` | the new group id |
 | `actorUserId` | `null` (server-to-server creation; user actors arrive in later phases) |
 | `payload` | `{ kind, name, visibility, metadata, defaultRoleId }` |
+
+## `GET /v1/groups/:id`
+
+Fetches a single group by id. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Response
+
+`200 OK` with a `Group` body. `memberCount` is the number of `GroupMember` rows with `status = "active"` for this group, computed at request time.
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz",
+  "memberCount": 42,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T05:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
