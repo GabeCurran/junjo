@@ -209,7 +209,7 @@ export default async function GameAnalyticsPage(props: AnalyticsPageProps) {
         }
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto flex max-w-6xl flex-col gap-6">
+        <div className="mx-auto flex max-w-screen-2xl flex-col gap-6">
           <DateRangePicker query={query} />
           <Suspense key={suspenseKey} fallback={<AnalyticsBodySkeleton />}>
             <AnalyticsBody gameId={params.gameId} query={query} />

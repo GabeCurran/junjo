@@ -15,7 +15,7 @@ export default function PermissionsPage() {
         description="Resolve a (user, group, permission) triple to debug authorization."
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-5xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
+        <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
           <h2 className="text-lg font-semibold">Permission checks are game-scoped</h2>
           <p className="mt-2 text-sm text-muted-foreground">
             Permissions are defined and resolved per game. Open a game from the{" "}

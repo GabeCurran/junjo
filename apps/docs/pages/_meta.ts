@@ -1,0 +1,11 @@
+export default {
+  index: "Introduction",
+  "getting-started": "Getting started",
+  tutorial: "Tutorial",
+  "self-host": "Self-hosting",
+  sdk: "SDK",
+  react: "React",
+  roblox: "Roblox",
+  api: "API",
+  auth: "Auth",
+};

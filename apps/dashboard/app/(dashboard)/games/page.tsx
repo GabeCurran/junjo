@@ -47,7 +47,7 @@ export default function GamesPage() {
         actions={<CreateGameDialog />}
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-screen-2xl">
           <Suspense fallback={<GamesListSkeleton />}>
             <GamesList />
           </Suspense>

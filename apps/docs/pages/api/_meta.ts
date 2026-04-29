@@ -1,0 +1,14 @@
+export default {
+  index: "Overview",
+  groups: "Groups",
+  invitations: "Invitations",
+  members: "Members",
+  roles: "Roles",
+  permissions: "Permissions",
+  audit: "Audit",
+  events: "Events",
+  webhooks: "Webhooks",
+  "webhooks-discord": "Webhooks (Discord)",
+  "webhooks-slack": "Webhooks (Slack)",
+  admin: "Admin",
+};

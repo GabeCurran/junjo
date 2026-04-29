@@ -230,7 +230,7 @@ export default async function GameAuditPage(props: AuditPageProps) {
         }
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-screen-2xl">
           <Suspense key={suspenseKey} fallback={<AuditFeedSkeleton />}>
             <AuditBody gameId={params.gameId} query={query} />
           </Suspense>

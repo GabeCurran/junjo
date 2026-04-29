@@ -636,7 +636,7 @@ export default async function GroupDetailPage(props: GroupDetailPageProps) {
         }
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <div className="mx-auto max-w-screen-2xl space-y-6">
           <Suspense fallback={<GroupHeaderSkeleton />}>
             <GroupBody gameId={params.gameId} groupId={params.groupId} />
           </Suspense>

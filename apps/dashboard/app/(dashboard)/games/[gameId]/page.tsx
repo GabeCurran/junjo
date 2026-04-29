@@ -156,7 +156,7 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
         }
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-screen-2xl">
           <GameBody gameId={params.gameId} />
         </div>
       </main>

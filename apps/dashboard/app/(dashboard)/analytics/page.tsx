@@ -15,7 +15,7 @@ export default function AnalyticsPage() {
         description="Group churn, growth, member activity, and permission distributions."
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-5xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
+        <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
           <h2 className="text-lg font-semibold">Analytics surfaces are game-scoped</h2>
           <p className="mt-2 text-sm text-muted-foreground">
             Charts populate from each game's audit log and group / member tables. Open a game from

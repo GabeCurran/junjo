@@ -42,7 +42,7 @@ export default async function PermissionCheckPage(props: PermissionCheckPageProp
         }
       />
       <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-screen-xl">
           <PermissionCheckTester gameId={params.gameId} />
         </div>
       </main>

@@ -1469,6 +1469,83 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 }
 ```
 
+## `GET /v1/admin/games/:gameId/analytics/group-growth`
+
+Phase 12.3a. Returns time-bucketed cumulative active member counts across the supplied window for the top-N groups (by current active count) plus an "All others" aggregated series. Backs the dashboard's group growth chart (Phase 12.3b).
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | `to - 30d` | Inclusive lower bound on the time series. |
+| `to` | no | ISO 8601 | now | Exclusive upper bound on the time series. |
+| `topN` | no | integer 1-10 | 5 | How many top groups (by active count at `to`) to render as separate series. The remainder roll up into a single "All others" series. |
+
+Response:
+
+```ts
+interface WireAdminGroupGrowthSeries {
+  key: string;             // opaque, stable across renders ("group:<id>" or "all-others")
+  name: string;            // group.name, or "All others"
+  groupId: string | null;  // null for the aggregate series
+  data: number[];          // counts, one per bucket boundary, aligned 1:1 with `buckets`
+}
+
+interface WireAdminGroupGrowth {
+  from: string;                 // resolved ISO 8601 (post-defaults)
+  to: string;                   // resolved ISO 8601 (post-defaults)
+  bucketSizeMs: number;         // chosen by the handler from window length
+  buckets: string[];            // ISO 8601 timestamps for every bucket boundary
+  series: WireAdminGroupGrowthSeries[];
+}
+```
+
+Behavior:
+
+- **Bucket size auto-picked** from the window length: `<=1d` -> hourly, `<=7d` -> 6 hours, `<=30d` -> daily, `<=90d` -> 3 days, longer -> weekly. The handler caps total buckets at 100 and returns 400 if the chosen size would emit more (narrow the window or wait for finer-grained controls).
+- **"Active at T"** means a `GroupMember` row where `joinedAt <= T` AND (`leftAt IS NULL` OR `leftAt > T`). Status (`active` / `left` / `kicked` / `invited`) is intentionally NOT consulted: a member that was active at T but later kicked at T+1 still counts at T. The lifecycle taxonomy is captured by `joinedAt` / `leftAt` directly; reading status would double-filter and produce wrong historical counts.
+- **Top-N ranking** uses each group's active count at the window's `to` boundary (the rightmost bucket). Ties break by `groupId` ascending so the ranking is deterministic across requests.
+- **Soft-deleted groups are excluded** from both the ranking and the aggregate (matches the rest of the admin read surface).
+- **"All others" only ships when groups.length > topN.** Otherwise the response carries `groups.length` series and no aggregate row.
+- **Empty population** (a brand-new game with zero groups) returns 200 with `series: []`.
+- **404 only when the gameId itself does not exist.**
+- **Default window** when neither `from` nor `to` is supplied: the last 30 days. Matches the dashboard's default range.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` / `to`, `from >= to`, `topN` out of range, or a window + bucket combination that would emit more than 100 buckets. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-growth?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z&topN=5"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00.000Z",
+  "to": "2026-05-01T00:00:00.000Z",
+  "bucketSizeMs": 86400000,
+  "buckets": ["2026-04-01T00:00:00.000Z", "2026-04-02T00:00:00.000Z", "..."],
+  "series": [
+    { "key": "group:cm_grp_a", "name": "Knights", "groupId": "cm_grp_a", "data": [12, 14, 14, "..."] },
+    { "key": "group:cm_grp_b", "name": "Mages", "groupId": "cm_grp_b", "data": [8, 8, 9, "..."] },
+    { "key": "all-others", "name": "All others", "groupId": null, "data": [42, 47, 51, "..."] }
+  ]
+}
+```
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
