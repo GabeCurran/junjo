@@ -20,6 +20,7 @@ import {
 import { PermissionsMatrix } from "../../../../../../components/dashboard/permissions-matrix";
 import { RelationshipsTable } from "../../../../../../components/dashboard/relationships-table";
 import { RolesTable } from "../../../../../../components/dashboard/roles-table";
+import { SubGroupsTable } from "../../../../../../components/dashboard/sub-groups-table";
 import { Topbar } from "../../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -46,6 +47,7 @@ import {
   fetchAdminGamePermissions,
   fetchAdminGroup,
   fetchAdminGroupAudit,
+  fetchAdminGroupChildren,
   fetchAdminGroupMembers,
   fetchAdminGroupRelationships,
   fetchAdminGroupRoles,
@@ -457,6 +459,81 @@ async function RelationshipsBody({ gameId, groupId }: { gameId: string; groupId:
   return <RelationshipsTable relationships={relationships} gameId={gameId} groupId={groupId} />;
 }
 
+function SubGroupsSkeleton() {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="h-4 w-28 rounded bg-muted" />
+          <CardDescription className="h-3 w-72 rounded bg-muted" />
+        </CardHeader>
+        <CardContent>
+          <div className="h-16 rounded-md bg-muted" />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="h-4 w-32 rounded bg-muted" />
+          <CardDescription className="h-3 w-80 rounded bg-muted" />
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="flex items-center justify-between border-b border-border py-3 last:border-0"
+              >
+                <div className="h-4 w-1/3 rounded bg-muted" />
+                <div className="flex gap-3">
+                  <div className="h-6 w-12 rounded bg-muted" />
+                  <div className="h-4 w-16 rounded bg-muted" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+async function SubGroupsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
+  let group: AdminGroup;
+  let children: AdminGroup[];
+  try {
+    // Parallel fetches: the parent breadcrumb needs the current group's
+    // `parentGroupId` field while the children list needs the bare-array
+    // children endpoint. Both fetches share the 60s revalidate cache used
+    // by `<GroupBody>` above (the group fetch hits the cached value),
+    // so the cost is one extra round trip for the children only.
+    [group, children] = await Promise.all([
+      fetchAdminGroup(gameId, groupId),
+      fetchAdminGroupChildren(gameId, groupId),
+    ]);
+  } catch (err) {
+    if (err instanceof AdminDisabledError) {
+      return (
+        <ErrorCard
+          title="Cross-game access is disabled"
+          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load sub-groups."
+        />
+      );
+    }
+    // The children fetch shares the 404-collapse contract with the group
+    // fetch; when the group itself is missing, the parent <GroupBody>
+    // already calls notFound(). Reaching here means a transient backend
+    // error.
+    return (
+      <ErrorCard
+        title="Could not load sub-groups"
+        body={err instanceof Error ? err.message : "unknown error fetching sub-groups"}
+      />
+    );
+  }
+
+  return <SubGroupsTable group={group} childGroups={children} gameId={gameId} />;
+}
+
 async function PermissionsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
   let roles: AdminRole[];
   let catalog: AdminPermissionDef[];
@@ -576,6 +653,10 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
           ) : activeTab === "relationships" ? (
             <Suspense fallback={<RelationshipsSkeleton />}>
               <RelationshipsBody gameId={params.gameId} groupId={params.groupId} />
+            </Suspense>
+          ) : activeTab === "sub-groups" ? (
+            <Suspense fallback={<SubGroupsSkeleton />}>
+              <SubGroupsBody gameId={params.gameId} groupId={params.groupId} />
             </Suspense>
           ) : (
             <Suspense key={membersKey} fallback={<MembersSkeleton />}>

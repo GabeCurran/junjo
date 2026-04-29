@@ -3,9 +3,9 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Phase 11.6b + 11.6c + 11.7a-ii + 11.7b-ii: tab navigation for the group
-// detail page. Five tabs ship today (Members + Roles + Permissions +
-// Audit + Relationships); 11.7c will add Sub-groups. The active tab is
+// Phase 11.6b + 11.6c + 11.7a-ii + 11.7b-ii + 11.7c-ii: tab navigation
+// for the group detail page. Six tabs ship today (Members + Roles +
+// Permissions + Audit + Relationships + Sub-groups). The active tab is
 // selected via a URL `?tab=` parameter that the page lenient-parses;
 // switching is just an anchor `<Link>` so the browser's Back button
 // restores prior tab state without per-tab JS state.
@@ -21,6 +21,7 @@ export const GROUP_DETAIL_TABS = [
   "permissions",
   "audit",
   "relationships",
+  "sub-groups",
 ] as const;
 export type GroupDetailTab = (typeof GROUP_DETAIL_TABS)[number];
 
@@ -33,8 +34,7 @@ interface TabDef {
 }
 
 // `description` populates the topbar when this tab is active. Adding new
-// tabs in 11.7b / 11.7c means appending to this array plus extending the
-// union.
+// tabs means appending to this array plus extending the union above.
 const TAB_DEFS: readonly TabDef[] = [
   {
     value: "members",
@@ -63,6 +63,12 @@ const TAB_DEFS: readonly TabDef[] = [
     label: "Relationships",
     description:
       "Outgoing directed links from this group to others in the same game. Set, edit, or clear ally / rival / vassal relationships.",
+  },
+  {
+    value: "sub-groups",
+    label: "Sub-groups",
+    description:
+      "This group's place in the hierarchy. View and edit the parent assignment and direct children.",
   },
 ];
 

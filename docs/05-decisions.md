@@ -4072,4 +4072,64 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the children list response is slightly larger than necessary (one extra string field per row). Acceptable: the field is small, and reusing the type keeps the dashboard's TanStack Table column definitions consistent across pages.
 
+### Phase 11.7c-ii: Sub-groups tab uses two stacked cards rather than one combined card
+
+**Decision:** the Sub-groups tab renders as two `<Card>` components stacked vertically inside one tab body - "Parent group" (zero or one row) on top, "Direct children" (N rows) underneath. NOT one card with two visually-separated sections, and NOT two side-by-side cards.
+
+**Rationale:**
+- Two cards is the same primitive the rest of the dashboard already uses (the Game detail page in iter-063 stacks `<GameDetailHeader>` + `<ApiKeysSection>` Cards; the Group detail page header + tab content are themselves card-shaped surfaces). The Sub-groups tab matching that pattern keeps the visual rhythm consistent.
+- The two sections are functionally independent: the parent assignment is a 0-or-1 relationship; the children list is a 0-to-N relationship; their actions (Set/Edit/Clear parent vs Add/Remove child) operate on different rows. Co-locating them inside one Card with header actions for both would crowd the header.
+- Side-by-side cards would force a horizontal layout that doesn't fit on narrower viewports; the dashboard's mobile-defer stance from iter-058 doesn't preclude graceful narrow-viewport rendering.
+- Per-card empty states stay distinct: "No parent group" reads as a separate concept from "No children yet"; merging them into one card would muddle the prose.
+
+**Trade:** more vertical space than a combined card. Acceptable: groups with many children already need vertical space for the children table; the parent breadcrumb's empty state is small and doesn't dominate.
+
+### Phase 11.7c-ii: parent breadcrumb shows id only, no parent-name enrichment
+
+**Decision:** the Parent group card's content shows the parent's id in monospace plus an "Open parent" `<Link>`, but does NOT fetch the parent group's full `AdminGroup` to display its name / kind / member count.
+
+**Rationale:**
+- The iter-079 Relationships tab follows the same pattern: each relationship row shows just the `groupBId` in monospace, not an enriched group name. Operators click "Open" to see full details. Keeping the Sub-groups tab consistent with that precedent reduces cognitive load across tabs.
+- An additional fetch for the parent's `AdminGroup` would either run sequentially after the current group fetch (because we don't know `parentGroupId` until then) or get bundled into a `Promise.all` with the children fetch. Either way it's an extra round-trip when the parent is non-null.
+- The "Open parent" `<Link>` is one click to the parent's full detail page; that's a reasonable cost for an action operators rarely take (the audit log + Add child / Remove child are the primary mutations).
+- A future iteration can add the parent fetch as a fan-out enrichment if operators report the id-only display is too sparse. Reversible at one call site.
+
+**Trade:** operators looking at a Sub-groups tab can't see the parent's name without navigating. Acceptable: the parent's id is enough to identify it (the dashboard's groups browser carries the same id-only identity in many places); the Open link is one click away.
+
+### Phase 11.7c-ii: same `setParentAction` Server Action backs both Set parent and Add child dialogs
+
+**Decision:** `<SetParentDialog>` and `<AddChildDialog>` both submit to `setParentAction`. The form contracts differ (the first asks the user to fill in `parentGroupId`; the second fills in `targetGroupId`) but the wire body is identical: `{ targetGroupId, parentGroupId }`. The Server Action validates either way.
+
+**Rationale:**
+- The underlying `setAdminGroupParent` wire helper takes `(targetGroupId, parentGroupId)` regardless of which dialog the operator opened. Splitting into two Server Actions would either duplicate validation logic or introduce a layer of indirection (one calling the other) without changing the wire shape.
+- Form-level `<input type="hidden">` fields cleanly disambiguate which side is fixed: the Set-parent dialog hides `targetGroupId` and exposes `parentGroupId`; the Add-child dialog hides `parentGroupId` and exposes `targetGroupId`. The Server Action reads both from `formData` either way.
+- Mirrors the iter-074 Roles dialogs pattern where Create / Edit / Delete each have their own dialog component but share the same `lib/admin.ts` mutation helpers - the dialog is the UX boundary, the action is the validation + revalidate boundary, the wire helper is the network boundary.
+- Self-parent rejection happens client-side in the Server Action (`parentGroupId === targetGroupId`) so an operator pasting the same id twice gets a clearer error than the server's `parent_cycle` (which is the right error code for ancestor cycles, but reads as overly cryptic for the trivial self-parent case).
+
+**Trade:** the Server Action handles two semantically-distinct call sites (Set vs Add) under one entry point. Acceptable: the two-line difference (which field came from the form vs which was hidden) doesn't justify two action functions.
+
+### Phase 11.7c-ii: `clearParentAction` calls `setAdminGroupParent` with null, not a dedicated DELETE helper
+
+**Decision:** `clearParentAction(gameId, groupId, targetGroupId)` calls `setAdminGroupParent(gameId, targetGroupId, { parentGroupId: null })` - it reuses the same PUT endpoint as the set / add flow rather than a dedicated `DELETE .../parent` helper.
+
+**Rationale:**
+- The server's `setAdminGroupParentHandler` is idempotent on already-null `parentGroupId` (no DB write, no audit, no event). Re-clicking a stale "Clear" button is safe; there's no double-clear race.
+- The per-game route uses the exact same PUT-with-null pattern - there is no DELETE counterpart. Mirroring the per-game shape keeps the admin client's API consistent with the per-game SDK.
+- Adding a DELETE endpoint server-side would mean a second handler with identical semantics to the null-PUT path (write `group.parent.cleared` audit + dispatch `group.updated` event), which is duplicative.
+- The clear is an idempotent side-effect-free read in the no-op case, which is exactly what PUT semantics promise. DELETE would be wrong-shaped here because the parent assignment row is on the child group itself; nothing is being deleted.
+
+**Trade:** the Server Action wraps a PUT call with a null-coalesced body. Acceptable: ~3 LoC; the wrapping makes the call site read as "clear" rather than "set parent to null".
+
+### Phase 11.7c-ii: one `<ClearParentDialog>` component handles both Clear-parent and Remove-child flows
+
+**Decision:** `<ClearParentDialog>` is a single Client Component used by both the standalone "Clear parent" button (target = current group) and the per-row "Remove child" button (target = child group). The component takes `targetGroupId` plus customizable `title` / `description` / `summary` props for the per-flow copy.
+
+**Rationale:**
+- Both flows ultimately call `clearParentAction(gameId, groupId, targetGroupId)`; the only difference is which group is being mutated and what the operator sees in the dialog.
+- Mirrors the iter-079 `<ClearRelationshipDialog>` shape: one dialog, configurable copy, plain-async-driven via `useTransition` rather than `useFormState` (no form-level validation needed; the only "data" the dialog has is the implicit `targetGroupId` already known from props).
+- The `title` / `description` / `summary` props let the per-row Remove-child variant render a richer summary (the child's name + kind in a sub-card) while keeping the standalone Clear-parent variant terse. Same component, different fillings.
+- A dedicated `<RemoveChildDialog>` would be ~80 LoC of structural duplicate; reusing the dialog keeps the diff focused.
+
+**Trade:** `<ClearParentDialog>` knows about both flows via its prop shape. Acceptable: the `targetGroupId` parameter abstracts the actual difference; the title / description / summary are pure presentation; reversible if the flows ever diverge structurally.
+
 

@@ -216,24 +216,46 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `group.relationship.changed` JunjoEvent dispatch). Reuse
   `serializeGroupRelationship` + `WireGroupRelationship` from
   `routes/relationships.ts` directly.
-- 11.7b-ii (this iteration): group detail page grows a fifth tab
-  (Relationships) under the same `?tab=` navigation. The Server
-  Component fetches the outgoing directed links via
-  `fetchAdminGroupRelationships` and renders the `<RelationshipsTable>`
-  Client Component. Each row carries the other group id, type,
-  and `since` timestamp. The header "Add relationship" button
-  opens a `<SetRelationshipDialog>` that round-trips through a
-  `useFormState`-bound `setRelationshipAction`; per-row "Edit" reuses
-  the same dialog with the row's `groupBId` locked + `type` pre-filled
-  (PUT semantics on the underlying endpoint cover both
-  create-new and edit-type). Per-row "Clear" opens a
-  destructive-confirmation dialog with an optional `mutual`
-  checkbox so the operator can clear both directions in one shot;
-  the dialog calls `clearRelationshipAction` imperatively from
-  `onClick` (matches the iter-069 view-overrides precedent for plain
-  async actions invoked outside a `<form>`).
-- 11.7c-i, 11.7c-ii: Sub-groups tab (split into server-endpoints + UI
-  iterations).
+- 11.7b-ii: group detail page grows a fifth tab (Relationships) under
+  the same `?tab=` navigation. The Server Component fetches the
+  outgoing directed links via `fetchAdminGroupRelationships` and
+  renders the `<RelationshipsTable>` Client Component. Each row
+  carries the other group id, type, and `since` timestamp. The
+  header "Add relationship" button opens a `<SetRelationshipDialog>`
+  that round-trips through a `useFormState`-bound
+  `setRelationshipAction`; per-row "Edit" reuses the same dialog
+  with the row's `groupBId` locked + `type` pre-filled (PUT
+  semantics on the underlying endpoint cover both create-new and
+  edit-type). Per-row "Clear" opens a destructive-confirmation
+  dialog with an optional `mutual` checkbox so the operator can
+  clear both directions in one shot; the dialog calls
+  `clearRelationshipAction` imperatively from `onClick` (matches
+  the iter-069 view-overrides precedent for plain async actions
+  invoked outside a `<form>`).
+- 11.7c-i: cross-game admin sub-group hierarchy endpoints
+  (`PUT /v1/admin/games/:gameId/groups/:groupId/parent`,
+  `GET .../children`) shipped on the server. Mirror the per-game
+  Phase 4.2 routes byte-for-byte (idempotence on matching value,
+  cycle detection bounded at depth 100, audit `group.parent.set` /
+  `group.parent.cleared`, `group.updated` JunjoEvent dispatch on
+  the changed direction).
+- 11.7c-ii (this iteration): group detail page grows a sixth tab
+  (Sub-groups) under the same `?tab=` navigation, closing Phase
+  11.7. Server Component fetches the current group + direct
+  children in parallel (`fetchAdminGroup` + `fetchAdminGroupChildren`)
+  and renders the `<SubGroupsTable>` Client Component, which stacks
+  two cards: parent-breadcrumb (showing the parent's id + Open
+  link, or an empty state) and a hand-rolled children table (Name,
+  Kind, Members, Created, Open + Remove actions). Three dialogs
+  back the four operations: `<SetParentDialog>` (form-driven,
+  `useFormState`, used for both Set parent and Edit parent),
+  `<AddChildDialog>` (form-driven, same Server Action with
+  `parentGroupId` fixed and `targetGroupId` user-supplied), and
+  `<ClearParentDialog>` (destructive-confirmation, `useTransition`,
+  used for both Clear parent and per-row Remove child). Both
+  Server Actions (`setParentAction` form-driven, `clearParentAction`
+  plain-async) call the same `setAdminGroupParent` wire helper;
+  the clear path is just `setAdminGroupParent(target, { parentGroupId: null })`.
 - 11.8 - 11.9: audit viewer, permission tester (one section per
   iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

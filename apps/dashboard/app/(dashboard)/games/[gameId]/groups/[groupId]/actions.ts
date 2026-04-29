@@ -14,6 +14,7 @@ import {
   ADMIN_ROLE_COLOR_PATTERN,
   ADMIN_ROLE_NAME_MAX_LENGTH,
   AdminDisabledError,
+  type AdminGroup,
   type AdminGroupMember,
   type AdminGroupRelationship,
   type AdminInvitation,
@@ -28,6 +29,7 @@ import {
   kickAdminGroupMember,
   listAdminMemberPermissionOverrides,
   revokeAdminRolePermission,
+  setAdminGroupParent,
   setAdminGroupRelationship,
   setAdminMemberPermissionOverride,
   updateAdminGroupMember,
@@ -691,6 +693,91 @@ export async function clearRelationshipAction(
     await clearAdminGroupRelationship(gameId, groupId, groupBId, mutual);
     refreshGroup(gameId, groupId);
     return { ok: true, groupBId, mutual };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+// Phase 11.7c-ii Server Actions backing the Sub-groups tab. The set
+// action serves both the "Set parent of this group" dialog (mutating
+// `groupId` with a new `parentGroupId`) and the "Add child" dialog
+// (mutating a child group's `parentGroupId` to point at this group).
+// Both flows call the same `setAdminGroupParent` wire helper with
+// different `targetGroupId` and `parentGroupId` arguments; the form's
+// hidden `targetGroupId` field disambiguates which group is being
+// mutated. The clear action is plain-async (not `useFormState`-shaped)
+// because the per-row "Remove child" buttons and the standalone "Clear
+// parent" button both call it imperatively from `onClick`.
+
+export interface SetParentResult {
+  ok: boolean;
+  error?: string;
+  group?: AdminGroup;
+}
+
+// `useFormState`-shaped because both dialogs wire `<form action={...}>`.
+// The form supplies `gameId`, `groupId` (the current group context, used
+// to revalidate the page's cache regardless of which group was mutated),
+// `targetGroupId` (the group whose parent is actually being set), and
+// `parentGroupId` (or empty/missing to clear). Self-parent is rejected
+// client-side with a clearer error than the server's generic
+// `parent_cycle`.
+export async function setParentAction(
+  _prev: SetParentResult,
+  formData: FormData,
+): Promise<SetParentResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  const targetGroupId = readStringField(formData, "targetGroupId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (!targetGroupId) return { ok: false, error: "target group id is required" };
+
+  const parentRaw = formData.get("parentGroupId");
+  const parentTrimmed = typeof parentRaw === "string" ? parentRaw.trim() : "";
+  const parentGroupId: string | null = parentTrimmed.length === 0 ? null : parentTrimmed;
+  if (parentGroupId !== null && parentGroupId === targetGroupId) {
+    return { ok: false, error: "a group cannot be its own parent" };
+  }
+
+  try {
+    const group = await setAdminGroupParent(gameId, targetGroupId, { parentGroupId });
+    refreshGroup(gameId, groupId);
+    return { ok: true, group };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+export interface ClearParentResult {
+  ok: boolean;
+  error?: string;
+  // Echoed so the dialog's optimistic-removal logic can identify which
+  // target was cleared (the children list removes the row from local
+  // state before `revalidatePath` propagates).
+  targetGroupId?: string;
+}
+
+// Plain-call action invoked from per-row "Remove child" buttons and the
+// standalone "Clear parent" button on the parent breadcrumb. Mirrors the
+// `clearRelationshipAction` shape from iter-079: takes the `gameId` /
+// `groupId` (current group context for revalidate) plus the
+// `targetGroupId` (which group's parent to clear). Implemented as a
+// `setAdminGroupParent` call with `parentGroupId: null` rather than a
+// dedicated DELETE endpoint - the underlying PUT is idempotent on
+// already-null values, so re-clicking a stale "Clear" button is safe.
+export async function clearParentAction(
+  gameId: string,
+  groupId: string,
+  targetGroupId: string,
+): Promise<ClearParentResult> {
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (targetGroupId.length === 0) return { ok: false, error: "target group id is required" };
+  try {
+    await setAdminGroupParent(gameId, targetGroupId, { parentGroupId: null });
+    refreshGroup(gameId, groupId);
+    return { ok: true, targetGroupId };
   } catch (err) {
     return { ok: false, error: describeError(err) };
   }

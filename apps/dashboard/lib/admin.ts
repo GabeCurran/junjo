@@ -916,3 +916,57 @@ export function clearAdminGroupRelationship(
   const search = mutual ? "?mutual=true" : "";
   return adminDelete(`${path}${search}`, opts);
 }
+
+// Phase 11.7c-i wire helpers backing the dashboard's group detail Sub-
+// groups tab in 11.7c-ii. The two endpoints mirror the per-game `PUT
+// /v1/groups/:id/parent` and `GET /v1/groups/:id/children` semantics
+// byte-for-byte; the children list reuses `AdminGroup` (the per-row shape
+// is identical to what the groups browser already renders, so the
+// dashboard can lean on the same column conventions).
+
+export interface SetAdminGroupParentInput {
+  // The id of the new parent group, or `null` to clear. Required field;
+  // the server's body schema rejects an absent key. Self-parent
+  // (`parentGroupId === <target group id>`) is rejected with `400
+  // parent_cycle`; supplying an ancestor of the target group is also
+  // rejected after the server walks up the chain (capped at depth 100).
+  parentGroupId: string | null;
+}
+
+// PUT semantics: idempotent on matching `parentGroupId` (no DB write, no
+// audit, no event); on a value change the server writes a single
+// `group.parent.set` or `group.parent.cleared` audit entry and dispatches
+// a `group.updated` JunjoEvent (no dedicated `GroupParentChangedEvent`
+// in the union, mirroring the per-game route's choice). Always returns
+// the post-state group with freshly counted `memberCount`.
+export function setAdminGroupParent(
+  gameId: string,
+  groupId: string,
+  input: SetAdminGroupParentInput,
+  opts?: MutationOptions,
+): Promise<AdminGroup> {
+  return adminMutate<SetAdminGroupParentInput, AdminGroup>(
+    "PUT",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/parent`,
+    input,
+    opts,
+  );
+}
+
+// Returns direct children only (groups whose `parentGroupId` points at
+// this one). Grandchildren are NOT recursed; the operator drills into a
+// child's detail page to see its own sub-tree. Soft-deleted children are
+// excluded server-side. Sorted by `(createdAt desc, id desc)` to match
+// the groups browser's default ordering. Each item is a full `AdminGroup`
+// (same shape `fetchAdminGroupsForGame` returns) with a freshly counted
+// `memberCount`.
+export function fetchAdminGroupChildren(
+  gameId: string,
+  groupId: string,
+  opts?: FetchOptions,
+): Promise<AdminGroup[]> {
+  return adminFetch<AdminGroup[]>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/children`,
+    opts,
+  );
+}
