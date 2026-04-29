@@ -112,6 +112,33 @@ export const adminCreateInvitationBody = z.object({
     .optional(),
 });
 
+// Phase 11.6a-i: cross-game roles CRUD. Caps mirror the per-game `Role`
+// schema (`name` 1-64, hex color regex). Body shapes are structural
+// duplicates of `createRoleBody` / `updateRoleBody` from `routes/roles.schema.ts`
+// (per the iter-068 boundary stance: admin handlers don't import across the
+// cloud-only boundary; ~20 lines of duplicated schema is cheap).
+export const ADMIN_ROLE_NAME_MAX_LENGTH = 64;
+const ADMIN_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+const ADMIN_HEX_COLOR_MESSAGE = "must be a 7-character hex color (e.g. #ff5050)";
+
+export const adminCreateRoleBody = z.object({
+  name: z.string().min(1).max(ADMIN_ROLE_NAME_MAX_LENGTH),
+  priority: z.number().int(),
+  color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).optional(),
+  isDefault: z.boolean().optional(),
+});
+
+export const adminUpdateRoleBody = z
+  .object({
+    name: z.string().min(1).max(ADMIN_ROLE_NAME_MAX_LENGTH).optional(),
+    priority: z.number().int().optional(),
+    color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).nullable().optional(),
+    isDefault: z.boolean().optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: "at least one field is required",
+  });
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -125,3 +152,5 @@ export type AdminKickMemberBody = z.infer<typeof adminKickMemberBody>;
 export type AdminUpdateMemberBody = z.infer<typeof adminUpdateMemberBody>;
 export type AdminOverridePermissionBody = z.infer<typeof adminOverridePermissionBody>;
 export type AdminCreateInvitationBody = z.infer<typeof adminCreateInvitationBody>;
+export type AdminCreateRoleBody = z.infer<typeof adminCreateRoleBody>;
+export type AdminUpdateRoleBody = z.infer<typeof adminUpdateRoleBody>;

@@ -795,6 +795,146 @@ Errors:
 | `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game (cross-game scope). |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/groups/:groupId/roles
+
+Lists the roles in a group on the cross-game admin surface. Backs the dashboard's group detail Roles tab (Phase 11.6b). Returns a bare `WireAdminRole[]` (no pagination wrapper); roles are conventionally a small list (10s, not 1000s). Sorted by `(priority desc, id desc)` so the highest-authority roles appear first.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Response: `200 OK` with `WireAdminRole[]`:
+
+```ts
+interface WireAdminRole {
+  id: string;
+  groupId: string;
+  name: string;
+  priority: number;
+  color: string | null;        // 7-character hex (e.g. "#ff5050") or null
+  isDefault: boolean;
+  permissions: string[];       // sorted ascending; empty until grant calls land
+  createdAt: string;           // ISO 8601
+}
+```
+
+Behavior:
+
+- Permissions are batch-loaded via a single `RolePermission.findMany` so list rendering stays at two queries regardless of page size.
+- 404 collapses missing / cross-game / soft-deleted group into one envelope (existence not leaked through the path scope).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/roles
+
+Creates a role in a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/roles` body shape and audit shape exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Body (JSON):
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `name` | string | required | 1-64 characters; unique within the group (a duplicate returns `409 role_name_taken`). |
+| `priority` | int | required | Higher priority wins on tiebreaks. Negative values allowed. |
+| `color` | string \| omitted | `null` | 7-character hex color (e.g. `#ff5050`); validated against `^#[0-9a-fA-F]{6}$`. |
+| `isDefault` | boolean \| omitted | `false` | Per-role tag; the single canonical default for a group lives on `Group.defaultRoleId`. |
+
+Response: `201 Created` with the created `WireAdminRole`. The `permissions` array is empty by definition (Phase 11.6a-ii will own grant / revoke; until then create + the dashboard's Add-role dialog produce a fresh role with no permissions).
+
+Behavior:
+
+- Writes one `role.created` audit entry inside the same transaction as the create. `actorUserId` is `null`. `targetId` is the new role id. `payload` is `{ name, priority, color, isDefault }`.
+- Dispatches a `role.created` `JunjoEvent` after the transaction commits so SSE subscribers and webhook endpoints see the same event a per-game-key create would emit (behavior parity with the per-game route).
+- 404 collapses missing / cross-game / soft-deleted group; 409 on duplicate `name`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing, malformed JSON, `name` empty / over 64 chars, `priority` not an integer, `color` failing the hex regex. |
+| `role_name_taken` | 409 | Another role in the same group already has that `name`. |
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PATCH /v1/admin/games/:gameId/roles/:roleId
+
+Updates a role on the cross-game admin surface. Mirrors the per-game `PATCH /v1/roles/:id` semantics exactly: partial body, per-field diff, no-op short-circuit, 409 on rename collision.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Body (JSON):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string \| omitted | 1-64 characters. Renaming to a name another role in the same group already has returns `409 role_name_taken`. |
+| `priority` | int \| omitted | Negative values allowed. |
+| `color` | string \| `null` \| omitted | 7-character hex; pass `null` to clear an existing color. |
+| `isDefault` | boolean \| omitted | Per-role tag. |
+
+Empty body returns `400 bad_request`.
+
+Response: `200 OK` with the updated `WireAdminRole` (with `permissions` populated from the current `RolePermission` rows).
+
+Behavior:
+
+- Per-field diff against the stored row. Only fields whose new value differs land in both the update and the audit `payload.before` / `payload.after`. A fully no-op PATCH (every supplied field equals the stored value) writes no audit entry, no DB row, returns the unchanged role, and does not bump `updatedAt`.
+- Audit action is `role.updated` with `payload: { before, after }` containing only the changed fields. `actorUserId` is `null`.
+- Does **not** dispatch a `JunjoEvent`. There is no `RoleUpdatedEvent` in the union (per VISION 5.1b: rename / priority / color edits are audit-only; only role assignment changes fire `role.changed`).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, malformed JSON, `name` empty / over 64 chars, `color` failing the hex regex. |
+| `role_name_taken` | 409 | Renaming to a name another role in the same group already has. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game (cross-game scope). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/roles/:roleId
+
+Deletes a role on the cross-game admin surface. Mirrors the per-game `DELETE /v1/roles/:id` semantics exactly: blocks on assigned members.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Response: `204 No Content` on success.
+
+Behavior:
+
+- Blocks if any `MemberRole` rows reference the role (returns `409 role_has_members`); the operator must reassign members first via the dashboard's row actions (Phase 11.5c-ii) or the per-game `members.removeRole` API.
+- On success, hard-deletes the row, writes a `role.deleted` audit entry with `payload: { name, priority, color, isDefault }` (full snapshot), invalidates the per-group permission cache, and dispatches a `role.deleted` `JunjoEvent`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `role_has_members` | 409 | One or more `MemberRole` rows reference the role. The row is preserved. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

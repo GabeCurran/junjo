@@ -10,6 +10,8 @@ import {
   createAdminApiKeyHandler,
   createAdminGameHandler,
   createAdminGroupInvitationHandler,
+  createAdminGroupRoleHandler,
+  deleteAdminRoleHandler,
   getAdminGameHandler,
   getAdminGroupHandler,
   getAdminStatsHandler,
@@ -17,6 +19,7 @@ import {
   listAdminApiKeysHandler,
   listAdminGamesHandler,
   listAdminGroupMembersHandler,
+  listAdminGroupRolesHandler,
   listAdminGroupsForGameHandler,
   listAdminMemberPermissionOverridesHandler,
   listRecentAuditHandler,
@@ -24,6 +27,7 @@ import {
   revokeAdminApiKeyHandler,
   setAdminMemberPermissionOverrideHandler,
   updateAdminGroupMemberHandler,
+  updateAdminRoleHandler,
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
@@ -182,6 +186,34 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/invitations",
     adminAuthMiddleware(opts.adminToken),
     createAdminGroupInvitationHandler(prisma, hub),
+  );
+  // Admin-token-gated roles CRUD (Phase 11.6a-i). Backs the dashboard's
+  // group detail Roles tab. Group-scoped list + create live under the
+  // group prefix; by-id update + delete live under `/admin/games/:gameId/roles/:roleId`
+  // (mirroring the per-game `/v1/groups/:id/roles` + `/v1/roles/:id`
+  // split). Create + delete take the event hub so SSE subscribers and
+  // webhook endpoints see the same `role.created` / `role.deleted`
+  // events a per-game-key call would emit; PATCH does NOT dispatch
+  // because there is no `RoleUpdatedEvent` in the JunjoEvent union.
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/roles",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupRolesHandler(prisma),
+  );
+  v1.post(
+    "/admin/games/:gameId/groups/:groupId/roles",
+    adminAuthMiddleware(opts.adminToken),
+    createAdminGroupRoleHandler(prisma, hub),
+  );
+  v1.patch(
+    "/admin/games/:gameId/roles/:roleId",
+    adminAuthMiddleware(opts.adminToken),
+    updateAdminRoleHandler(prisma),
+  );
+  v1.delete(
+    "/admin/games/:gameId/roles/:roleId",
+    adminAuthMiddleware(opts.adminToken),
+    deleteAdminRoleHandler(prisma, hub),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

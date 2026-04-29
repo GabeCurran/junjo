@@ -3619,3 +3619,58 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** about a dozen lines of duplicated validation logic in the Server Action that mirrors what the input attributes enforce. Acceptable - the alternative (trusting client-side validation) is a security mistake; the alternative (lifting validation into a shared library) is over-engineering for V1.
 
+### Phase 11.6 splits a-i / a-ii / b / c: server roles CRUD, then permissions, then dashboard tabs
+
+**Decision:** Phase 11.6 ("Group detail roles + permissions tabs") splits across four iterations. 11.6a-i (this iteration) ships the cross-game admin roles CRUD endpoints (list / create / update / delete). 11.6a-ii will ship the role permission grant / revoke endpoints + the per-game permission catalog endpoint. 11.6b will ship the dashboard Roles tab. 11.6c will ship the Permissions matrix tab.
+
+**Rationale:**
+- The two tabs (Roles + Permissions) plus the underlying admin endpoints (4 roles CRUD + 2 permission grant/revoke + 1 catalog list = 7 endpoints) is too much surface for one iteration. Bundling everything would produce a wide diff: schema, handlers, tests, two dashboard tabs, edit-in-place dialogs, the matrix component, the register-permission-key inline input, and Server Actions for every mutation.
+- The natural split is the same one that worked for 11.5: server admin endpoints (audit / event / wire-shape parity) ship first, dashboard UI ships after. Mirrors every prior 11.x precedent (11.1a/b, 11.2a/b, 11.3a/b/b-i/b-ii, 11.4a/b, 11.5a/b/c-i/c-ii/d-i/d-ii).
+- Splitting roles CRUD from permission grant/revoke matches the per-game route layout: per-game roles + permissions live in two separate phases of the original VISION (3.1 + 3.3) for the same reason - role lifecycle is a different concern from permission assignment.
+
+**Trade:** the Roles tab will land before the Permissions tab (which means a brief window where the dashboard's group detail page has a Roles tab populated by 11.6b but a stub Permissions tab waiting for 11.6c). Acceptable - 11.6b's Roles tab is independently useful and the partial state is documented in the README's "What ships when" table.
+
+### Phase 11.6a-i: admin roles CRUD endpoints mirror per-game route semantics byte-for-byte
+
+**Decision:** The four cross-game admin roles handlers (`listAdminGroupRolesHandler` / `createAdminGroupRoleHandler` / `updateAdminRoleHandler` / `deleteAdminRoleHandler`) mirror the per-game `routes/roles.ts` handlers exactly: same body shapes, same audit shapes, same idempotence rules, same 409 / 400 / 404 envelopes, same `JunjoEvent` dispatch (`role.created` on create, `role.deleted` on delete, no event on update because there is no `RoleUpdatedEvent` in the union per VISION 5.1b).
+
+**Rationale:**
+- Behavior parity is essential. SSE subscribers, webhook endpoints, audit log readers, and permission cache invalidation all have to fire the same way regardless of which surface invoked the mutation. Two parallel sets of audit actions (`role.created.admin` vs `role.created`) would force every consumer to handle both, doubling complexity for zero gain.
+- ~150 lines of duplicated handler code across the four endpoints is acceptable for byte-for-byte parity. The alternative (exporting per-game handlers and reusing them) would couple the cloud-only `routes/admin.ts` to the per-game `routes/roles.ts` and break the open-core boundary (admin handlers are stripped from a self-host build via `// @cloud-only`; per-game handlers are not).
+- Following the same precedent as 11.5c-i (kick / patch / override mutation handlers) and 11.5d-i (invitation create handler), where the admin counterparts mirror per-game routes byte-for-byte. Future operators reading audit logs or webhook payloads cannot tell whether a mutation came from a per-game key or the dashboard's admin token, which is a feature - the trust boundary is who can call the route, not what the route does.
+
+**Trade:** if the per-game route changes (e.g., a new audit field), the admin counterpart needs to follow. Acceptable - tests on both sides catch the drift; the admin route file imports nothing from the per-game route file, so the duplication is explicit at the source.
+
+### Phase 11.6a-i: `WireAdminRole` is a structural duplicate of the per-game `WireRole`
+
+**Decision:** A new `WireAdminRole` type ships in `routes/admin.ts` with the same eight fields as the per-game `WireRole` from `routes/roles.ts`: `{ id, groupId, name, priority, color, isDefault, permissions, createdAt }`. The dashboard's `lib/admin.ts` will mirror this byte-for-byte in 11.6b as `AdminRole`.
+
+**Rationale:**
+- Same cloud-only-boundary stance as 11.5c-i's `WireAdminMemberPermissionOverride` and the schema duplications. Admin handlers do not import across the boundary; ~10 lines of duplicated wire shape is cheaper than reaching into the per-game module and breaking a future self-host strip.
+- The dashboard's `AdminRole` type lives in the dashboard repo (per the iter-060 open-core boundary stance). Lifting types into `@junjo/shared` would force the OSS package to carry types with no value outside the proprietary dashboard.
+- A future iteration could refactor both types to share a definition in `@junjo/shared` if the boundary needs to relax; the duplication is intentional and reversible.
+
+**Trade:** if the per-game `WireRole` ever grows a field, three places need updating (per-game `WireRole`, admin `WireAdminRole`, dashboard `AdminRole`). Acceptable - tests on each surface catch drift; the duplication is explicit at the source and the diff is small per-place.
+
+### Phase 11.6a-i: only create + delete take the EventHub; update is audit-only
+
+**Decision:** `createAdminGroupRoleHandler(prisma, hub)` dispatches a `role.created` `JunjoEvent`. `deleteAdminRoleHandler(prisma, hub)` dispatches a `role.deleted` `JunjoEvent`. `updateAdminRoleHandler(prisma)` does NOT take the hub and does NOT dispatch an event - role rename / priority / color / isDefault edits are audit-only.
+
+**Rationale:**
+- Per VISION 5.1b, the `JunjoEvent` union has `role.created`, `role.deleted`, and `role.changed` (the last for member role assignment changes - per-member role grants / revokes, not role-entity edits) but no `RoleUpdatedEvent`. The per-game `updateRoleByIdHandler` follows the same rule: audit-only, no event.
+- Adding a `RoleUpdatedEvent` to the union would be a wire-shape change with cross-cutting impact (SDK deserialize, react useGroup reducer, every webhook subscriber). Out of scope for an admin-endpoint iteration.
+- Behavior parity again: the audit log captures the change; consumers who need to react to role rename / priority changes can read `audit.list` (per-game) or the dashboard's audit feed (cross-game).
+
+**Trade:** the dashboard's Roles tab (Phase 11.6b) cannot use SSE to live-update on role rename / priority / color edits - it has to refetch the roles list after each PATCH. Acceptable - the role list is small (10s of roles, not 1000s), refetching is cheap, and the dashboard already has a `router.refresh()` after every Server Action.
+
+### Phase 11.6a-i: tests live in standalone `admin.roles.test.ts`, not in `admin.test.ts`
+
+**Decision:** the 40 new server tests for the four roles CRUD endpoints live in a new file `packages/server/src/routes/admin.roles.test.ts`, not folded into the existing `admin.test.ts` (which is already 2500 lines).
+
+**Rationale:**
+- Mirrors the iter-068 `admin.rowActions.test.ts` and iter-070 `admin.invitations.test.ts` precedents. File-per-feature keeps git blame legible and load time low.
+- The four tests blocks (one per endpoint) share a `seedGroup` helper local to the file, so the file is self-contained without leaking helpers into the cross-feature `admin.test.ts`.
+- A future Phase 11.6a-ii will add a sibling `admin.permissions.test.ts` for the grant / revoke / catalog endpoints, mirroring the same pattern.
+
+**Trade:** four `describe` blocks with similar boilerplate (TRUNCATE list, `app.request` helper) repeats across files. Acceptable - the boilerplate is short, the alternative (one mega-file) is harder to navigate, and the cumulative test count (913 -> 953 with 40 new tests) is comfortably in the same territory.
+
