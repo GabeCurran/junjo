@@ -106,6 +106,14 @@
 }
 
 @layer base {
+  /* Fluid root font-size matches ../portfolio/app/globals.css. Tailwind
+   * sizes everything in rem (text, padding, gap, icon sizes), so bumping
+   * the html base proportionally scales the entire UI by ~25-31% over
+   * the default 16px. 18px floor at narrow viewports, 21px ceiling on
+   * wide ones; comfortable density on 1080p and up. */
+  html {
+    font-size: clamp(18px, 16px + 0.6vw, 21px);
+  }
   * {
     @apply border-border;
   }
