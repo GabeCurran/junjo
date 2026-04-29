@@ -1052,6 +1052,71 @@ export function fetchAdminGroupChildren(
   );
 }
 
+// Phase 12.2a wire shape mirroring `WireAdminGroupChurn` and
+// `WireAdminGroupChurnBin` from `packages/server/src/routes/admin.ts`. The
+// dashboard's group churn chart (Phase 12.2b) renders the bin counts as
+// bars and surfaces `totalGroupsInWindow` / `totalDeparturesInWindow` in
+// the card description. Bin labels are wire-stable copy the chart prints
+// verbatim; `minMs` / `maxMs` are forward-compat for tooltips that want
+// to display the exact boundary as a sentence.
+export interface AdminGroupChurnBin {
+  label: string;
+  // Lower bound in milliseconds (inclusive). `null` means "-infinity";
+  // always set on every bin except the first, where the meaning is "no
+  // lower bound".
+  minMs: number | null;
+  // Upper bound in milliseconds (exclusive). `null` means "+infinity";
+  // always set on every bin except the last, where the meaning is "no
+  // upper bound".
+  maxMs: number | null;
+  count: number;
+}
+
+export interface AdminGroupChurn {
+  // Echoes the supplied `from` / `to` query parameters verbatim, or
+  // `null` when the operator omitted them. Useful for the chart's card
+  // description so the operator can confirm what window the data came
+  // from.
+  from: string | null;
+  to: string | null;
+  // Population: number of non-soft-deleted groups whose `createdAt`
+  // falls within `[from, to)`. Counts every group, even those with zero
+  // departures, because the cohort definition is "groups created in the
+  // window", not "groups with churn in the window".
+  totalGroupsInWindow: number;
+  // Sample: total departures (kicked + left members) across every group
+  // in the cohort. Equals the sum of every bin's `count`.
+  totalDeparturesInWindow: number;
+  // Five wire-stable bins: `< 1h`, `1h - 1d`, `1d - 1w`, `1w - 1mo`,
+  // `1mo+`. Each bin is half-open `[minMs, maxMs)`; a tenure landing
+  // exactly on a boundary goes into the higher bin (lower bound is
+  // inclusive). Empty population returns 0 in every bin.
+  bins: AdminGroupChurnBin[];
+}
+
+export interface FetchAdminGroupChurnParams {
+  // ISO 8601 timestamps. Both bounds are optional; the dashboard always
+  // sends `from` (resolved from the date-range picker) and sometimes
+  // sends `to` (custom ranges only). Empty strings are dropped from the
+  // wire request so the server's `min(1)` Zod constraint does not 400
+  // on a stale URL.
+  from?: string;
+  to?: string;
+}
+
+export function fetchAdminGameGroupChurn(
+  gameId: string,
+  params: FetchAdminGroupChurnParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupChurn> {
+  const qs = new URLSearchParams();
+  if (params.from !== undefined && params.from.length > 0) qs.set("from", params.from);
+  if (params.to !== undefined && params.to.length > 0) qs.set("to", params.to);
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/group-churn`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupChurn>(search ? `${path}?${search}` : path, opts);
+}
+
 // Phase 11.9a-i wire shape mirroring `PermissionCheckResult` from
 // `@junjo/shared`. The admin endpoint reuses the per-game check route's
 // resolution logic byte-for-byte (same source taxonomy, same viaRoleId

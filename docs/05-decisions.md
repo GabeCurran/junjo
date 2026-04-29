@@ -4485,3 +4485,70 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Cumulative server test count: 1149 -> 1171 (+22).
 
 **Trade:** the test directory grows by one more file. Acceptable: the iter-068+ precedent shows this scales fine; the alternative (one mega-file) is worse.
+
+### Phase 12.2b: Tremor color tokens wired into Tailwind via the `--tremor-*` CSS-variable ladder
+
+**Decision:** the dashboard exposes Tremor's standard color token ladder (`--tremor-brand-*`, `--tremor-content-*`, `--tremor-background-*`, `--tremor-border`, `--tremor-ring`) as CSS variables in both `:root` (light) and `.dark` blocks of `app/globals.css`, and surfaces them through `tailwind.config.ts`'s `theme.extend.colors.tremor` and `theme.extend.colors["dark-tremor"]` namespaces resolving via `hsl(var(--tremor-...))`. Both the light and dark namespaces resolve through the same CSS variables; `next-themes` toggling `.dark` on the html element flips the variables, so a single set of Tailwind classnames (`text-tremor-content`, `border-tremor-border`, `bg-tremor-background`) follows the dashboard's theme.
+
+**Rationale:**
+- Without the `--tremor-*` variables, Tremor primitives render axis labels and tooltip text in the library's default sea-foam colors, which look out-of-place next to the dashboard's shadcn theme. The variables let chart text inherit the dashboard's existing muted / foreground / border tones.
+- The CSS-variable approach mirrors shadcn's pattern for `--background` / `--foreground` / etc.; theme switching is a one-class flip on `<html>`, and adding a third theme (e.g., a high-contrast variant) is one more block of variable redefinitions.
+- The `dark-tremor-*` Tailwind namespace is defined alongside the `tremor-*` namespace because Tremor's source actually emits classnames under both prefixes (the namespace toggles by parent state); both must resolve or the chart shows blank text.
+
+**Trade:** ~80 LoC of new CSS variables + Tailwind theme additions, doubled across light + dark and across both namespaces. Acceptable: the cost lands once and is paid for by every chart in 12.2 - 12.5.
+
+### Phase 12.2b: Tremor safelist for the chart's per-color classnames
+
+**Decision:** `tailwind.config.ts` grows a `safelist` array with six regex patterns covering Tailwind's full color palette across `bg-`, `text-`, `border-`, `ring-`, `stroke-`, and `fill-` utilities (plus `hover` / `ui-selected` variants on a subset). The patterns mirror Tremor's official Next.js install guide.
+
+**Rationale:**
+- Tremor's `<BarChart colors={["blue"]}>` prop computes Tailwind classnames at render time (e.g., `fill-blue-500`, `stroke-blue-500`, `text-blue-500` inside the SVG). Without a safelist, Tailwind's content scanner sees no source-text match and purges every Tremor-generated color class in production builds.
+- The chart renders in dev (no purge happens), so this only manifests as a "the chart has no color in production" bug - exactly the kind of late-discovery defect the safelist exists to prevent.
+- Variants are kept narrow (hover only where Tremor uses it) to avoid bloating the production CSS with unused state combinations like `2xl:focus-visible:dark:hover:bg-blue-500`.
+
+**Trade:** the safelist adds ~6 KB to production CSS (one row per palette entry across the six utilities). Acceptable: the alternative (hand-listing every classname Tremor might emit) is unmaintainable, and gzip compresses the repetitive patterns to a few hundred bytes on the wire.
+
+### Phase 12.2b: chart fetches game + churn data in parallel via `Promise.all`
+
+**Decision:** the `<AnalyticsBody>` Server Component runs `Promise.all([fetchAdminGame(gameId), fetchAdminGameGroupChurn(gameId, { from, to })])` rather than awaiting them sequentially.
+
+**Rationale:**
+- The two fetches are independent; the game fetch is needed for the 404-collapse + breadcrumb, and the churn fetch is needed for the chart. A sequential await would double the perceived latency for a page where the slower of the two already dominates.
+- The game fetch hits the same 60s revalidate cache the game detail page populates (operators arriving via the topbar's "Analytics" link have just resolved this game), so on cache hit the parallel call is effectively just the churn fetch.
+- A single `try / catch` covers both - on any error the body renders an `<ErrorCard>`. The `notFound()` substring-match handles the gameId-missing case; the dashboard does not need to differentiate "game missing" from "churn fetch failed" at the UX level (both render the not-found page or an error card, the operator's recovery is the same).
+
+**Trade:** one error message says "could not load analytics" rather than the more precise "could not load churn data" or "could not load game". Acceptable: the underlying error message is preserved verbatim from the wire response and gives the operator enough context to debug; the parallel-fetch latency win is worth the merged failure path.
+
+### Phase 12.2b: `<AnalyticsEmptyState>` only renders when both the cohort AND the chart are empty AND `JUNJO_DOCS_BASE_URL` is set
+
+**Decision:** the chart renders unconditionally (it has its own per-state empty copy when there are zero matching groups or zero departures); the page-level `<AnalyticsEmptyState>` (the Phase 12.1 chart-shell with the tutorial deep-link) only renders when `JUNJO_DOCS_BASE_URL` is set AND `totalGroupsInWindow === 0` AND `totalDeparturesInWindow === 0`.
+
+**Rationale:**
+- Three states matter: (a) operator has a populated chart - show the chart, don't distract with onboarding copy; (b) operator has data but the window happens to be empty (e.g., new game just created) - show the chart's per-state empty copy explaining the window, don't show a redundant "no data yet" callout; (c) operator has nothing yet - show the chart's per-state empty copy AND the tutorial deep-link, because this is the first-time user who would benefit from the tutorial.
+- Gating on `JUNJO_DOCS_BASE_URL` matters because the empty-state Card's call-to-action IS the tutorial link; without the env var, the Card collapses to a hint pointing at `/tutorial` on the dev's own docs deployment, which is less useful than the chart's own empty copy at the same scroll position.
+- The dual empty-state path keeps the chart's per-state empty messaging close to the chart (where the operator's eye is) and reserves the page-level empty state for the onboarding bookmark case (where the eye scans the whole page).
+
+**Trade:** the rendering logic is a three-way condition rather than a single boolean. Acceptable: the alternative (always render the empty state, hide the chart on empty data) loses the chart's contextual "no kicked or left members yet for groups created in this window" copy that distinguishes between the two empty branches.
+
+### Phase 12.2b: chart is a Client Component (`"use client"`) wrapping Tremor's BarChart
+
+**Decision:** `<GroupChurnChart>` is marked `"use client"`; the data flows in as a prop from the Server Component parent. The chart does not fetch on its own.
+
+**Rationale:**
+- Tremor's BarChart depends on Recharts (under `@tremor/react`'s hood), which uses `useState`, `useEffect`, and ResizeObserver - all client-only React features. Server-rendering would crash at the first hook call.
+- Keeping the fetch in the Server Component parent (`<AnalyticsBody>`) means the operator's network round-trip is dominated by Next.js's streaming render, not by an additional client-side fetch waterfall after hydration. The chart's first paint is also the first paint of the page body.
+- Pure-presentation Client Components are exactly the seam the App Router was designed for: data flows down, interactivity stays at the leaf.
+
+**Trade:** the chart's bundle weight is paid by every page view that loads the analytics route. Acceptable: Tremor's BarChart is the central UI of the analytics surface; a future tree-shake of unused Tremor exports can prune the bundle if profiling shows it dominates.
+
+### Phase 12.2b: `valueFormatter={formatCount}` renders Y-axis ticks with thousands separators
+
+**Decision:** the Tremor BarChart receives a `valueFormatter` prop wrapping `Intl.NumberFormat("en-US")` so a count of `1254` renders as `1,254` on the Y-axis, in tooltip values, and in the legend.
+
+**Rationale:**
+- The home page's stat tiles use `Intl.NumberFormat("en-US")` for `totalGroups` / `totalActiveMembers` etc. (per Phase 11.2b). The chart matches that convention so the operator scans across the dashboard with consistent numeric styling.
+- Without the formatter, Tremor renders raw integers; a 4-digit count looks unpolished next to thousands-separated counts elsewhere on the page.
+- `Intl.NumberFormat` is a Node 18+ / browser-native API (no third-party date or number library added).
+
+**Trade:** the dashboard is locale-pinned to `en-US`. Acceptable: this matches every other formatter in the dashboard; a future i18n pass can lift the locale to a single helper.
+

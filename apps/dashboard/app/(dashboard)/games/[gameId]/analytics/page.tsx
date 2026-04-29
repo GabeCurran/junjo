@@ -14,6 +14,7 @@ import {
   DateRangePicker,
   datetimeLocalToIso,
 } from "../../../../../components/analytics/date-range-picker";
+import { GroupChurnChart } from "../../../../../components/analytics/group-churn-chart";
 import { Topbar } from "../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -22,7 +23,13 @@ import {
   CardHeader,
   CardTitle,
 } from "../../../../../components/ui/card";
-import { AdminDisabledError, type AdminGame, fetchAdminGame } from "../../../../../lib/admin";
+import {
+  AdminDisabledError,
+  type AdminGame,
+  type AdminGroupChurn,
+  fetchAdminGame,
+  fetchAdminGameGroupChurn,
+} from "../../../../../lib/admin";
 import { getDocsBaseUrl } from "../../../../../lib/junjo";
 
 interface AnalyticsPageProps {
@@ -109,15 +116,29 @@ function AnalyticsBodySkeleton() {
   );
 }
 
-async function AnalyticsBody({ gameId }: { gameId: string }) {
+async function AnalyticsBody({
+  gameId,
+  query,
+}: {
+  gameId: string;
+  query: AnalyticsRangeQueryState;
+}) {
   // Resolve the game once, so a missing / cross-game / soft-deleted id
   // 404s the page rather than rendering an empty shell pointed at a game
   // that does not exist. The `fetchAdminGame` call hits the same 60s
   // revalidate cache the game detail page populates, so it is effectively
-  // free.
+  // free. Pair it with the churn fetch via `Promise.all` so the slower
+  // network leg dominates instead of the sum of both.
+  const fromIso = resolveRangeFrom(query);
+  const toIso = resolveRangeTo(query);
+
   let game: AdminGame;
+  let churn: AdminGroupChurn;
   try {
-    game = await fetchAdminGame(gameId);
+    [game, churn] = await Promise.all([
+      fetchAdminGame(gameId),
+      fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
+    ]);
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return (
@@ -132,26 +153,30 @@ async function AnalyticsBody({ gameId }: { gameId: string }) {
     }
     return (
       <ErrorCard
-        title="Could not load game"
-        body={err instanceof Error ? err.message : "unknown error fetching the game"}
+        title="Could not load analytics"
+        body={err instanceof Error ? err.message : "unknown error fetching analytics"}
       />
     );
   }
 
-  // The shell ships an unconditional empty state in 12.1 because no charts
-  // render yet; charts land in 12.2 - 12.5. Each chart will own its own
-  // empty state when its query returns zero rows for the selected window.
-  // Reading the docs base URL here (rather than in the empty-state
-  // component) keeps the empty state a pure presentation component and
-  // matches the iter-067 / 077 / 083 server-fetches / client-renders split.
+  // The chart renders unconditionally now (Phase 12.2b). The chart owns
+  // its own empty-state copy when the window has zero matching groups or
+  // zero departures; the page-level `<AnalyticsEmptyState>` only renders
+  // when the operator has not configured `JUNJO_DOCS_BASE_URL` AND the
+  // chart has nothing to show, which is the early-onboarding case where
+  // the tutorial deep-link is the most useful next step. Charts 12.3 -
+  // 12.5 will land alongside the churn chart in subsequent iterations.
   const docsBaseUrl = getDocsBaseUrl();
+  const showOnboardingHint =
+    docsBaseUrl !== null && churn.totalDeparturesInWindow === 0 && churn.totalGroupsInWindow === 0;
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
         Game <span className="font-mono">{game.name}</span> -{" "}
         <span className="font-mono text-[11px]">{game.id}</span>
       </p>
-      <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} />
+      <GroupChurnChart data={churn} />
+      {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
     </div>
   );
 }
@@ -184,7 +209,7 @@ export default function GameAnalyticsPage({ params, searchParams }: AnalyticsPag
         <div className="mx-auto flex max-w-6xl flex-col gap-6">
           <DateRangePicker query={query} />
           <Suspense key={suspenseKey} fallback={<AnalyticsBodySkeleton />}>
-            <AnalyticsBody gameId={params.gameId} />
+            <AnalyticsBody gameId={params.gameId} query={query} />
           </Suspense>
         </div>
       </main>

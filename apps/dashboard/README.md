@@ -309,7 +309,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `/permissions` placeholder updated to point operators at the per-
   game tester (since permissions are always game-scoped). Phase 11.9
   closes here.
-- 12.1 (this iteration): analytics shell + Tremor setup. Installs
+- 12.1: analytics shell + Tremor setup. Installs
   `@tremor/react` 3.18 (which brings Recharts 2.x as a transitive
   dep) and adds Tremor's content path to `tailwind.config.ts` so
   Tailwind does not purge Tremor classnames in production. The
@@ -321,17 +321,43 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   type="radio">` elements (matches the iter-075 native-checkbox a11y
   precedent). Custom range exposes two `<input type="datetime-local">`
   fields plus an Apply button; URL pushes use `router.replace(...,
-  { scroll: false })`. The page body renders an unconditional "No
-  data yet" empty state via `<AnalyticsEmptyState>`: chart-shaped
-  Card with a "Charts that land in 12.2 - 12.5" callout and (when
-  `JUNJO_DOCS_BASE_URL` is set) a deep-link to the 5-minute tutorial.
-  The top-level `/analytics` placeholder updates to a router pointing
-  operators at the Games list (analytics is per-game). Game detail
-  page topbar grows an "Analytics" link next to Permission check +
-  Audit log. Two server-side resolvers (`resolveRangeFrom`,
-  `resolveRangeTo`) ship in the page module ready for 12.2 - 12.5
-  to consume when individual charts land. Tremor's color tokens are
-  intentionally NOT wired into Tailwind in 12.1; the first chart
-  iteration owns that work.
-- 12.2 - 12.5: Tremor charts (group churn, growth, member activity
-  heatmap, role / permission distribution).
+  { scroll: false })`. The top-level `/analytics` placeholder updates
+  to a router pointing operators at the Games list (analytics is
+  per-game). Game detail page topbar grows an "Analytics" link next
+  to Permission check + Audit log. Two server-side resolvers
+  (`resolveRangeFrom`, `resolveRangeTo`) ship in the page module ready
+  for 12.2 - 12.5 to consume when individual charts land.
+- 12.2a: cross-game admin group-churn analytics endpoint
+  `GET /v1/admin/games/:gameId/analytics/group-churn?from=&to=` returns
+  the binned tenure histogram of departures (kicked + left members)
+  for groups created within `[from, to)`. Five wire-stable bins:
+  `< 1h`, `1h - 1d`, `1d - 1w`, `1w - 1mo`, `1mo+`. Window applies to
+  `Group.createdAt` per VISION's exact phrasing ("for groups created
+  in the date range"); a today-old group with a year-old departure
+  counts (cohort answer), but a year-old group with a today departure
+  does not.
+- 12.2b (this iteration): dashboard group churn chart consuming the
+  12.2a endpoint. Wires Tremor's color tokens into Tailwind via
+  `globals.css` CSS variables (mirroring shadcn's pattern: `--tremor-*`
+  in `:root` for light, redefined in `.dark` for dark mode) plus the
+  matching `tailwind.config.ts` color extensions and a Tremor-specific
+  safelist (the chart's `colors={["blue"]}` prop computes Tailwind
+  classnames at render time so `bg-blue-500`, `fill-blue-500` etc.
+  must escape Tailwind's purge). New `<GroupChurnChart>` Client
+  Component (`components/analytics/group-churn-chart.tsx`) renders a
+  Tremor `<BarChart>` with five bars (one per bin) plus a three-tile
+  summary header (window / groups in window / total departures). Empty
+  states: a group has no matching cohort -> "no groups were created
+  in this window"; cohort exists but no departures -> "no kicked or
+  left members yet"; populated -> chart renders. New `lib/admin.ts`
+  helpers (`fetchAdminGameGroupChurn`, `AdminGroupChurn`,
+  `AdminGroupChurnBin`, `FetchAdminGroupChurnParams`) mirror the
+  server's `WireAdminGroupChurn` shape byte-for-byte. The analytics
+  page rewrites `<AnalyticsBody>` to fetch the game + churn in
+  parallel via `Promise.all`, render the chart unconditionally, and
+  fall back to the page-level `<AnalyticsEmptyState>` (with the
+  tutorial deep-link) only when the operator has set
+  `JUNJO_DOCS_BASE_URL` AND both `totalGroupsInWindow` and
+  `totalDeparturesInWindow` are zero (early-onboarding case).
+- 12.3 - 12.5: remaining Tremor charts (growth over time, member
+  activity heatmap, role / permission distribution).
