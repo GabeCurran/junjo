@@ -91,6 +91,22 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   is a separate dialog. The page calls `notFound()` when the gameId is not
   resolvable, so the route returns Next.js's 404 page rather than a generic
   error card. Hand-vendored shadcn `Badge` primitive ships alongside.
-- 11.4 - 11.9: Group browser, group detail tabs, audit viewer, permission
-  tester (one section per iteration).
+- 11.4a: cross-game admin endpoint backing the group browser
+  (`GET /v1/admin/games/:gameId/groups` with q + kind + visibility filters,
+  createdAt / name / memberCount sort, offset pagination).
+- 11.4b (this iteration, closes Phase 11.4): groups page at
+  `(dashboard)/games/[gameId]/groups/page.tsx`. Server Component parses
+  `searchParams` into a typed `GroupsQueryState` (lenient: invalid values
+  fall through to defaults rather than 400) and forwards it to
+  `fetchAdminGroupsForGame`. The result is rendered by `<GroupsTable>`, a
+  Client Component built on TanStack Table v8 with server-driven sorting,
+  filtering, and pagination (the table is a presentation layer; URL state
+  is the source of truth). Search input has a 350ms debounce, filter
+  selects forward `kind` and `visibility` to the URL, sortable column
+  headers cycle desc -> asc -> desc on the three server-supported fields,
+  pagination has Previous / Next plus a page-size selector. Row click and
+  the "Open" affordance navigate to `/games/[gameId]/groups/[groupId]`
+  (which 404s today; Phase 11.5 fills it in).
+- 11.5 - 11.9: Group detail tabs, audit viewer, permission tester
+  (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

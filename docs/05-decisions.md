@@ -3222,3 +3222,59 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Full-text search (tsvector) would change the search semantics: word-boundary matching, stemming, and stop words. The dashboard's group browser is for an operator looking at exact game names; substring matching is what they expect, not lexeme matching.
 
 **Trade:** the search is O(matching-set-size) per request. For a hypothetical game with 50,000 groups in V1 the latency would be a few hundred ms even before in-memory sort. Acceptable: such a deployment would already be hitting the memberCount cap; the right tool is to filter first by `kind` / `visibility` (which use indexed equality) before falling back to free-text search.
+
+### Phase 11.4b: dashboard groups page is a Server Component with a Client Component for table interactions
+
+**Decision:** `app/(dashboard)/games/[gameId]/groups/page.tsx` is a Server Component that lenient-parses `searchParams` into a typed `GroupsQueryState` and forwards the resolved query to `fetchAdminGroupsForGame`. The result is rendered by `<GroupsTable>` (`components/dashboard/groups-table.tsx`), a Client Component that owns search input, filter selects, sortable headers, page-size selector, and Previous / Next buttons. The Client Component pushes URL state via `router.replace(..., { scroll: false })` and the App Router re-runs the Server Component on the new searchParams.
+
+**Rationale:**
+- Same Server-Component-fetches / Client-Component-interacts split the dashboard already uses for the games list (iter 062) and the game detail page (iter 063). The pattern is established; future iterations should not have to reverse-engineer it.
+- Server-side fetching keeps the admin token on the server (`lib/admin.ts` enforces this via `import "server-only"`). A Client Component fetcher would either need a route-handler proxy (more code, no benefit) or leak the token (security regression).
+- Lenient parsing matters because the URL is part of the dashboard's UX surface: operators share filtered URLs, deep-linked URLs come from the row's "Open" button, and a future deploy could change the sort allowlist. Strict parsing would force every consumer to keep their bookmarks fresh; lenient parsing is a one-line guarantee that no URL will ever blow up the page.
+
+**Trade:** every URL change is a server round-trip (no client-side caching of pages). Acceptable: the dashboard's audience is operators on fast machines on internal networks, and the 60s `revalidate` on the admin fetch means typical filter / sort flips hit the cache.
+
+### Phase 11.4b: TanStack Table v8 used purely as a column-definition + render-helper layer
+
+**Decision:** `<GroupsTable>` instantiates `useReactTable` with `manualSorting: true`, `manualFiltering: true`, `manualPagination: true`. TanStack's internal sorting / filtering / pagination state is disabled; URL state is the single source of truth. The library is used only for `ColumnDef[]` (one-source-of-truth column definitions) and `flexRender` (the helper that materializes header / cell nodes). `pageCount` is supplied so any TanStack-aware future feature (export-to-CSV via `table.getRowModel()`) still gets the right shape.
+
+**Rationale:**
+- VISION calls for TanStack Table by name; using it gives a recognizable abstraction the next iteration's group detail tabs can extend (member roster, audit log) without re-inventing column definitions.
+- Server-driven sorting / filtering / pagination is the right contract for the admin endpoint: the server owns the cap on memberCount sort, the case-insensitive search, and the offset semantics. A client-side TanStack store would either contradict the server (showing rows the server filtered out) or be unused.
+
+**Trade:** TanStack's internal-state niceties (multi-column sort, on-the-fly column visibility) all stay unused. Acceptable: V1's group browser ships with one sort key + two filters; richer interactions can switch to client-side TanStack state if that becomes the right tradeoff. Switching would be a state-management change inside `<GroupsTable>` only; the server route does not need to follow.
+
+### Phase 11.4b: filter / sort / page changes use `router.replace`, not `router.push`
+
+**Decision:** every URL update from `<GroupsTable>` calls `router.replace(target, { scroll: false })`. Search box debounce, filter select, sort header click, page-size change, and Previous / Next buttons all use `replace`.
+
+**Rationale:**
+- `replace` does not add a history entry. Operators tweaking filters expect Back to leave the page (return to the game detail page they came from), not to walk back through every keystroke.
+- `scroll: false` keeps the table position stable when the row set shifts under the operator. Default behavior would scroll-to-top on every URL change, which would be jarring on every filter tap.
+- Mirrors React Query / SWR / Stripe-dashboard URL-binding patterns where the URL is the source of truth for filter state but the back button stays a navigation primitive.
+
+**Trade:** an operator who wants a "go back to my previous filter" affordance does not get one. Acceptable: filter state is small and re-applying via the toolbar is one click per field; back-stack pollution would make the larger "leave the page" flow worse.
+
+### Phase 11.4b: search input has a 350ms debounce; URL is pushed only on idle
+
+**Decision:** the search `<Input>` is a controlled component bound to local React state. A `useEffect` watches the local value and pushes the URL after 350ms of typing inactivity. A `skipFirstEffectRef` guard suppresses the mount-time effect (URL already matches local state); an equality check (`searchValue === query.q`) skips the push when the operator's last keystroke landed on the same value the URL already has. A separate `useEffect([query.q])` resets the input when the URL changes from outside (operator hits Back).
+
+**Rationale:**
+- Without debouncing, typing "warriors" would fire 8 separate URL pushes -> 8 server fetches -> 8 React re-renders with skeleton flashes. 350ms is a sweet spot that feels responsive while collapsing typing into ~1 fetch per word.
+- Local state for the input keeps the cursor position stable across re-renders. Driving the input's value directly from `query.q` would force a controlled-input cycle through the URL on every keystroke.
+- The skip-first guard is essential: without it, every mount fires a redundant `router.replace` to the same URL, causing a no-op re-render and a skeleton flash.
+
+**Trade:** an operator who pastes a long search string and instantly hits Enter sees a 350ms delay before the URL updates. Acceptable: the debounce handler clears on unmount so the page does not push a stale URL after navigation. A future "submit on Enter" affordance can short-circuit the debounce; not in V1.
+
+### Phase 11.4b: kind filter dropdown is populated from the rows on the current page, not from a separate API
+
+**Decision:** `<GroupsTable>` accepts a `kindOptions: readonly string[]` prop populated by the server-side `GroupsBrowser` from `Array.from(new Set(page.items.map((g) => g.kind))).sort()`. The visibility filter, by contrast, is a closed enum baked into the component (`["", "public", "invite-only", "secret"]`).
+
+**Rationale:**
+- Kind is a free-text string in the schema; the server has no enum to enumerate. A separate `GET /v1/admin/games/:gameId/group-kinds` endpoint would add an admin endpoint with one consumer, and the round-trip cost would be paid on every page load.
+- Driving the dropdown from the current page's rows is a "show me what I am looking at" affordance: operators see kinds as they encounter them. The free-text URL `?kind=` parameter still works for kinds not in the dropdown (a deep-linked URL with an unusual kind value renders fine).
+- An empty `kindOptions` array hides the dropdown entirely (the toolbar layout collapses cleanly), which is the right rendering when the current page has no rows.
+
+**Trade:** an operator on page 4 may see a different kind list than an operator on page 1; the dropdown is a snapshot, not a catalog. Acceptable: the V1 group browser is for inspecting active groups, not building catalog UX. A future "all kinds in this game" endpoint can land additively if Phase 11.5+ exposes it for related work.
+
+

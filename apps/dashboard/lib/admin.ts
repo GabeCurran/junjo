@@ -198,3 +198,75 @@ export function revokeAdminApiKey(
     opts,
   );
 }
+
+// Phase 11.4a wire shapes mirrored byte-for-byte from
+// `packages/server/src/routes/admin.ts:WireAdminGroup` and `WireAdminGroupList`.
+// The dashboard's group browser drives every fetch through these helpers.
+
+export type AdminGroupVisibility = "public" | "invite-only" | "secret";
+export type AdminGroupSort = "createdAt" | "name" | "memberCount";
+export type AdminGroupOrder = "asc" | "desc";
+
+export const ADMIN_GROUP_VISIBILITIES: readonly AdminGroupVisibility[] = [
+  "public",
+  "invite-only",
+  "secret",
+];
+export const ADMIN_GROUP_SORTS: readonly AdminGroupSort[] = ["createdAt", "name", "memberCount"];
+export const ADMIN_GROUP_ORDERS: readonly AdminGroupOrder[] = ["asc", "desc"];
+// The route caps `limit` at 100; the dashboard never asks for more than this
+// even on its largest page-size selector. The cap mirrors the server-side
+// `listAdminGroupsQuery` schema.
+export const ADMIN_GROUPS_PAGE_SIZE_OPTIONS: readonly number[] = [10, 25, 50, 100];
+export const ADMIN_GROUPS_DEFAULT_PAGE_SIZE = 50;
+
+export interface AdminGroup {
+  id: string;
+  gameId: string;
+  kind: string;
+  name: string;
+  visibility: string;
+  metadata: Record<string, unknown>;
+  defaultRoleId: string | null;
+  parentGroupId: string | null;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminGroupList {
+  items: AdminGroup[];
+  total: number;
+  hasMore: boolean;
+}
+
+export interface FetchAdminGroupsParams {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  kind?: string;
+  visibility?: AdminGroupVisibility;
+  sort?: AdminGroupSort;
+  order?: AdminGroupOrder;
+}
+
+// `q`, `kind`, and `visibility` are dropped from the wire request when
+// undefined or empty so the server schema (which rejects empty strings) does
+// not 400 on a stale URL. Other params forward verbatim.
+export function fetchAdminGroupsForGame(
+  gameId: string,
+  params: FetchAdminGroupsParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupList> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(params.offset));
+  if (params.q !== undefined && params.q.length > 0) qs.set("q", params.q);
+  if (params.kind !== undefined && params.kind.length > 0) qs.set("kind", params.kind);
+  if (params.visibility !== undefined) qs.set("visibility", params.visibility);
+  if (params.sort !== undefined) qs.set("sort", params.sort);
+  if (params.order !== undefined) qs.set("order", params.order);
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupList>(search ? `${path}?${search}` : path, opts);
+}
