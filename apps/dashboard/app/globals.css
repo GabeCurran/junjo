@@ -121,4 +121,28 @@
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+
+  /* Theme-toggle animation. Every element fades its color-related
+   * properties (background, text, border, icon fill/stroke) over 200ms
+   * when the .dark class is added/removed by next-themes. Scoped to
+   * color properties only so existing transform/opacity transitions
+   * (drawer slides, hover lifts, etc.) keep their own durations.
+   * The next-themes provider has disableTransitionOnChange OFF in
+   * app/layout.tsx so this fires on the toggle. */
+  *,
+  *::before,
+  *::after {
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
+  }
+
+  /* Respect reduced-motion preference: skip the fade entirely. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0ms !important;
+    }
+  }
 }
