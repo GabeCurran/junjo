@@ -4,6 +4,7 @@
 // with `routes/admin.ts` per the existing route-module convention.
 
 import { z } from "zod";
+import { AUDIT_ACTIONS } from "./audit.schema.js";
 
 export const GAME_NAME_MAX_LENGTH = 200;
 
@@ -184,6 +185,43 @@ export const adminSetParentBody = z.object({
 // not import across the cloud-only boundary).
 export const ADMIN_MAX_PARENT_DEPTH = 100;
 
+// Phase 11.8a: cross-game per-game audit feed. Backs the dashboard's
+// game-wide audit log viewer (Phase 11.8b). Extends the per-group
+// `listAuditQuery` shape with three filters:
+//   - `since`: lower-bound (inclusive) timestamp; combined with `before`
+//     gives a date-range filter for the dashboard's date picker.
+//   - `actorUserId`: exact match on the stored `AuditEntry.actorUserId`
+//     (the internal `JunjoUser.id` for routes that resolved an actor;
+//     null for routes that wrote `actorUserId: null`). The filter is
+//     exact-match-only in V1; the dashboard surfaces the value from a
+//     prior row so operators don't need to know external/internal id
+//     mapping. Future iterations could add an external-id resolver.
+//   - `targetId`: exact match on the stored `AuditEntry.targetId`. The
+//     stored value depends on the route (some store external user id,
+//     some store member ids, some store role ids). Exact-match-only.
+// Caps mirror the existing `Invitation` user-id shape (255 chars). The
+// `actions[]` repeat semantics match the per-group route - it's
+// validated against the same `AUDIT_ACTIONS` const enum.
+export const ADMIN_AUDIT_ACTOR_ID_MAX_LENGTH = 255;
+export const ADMIN_AUDIT_TARGET_ID_MAX_LENGTH = 255;
+
+export const listAdminGameAuditQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  before: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "before must be an ISO 8601 date" })
+    .optional(),
+  since: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "since must be an ISO 8601 date" })
+    .optional(),
+  actions: z.array(z.enum(AUDIT_ACTIONS)).optional(),
+  actorUserId: z.string().min(1).max(ADMIN_AUDIT_ACTOR_ID_MAX_LENGTH).optional(),
+  targetId: z.string().min(1).max(ADMIN_AUDIT_TARGET_ID_MAX_LENGTH).optional(),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -203,3 +241,4 @@ export type AdminGrantPermissionBody = z.infer<typeof adminGrantPermissionBody>;
 export type AdminSetRelationshipBody = z.infer<typeof adminSetRelationshipBody>;
 export type AdminClearRelationshipQuery = z.infer<typeof adminClearRelationshipQuery>;
 export type AdminSetParentBody = z.infer<typeof adminSetParentBody>;
+export type ListAdminGameAuditQuery = z.infer<typeof listAdminGameAuditQuery>;

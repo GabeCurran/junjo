@@ -4133,3 +4133,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 **Trade:** `<ClearParentDialog>` knows about both flows via its prop shape. Acceptable: the `targetGroupId` parameter abstracts the actual difference; the title / description / summary are pure presentation; reversible if the flows ever diverge structurally.
 
 
+
+
+### Phase 11.8 splits a/b: server admin endpoint, then dashboard page with CSV export
+
+**Decision:** Phase 11.8 ("Game-wide audit log viewer") splits across iterations mirroring the established a/b precedent. 11.8a (this iteration) ships the cross-group server endpoint `GET /v1/admin/games/:gameId/audit` with the new `actorUserId` / `targetId` / `since` filters and tests + docs. 11.8b ships the dashboard page (`apps/dashboard/app/(dashboard)/games/[gameId]/audit/page.tsx`) consuming the endpoint plus the export-to-CSV button.
+
+**Rationale:**
+- Bundling the server endpoint with the dashboard table + filters + CSV export into one iteration would produce a wide-touching diff (server route + tests + UI components + URL state + CSV transformer). The natural seam is invisible API surface (this) vs visible UI (next).
+- Mirrors every prior 11.x precedent (11.2 / 11.3 / 11.4 / 11.5 / 11.6 / 11.7) and the broader 5.x / 7.5 a/b/c precedents.
+- Server endpoint is independently testable. The dashboard iteration that consumes it can focus purely on table rendering, filter UX, and the CSV transformer.
+
+**Trade:** the new endpoint has no consumer until 11.8b lands. Acceptable: tests cover it end-to-end; an operator could call it via curl immediately for ad-hoc audits.
+
+### Phase 11.8a: per-game audit endpoint INCLUDES soft-deleted-group entries (key behavior difference from per-group route)
+
+**Decision:** `GET /v1/admin/games/:gameId/audit` returns audit entries from ALL groups in the game, including soft-deleted ones. Each row carries `groupSoftDeleted: boolean` so the dashboard can mark them visually. This is the single behavior difference from the per-group `GET /v1/admin/games/:gameId/groups/:groupId/audit` route (Phase 11.7a-i), which 404s on soft-deleted groups.
+
+**Rationale:**
+- The audit log is the system of record for everything that ever happened. A `group.deleted` audit entry MUST be visible after the group is soft-deleted; otherwise the audit log silently elides the most important transition in the group's lifecycle.
+- The per-group route requires a live group (operators reach it from the group detail page; soft-deleted groups have no detail page). The per-game route is the surface for cross-group audit history, including history of groups that no longer exist.
+- Mirrors the iter-059 `/v1/admin/audit` cross-game recent feed precedent: that feed also includes soft-deleted-group entries with the same `groupSoftDeleted` flag. The per-game audit endpoint is conceptually "narrow that recent feed to one game and let me page through it".
+- The `groupSoftDeleted` flag lets the dashboard surface the lifecycle visually (e.g., strike-through the group name, append a "deleted" tag) without operator confusion.
+
+**Trade:** operators viewing the per-game audit feed see entries from groups that no longer appear in the groups browser. Acceptable: the `groupSoftDeleted` flag makes the lifecycle explicit; mirrors the home-page recent-activity feed which has shipped the same pattern since iter-060.
+
+### Phase 11.8a: `actorUserId` and `targetId` filters do exact-match on the stored value (no external-id resolution)
+
+**Decision:** the new `?actorUserId=` and `?targetId=` filters do exact-match on the raw stored `AuditEntry` field values. `actorUserId` is the internal `JunjoUser.id` (for routes that resolved an actor; null for routes that wrote `actorUserId: null`); the filter does NOT accept external user ids and resolve them to internal ids.
+
+**Rationale:**
+- The dashboard surfaces the actorUserId / targetId values from a prior row in the table (operators copy + paste from the row they want to filter on). Operators don't need to know external/internal id mapping; the filter's input is whatever appeared in a previous row.
+- An external-id resolver would require an `ExternalIdentity` lookup per request, plus disambiguation when the same external id resolves to different JunjoUsers across games. The route is per-game-scoped so the disambiguation case isn't a problem here, but the lookup adds complexity for a filter that the dashboard's natural workflow doesn't need.
+- `targetId` storage varies by route (sometimes external user id, sometimes member id, sometimes role id); a single "resolve external to internal" rule would be wrong half the time. Exact-match keeps the contract honest.
+- A future iteration can add a richer filter (`?actorExternalUserId=`) additively if operators report that copy-paste isn't enough.
+
+**Trade:** operators who only know an external user id need to look up the internal id first (or filter a different way - e.g., `?actions=member.invited&targetId=external_id` works because `member.invited` writes the external id as the target). Acceptable: the dashboard's UX is row-driven, not free-form-text-input-driven; the filter shape matches the surface it backs.
+
+### Phase 11.8a: wire shape reuses `WireAdminAuditEntry` from iter-059 instead of inventing a per-game shape
+
+**Decision:** the per-game audit endpoint returns `WireAdminAuditEntry` (the cross-game recent-audit shape from iter-059, including `gameId` + `gameName` + `groupId` + `groupName` + `groupSoftDeleted`) wrapped in a new `WireAdminGameAuditPage` page envelope (which adds `nextCursor` since the per-game endpoint is paginated and the cross-game home feed is not). NOT a new `WireAdminGameAuditEntry` shape that drops the redundant `gameId` / `gameName` fields.
+
+**Rationale:**
+- The dashboard already has a Server Component that parses `WireAdminAuditEntry` (the home page recent-activity feed); reusing the shape lets the same parser handle both feeds.
+- The dashboard ignores `gameId` / `gameName` on the per-game audit page (URL context already carries them). The wire-size overhead is ~50 bytes per row times ~50 rows per page = ~2.5 KB per page, which is negligible.
+- Inventing a parallel `WireAdminGameAuditEntry` would mean two near-identical shapes, two serializers, two test fixtures - all for the same cost as filtering two fields client-side.
+- Mirrors the iter-070 / iter-076 precedent of cross-importing pure helpers: the per-game audit handler reuses `serializeAdminAuditEntry` and `AdminAuditRow` from the same file directly.
+
+**Trade:** the wire carries `gameId` + `gameName` redundantly per row. Acceptable: ~negligible bytes; one less shape to maintain; one less serializer to keep in sync with future schema changes.
+
+### Phase 11.8a: `since` filter is inclusive, `before` filter is exclusive
+
+**Decision:** the new `?since=` query param is an inclusive lower-bound timestamp filter (`createdAt >= since`); the existing `?before=` query param remains an exclusive upper-bound (`createdAt < before`). Combined they form a half-open date range `[since, before)`.
+
+**Rationale:**
+- `before` is exclusive because it's the pagination cursor: passing the previous page's last `createdAt` value as `before` should exclude that entry (otherwise paging would show the same entry twice).
+- `since` is inclusive because it's a date-range filter, not a cursor: an operator picking "April 1" expects entries from April 1 to be included. The standard date-range convention is half-open `[since, before)` which matches typical "give me last week" intuitions.
+- Postgres `createdAt: { gte: since, lt: before }` is one Prisma filter object; the asymmetry is purely in the boundary semantics, not the query plan.
+- Documented in the API reference table so operators know exactly what they're filtering on.
+
+**Trade:** the asymmetry could surprise operators who expect both bounds to be inclusive. Acceptable: documented; matches the JavaScript / Python / SQL convention for date ranges ("between A and B" typically excludes B in pagination contexts).

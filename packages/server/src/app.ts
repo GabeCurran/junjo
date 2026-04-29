@@ -20,6 +20,7 @@ import {
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
+  listAdminGameAuditHandler,
   listAdminGamePermissionsHandler,
   listAdminGamesHandler,
   listAdminGroupAuditHandler,
@@ -261,6 +262,19 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/audit",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupAuditHandler(prisma),
+  );
+  // Admin-token-gated per-game audit feed (Phase 11.8a). Cross-group
+  // (every group in the game, including soft-deleted ones), with
+  // filters for `actions[]`, `actorUserId`, `targetId`, and a
+  // `since`/`before` date range. Timestamp-based pagination via
+  // `nextCursor`. Backs the dashboard's game-wide audit log viewer
+  // (Phase 11.8b). 404 only on missing gameId; soft-deleted groups
+  // are intentionally included since the audit log preserves history
+  // regardless of group lifecycle.
+  v1.get(
+    "/admin/games/:gameId/audit",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGameAuditHandler(prisma),
   );
   // Admin-token-gated per-group relationships (Phase 11.7b-i). Mirrors
   // the per-game `PUT/DELETE/GET /v1/groups/:a/relationships/:b` and

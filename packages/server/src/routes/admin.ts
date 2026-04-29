@@ -62,6 +62,7 @@ import {
   adminUpdateMemberBody,
   adminUpdateRoleBody,
   createGameBody,
+  listAdminGameAuditQuery,
   listAdminGamesQuery,
   listAdminGroupMembersQuery,
   listAdminGroupsQuery,
@@ -2182,6 +2183,127 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
 
     return c.json<{ items: WireAuditEntry[]; nextCursor: string | null }>({
       items: sliced.map(serializeAuditEntry),
+      nextCursor,
+    });
+  };
+}
+
+// Wire shape for the per-game audit feed (Phase 11.8a). Reuses
+// `WireAdminAuditEntry` from iter 059's cross-game recent-audit feed:
+// the dashboard's game-wide audit page renders entries across multiple
+// groups so it needs `groupId` + `groupName` + `groupSoftDeleted` per
+// row, and reusing the existing shape keeps the cross-game home feed
+// and the per-game audit page parsable by the same dashboard helper.
+// The page wrapper extends the cross-game shape with `nextCursor`:
+// the per-game feed is paginated (timestamp-based via `before`), the
+// cross-game home feed is not.
+export interface WireAdminGameAuditPage {
+  items: WireAdminAuditEntry[];
+  nextCursor: string | null;
+}
+
+// `GET /v1/admin/games/:gameId/audit` returns a timestamp-paginated
+// audit feed scoped to one game (across every group, including
+// soft-deleted groups). Backs the dashboard's game-wide audit log
+// viewer (Phase 11.8b).
+//
+// Filters (all optional, all combinable):
+//   - `limit`: 1-100, default 50 (matches the existing per-group +
+//     cross-game audit shapes).
+//   - `before` / `since`: ISO 8601 timestamps. Combined they form a
+//     date-range filter (`since <= createdAt < before`). Either or
+//     both may be omitted.
+//   - `actions[]`: repeats per filter value (`?actions=foo&actions=bar`),
+//     OR semantics, validated against `AUDIT_ACTIONS`.
+//   - `actorUserId`: exact match on the stored `AuditEntry.actorUserId`
+//     (the internal `JunjoUser.id`). The dashboard surfaces the value
+//     from a prior row; future iterations could add an external-id
+//     resolver.
+//   - `targetId`: exact match on the stored `AuditEntry.targetId`. The
+//     stored value depends on the route (sometimes external user id,
+//     sometimes member id, sometimes role id). Exact-match-only.
+//
+// Behavior:
+//   - Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps
+//     ordering stable when two rows share the same millisecond.
+//   - Soft-deleted-group entries ARE included; the audit log preserves
+//     history regardless of group lifecycle. Each row carries
+//     `groupSoftDeleted: boolean` so the dashboard can mark them
+//     visually. (This is the key behavior difference from the per-group
+//     `listAdminGroupAuditHandler` route, which 404s on soft-deleted
+//     groups.)
+//   - Returns `Page<WireAdminAuditEntry>` with `nextCursor` set to the
+//     ISO `createdAt` of the last item when more pages exist. Caller
+//     pages by passing `nextCursor` back as `before`.
+//   - 404 only when the gameId itself does not exist; never when the
+//     game has zero audit entries (returns 200 with `items: []`).
+//
+// Wire-format note: reuses `WireAdminAuditEntry` (the cross-game
+// recent-audit shape from iter 059, including `gameId` + `gameName`
+// for compatibility with the same dashboard helper used by the home
+// page activity feed). The dashboard ignores the `gameId` / `gameName`
+// fields since URL context already carries them.
+export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const parsed = listAdminGameAuditQuery.safeParse({
+      limit: c.req.query("limit"),
+      before: c.req.query("before"),
+      since: c.req.query("since"),
+      actions: c.req.queries("actions"),
+      actorUserId: c.req.query("actorUserId"),
+      targetId: c.req.query("targetId"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, before, since, actions, actorUserId, targetId } = parsed.data;
+
+    const createdAtFilter: Prisma.DateTimeFilter = {};
+    if (before) createdAtFilter.lt = new Date(before);
+    if (since) createdAtFilter.gte = new Date(since);
+
+    const where: Prisma.AuditEntryWhereInput = {
+      group: { gameId },
+      ...(before || since ? { createdAt: createdAtFilter } : {}),
+      ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
+      ...(actorUserId ? { actorUserId } : {}),
+      ...(targetId ? { targetId } : {}),
+    };
+
+    const rows = await prisma.auditEntry.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      include: {
+        group: {
+          select: {
+            name: true,
+            gameId: true,
+            softDeletedAt: true,
+            game: { select: { name: true } },
+          },
+        },
+      },
+    });
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.createdAt.toISOString() : null;
+
+    return c.json<WireAdminGameAuditPage>({
+      items: sliced.map(serializeAdminAuditEntry),
       nextCursor,
     });
   };
