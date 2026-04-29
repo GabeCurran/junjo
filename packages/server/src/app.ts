@@ -2,8 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { prisma as defaultPrisma } from "./db.js";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
+import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
+import { listUserGamesHandler } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
 import {
@@ -32,6 +34,12 @@ export interface CreateAppOptions {
     hub?: EventHub;
     heartbeatIntervalMs?: number;
   };
+  // Cloud-only admin token (Phase 10.2). Threaded in from `JUNJO_ADMIN_TOKEN`
+  // by the server entry point; tests pass a literal value. Routes gated by
+  // `adminAuthMiddleware` 401 every request when this is undefined, so a
+  // self-host setup that never configured one effectively disables those
+  // endpoints.
+  adminToken?: string;
 }
 
 // Builds a fresh Hono app per call so tests can boot one server per file
@@ -61,6 +69,15 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   // even though it would otherwise match `*`. Anyone with the code can
   // fetch the invitation preview the dev's frontend renders.
   v1.get("/invitations/:code", getInvitationByCodeHandler(prisma));
+  // Admin-token-gated cross-game endpoint (Phase 10.2). Registered before
+  // the per-game `apiKeyMiddleware` so the per-route admin middleware is
+  // the only auth check that runs; the apiKey middleware would otherwise
+  // match `*` and reject the request as a missing per-game key.
+  v1.get(
+    "/users/:junjoUserId/games",
+    adminAuthMiddleware(opts.adminToken),
+    listUserGamesHandler(prisma),
+  );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));

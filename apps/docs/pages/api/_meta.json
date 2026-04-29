@@ -9,5 +9,6 @@
   "events": "Events",
   "webhooks": "Webhooks",
   "webhooks-discord": "Webhooks (Discord)",
-  "webhooks-slack": "Webhooks (Slack)"
+  "webhooks-slack": "Webhooks (Slack)",
+  "admin": "Admin"
 }

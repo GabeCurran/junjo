@@ -1,0 +1,109 @@
+# Admin endpoints
+
+Server-wide endpoints that operate across the games on a single Junjo deployment. These are intentionally separate from the per-game API key surface that the rest of the API uses, and they ship as cloud-only features in the runtime sense (the dashboard is the primary consumer; self-hosted single-game deployments do not need them).
+
+The code is built and tested like every other route - "cloud-only" means a future self-host build can exclude these modules via a build flag, not that they are skipped today.
+
+## Authentication
+
+Admin endpoints check the `Authorization: Bearer <admin token>` header against the server-configured `JUNJO_ADMIN_TOKEN` env var. The check is a constant-time string comparison.
+
+This is a different auth scheme from the per-game API keys (`prefix.secret`). A per-game API key cannot be used to call an admin endpoint, and vice versa. The two middlewares run on disjoint route trees.
+
+When `JUNJO_ADMIN_TOKEN` is unset on the server, every request to an admin endpoint returns:
+
+```json
+{ "code": "invalid_admin_token", "status": 401, "message": "admin endpoints are disabled on this server" }
+```
+
+This is the right default for self-hosters with a single game who do not need cross-game visibility. Cloud / dashboard deployments set the env var to a long random string at deploy time.
+
+The error envelope on a wrong or missing token:
+
+```json
+{ "code": "invalid_admin_token", "status": 401, "message": "..." }
+```
+
+## `GET /v1/users/:junjoUserId/games`
+
+Returns every game the supplied `JunjoUser` has an `ExternalIdentity` row in, with the dev-supplied external user id and the count of active group memberships for that user in that game.
+
+Used by the dashboard to render a "this player is in N games on the platform" view across the games operated by a single tenant.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `junjoUserId` | string | The internal `JunjoUser.id` (a cuid). This is NOT a dev-supplied external user id; it is the cross-game identifier the server assigns when the user first authenticates against any game. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "junjoUserId": "user_clxxx...",
+  "games": [
+    {
+      "gameId": "game_clxxx...",
+      "externalUserId": "user_alpha",
+      "joinedGroupCount": 3
+    },
+    {
+      "gameId": "game_clyyy...",
+      "externalUserId": "abc-uuid-from-clerk",
+      "joinedGroupCount": 0
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `junjoUserId` | string | Echoed from the path. |
+| `games` | array | Each entry is one game the user has an `ExternalIdentity` in, sorted by `gameId` ascending. |
+| `games[].gameId` | string | The game's id. |
+| `games[].externalUserId` | string | The dev-supplied external id this user has within that game (e.g., the Clerk `sub`, the Supabase user UUID, the Roblox `UserId` rendered as a string). The same Junjo user can appear under different external ids across games. |
+| `games[].joinedGroupCount` | number | Active group memberships in this game. Excludes `left`, `kicked`, `invited` members; excludes soft-deleted groups. |
+
+### Behavior
+
+- A `junjoUserId` with no `ExternalIdentity` rows returns `200` with `games: []`. The route does not `404` because it cannot distinguish "user we have never seen" from "user known but no cross-game footprint yet" without leaking whether a given internal id has been recorded.
+- Games where the user has an identity but no active memberships are still listed (with `joinedGroupCount: 0`). The endpoint reports presence in the game's user pool, not just in its groups.
+- `joinedGroupCount` matches the rule used by the permission resolver and `Group.memberCount`: only `status: "active"` members in non-soft-deleted groups count. A user who left every group in a game still appears in `games[]` with `joinedGroupCount: 0` as long as their identity row exists.
+- Pagination is intentionally absent. A single Junjo user across more than a few hundred games is not a V1 concern; if it ever surfaces, this endpoint will gain pagination as an additive change (the response shape preserves the `games` array name).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  https://api.junjo.io/v1/users/user_clxxx0000000000000000000/games
+```
+
+## SDK
+
+Not part of the per-game `@junjo/sdk` surface. The dashboard calls this endpoint directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
+
+A dashboard-internal client typically looks like:
+
+```ts
+async function listUserGames(junjoUserId: string) {
+  const res = await fetch(`${process.env.JUNJO_BASE_URL}/v1/users/${encodeURIComponent(junjoUserId)}/games`, {
+    headers: { authorization: `Bearer ${process.env.JUNJO_ADMIN_TOKEN}` },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message ?? `admin lookup failed: ${res.status}`);
+  }
+  return res.json() as Promise<{
+    junjoUserId: string;
+    games: Array<{ gameId: string; externalUserId: string; joinedGroupCount: number }>;
+  }>;
+}
+```

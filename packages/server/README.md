@@ -38,6 +38,7 @@ The `postinstall` script runs `prisma generate` automatically after every `npm i
 | `PORT` | no | HTTP listen port. Defaults to `8787`. Must be a positive integer. |
 | `NODE_ENV` | no | One of `development`, `test`, `production`. Defaults to `development`. Controls the Prisma client globalThis cache (only enabled outside production). |
 | `JUNJO_BASE_URL` | no | Public base URL of this server. Used when building links (e.g., invitation share URLs). Optional during local dev. |
+| `JUNJO_ADMIN_TOKEN` | no | Server-wide bearer token that gates the cross-game admin endpoints (`GET /v1/users/:junjoUserId/games`, see [`apps/docs/pages/api/admin.mdx`](../../apps/docs/pages/api/admin.mdx)). When unset the admin endpoints return `401 invalid_admin_token` for every request, which is the right default for self-hosters with one game per server. Cloud / dashboard deployments set this to a long random string. The token is compared in constant time. |
 
 `loadEnv()` in `src/env.ts` validates every variable above through a Zod schema; missing or malformed values throw a single readable error at startup.
 

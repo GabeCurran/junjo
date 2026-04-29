@@ -34,4 +34,23 @@ describe("loadEnv", () => {
   it("rejects a non-numeric PORT", () => {
     expect(() => loadEnv({ DATABASE_URL: "postgres://x", PORT: "abc" })).toThrow();
   });
+
+  it("leaves JUNJO_ADMIN_TOKEN undefined when unset", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.JUNJO_ADMIN_TOKEN).toBeUndefined();
+  });
+
+  it("accepts a non-empty JUNJO_ADMIN_TOKEN", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      JUNJO_ADMIN_TOKEN: "supersecret-admin-token",
+    });
+    expect(env.JUNJO_ADMIN_TOKEN).toBe("supersecret-admin-token");
+  });
+
+  it("rejects an empty JUNJO_ADMIN_TOKEN", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", JUNJO_ADMIN_TOKEN: "" })).toThrow(
+      /JUNJO_ADMIN_TOKEN/,
+    );
+  });
 });

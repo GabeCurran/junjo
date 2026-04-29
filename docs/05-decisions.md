@@ -2718,3 +2718,81 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** one more test file in `packages/server/src`. Acceptable: matches the precedent of `softDelete.test.ts`, `apiKey.test.ts`, `errors.test.ts`, `permissionCache.test.ts` - module-scoped tests next to their module.
 
+### Phase 10.2: cross-game user query lives at `GET /v1/users/:junjoUserId/games`, gated by a separate admin token
+
+**Decision:** Phase 10.2 ships `GET /v1/users/:junjoUserId/games` returning `{ junjoUserId, games: [{ gameId, externalUserId, joinedGroupCount }] }`. The route is gated by a server-wide `JUNJO_ADMIN_TOKEN` env var (separate auth scheme from per-game API keys), checked by a new `adminAuthMiddleware` that constant-time-compares the presented Bearer token against the configured value. The admin route is registered in `app.ts` BEFORE the per-game `apiKeyMiddleware` so the per-route admin middleware is the only auth check that runs.
+
+**Rationale:**
+- VISION's Phase 10.2 spec calls for "an admin token (separate from per-game API keys; document a single `JUNJO_ADMIN_TOKEN` env var on the server, checked via `Authorization: Bearer ${admin_token}`)". A per-game API key is the wrong shape for cross-game queries: it identifies which game is calling, but the cross-game endpoint operates across all of them.
+- The admin token is a single secret per deployment, intended for the dashboard or operator scripts. The dashboard reads it from its own env (`JUNJO_ADMIN_TOKEN`) and includes it on every cross-game request.
+- Registering the route before `apiKeyMiddleware` follows the same "public route inside `/v1`" pattern set by `getInvitationByCodeHandler` (iter 012); the per-route admin middleware is the only auth check that runs because `apiKeyMiddleware` would only attach later in the chain (the admin handler returns a Response without calling next, so apiKey never executes).
+
+**Trade:** two distinct auth-failure error codes (`invalid_api_key` and `invalid_admin_token`) instead of one shared 401. The trade is intentional: the codes name the calling shape, so a misconfigured client knows whether they used the wrong token or the wrong endpoint without having to interpret a generic 401.
+
+### Phase 10.2: `JUNJO_ADMIN_TOKEN` is optional; unset means "endpoints disabled"
+
+**Decision:** `JUNJO_ADMIN_TOKEN` is an optional env var (Zod: `z.string().min(1).optional()`). When unset, every request to an admin endpoint returns `401 invalid_admin_token` with the message "admin endpoints are disabled on this server". Self-hosters with one game per server can ignore the env var entirely; cloud / dashboard deployments set it to a long random string at deploy time.
+
+**Rationale:**
+- A required env var would break self-host onboarding for setups that don't need cross-game visibility (a single-game self-host doesn't need this endpoint at all).
+- A default value (e.g. an empty string treated as "open") would be a security footgun: any deployer who forgets to override it ships an open admin endpoint.
+- The "disabled" stance treats absence-of-config as "off" rather than "open" - the safe default for a security-relevant feature. It also gives operators a deliberate kill switch (unset the env var, restart, every admin endpoint goes 401).
+- Empty-string is rejected by the Zod schema (`min(1)`) so a stray `JUNJO_ADMIN_TOKEN=` line in a `.env` file fails fast at startup rather than silently disabling the endpoints.
+
+**Trade:** the wrong message ("disabled") on a misconfigured deployer who DID intend to use the feature. Acceptable: the message is explicit, and the operator's first instinct ("did I forget to set the env var?") is the right diagnostic step.
+
+### Phase 10.2: admin token compared in constant time via `node:crypto.timingSafeEqual`
+
+**Decision:** the admin middleware compares the presented Bearer token to the configured token using a UTF-8-buffer-based constant-time comparison (`Buffer.from(a, "utf8")` + `timingSafeEqual`). Length mismatch returns `false` after a dummy compare against itself (so the early-return path resembles the equal-length compare in runtime).
+
+**Rationale:**
+- Token comparison is a security-sensitive code path. `===` is fast-path optimized to compare prefix lengths first and return early on the first differing byte; an attacker measuring response timing across many requests can in principle leak the token byte-by-byte.
+- `node:crypto.timingSafeEqual` is the standard Node solution. The buffer wrapping is needed because the underlying check operates on byte buffers; the UTF-8 encoding is unambiguous and matches how the tokens are transmitted.
+- The length-mismatch case still has to short-circuit (timingSafeEqual throws on unequal lengths), but the dummy `timingSafeEqual(aBuf, aBuf)` keeps the runtime bounded by the longer buffer's length rather than by the shorter one. The leak is reduced to "is the token shorter or longer than the configured value", which is far less useful than per-byte content leak.
+
+**Trade:** ~microsecond overhead per request on a path that already does I/O (the surrounding HTTP stack dwarfs it). Acceptable; correctness > perf.
+
+### Phase 10.2: `joinedGroupCount` counts active members in non-soft-deleted groups only
+
+**Decision:** the `joinedGroupCount` field counts `GroupMember` rows where `status === "active"` AND the parent group has `softDeletedAt: null`. Members in `left` / `kicked` / `invited` status do not count; soft-deleted groups do not contribute even if the user has an active row in them (the row is preserved on group soft-delete for audit history but the group is effectively gone for everything else).
+
+**Rationale:**
+- Matches the existing `Group.memberCount` precedent (set in Phase 1.2): the dashboard renders "this group has N members" using the same active-only rule, so the cross-game lookup uses the same definition.
+- Matches the permission resolver's "non-active member = `source: none`" rule (Phase 3.5): a user in `kicked` status cannot exercise permissions, and "this user is in N games" should match the user's apparent reach in the system.
+- A consumer that wants the lifecycle-history view can count `GroupMember` rows directly via a future endpoint or via Postgres directly; conflating the two views into a single field would be misleading on the dashboard's overview.
+
+**Trade:** the answer to "how many groups was this user EVER in across this game" is not directly available from this endpoint. Acceptable: that's a different question (lifecycle history, not current footprint), and the audit log already carries `member.left` / `member.invited` events that reconstruct it.
+
+### Phase 10.2: a `junjoUserId` with no `ExternalIdentity` rows returns 200 with `games: []`, not 404
+
+**Decision:** when the supplied `junjoUserId` has no `ExternalIdentity` rows in any game, the route returns `200 OK` with `{ junjoUserId, games: [] }` rather than `404 not_found`. Same response shape for "user we have never seen" and "user known but no cross-game footprint yet".
+
+**Rationale:**
+- The two cases are indistinguishable from the consumer's perspective: both mean "this user has zero games to show". Forcing the consumer to handle two response shapes for the same observable answer is ergonomic friction without information value.
+- Returning `404` would leak existence: an attacker who can hit the admin endpoint could enumerate `JunjoUser` ids by observing 200-vs-404 responses. Collapsing the cases removes that signal.
+- Consistent with `members.listForUser` (Phase 2.6), which returns `[]` for an unknown external user id rather than `404`. Same rationale.
+
+**Trade:** the consumer cannot distinguish "I queried the right id but the user isn't in any games" from "I queried a typo'd id that doesn't exist at all". Acceptable: the dashboard query path already validates ids out-of-band, and the admin endpoint isn't the right place to enforce id-shape validation.
+
+### Phase 10.2: no SDK method for the cross-game endpoint
+
+**Decision:** the per-game `@junjo/sdk` does NOT add a `junjo.users.listGames(...)` method or any other admin-shaped surface. The dashboard calls the endpoint directly via `fetch`.
+
+**Rationale:**
+- The per-game SDK shape is "one `Junjo` instance, one API key, one game". An admin-shaped method on this client would either ignore the configured per-game API key (confusing) or accept a separate `adminToken` argument (a different auth model awkwardly grafted onto a per-game client).
+- VISION 10.2 explicitly says "SDK: skip for V1 (admin-only endpoint; not part of the public per-game SDK). The dashboard uses it directly via fetch."
+- A dedicated `@junjo/admin-sdk` package would be over-engineering for a single endpoint. If the cross-game admin surface ever grows past two or three endpoints, a separate package becomes worth its weight; until then, hand-rolled `fetch` calls in the dashboard are the right shape.
+
+**Trade:** dashboards copy the `Authorization: Bearer ${JUNJO_ADMIN_TOKEN}` boilerplate at every call site. Acceptable: there's only one call site today (the user-detail page; lands in Phase 11), and the docs page (`apps/docs/pages/api/admin.mdx`) shows the canonical pattern.
+
+### Phase 10.2: cloud-only modules marked with `// @cloud-only` headers
+
+**Decision:** new files added in Phase 10.2 (`packages/server/src/middleware/adminAuth.ts`, `packages/server/src/routes/admin.ts`) start with a `// @cloud-only` comment header. The header is not currently consumed by any build tool; it's a marker for a future self-host build flag that excludes admin-only modules.
+
+**Rationale:**
+- VISION Phase 10 explicitly calls for the marker: "Mark cloud-only modules with a `// @cloud-only` comment header so a future self-host build can exclude them via a build flag, but do not skip building or testing them in the loop."
+- A header is the smallest possible signal that requires zero runtime cost and zero build-system change today. When the self-host build splits, a simple grep / AST visit can identify modules to drop.
+- Keeping admin code in the same package as the OSS server (rather than a separate `@junjo/server-cloud`) avoids module-graph splits during V1 development; the marker is the easy split point for later.
+
+**Trade:** the marker is informational only - a future maintainer could ignore it and the build would still work. Acceptable: the rule is documented in VISION, and the marker is a clear semaphore for code-review.
+

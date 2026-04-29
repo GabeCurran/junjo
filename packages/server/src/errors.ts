@@ -20,6 +20,8 @@ export class JunjoError extends Error {
 export const Errors = {
   notFound: (what = "resource") => new JunjoError("not_found", 404, `${what} not found`),
   invalidApiKey: (msg = "invalid API key") => new JunjoError("invalid_api_key", 401, msg),
+  invalidAdminToken: (msg = "invalid admin token") =>
+    new JunjoError("invalid_admin_token", 401, msg),
   badRequest: (msg = "bad request") => new JunjoError("bad_request", 400, msg),
   permissionDenied: (msg = "permission denied") => new JunjoError("permission_denied", 403, msg),
   restoreWindowExpired: (msg = "restore window expired") =>

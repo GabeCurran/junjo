@@ -28,6 +28,8 @@ A small number of routes are intentionally **public**: the request reaches the h
 
 - [`GET /v1/invitations/:code`](/api/invitations) - fetch an invitation preview by code.
 
+A separate set of routes is gated by an **admin token** instead of a per-game API key. These are server-wide endpoints (typically used by the dashboard to query across the games on a single deployment); the admin token is configured via the `JUNJO_ADMIN_TOKEN` env var. See [Admin](/api/admin) for the full surface.
+
 ## Error envelope
 
 Every error response uses the same JSON shape:
@@ -47,6 +49,7 @@ Reserved codes the server returns today:
 | code | status | meaning |
 |------|--------|---------|
 | `invalid_api_key` | 401 | API key missing, malformed, unknown, or revoked. |
+| `invalid_admin_token` | 401 | Admin endpoint called with a missing or wrong admin token, or the server has `JUNJO_ADMIN_TOKEN` unset. See [Admin](/api/admin). |
 | `bad_request` | 400 | Body or query failed Zod validation. |
 | `permission_denied` | 403 | Caller lacks permission to perform the action. |
 | `not_found` | 404 | Resource does not exist (or is soft-deleted). |

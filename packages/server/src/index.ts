@@ -6,7 +6,7 @@ import { startHardDeleteSweeper } from "./softDelete.js";
 import { startWebhookWorker } from "./webhookWorker.js";
 
 const env = loadEnv();
-const app = createApp();
+const app = createApp({ adminToken: env.JUNJO_ADMIN_TOKEN });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   console.log(`junjo-server listening on http://localhost:${info.port}`);
