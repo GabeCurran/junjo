@@ -47,3 +47,13 @@ export function getInviteBaseUrl(): string {
   const raw = env.JUNJO_INVITE_BASE_URL ?? env.JUNJO_BASE_URL;
   return raw.replace(/\/+$/, "");
 }
+
+// The Junjo docs base URL. Used by the analytics empty state (Phase 12.1)
+// to link operators at the 5-minute tutorial. Returns null when the env
+// var is absent so callers can render a "no link" empty state instead of
+// a broken URL. Trailing slashes are trimmed.
+export function getDocsBaseUrl(): string | null {
+  const env = loadDashboardEnv();
+  if (!env.JUNJO_DOCS_BASE_URL) return null;
+  return env.JUNJO_DOCS_BASE_URL.replace(/\/+$/, "");
+}

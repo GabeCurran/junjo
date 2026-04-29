@@ -25,6 +25,7 @@ The dashboard expects a Junjo server running at `JUNJO_BASE_URL` (defaults to
 | `JUNJO_ADMIN_API_KEY` | required | - | Per-game API key the dashboard uses for SDK calls. Issue one with `npm run db:seed -w @junjo/server`. |
 | `JUNJO_ADMIN_TOKEN` | optional | unset | The cross-game admin token (Phase 10.2). Required only for the cross-game user query; if unset, those views render an empty state. |
 | `JUNJO_INVITE_BASE_URL` | optional | falls back to `JUNJO_BASE_URL` | URL prefix the invite-member dialog uses when constructing shareable invite links (Phase 11.5d-ii). The dashboard does not host the acceptance flow itself; set this to the origin of the dev's player-facing app that resolves `/invite/<code>`. |
+| `JUNJO_DOCS_BASE_URL` | optional | unset | Base URL for the Junjo docs site. The Phase 12.1 analytics empty state deep-links operators at `<JUNJO_DOCS_BASE_URL>/tutorial`. When unset, the empty state still renders but omits the link (operators see a hint pointing at the tutorial path on their own docs deployment). |
 | `DASHBOARD_ADMIN_USER` | required | - | HTTP Basic Auth username gating every dashboard route. |
 | `DASHBOARD_ADMIN_PASSWORD` | required | - | HTTP Basic Auth password. |
 
@@ -290,7 +291,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   same resolution order, shared singleton `permissionCache`); reuses
   `resolvePermission` from `routes/permissions.ts` directly via the
   cloud-only boundary cross-import precedent.
-- 11.9a-ii (this iteration): permission check tester at
+- 11.9a-ii: permission check tester at
   `app/(dashboard)/games/[gameId]/permissions/check/page.tsx`. Form
   takes (userId, groupId, permission), runs the new
   `checkPermissionAction` Server Action against
@@ -308,4 +309,29 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `/permissions` placeholder updated to point operators at the per-
   game tester (since permissions are always game-scoped). Phase 11.9
   closes here.
-- 12.1 - 12.5: Analytics surface (Tremor charts).
+- 12.1 (this iteration): analytics shell + Tremor setup. Installs
+  `@tremor/react` 3.18 (which brings Recharts 2.x as a transitive
+  dep) and adds Tremor's content path to `tailwind.config.ts` so
+  Tailwind does not purge Tremor classnames in production. The
+  analytics surface lives at
+  `app/(dashboard)/games/[gameId]/analytics/page.tsx`: Server
+  Component lenient-parses `?range=` (24h / 7d / 30d / 90d / custom)
+  and forwards to a hand-rolled `<DateRangePicker>` Client Component
+  that renders five styled labels wrapping native `<input
+  type="radio">` elements (matches the iter-075 native-checkbox a11y
+  precedent). Custom range exposes two `<input type="datetime-local">`
+  fields plus an Apply button; URL pushes use `router.replace(...,
+  { scroll: false })`. The page body renders an unconditional "No
+  data yet" empty state via `<AnalyticsEmptyState>`: chart-shaped
+  Card with a "Charts that land in 12.2 - 12.5" callout and (when
+  `JUNJO_DOCS_BASE_URL` is set) a deep-link to the 5-minute tutorial.
+  The top-level `/analytics` placeholder updates to a router pointing
+  operators at the Games list (analytics is per-game). Game detail
+  page topbar grows an "Analytics" link next to Permission check +
+  Audit log. Two server-side resolvers (`resolveRangeFrom`,
+  `resolveRangeTo`) ship in the page module ready for 12.2 - 12.5
+  to consume when individual charts land. Tremor's color tokens are
+  intentionally NOT wired into Tailwind in 12.1; the first chart
+  iteration owns that work.
+- 12.2 - 12.5: Tremor charts (group churn, growth, member activity
+  heatmap, role / permission distribution).

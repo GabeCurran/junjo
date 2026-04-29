@@ -4366,3 +4366,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The check tester Server Action is the only one in this iteration; folding it into a sibling action file would mix it with mutating actions (the check is read-only with no `revalidatePath` call) which would mislead future readers.
 
 **Trade:** another file in the route directory tree. Acceptable: the directory already contains `page.tsx` so an `actions.ts` next to it is the standard Next.js App Router convention; no other 11.x iteration has consolidated multiple routes' actions into one file.
+
+### Phase 12.1: Tremor installed but its color tokens NOT wired into Tailwind in 12.1
+
+**Decision:** Phase 12.1 adds `@tremor/react ^3.18.7` to `apps/dashboard/package.json` and adds Tremor's content path (`./node_modules/@tremor/**/*.{js,ts,jsx,tsx}`) to `tailwind.config.ts` so Tailwind does not purge Tremor classnames in production. The much more invasive set of changes (extending the Tailwind theme with `tremor-brand`, `tremor-content`, `dark-tremor-background`, etc. color tokens) is intentionally deferred until 12.2 when the first chart actually renders.
+
+**Rationale:**
+- Phase 12.1's deliverables per VISION are "install Tremor, set up the analytics page layout with a date-range picker, add a 'no data yet' empty state". None of those need Tremor's color tokens; the empty state and date-range picker are hand-rolled with the existing shadcn-style primitives.
+- Wiring the color tokens is non-trivial: Tremor's stock theme references ~80 CSS variables (`tremor-brand-default`, `tremor-content-emphasis`, etc.) that don't map cleanly onto the dashboard's existing shadcn variables (`--background`, `--foreground`, `--primary`, etc.). A clean integration requires HSL-CSS-variable mapping for each token; doing it speculatively in 12.1 means choosing a mapping for charts that don't exist yet, and re-doing the mapping in 12.2 when the first real chart reveals a styling issue.
+- Deferring keeps the 12.1 diff focused on the operator-visible deliverables (page route, picker, empty state) without buried Tailwind config rewrites that would make the iteration's change set hard to review.
+- The 12.2 iteration will own the chart-rendering infrastructure end-to-end (color tokens + the first chart's data fetch + the chart component), making the trade-off and the styling choices visible in one commit.
+
+**Trade:** a Tremor chart imported speculatively in 12.1 would render with default Tailwind colors that don't match the dashboard theme. Acceptable: 12.1 doesn't render any Tremor chart; the empty state shell is hand-rolled with the existing primitives.
+
+### Phase 12.1: per-game analytics route at `games/[gameId]/analytics/page.tsx` mirrors VISION verbatim; top-level `/analytics` becomes a router
+
+**Decision:** the analytics surface lives at `app/(dashboard)/games/[gameId]/analytics/page.tsx` per VISION's Phase 12 spec verbatim. The top-level `app/(dashboard)/analytics/page.tsx` placeholder updates from "lands in 12.1 - 12.5" to a router pointing operators at the Games list, mirroring the iter-085 `/permissions` -> `/games/[gameId]/permissions/check` convention.
+
+**Rationale:**
+- VISION 12 header says: "The analytics surface lives at `apps/dashboard/app/games/[gameId]/analytics/page.tsx` plus per-chart components under `apps/dashboard/components/analytics/`." With the route group convention this resolves to `app/(dashboard)/games/[gameId]/analytics/page.tsx`. The placement is non-negotiable per VISION.
+- Analytics is intrinsically game-scoped: each chart's underlying Prisma query filters by `gameId` (group churn for groups in game X, member activity heatmap of audit entries in game X). A cross-game analytics surface would require either a game picker on the page (more UI than the per-game form) or arbitrary aggregation across all games (which loses the question that motivated the chart).
+- The top-level `/analytics` page becomes a router pointing at the Games list. The dashboard does not auto-redirect because the operator may have multiple games. This mirrors the iter-085 `/permissions` precedent.
+- Discovery from the game detail topbar covers operators who arrive via the games browser; the top-level `/analytics` page covers operators who arrive via the left-rail nav.
+
+**Trade:** an operator clicking the left-rail "Analytics" entry sees a router rather than landing on a chart surface. Acceptable: the click cost of "Analytics -> Games -> [pick game] -> Analytics" is one click higher than a unified surface; future iteration can add a "recently viewed" list on the top-level page if operator feedback warrants.
+
+### Phase 12.1: hand-rolled `<DateRangePicker>` over Tremor's built-in date range component
+
+**Decision:** the date-range picker is hand-rolled in `apps/dashboard/components/analytics/date-range-picker.tsx` rather than using `@tremor/react`'s built-in `<DateRangePicker>` component.
+
+**Rationale:**
+- VISION's stack-conventions section (Phase 11): "Use [Tremor] only when a chart is needed; do not import Tremor for non-chart UI." The picker is non-chart UI; it should match the rest of the dashboard's shadcn / lucide aesthetic, not Tremor's default theme.
+- Tremor's built-in `<DateRangePicker>` ships with its own date library (`react-day-picker` 8.x), keyboard handling, and styling that target a different visual language. Using it would mean the picker looks subtly different from every other input / select / button on the dashboard.
+- The hand-rolled picker uses native `<input type="radio">` (one per preset, wrapped in styled `<label>`s) and `<input type="datetime-local">` (for the custom range). Native inputs get keyboard focus + arrow-key navigation + aria-checked / aria-pressed for free; the visible style is purely Tailwind classes that match the rest of the dashboard. Cost: ~200 lines of component code; benefit: consistent visual language and zero new heavy dependencies.
+- Mirrors the iter-075 Permissions matrix decision (native `<input type="checkbox">` over `<button role="checkbox">`) and the iter-082 audit feed decision (`<input type="datetime-local">` for date filters).
+
+**Trade:** the hand-rolled picker is less feature-rich than Tremor's (no calendar grid; just two datetime-local inputs for custom). Acceptable: V1 operators do not need a calendar grid; the four preset windows cover the dominant case and `<input type="datetime-local">` handles the long tail.
+
+### Phase 12.1: empty state ships unconditionally in 12.1, gets replaced piecewise in 12.2 - 12.5
+
+**Decision:** the per-game analytics page renders `<AnalyticsEmptyState>` unconditionally in 12.1. There is no data-driven branch; the empty state is the "shell" placeholder that subsequent chart iterations replace one chart at a time. Each chart in 12.2 - 12.5 will own its own per-chart empty state for actual no-data conditions (e.g., "no churned members in this window", "no role assignments yet").
+
+**Rationale:**
+- 12.1 ships the page route and the date-range picker but no charts; the empty state IS the page body in 12.1. A data-driven branch ("show empty state when audit-entry count for the window is zero, otherwise show charts") would require shipping a probe fetch (e.g., `fetchAdminGameAudit({ limit: 1 })`) that has nothing to gate; the conditional would always go down the empty-state branch since there are no charts to render in the other branch.
+- Per-chart empty states are the right granularity for the data-driven case: the group churn chart should show its own "no kicked / left members in this window" state independently of the role distribution chart's "no roles defined yet" state. A page-level empty state would hide all charts when only one of them lacks data.
+- VISION's Phase 12.1 wording ("Add a 'no data yet' empty state with a link to the tutorial") is most simply satisfied by an unconditional shell. The data-driven empty states implied by per-chart `revalidate: 60` Prisma queries land in 12.2 - 12.5 alongside the queries themselves.
+- The shell's "Charts that land in 12.2 - 12.5" callout is honest about what the page does today; it does not claim "you have no data" when the operator might have plenty.
+
+**Trade:** an operator with a populous game opens the analytics page and sees a "no data yet" shell rather than charts. Acceptable: the shell title is "No data yet" but the body explicitly explains "charts that land in 12.2 - 12.5" so the operator understands they are seeing the placeholder; once the charts ship, this slot disappears chart-by-chart.
+
+### Phase 12.1: `JUNJO_DOCS_BASE_URL` env var (optional) gates the tutorial deep-link
+
+**Decision:** the analytics empty state's "Follow the 5-minute tutorial" button is rendered only when `JUNJO_DOCS_BASE_URL` is set; otherwise the empty state shows a hint ("Set `JUNJO_DOCS_BASE_URL` to deep-link operators at the tutorial; until then see the `/tutorial` page on your docs site") instead of a broken hyperlink.
+
+**Rationale:**
+- The Junjo docs site (`apps/docs/`) is a separate Next.js app deployed to a separate URL. The dashboard's V1 deployment may have the docs at `https://docs.junjo.dev`, on a sibling subdomain like `https://app.example.com/docs`, or unpublished entirely. Hardcoding a URL would break in the second and third cases.
+- An optional env var matches the existing pattern (`JUNJO_INVITE_BASE_URL` from Phase 11.5d-ii is also optional with a fallback). Adds 1 line to `lib/env.ts` and 1 helper to `lib/junjo.ts` (`getDocsBaseUrl()` returning `string | null`).
+- The hint-when-unset path is operator-friendly: a self-host operator who has not deployed the docs site separately gets actionable feedback, not a broken link to a 404.
+- The button uses `target="_blank"` + `rel="noopener noreferrer"` because the docs site is a different origin from the dashboard's Basic Auth gate; opening in the same tab would log the operator out of the dashboard.
+
+**Trade:** the empty state has two visual variants (with-link and without-link) instead of a single canonical layout. Acceptable: the divergence is one line of inline conditional rendering; the visual shapes are similar enough (button vs paragraph) that the layout does not shift jarringly between them.

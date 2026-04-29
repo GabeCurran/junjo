@@ -1,5 +1,5 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft, ScrollText, ShieldCheck } from "lucide-react";
+import { ArrowLeft, BarChart3, ScrollText, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
@@ -122,6 +122,13 @@ export default function GameDetailPage({ params }: GameDetailPageProps) {
         description="Issue and revoke API keys for this game."
         actions={
           <div className="flex items-center gap-2">
+            <Link
+              href={`/games/${encodeURIComponent(params.gameId)}/analytics`}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <BarChart3 className="h-3 w-3" aria-hidden />
+              Analytics
+            </Link>
             <Link
               href={`/games/${encodeURIComponent(params.gameId)}/permissions/check`}
               className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
