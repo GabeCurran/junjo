@@ -204,23 +204,41 @@ The package depends on `@junjo/sdk` (regular dep, for the `Junjo` type) and decl
 
 ### `junjo-roblox` (Luau)
 
-Roblox model bundling a Luau module. Wraps `HttpService` and `MessagingService`. Dogfooded against the existing `mobarena-roblox` project.
+Roblox model bundling a Luau module. Wraps `HttpService` for outbound REST and (post-V1) `MessagingService` for cross-server delivery. Dogfooded against the existing `mobarena-roblox` project.
+
+#### File layout
+
+The `packages/sdk-roblox/src/` tree:
+
+- `Junjo.lua` - the single Phase 8.1 source file. Exports the `Junjo` table with `Junjo.new(config)`, `Junjo.JunjoError`, `Junjo.Null`, and `Junjo.DEFAULT_BASE_URL`. The instance returned by `Junjo.new` carries a normalized `config` table (`baseUrl`, `inviteBaseUrl` with trailing slashes trimmed) and an `http` reference to the internal HTTP wrapper class. Phase 8.2 will split into per-namespace siblings (`Groups.lua`, `Members.lua`, etc.) with `Junjo.lua` renamed to `init.lua` so `require(ReplicatedStorage.Junjo)` keeps working.
+
+#### HTTP wrapper
+
+Internal `Http` class inside `Junjo.lua`; exposed on the instance as `junjo.http`. Methods: `:request(method, path, body)`, `:get(path)`, `:post(path, body)`, `:patch(path, body)`, `:put(path, body)`, `:delete(path)`. Auto-encodes JSON request bodies via `HttpService:JSONEncode`, parses JSON responses via `HttpService:JSONDecode`, sets the `Authorization: Bearer <apiKey>` and `Content-Type: application/json` headers, and pcall-wraps `HttpService:RequestAsync` so network-level failures (HttpService disabled, DNS, TLS) surface as `JunjoError({ code = "network" })`. Non-2xx responses parse the server envelope and raise `JunjoError({ code, status, message })` mirroring the TypeScript SDK's contract; 204 + empty 2xx bodies return `nil`. Body-encoding handles the `Junjo.Null` sentinel (a unique `newproxy` value): the encoder substitutes a randomized placeholder string before `JSONEncode` runs, then string-replaces it with literal `null` afterwards, so callers can express `{ defaultRoleId = Junjo.Null }` to send `"defaultRoleId": null` (Lua's `nil` means key-absent and cannot serialize as JSON null).
+
+#### Config + GetSecret fallback
+
+`JunjoConfig` mirrors the TypeScript SDK's shape: `apiKey` (string OR Roblox `Secret` userdata), optional `apiKeySecret` (a Roblox secret-store name), `baseUrl` (defaults to `https://api.junjo.io`), `inviteBaseUrl` (defaults to `baseUrl`), `httpService` (defaults to `game:GetService("HttpService")`; injectable for tests). When `apiKeySecret` is supplied the SDK calls `HttpService:GetSecret(apiKeySecret)`; on success the returned `Secret` userdata is concatenated into the auth header (Roblox interpolates the actual secret value at request time without ever exposing it as a Lua string). On failure the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. Specifying only `apiKey` skips the secret lookup entirely and uses the literal value (the cloud-Studio testing path).
+
+#### Errors
+
+`JunjoError` is a Lua object built with `setmetatable({}, JunjoError)` and a `__tostring` metamethod. Fields: `name` ("JunjoError"), `message`, `code`, `status` (number or `nil`). The exported `Junjo.JunjoError.is(value)` helper returns `true` when `value` was raised by the SDK (so consumers can branch on `if Junjo.JunjoError.is(err) then ... else error(err) end` after `pcall`). Errors are raised with `error(table, 0)` to suppress Lua's automatic file:line prefix, so the error value `pcall` returns is the raw `JunjoError` table.
 
 ```lua
 local Junjo = require(ReplicatedStorage.Junjo)
 
 local junjo = Junjo.new({
   apiKey = game:GetService("HttpService"):GetSecret("JUNJO_API_KEY"),
-  authAdapter = Junjo.RobloxUserIdAdapter(), -- uses Players service
+  authAdapter = Junjo.RobloxUserIdAdapter(), -- uses Players service (Phase 8.3)
 })
 
-local group = junjo.groups:create({
+local group = junjo.groups:create({                      -- Phase 8.2
   name = "Crimson Wolves",
   kind = "clan",
   defaultRoleId = "member",
 })
 
-local allowed = junjo:can(player.UserId, group.id, "invite_member")
+local allowed = junjo:can(player.UserId, group.id, "invite_member") -- Phase 8.2
 ```
 
 ## Auth adapter pattern

@@ -1,0 +1,108 @@
+# Roblox SDK
+
+`junjo-roblox` is the Luau client for Roblox game servers. It wraps `HttpService` for outbound REST calls, mirrors the TypeScript SDK's `JunjoConfig` shape, and surfaces server errors as a typed `JunjoError` table.
+
+The package is distributed as a Roblox model (`.rbxm`) on each GitHub release and (later) on the Roblox marketplace. It is not on npm.
+
+## What ships today
+
+| Surface | Status |
+|---------|--------|
+| `Junjo.new(config)` factory | shipped (Phase 8.1). |
+| HTTP wrapper (`junjo.http:get / :post / :patch / :put / :delete`) | shipped (Phase 8.1). Auto-encodes JSON bodies, parses JSON responses, throws `JunjoError` on non-2xx. |
+| `Junjo.Null` sentinel for explicit JSON nulls in PATCH bodies | shipped (Phase 8.1). |
+| `HttpService:GetSecret(...)` lookup with `apiKey` fallback | shipped (Phase 8.1). |
+| `junjo.groups`, `junjo.roles`, `junjo.members`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks` namespace methods | lands in Phase 8.2. |
+| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | lands in Phase 8.2. |
+| `Junjo.RobloxUserIdAdapter()` | lands in Phase 8.3. |
+| Real-time subscriptions (SSE-equivalent via `MessagingService`) | post-V1. The TypeScript SDK's `groups.subscribe` is not yet mirrored on Roblox; Roblox's `HttpService` does not stream. |
+
+Until Phase 8.2 lands, you can already call any Junjo route by hand through `junjo.http`. The wrapper is intentionally thin so the eventual namespace methods will be a layer on top, not a replacement.
+
+## Construct a client
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local junjo = Junjo.new({
+  apiKey = game:GetService("HttpService"):GetSecret("JUNJO_API_KEY"),
+})
+```
+
+Or let the SDK do the secret lookup for you, with a literal-string fallback for local Studio testing where the secret is not registered:
+
+```lua
+local junjo = Junjo.new({
+  apiKeySecret = "JUNJO_API_KEY",
+  apiKey = "junjo_test.localdev",
+})
+```
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `apiKey` | yes (or `apiKeySecret`) | A `prefix.secret` string OR a `Secret` userdata returned by `HttpService:GetSecret`. Concatenated into the `Authorization: Bearer ...` header; Roblox interpolates the actual secret value at request time when a `Secret` is passed through. |
+| `apiKeySecret` | no | A Roblox secret-store name. The SDK calls `HttpService:GetSecret(apiKeySecret)`. If the call errors (the secret is not registered, HttpService is disabled, etc.) the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. |
+| `baseUrl` | no | Override the API root. Trailing slashes are trimmed. Defaults to `https://api.junjo.io`. |
+| `inviteBaseUrl` | no | Base URL used by the eventual `groups.inviteByLink` (Phase 8.2). Defaults to `baseUrl`. Trailing slashes are trimmed. |
+| `httpService` | no | Override the `HttpService` reference. Used to inject a fake during unit testing of higher-level wrappers; production reads `game:GetService("HttpService")`. |
+
+## Errors
+
+Every method that talks to the server raises a `JunjoError`-shaped Lua error table when the response is non-2xx. Catch it with `pcall` and branch on `code`:
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local ok, result = pcall(function()
+  return junjo.http:post("/v1/groups", {
+    kind = "guild",
+    name = "",
+  })
+end)
+
+if not ok then
+  if Junjo.JunjoError.is(result) then
+    print(result.code)    -- "bad_request"
+    print(result.status)  -- 400
+    print(result.message) -- "name: too short"
+  else
+    -- Lua-level error (typo in your code, etc.)
+    error(result)
+  end
+end
+```
+
+Branch on `error.code`, not on `error.message`. Codes are stable; messages are not.
+
+The `JunjoError` table is a Lua object with `name`, `message`, `code`, and `status` fields plus a `__tostring` metamethod, so `print(err)` and `tostring(err)` produce a readable summary.
+
+## Sending JSON null in PATCH bodies
+
+Lua tables treat `nil` as "key absent", so a literal table cannot express a JSON `null`. Use the `Junjo.Null` sentinel for fields that must be cleared:
+
+```lua
+junjo.http:patch("/v1/groups/" .. groupId, {
+  defaultRoleId = Junjo.Null, -- sends `"defaultRoleId": null`
+})
+```
+
+A field set to `nil` is omitted from the request body entirely (matching every other Junjo PATCH route's "absent means no change" convention). Use `Junjo.Null` only when you specifically want to clear a server-side value.
+
+## Error codes you may see from Phase 8.1
+
+| `code` | When |
+|--------|------|
+| `invalid_config` | `Junjo.new(config)` was called without `apiKey` or `apiKeySecret`, with a non-table argument, or with an empty / non-string `baseUrl` / `inviteBaseUrl`. |
+| `network` | `HttpService:RequestAsync` itself raised (HttpService is disabled, the URL is not in the allowed-origins list, DNS / TLS failure, etc.). |
+| `internal` | A non-2xx response whose body could not be parsed as the canonical `{ code, status, message }` envelope, or a 2xx response whose body was not valid JSON. |
+| `<server-supplied>` | Any value the server returned in the JSON envelope (`not_found`, `bad_request`, `permission_denied`, `invitation_used`, `parent_cycle`, etc.). The full code list is documented in the per-route pages under [API](/api). |
+
+## Manual verification (Phase 8.1)
+
+The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/Junjo.lua` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
+
+- `Junjo.new({ apiKey = "..." })` constructs without error in Roblox Studio.
+- `junjo.http:get("/v1/whoami")` (or any other 2xx route) returns a parsed Lua table.
+- A 4xx response is surfaced as a Lua error whose `code`, `status`, and `message` fields match the server envelope.
+- `Junjo.new({ apiKeySecret = "JUNJO_API_KEY" })` reads from `HttpService:GetSecret` when the secret is registered.
+- `Junjo.new({ apiKeySecret = "MISSING", apiKey = "fallback" })` falls back to the literal apiKey when the secret is missing.

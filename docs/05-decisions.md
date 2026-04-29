@@ -2486,3 +2486,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 **Trade:** the BYO page hand-writes a `firstMatch` adapter and several illustrative wrappers (`sessionStoreAdapter`, `auth0Adapter`, `robloxUserIdAdapter`, `staticUserAdapter`) that Junjo does NOT ship as code. The wrappers exist only as docs prose. Promoting any of them into `packages/sdk/src/adapters/` would commit Junjo to maintaining them; keeping them as cookbook examples lets devs copy-adapt without ongoing version-pinning costs. The Phase 8.3 `RobloxUserIdAdapter` (which DOES ship as code, but in `junjo-roblox`, the Luau SDK) is cross-referenced from the recipe so the relationship between the two is explicit.
 
 **Future additions:** if a recipe pattern proves popular enough that every dev hand-rolls the same wrapper, the right move is to ship it as code under `@junjo/sdk/adapters` and convert the recipe into a per-adapter page (matching the jwt / clerk / supabase precedent). V1 does not need this.
+
+### Phase 8.1: Roblox SDK ships as a single `Junjo.lua` file with internal `Http` and `JunjoError` classes
+
+**Decision:** the entire Phase 8.1 surface lives in `packages/sdk-roblox/src/Junjo.lua` (a single Lua module). The internal `Http` class and `JunjoError` table-with-metatable live in the same file rather than separate `Http.lua` / `JunjoError.lua` siblings. Phase 8.2 will rename `Junjo.lua` to `init.lua` and add per-namespace siblings (`Groups.lua`, `Members.lua`, etc.) at that point.
+
+**Rationale:**
+- Phase 8.1's surface is small (`Junjo.new`, `junjo.http:get/:post/:patch/:put/:delete`, `Junjo.Null`, `Junjo.JunjoError`). Splitting it across three files would create more import boilerplate than the saved code-density justifies, and the `Http` class is purely internal (callers never instantiate it directly).
+- Roblox's standard module convention is `ModuleScript` (single file) for simple modules and `Folder/init.lua` (multi-file) for compound modules. Phase 8.1 fits the simple case; Phase 8.2 needs the compound case (one namespace per file). Migrating from the simple shape to the compound shape is one rename plus N new siblings, which is cheap.
+- The README example (`require(ReplicatedStorage.Junjo)`) works identically against either layout, so consumers see no churn at the Phase 8.1 -> 8.2 transition.
+
+**Trade:** if a future iteration needs to share `JunjoError` or the `Http` class outside `Junjo.lua` (e.g. an in-package test harness, or a plugin script in the same Roblox project), it would need to extract those symbols into their own ModuleScripts. Acceptable: when it actually happens, do the extraction. Premature splitting now costs more than it saves.
+
+### Phase 8.1: `Junjo.Null` sentinel uses `newproxy` + placeholder-string substitution to express JSON null in PATCH bodies
+
+**Decision:** `Junjo.Null = newproxy(false)` is a unique userdata token. Body encoding walks the table tree and substitutes every `Junjo.Null` reference with a randomized placeholder string (`"__JUNJO_NULL_3f6c9a01__"`); after `HttpService:JSONEncode` runs, the encoder string-substitutes `"\"__JUNJO_NULL_3f6c9a01__\""` with the literal JSON `null`. Callers express `{ defaultRoleId = Junjo.Null }` to send `"defaultRoleId": null`.
+
+**Rationale:**
+- Lua tables treat `nil` as "key absent" (the iteration semantics of `pairs` and `next`), and Roblox's `HttpService:JSONEncode` does NOT expose a JSON-null helper. Without an explicit sentinel, callers cannot send `{ "defaultRoleId": null }` from Lua at all.
+- The substitution-via-placeholder trick is the standard Lua workaround. The token includes a randomized hex suffix so an accidental collision with caller content is vanishingly unlikely (and would only matter if a string field accidentally contained that exact value, which would not pass code review).
+- `newproxy` is the cheapest way to create a unique userdata reference. Roblox's Luau supports it natively. The alternative (a unique table reference like `{}`) would also work but `newproxy` makes intent clearer (this is a sentinel, not a struct).
+- The Phase 8.2 namespace methods (`groups.update` etc.) will accept the same partial-body shape as the TypeScript SDK's `UpdateGroupInput` etc. The sentinel is the bridge that lets Lua callers express the full surface today rather than waiting for a more elaborate body-builder helper.
+
+**Trade:** the sentinel is reference-equal-only (`==` against `Junjo.Null`). Tables that go through serialization libraries that copy values (deep-clone, immutable.js-style libs, cross-Roblox-instance transfer) can lose the sentinel reference. Acceptable for V1: the sentinel only needs to survive from the user's `junjo.http:patch(...)` call site through the synchronous body-encode path, and it does. If a future iteration needs to round-trip nulls through SerDe, switch to a string-literal sentinel (e.g. `Junjo.Null = "<JUNJO_NULL>"`).
+
+### Phase 8.1: `apiKeySecret` triggers `HttpService:GetSecret`, with `apiKey` as the literal-string fallback
+
+**Decision:** `Junjo.new(config)` accepts both `apiKey` (a literal string OR a Roblox `Secret` userdata) and `apiKeySecret` (a Roblox secret-store name). When `apiKeySecret` is supplied the SDK calls `HttpService:GetSecret(apiKeySecret)` inside a `pcall`; on success the returned value (which may be a `Secret` userdata or a string depending on Roblox version) is concatenated into the auth header. On failure (HttpService disabled, secret not registered, etc.) the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. Specifying only `apiKey` skips the secret lookup entirely.
+
+**Rationale:**
+- Roblox's `Secret` type is opaque: `tostring(secret)` returns a placeholder like `<<HTTP_SECRET>>`, not the actual key. The Secret can only be resolved inside `HttpService:RequestAsync` itself. So the SDK has to thread the `Secret` through verbatim into the header, not extract a string from it.
+- String-concatenation against a `Secret` produces another `Secret` (Roblox's documented behavior). So `"Bearer " .. secret` works whether `secret` is a string OR a Secret, and `RequestAsync` substitutes the actual value at request time without ever exposing it to Lua. This means the SDK's HTTP wrapper does not need a separate "is this a Secret" code path: the same header-construction line works for both.
+- The two-field config (apiKey + apiKeySecret) lets devs put the secret name in source-controlled code (`apiKeySecret = "JUNJO_API_KEY"`) while keeping a literal-string fallback for local Studio testing where the secret is not registered (`apiKey = "junjo_test.localdev"`). The fallback path is the production-friendly default: in production both fields can be absent of the literal and the secret name resolves; in dev the secret name is missing and the literal kicks in.
+- VISION's Phase 8.1 spec calls out exactly this fallback shape ("API key: read via `HttpService:GetSecret(secretName)`, fall back to passing apiKey in `config` if `HttpService:GetSecret` errors"). The decision matches the spec verbatim.
+
+**Trade:** the SDK does not assume a magic default secret name like `"JUNJO_API_KEY"` when neither field is supplied. Callers must opt in by setting `apiKeySecret` explicitly. Acceptable: implicit default secret names are surprising in test environments and would conflict with multi-game setups where multiple Junjo keys live in the same Roblox project.
+
+### Phase 8.1: errors are raised with `error(JunjoError, 0)` rather than `error(string)`
+
+**Decision:** every non-2xx response and every config validation failure raises a `JunjoError` table (built with `setmetatable({}, JunjoError)`) via `error(table, 0)`. The `0` level argument suppresses Lua's automatic file:line prefix so the value `pcall` returns is the raw table. The exported `Junjo.JunjoError.is(value)` helper checks the metatable so consumers can branch on `if Junjo.JunjoError.is(err) then ... else error(err) end` after `pcall`.
+
+**Rationale:**
+- Mirrors the TypeScript SDK's `JunjoError` contract (`{ code, status, message }`). Consumers who already speak Junjo on TS get the same field names and branching pattern on Lua.
+- Branching on `err.code` (stable taxonomy) is more robust than parsing `tostring(err)` (a freeform message). The `__tostring` metamethod still produces a readable summary for `print(err)` / log lines.
+- Lua's `error(value, 0)` accepts any value; the `0` level avoids polluting structured errors with file:line junk that would force consumers to peel off a prefix before they could read `err.code`.
+- The `JunjoError.is(value)` shape (rather than `instanceof JunjoError`) is the idiomatic Lua check: `getmetatable(value) == JunjoError`. It is the Lua equivalent of TypeScript's `err instanceof JunjoError` and serves the same role.
+
+**Trade:** unstructured Lua errors (a coding bug in the SDK or in the consumer's pcall'd block) still arrive as strings or other values. Consumers that catch with `pcall` must use `Junjo.JunjoError.is(err)` to distinguish "the SDK rejected the request" from "the SDK or my code crashed". Documented in the docs page; the same shape every Lua library that uses structured errors lands on.
+
+### Phase 8.1: Roblox docs land at `apps/docs/pages/roblox/`, distinct from `/sdk` (TypeScript)
+
+**Decision:** the Roblox SDK gets its own top-level docs section at `apps/docs/pages/roblox/`, parallel to `/sdk` (TypeScript) and `/react`. The top-level `_meta.json` orders it as `index -> getting-started -> tutorial -> self-host -> sdk -> react -> roblox -> api -> auth`. Phase 8.1 ships only `roblox/index.mdx` (the overview); future Phase 8 iterations can add per-namespace sub-pages (`roblox/groups.mdx` etc.) as the API grows.
+
+**Rationale:**
+- Roblox is a distinct runtime with distinct conventions (Luau syntax, `HttpService` quirks, `Secret` userdata handling, no streaming HTTP). Co-locating with `/sdk` would force every code example to be either Lua-only (alienating TS readers) or dual-language (inflating page size). Splitting matches how Stripe documents Stripe for iOS / Android / .NET separately, not as variations under Stripe.js.
+- The natural reading order is: read what Junjo is, install the server, run the tutorial, then dive into whichever client SDK matches your runtime. Putting `roblox` after `sdk` and `react` (the two npm packages) groups all client SDKs together, alphabetical within "non-npm" tier.
+- Phase 8.1 is small enough (one page) that a single `roblox/index.mdx` with a "what ships today / what lands later" status table is the right shape today. The directory makes future expansion (one page per namespace) drop-in: just add `roblox/groups.mdx` plus a row in `_meta.json`.
+
+**Trade:** new top-level section adds one nav entry. Acceptable: the Junjo nav is already eight entries deep, one more is cheap; and the alternative (burying Roblox under `/sdk/roblox`) would imply the Roblox client is a sub-variant of the TypeScript SDK rather than a sibling.
