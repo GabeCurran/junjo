@@ -19,6 +19,7 @@ import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { EditMemberNotesDialog } from "./edit-member-notes-dialog";
+import { InviteMemberDialog } from "./invite-member-dialog";
 import { KickMemberDialog } from "./kick-member-dialog";
 import { SetPermissionOverrideDialog } from "./set-permission-override-dialog";
 import { ViewPermissionOverridesDialog } from "./view-permission-overrides-dialog";
@@ -357,32 +358,35 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
               </select>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor={pageSizeSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Rows
-            </label>
-            <select
-              id={pageSizeSelectId}
-              value={query.limit}
-              onChange={(e) => {
-                const nextLimit = Number(e.target.value);
-                pushQuery({ limit: nextLimit, offset: 0 });
-              }}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            >
-              {ADMIN_MEMBERS_PAGE_SIZE_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor={pageSizeSelectId}
+                className="text-xs uppercase tracking-wide text-muted-foreground"
+              >
+                Rows
+              </label>
+              <select
+                id={pageSizeSelectId}
+                value={query.limit}
+                onChange={(e) => {
+                  const nextLimit = Number(e.target.value);
+                  pushQuery({ limit: nextLimit, offset: 0 });
+                }}
+                className={cn(
+                  "h-10 rounded-md border border-input bg-background px-3 text-sm",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "focus-visible:ring-offset-2 ring-offset-background",
+                )}
+              >
+                {ADMIN_MEMBERS_PAGE_SIZE_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <InviteMemberDialog gameId={gameId} groupId={groupId} />
           </div>
         </div>
 

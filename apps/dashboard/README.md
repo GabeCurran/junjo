@@ -24,6 +24,7 @@ The dashboard expects a Junjo server running at `JUNJO_BASE_URL` (defaults to
 | `JUNJO_BASE_URL` | optional | `http://localhost:8787` | Origin of the Junjo server. |
 | `JUNJO_ADMIN_API_KEY` | required | - | Per-game API key the dashboard uses for SDK calls. Issue one with `npm run db:seed -w @junjo/server`. |
 | `JUNJO_ADMIN_TOKEN` | optional | unset | The cross-game admin token (Phase 10.2). Required only for the cross-game user query; if unset, those views render an empty state. |
+| `JUNJO_INVITE_BASE_URL` | optional | falls back to `JUNJO_BASE_URL` | URL prefix the invite-member dialog uses when constructing shareable invite links (Phase 11.5d-ii). The dashboard does not host the acceptance flow itself; set this to the origin of the dev's player-facing app that resolves `/invite/<code>`. |
 | `DASHBOARD_ADMIN_USER` | required | - | HTTP Basic Auth username gating every dashboard route. |
 | `DASHBOARD_ADMIN_PASSWORD` | required | - | HTTP Basic Auth password. |
 
@@ -140,7 +141,22 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   view-overrides dialog calls plain-shape Server Actions from a
   `useEffect` on open and from per-row clear buttons. Hand-vendored
   shadcn `Textarea` primitive ships alongside.
-- 11.5d, 11.6 - 11.9: invite-member tabbed dialog, roles + permissions
-  + audit + relationships + sub-groups tabs, audit viewer, permission
-  tester (one section per iteration).
+- 11.5d-i: cross-game admin invitation endpoint
+  (`POST /v1/admin/games/:gameId/groups/:groupId/invitations`) mirroring
+  the per-game `POST /v1/groups/:id/invitations` body shape and audit /
+  event semantics. Body `{ targetUserId?, roleId?, expiresIn? }` (all
+  optional; `{}` produces an open-code invitation with no role and no
+  expiry). Audit `payload.source = "admin"` distinguishes admin-issued
+  invitations from per-game-key calls.
+- 11.5d-ii (this iteration, closes Phase 11.5d): MembersTable invite-member
+  dialog at the right end of the table toolbar. Three tabs - by user id
+  (direct invitation; closes on success), by code (open invitation; shows
+  the generated code with a copy-to-clipboard affordance), by link (open
+  invitation; constructs `<JUNJO_INVITE_BASE_URL>/invite/<code>` and shows
+  the URL with the same copy affordance). All three tabs call the same
+  `inviteMemberAction` Server Action, which validates the form fields
+  client-side, calls `createAdminGroupInvitation` from `lib/admin.ts`, and
+  `revalidatePath`s the parent page on success.
+- 11.6 - 11.9: roles + permissions + audit + relationships + sub-groups
+  tabs, audit viewer, permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

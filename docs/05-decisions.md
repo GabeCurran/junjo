@@ -3561,3 +3561,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** four admin test files now live in `routes/`: `admin.test.ts` (Phase 10.2, 11.2a, 11.3a, 11.4a, 11.5a), `admin.rowActions.test.ts` (11.5c-i), `admin.invitations.test.ts` (11.5d-i, this iteration), plus the implicit cross-package dashboard tests in 14.12. Acceptable - test files are cheap and the alternative (one mega-file) is worse.
 
+### Phase 11.5d-ii: invite-member dialog ships three tabs in one Client Component, not three separate dialogs
+
+**Decision:** `<InviteMemberDialog>` carries all three variants (by-userId / by-code / by-link) inside a single Client Component. A `role="tablist"` + `role="tab"` button row at the top of the dialog swaps the active mode; the form below adapts (only the by-userId tab renders the `targetUserId` input; `roleId` and `expiresIn` are shared across all three). The same `inviteMemberAction` Server Action handles all three; a hidden `mode` field on the form selects the variant.
+
+**Rationale:**
+- Three separate dialogs would mean three triggers in the toolbar, three separate `useFormState` chains, three separate result panels, and three near-identical forms. The end result is the same surface area; the UX is just more cluttered.
+- VISION's Phase 11.5 spec calls for "by-userId / by-code / by-link tabs" - tabs is the right primitive when the differences between flows are small (one input changes; the result is shown differently).
+- A single Server Action keeps the validation rules (caps, regex, required-when-mode-is-userId) centralized; three actions would duplicate the cap constants and the regex check.
+- Tabs are hand-rolled with three `<button role="tab">` elements rather than vendoring shadcn's `Tabs` primitive (which requires `@radix-ui/react-tabs`). Three tabs that don't need keyboard arrow-key navigation or roving tabindex aren't worth the dependency. Future iterations can promote to the shadcn primitive if more tabs land.
+
+**Trade:** the form's `key={mode}` reset trick is needed so swapping tabs clears any in-flight input. `useFormState`'s state is shared across mode swaps (intentional - if the by-userId form errors, swapping to by-code preserves the error message until a successful create). Both surfaces are documented in the dialog source.
+
+### Phase 11.5d-ii: by-userId closes on success; by-code and by-link show a result panel
+
+**Decision:** the by-userId tab closes the dialog immediately on a successful create. The by-code and by-link tabs flip the dialog into a "result" panel showing the generated code or URL with a copy-to-clipboard affordance, requiring an explicit "Done" click to close.
+
+**Rationale:**
+- For by-userId, the operator has nothing to copy: the invitation is recorded and the actual notification to the user is the dev's responsibility (the dev's auth-adapter integration or notification flow surfaces it). Auto-closing returns the operator to the members table where they can verify the invitation in the audit feed if needed.
+- For by-code, the entire point of the variant is to display the code for sharing - the operator pastes it into Discord, an email, etc. Auto-closing would lose the just-generated code (recoverable later via the audit log + invitations endpoint, but that's three clicks of friction for the dominant case).
+- For by-link, same as by-code: the URL is the artifact the operator wants. The dialog stays open until they click Done.
+- Mirrors the Phase 11.3b-ii API key issuance UX (which also stays open after success to surface the secret), but without the same urgency: the API key secret is unrecoverable after closing while the invitation code is retrievable from the audit log + invitations endpoint, so the framing is "share now, retrievable later" rather than "store now or lose forever".
+
+**Trade:** the by-code and by-link result panels are only briefly useful (the operator copies once, clicks Done, never sees them again). Acceptable - the alternative (closing immediately and showing a toast with "code generated") would lose the URL building affordance for by-link and force the operator to look up the code elsewhere.
+
+### Phase 11.5d-ii: dashboard owns `JUNJO_INVITE_BASE_URL` env var separate from `JUNJO_BASE_URL`
+
+**Decision:** the dashboard's `lib/env.ts` adds an optional `JUNJO_INVITE_BASE_URL` env var (defaults to falling back to `JUNJO_BASE_URL` when unset). The by-link tab builds invite URLs as `<JUNJO_INVITE_BASE_URL>/invite/<encodeURIComponent(code)>` via the new `getInviteBaseUrl()` helper in `lib/junjo.ts`.
+
+**Rationale:**
+- The dashboard's `JUNJO_BASE_URL` points at the Junjo *server* (the API). The Junjo server does not host a player-facing `/invite/<code>` acceptance flow; that's the dev's frontend (their game's UI). So the URL the dashboard builds and the operator shares needs to be configurable separately.
+- Mirrors the SDK's `JunjoConfig.inviteBaseUrl` field (Phase 2.2's iter 011 decision) which serves the same purpose for code-side `inviteByLink` calls.
+- Optional with a fallback rather than required: an operator running a self-hosted Junjo for testing can leave it unset and get a copyable URL (typically pointing at the API rather than a player-facing frontend) instead of a `next build` failure or a runtime crash.
+- Trailing slashes are trimmed in the helper so a misconfigured env value (`https://app.example.com/`) does not produce `https://app.example.com//invite/<code>` URLs.
+
+**Trade:** an operator who forgets to configure the env var gets a URL that does not actually work in their player-facing app. Documented in the README's env table; a future iteration could surface a warning in the dialog's helper text when the URL host equals the server host.
+
+### Phase 11.5d-ii: invite-member trigger lives in the MembersTable toolbar, not on each row
+
+**Decision:** the "Invite member" button is rendered in the MembersTable's toolbar (right end, next to the page-size selector) rather than as an action on each member row.
+
+**Rationale:**
+- The four row actions shipped in Phase 11.5c-ii (Notes / Override / Overrides / Kick) operate on the row's specific member. The invite action is the opposite - it creates a new member who isn't in the table yet, so there's no row to attach it to.
+- Topbar-style placement (a button at the page level) would also work but the table toolbar is closer to the data the operator is acting on. Operators reaching the page typically do so to manage members; the invite trigger should be visible without reaching for the topbar.
+- Matches Stripe / Linear / GitHub conventions where "invite", "create", and "add" buttons live above their respective tables.
+
+**Trade:** the button is only visible when the members table is visible. If a future iteration adds a roles or audit tab as the default view of the group detail page, the invite trigger would need to move (probably to a per-tab toolbar or up to the page header). Acceptable - 11.5b ships members as the only tab; 11.6+ will reshape the page anyway.
+
+### Phase 11.5d-ii: form fields validated client-side AND server-side; client validation is best-effort
+
+**Decision:** the Server Action `inviteMemberAction` re-validates every field that the dialog's `<input>` `maxLength` attribute already enforces (`targetUserId`, `roleId` length caps; `expiresIn` regex). The client-side `maxLength` is a UX hint, not the security boundary.
+
+**Rationale:**
+- Browsers can be bypassed (the operator can edit DOM in DevTools, or POST the form via curl). The Server Action is the trust boundary; defense in depth.
+- The cap constants live in `lib/admin.ts` and are reused by both the dialog (`maxLength={ADMIN_INVITATION_USER_ID_MAX_LENGTH}`) and the Server Action. One source of truth means a bumped cap propagates to both sides automatically.
+- The `ADMIN_INVITATION_EXPIRES_IN_PATTERN` regex catches typos like "7days" client-side with a clear error message instead of bouncing off the server with a generic 400. The server still re-validates because the regex on the wire would otherwise be unenforced if the dashboard is bypassed.
+
+**Trade:** about a dozen lines of duplicated validation logic in the Server Action that mirrors what the input attributes enforce. Acceptable - the alternative (trusting client-side validation) is a security mistake; the alternative (lifting validation into a shared library) is over-engineering for V1.
+

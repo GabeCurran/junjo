@@ -496,3 +496,70 @@ export function listAdminMemberPermissionOverrides(
     { ...opts, revalidate: opts?.revalidate ?? 0 },
   );
 }
+
+// Phase 11.5d-i wire shape mirroring `WireInvitation` from
+// `packages/server/src/routes/invitations.ts`. Same ten fields exposed by
+// the per-game and admin invitation endpoints; duplicated here so the
+// dashboard does not import across the cloud-only boundary. The admin
+// endpoint adds a `payload.source: "admin"` discriminator on its audit
+// entry, but the wire shape itself is byte-identical to the per-game
+// route.
+export interface AdminInvitation {
+  id: string;
+  groupId: string;
+  code: string;
+  roleId: string | null;
+  targetUserId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  usedAt: string | null;
+  usedBy: string | null;
+}
+
+// Mirrors the server-side caps in `routes/admin.schema.ts:adminCreateInvitationBody`
+// so the dashboard's invite-member dialog can enforce the same limits via
+// input maxLength attributes without a round trip to learn what the server
+// accepts.
+export const ADMIN_INVITATION_USER_ID_MAX_LENGTH = 255;
+export const ADMIN_INVITATION_ROLE_ID_MAX_LENGTH = 255;
+// expiresIn is matched against the server's regex; surfacing it client-side
+// lets a typo like "7days" return a clear error message instead of
+// bouncing off the server with a generic 400.
+export const ADMIN_INVITATION_EXPIRES_IN_PATTERN = /^\d+[smhd]$/;
+
+export interface CreateAdminGroupInvitationInput {
+  // When set, the invitation is direct - only this user can accept. When
+  // omitted, the invitation is open-code (anyone with the code can
+  // accept). Mirrors the per-game route's body shape exactly.
+  targetUserId?: string;
+  // Forwarded verbatim; not validated against `Role` server-side. An
+  // invalid roleId surfaces at accept time when the dev's flow tries to
+  // assign it.
+  roleId?: string;
+  // `<positive integer><unit>` where unit is `s|m|h|d`. The server stamps
+  // `expiresAt = now() + expiresIn` post-validation; non-positive
+  // durations like `0d` return 400. Omitted = no expiry.
+  expiresIn?: string;
+}
+
+// Undefined fields are dropped from the wire body so the server's
+// non-empty-string constraints do not reject. An empty body `{}` is valid
+// and produces an open-code invitation with no role and no expiry.
+export function createAdminGroupInvitation(
+  gameId: string,
+  groupId: string,
+  input: CreateAdminGroupInvitationInput = {},
+  opts?: MutationOptions,
+): Promise<AdminInvitation> {
+  const body: Record<string, string> = {};
+  if (input.targetUserId !== undefined) body.targetUserId = input.targetUserId;
+  if (input.roleId !== undefined) body.roleId = input.roleId;
+  if (input.expiresIn !== undefined) body.expiresIn = input.expiresIn;
+  return adminMutate<Record<string, string>, AdminInvitation>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/invitations`,
+    body,
+    opts,
+  );
+}

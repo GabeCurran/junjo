@@ -4,18 +4,24 @@
 import { revalidatePath } from "next/cache";
 
 import {
+  ADMIN_INVITATION_EXPIRES_IN_PATTERN,
+  ADMIN_INVITATION_ROLE_ID_MAX_LENGTH,
+  ADMIN_INVITATION_USER_ID_MAX_LENGTH,
   ADMIN_MEMBER_KICK_REASON_MAX_LENGTH,
   ADMIN_MEMBER_NOTES_MAX_LENGTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   AdminDisabledError,
   type AdminGroupMember,
+  type AdminInvitation,
   type AdminMemberPermissionOverride,
   clearAdminMemberPermissionOverride,
+  createAdminGroupInvitation,
   kickAdminGroupMember,
   listAdminMemberPermissionOverrides,
   setAdminMemberPermissionOverride,
   updateAdminGroupMember,
 } from "../../../../../../lib/admin";
+import { getInviteBaseUrl } from "../../../../../../lib/junjo";
 
 // Phase 11.5c-ii Server Actions wired to the iter-068 cross-game admin
 // row-action endpoints. The four `useFormState`-shaped actions back the
@@ -238,5 +244,96 @@ export async function clearMemberPermissionOverrideAction(
     return { ok: true };
   } catch (err) {
     return { ok: false, error: describeError(err) };
+  }
+}
+
+// Phase 11.5d-ii invite-member action backing the three-tab dialog
+// (by-userId / by-code / by-link). The form's hidden `mode` field selects
+// the variant; the same Server Action handles all three because the
+// underlying server endpoint takes the same body shape regardless. The
+// only mode-specific behavior is whether `targetUserId` is required (mode
+// = "userId") and whether the result includes a constructed
+// `inviteUrl` (mode = "link").
+export const INVITE_MODES = ["userId", "code", "link"] as const;
+export type InviteMode = (typeof INVITE_MODES)[number];
+
+export interface InviteMemberResult {
+  ok: boolean;
+  error?: string;
+  // The created invitation. Always set on success regardless of mode; the
+  // dialog reads `code` from here for the by-code result panel.
+  invitation?: AdminInvitation;
+  // The constructed invite URL. Only set when mode === "link".
+  inviteUrl?: string;
+  // Echoed so the dialog knows which result panel to render after success
+  // (the by-userId tab closes immediately; the others show a copy-able
+  // result).
+  mode?: InviteMode;
+}
+
+export async function inviteMemberAction(
+  _prev: InviteMemberResult,
+  formData: FormData,
+): Promise<InviteMemberResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+
+  const modeRaw = formData.get("mode");
+  if (typeof modeRaw !== "string" || !(INVITE_MODES as readonly string[]).includes(modeRaw)) {
+    return { ok: false, error: "mode must be one of userId, code, link" };
+  }
+  const mode = modeRaw as InviteMode;
+
+  const targetUserIdRaw = formData.get("targetUserId");
+  const targetUserId = typeof targetUserIdRaw === "string" ? targetUserIdRaw.trim() : "";
+  if (mode === "userId") {
+    if (targetUserId.length === 0) {
+      return { ok: false, error: "user id is required for direct invitations", mode };
+    }
+    if (targetUserId.length > ADMIN_INVITATION_USER_ID_MAX_LENGTH) {
+      return {
+        ok: false,
+        error: `user id must be at most ${ADMIN_INVITATION_USER_ID_MAX_LENGTH} characters`,
+        mode,
+      };
+    }
+  }
+
+  const roleIdRaw = formData.get("roleId");
+  const roleId = typeof roleIdRaw === "string" ? roleIdRaw.trim() : "";
+  if (roleId.length > ADMIN_INVITATION_ROLE_ID_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `role id must be at most ${ADMIN_INVITATION_ROLE_ID_MAX_LENGTH} characters`,
+      mode,
+    };
+  }
+
+  const expiresInRaw = formData.get("expiresIn");
+  const expiresIn = typeof expiresInRaw === "string" ? expiresInRaw.trim() : "";
+  if (expiresIn.length > 0 && !ADMIN_INVITATION_EXPIRES_IN_PATTERN.test(expiresIn)) {
+    return {
+      ok: false,
+      error: "expires-in must look like 7d, 24h, 30m, or 60s",
+      mode,
+    };
+  }
+
+  try {
+    const invitation = await createAdminGroupInvitation(gameId, groupId, {
+      targetUserId: mode === "userId" ? targetUserId : undefined,
+      roleId: roleId.length > 0 ? roleId : undefined,
+      expiresIn: expiresIn.length > 0 ? expiresIn : undefined,
+    });
+    refreshGroup(gameId, groupId);
+    if (mode === "link") {
+      const inviteUrl = `${getInviteBaseUrl()}/invite/${encodeURIComponent(invitation.code)}`;
+      return { ok: true, invitation, inviteUrl, mode };
+    }
+    return { ok: true, invitation, mode };
+  } catch (err) {
+    return { ok: false, error: describeError(err), mode };
   }
 }

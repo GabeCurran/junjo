@@ -36,3 +36,14 @@ export function getAdminToken(): string | null {
 export function getJunjoBaseUrl(): string {
   return loadDashboardEnv().JUNJO_BASE_URL;
 }
+
+// The URL prefix used when the invite-member dialog (Phase 11.5d-ii)
+// constructs invite-link URLs. Falls back to JUNJO_BASE_URL when the
+// dedicated env var is unset; trailing slashes are trimmed so the resulting
+// URL has a single `/invite/<code>` segment regardless of whether the
+// operator wrote `https://app.example.com` or `https://app.example.com/`.
+export function getInviteBaseUrl(): string {
+  const env = loadDashboardEnv();
+  const raw = env.JUNJO_INVITE_BASE_URL ?? env.JUNJO_BASE_URL;
+  return raw.replace(/\/+$/, "");
+}
