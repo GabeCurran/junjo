@@ -2431,3 +2431,15 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Slack does not have a per-event "color category" like Discord embeds, so the unknown-type branch is visually identical to a known-type message except for the title and fields. No grey-vs-red color signal needed.
 
 **Trade:** new event types ship to Slack without per-type customization until the formatter ships an updated mapping. Same as Discord; documented in the user-facing Slack page.
+
+### Phase 13.1: docs onboarding is three pages: introduction, getting started, tutorial
+
+**Decision:** the new-user onboarding flow lives across three pages at the docs site root: `index.mdx` (the introduction - what Junjo is, what it gives you, what it is not, plus links into the rest of the site), `getting-started.mdx` (the install path: pick a server, install the SDK, construct a client, make your first call), and `tutorial.mdx` (the five-minute walkthrough that creates a group, invites a user, accepts the invitation, assigns a role, grants a permission, checks the permission, and opens an SSE subscription). The previous `index.mdx` placeholder ("This site is a placeholder.") is replaced.
+
+**Rationale:**
+- One page would be too long to scan and would mix two distinct intents: "what is this and should I bother" vs "show me how to use it." Splitting them lets a reader skim the introduction in 20 seconds before committing to the install steps.
+- A separate tutorial page lets us link readers directly into a worked example from any other doc page (common pattern from the SDK reference: "see the tutorial for how this fits together"). Having it embedded in the getting-started page would force every link to scroll a long way down.
+- Three pages keep each one focused: introduction is benefit-led, getting-started is install-led, tutorial is code-led. Matches the convention used by Stripe, Auth0, Clerk, and React Query, which is what new-V1 readers will be measuring this site against.
+- All three are linked from the top-level `_meta.json` ordering (`index` -> `getting-started` -> `tutorial` -> `sdk` -> `react` -> `api` -> `auth`), which is the natural reading order: read what it is, install it, do the tutorial, then dive into the reference.
+
+**Trade:** three pages instead of one means three places to keep the install snippet up to date when (e.g.) a new package ships or a new env var becomes required. Acceptable: the snippets live in plain MDX, not in code, and the introduction's snippet is intentionally tiny (one `npm install` line) to minimize duplication. The tutorial does NOT repeat the install steps - it links back to getting-started.
