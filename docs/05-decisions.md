@@ -3277,4 +3277,71 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** an operator on page 4 may see a different kind list than an operator on page 1; the dropdown is a snapshot, not a catalog. Acceptable: the V1 group browser is for inspecting active groups, not building catalog UX. A future "all kinds in this game" endpoint can land additively if Phase 11.5+ exposes it for related work.
 
+### Phase 11.5 splits a/b/c/d: server admin endpoints, then group detail page shell, then row actions, then invite dialog
+
+**Decision:** Phase 11.5 ("Group detail (members tab)") splits across four iterations. 11.5a (this iteration) ships two new cross-game admin endpoints: `GET /v1/admin/games/:gameId/groups/:groupId` (single-group detail backed by the existing `WireAdminGroup` shape) and `GET /v1/admin/games/:gameId/groups/:groupId/members` (paginated members with role chips populated). 11.5b ships the dashboard's group detail page shell (`apps/dashboard/app/(dashboard)/games/[gameId]/groups/[groupId]/page.tsx`) plus a TanStack Table-backed members tab consuming both endpoints (read-only; the row-action dialogs land later). 11.5c ships row actions (kick / override permission / edit notes / view all overrides). 11.5d ships the "Invite member" tabbed dialog.
+
+**Rationale:**
+- VISION's Phase 11.5 spec mixes invisible API surface (the data the page renders) with visible UI (table layout, role chips, row actions, invite dialog). Bundling everything into one iteration would produce a 5+ surface diff. The natural seam is the same one that landed cleanly in 11.2 / 11.3 / 11.4: server endpoints first, then the page that consumes them, then interactive surface area.
+- Each row action (kick + override + notes + overrides) is its own destructive-confirmation or PATCH-style dialog with its own Server Action. Bundling them into the read-only iteration would mix three concerns; bundling all four into a single later iteration would produce a wider diff than 11.3b-ii (which split issue + revoke into two dialogs).
+- The "Invite member" dialog with three tabs (by-userId / by-code / by-link) is a non-trivial Client Component on its own. Each tab has different form fields and produces a different SDK call; folding all three into the row-actions iteration would mix concerns and obscure the diff.
+
+**Trade:** Phase 11.5 takes longer to close (four iterations vs one). Acceptable: each iteration ships a reviewable unit with its own tests, the group detail page is usable without the row actions or invite dialog (just read-only), and the iteration log makes the partial state explicit.
+
+### Phase 11.5a: single-group detail reuses `WireAdminGroup`, no new wire shape
+
+**Decision:** `GET /v1/admin/games/:gameId/groups/:groupId` returns the same `WireAdminGroup` shape that `GET /v1/admin/games/:gameId/groups` (Phase 11.4a) emits per item: `{ id, gameId, kind, name, visibility, metadata, defaultRoleId, parentGroupId, memberCount, createdAt, updatedAt }`. No additional fields (no role count, no audit-entry count) on the single-group fetch.
+
+**Rationale:**
+- The dashboard's group detail page header renders the same data the list view's row already renders; no need to invent a richer shape just because we have one row's worth of bandwidth.
+- A future "richer detail" endpoint (with role count, child group count, audit-entry count) could be `GET /v1/admin/games/:gameId/groups/:groupId/stats` if Phase 11.6+ wants it; tabs that need their own data fetch (roles tab, audit tab) will get their own endpoints anyway.
+- Keeping the wire shape stable across list / detail eliminates a class of consumer bugs (the dashboard's `<GroupDetailHeader>` can be a thin function over `AdminGroup` regardless of how the data was fetched).
+
+**Trade:** the dashboard makes a separate `findUnique` round-trip to fetch the single-group detail when the list endpoint just returned the same row. Acceptable: the list view's 60s revalidate cache could otherwise be stale relative to a recent membership change, and the per-page revalidate on the detail page keeps the header counts live.
+
+### Phase 11.5a: group existence checks live in the handler, not in middleware
+
+**Decision:** the two new handlers (`getAdminGroupHandler`, `listAdminGroupMembersHandler`) each run their own `prisma.group.findUnique` lookup with three checks (existence, `gameId` match, soft-delete null) before doing their main work. No shared "load group by id and 404 if missing" middleware.
+
+**Rationale:**
+- Hono middleware in V1 attaches to a path prefix, not a specific handler-with-:groupId placeholder. A middleware that ran on `/admin/games/:gameId/groups/:groupId/*` would apply to any future child route under that prefix, which would over-couple unrelated routes.
+- The 404-collapse logic is six lines per handler and reads cleanly inline; extracting a shared `loadAdminGroup(prisma, gameId, groupId)` helper would be additive in a future iteration if the duplication ever exceeds three call sites. Today it is two.
+- The dashboard's `notFound()` substring-match on the error envelope (iter 063) routes 404s to Next.js's standard 404 page; the inline checks produce the canonical `{ code: "not_found", ... }` envelope that mapping expects.
+
+**Trade:** if a future iteration adds a third group-scoped admin route (e.g. roles tab in 11.6), the third handler will repeat the same check sequence. Acceptable: the threshold for extracting a shared helper is three call sites; the iteration that adds the third site can refactor in a 5-line change.
+
+### Phase 11.5a: members endpoint exposes `junjoUserId` alongside `externalUserId`
+
+**Decision:** each `WireAdminGroupMember` carries both `externalUserId` (the dev-supplied id, the value operators recognize) and `junjoUserId` (the internal cross-game UUID). The per-game `members.list` route (`/v1/groups/:groupId/members`) only carries `userId` (the external one).
+
+**Rationale:**
+- The dashboard is the cross-game admin surface; operators investigating a player will sometimes need the internal id to correlate against `GET /v1/users/:junjoUserId/games` (Phase 10.2's cross-game user query) without making a separate ExternalIdentity lookup. Exposing both fields lets the dashboard chain into the cross-game view directly.
+- The per-game route deliberately hides `junjoUserId` because per-game SDK consumers should not need to know the internal id (their auth-adapter only ever sees external ids). The admin route does not have that constraint.
+- `junjoUserId` is not a secret; it is a stable cross-game cuid. Exposing it on the admin surface only adds capability, no risk.
+
+**Trade:** the dashboard's wire shape diverges from the per-game `Member` shape by one field. Acceptable: the dashboard already maintains its own `lib/admin.ts` types byte-for-byte (per the open-core boundary stance). Future per-game consumers do not see this field and cannot accidentally depend on it.
+
+### Phase 11.5a: members endpoint default `status=active` mirrors the React `useMembers` hook
+
+**Decision:** the `?status=` query parameter defaults to `active`. Other valid values are `left`, `kicked`, `invited`, `all`. Empty / missing query parameter returns active members only.
+
+**Rationale:**
+- The default-active stance matches the V1 React `useMembers` hook (Phase 7.4, iter 040), which also defaults to active because the dominant consumer is a roster panel.
+- The dashboard's group detail members tab is the operator's "who is in this group right now" view. Surfacing left / kicked / invited members on the default render would make the table noisier than useful; operators investigating churn will switch the filter explicitly.
+- The `all` value is the explicit escape hatch for cross-status queries; making it the default would push every operator to filter manually on every page load.
+
+**Trade:** an operator who wants to see "every member who has ever been in this group" must explicitly switch to `?status=all`. Acceptable: the dashboard's filter chips will surface the four explicit values plus the wildcard; explicit beats implicit for membership status.
+
+### Phase 11.5a: `q` searches `externalUserId` only (not `notesPublic` / `notesPrivate` / `metadata`)
+
+**Decision:** the `?q=` query parameter case-insensitive substring-matches against `ExternalIdentity.externalUserId` only. Notes and metadata fields are NOT searchable in V1.
+
+**Rationale:**
+- The dashboard's members table renders the externalUserId as the primary identifier; operators searching for "alice" expect rows whose externalUserId contains "alice", not rows whose private notes mention alice.
+- Notes are dev-supplied free-form strings; searching them would require additional Postgres indexes (or an unindexed `ILIKE` scan) and would conflate distinct concerns. A future "notes search" feature can land additively as `?notesQ=` if a real use case surfaces.
+- Metadata is JSON; searching it requires either jsonb path queries (slow without a GIN index) or whole-document `ILIKE` (semantically wrong). Out of scope for V1.
+- The single-field q parameter mirrors the Phase 11.4a groups list `?q=` (which searches `Group.name` only). Pattern consistency across admin endpoints means operators can predict what search does without reading docs.
+
+**Trade:** an operator looking for a member by their public note text cannot do so via this endpoint in V1. Acceptable: notes are a dev-supplied free-text field, not a primary identifier; `ExternalIdentity.externalUserId` is the canonical "who is this member" lookup.
+
 

@@ -9,9 +9,11 @@ import {
   createAdminApiKeyHandler,
   createAdminGameHandler,
   getAdminGameHandler,
+  getAdminGroupHandler,
   getAdminStatsHandler,
   listAdminApiKeysHandler,
   listAdminGamesHandler,
+  listAdminGroupMembersHandler,
   listAdminGroupsForGameHandler,
   listRecentAuditHandler,
   listUserGamesHandler,
@@ -122,6 +124,18 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupsForGameHandler(prisma),
+  );
+  // Admin-token-gated single-group detail + member listing (Phase 11.5a).
+  // Backs the dashboard's group detail page (members tab as the default).
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId",
+    adminAuthMiddleware(opts.adminToken),
+    getAdminGroupHandler(prisma),
+  );
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/members",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupMembersHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

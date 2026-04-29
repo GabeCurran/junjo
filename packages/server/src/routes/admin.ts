@@ -6,7 +6,16 @@
 // intentionally NOT shipped in V1 per VISION; the dashboard calls these
 // endpoints directly via fetch.
 
-import type { ApiKey, AuditEntry, Game, Group, Prisma, PrismaClient } from "@prisma/client";
+import type {
+  ApiKey,
+  AuditEntry,
+  Game,
+  Group,
+  GroupMember,
+  Prisma,
+  PrismaClient,
+  Role,
+} from "@prisma/client";
 import type { Handler } from "hono";
 import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
@@ -14,6 +23,7 @@ import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   createGameBody,
   listAdminGamesQuery,
+  listAdminGroupMembersQuery,
   listAdminGroupsQuery,
   listRecentAuditQuery,
 } from "./admin.schema.js";
@@ -707,5 +717,247 @@ export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
       data: { revokedAt: new Date() },
     });
     return c.json<WireAdminApiKey>(toWireApiKey(updated));
+  };
+}
+
+// =====================================================================
+// Phase 11.5a: cross-game group detail + members listing
+// =====================================================================
+
+// Single-group fetch reuses `WireAdminGroup` from Phase 11.4a.
+
+export interface WireAdminMemberRole {
+  id: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+}
+
+export interface WireAdminGroupMember {
+  id: string;
+  groupId: string;
+  externalUserId: string;
+  junjoUserId: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;
+  leftAt: string | null;
+  roles: WireAdminMemberRole[];
+}
+
+export interface WireAdminGroupMemberList {
+  items: WireAdminGroupMember[];
+  total: number;
+  hasMore: boolean;
+}
+
+function toWireAdminMemberRole(role: Role): WireAdminMemberRole {
+  return {
+    id: role.id,
+    name: role.name,
+    priority: role.priority,
+    color: role.color,
+    isDefault: role.isDefault,
+  };
+}
+
+function toWireAdminGroupMember(
+  member: GroupMember,
+  externalUserId: string,
+  roles: Role[],
+): WireAdminGroupMember {
+  return {
+    id: member.id,
+    groupId: member.groupId,
+    externalUserId,
+    junjoUserId: member.junjoUserId,
+    status: member.status,
+    metadata: (member.metadata ?? {}) as Record<string, unknown>,
+    notesPublic: member.notesPublic,
+    notesPrivate: member.notesPrivate,
+    joinedAt: member.joinedAt.toISOString(),
+    leftAt: member.leftAt ? member.leftAt.toISOString() : null,
+    roles: roles.map(toWireAdminMemberRole),
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:groupId` returns a single group's
+// detail in the same wire shape as the list endpoint (Phase 11.4a). The
+// dashboard's group detail page header consumes this; counts are computed
+// fresh per request rather than reading the list's revalidated cache.
+//
+// 404 when the game does not exist OR when the group does not exist OR
+// when the group exists but belongs to a different game OR when the group
+// is soft-deleted. Cross-game existence is not leaked through the gameId
+// path scope. The dashboard's not-found mapping (substring-match on the
+// error envelope) routes the operator to Next.js's 404 page.
+export function getAdminGroupHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const group = await prisma.group.findUnique({ where: { id: groupId } });
+    if (!group) throw Errors.notFound("group");
+    if (group.gameId !== gameId) throw Errors.notFound("group");
+    if (group.softDeletedAt !== null) throw Errors.notFound("group");
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId, status: "active" },
+    });
+
+    return c.json<WireAdminGroup>(toWireAdminGroup(group, memberCount));
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:groupId/members` lists members of a
+// single group with their roles populated for the dashboard's members tab
+// (TanStack Table with role chips). Pagination is offset / limit; the
+// status filter narrows to one of `active | left | kicked | invited` or
+// returns every status with `?status=all`. Default is `active` since the
+// roster panel is the dominant view.
+//
+// Behavior:
+//
+//   - Sorted by `(joinedAt desc, id desc)`. Newest joins first matches
+//     the dashboard's mental model and the per-game `members.list` route.
+//   - `q` performs a case-insensitive substring search against the dev's
+//     external user id (the `ExternalIdentity.externalUserId` field, NOT
+//     the internal `junjoUserId`). This is the field operators recognize.
+//     The search runs as a Postgres `contains` on the joined identity row.
+//   - Roles are populated via two batched queries: one `MemberRole.findMany`
+//     for join rows scoped to the page's member ids, plus one
+//     `Role.findMany` for the role rows themselves. The handler fans out
+//     the result to per-member arrays in memory. This keeps the fetch at
+//     four total queries (count + member page + member-roles + role rows
+//     + identities) regardless of page size.
+//   - 404 propagates from the same group existence checks the single-group
+//     handler enforces.
+//   - `total` reflects the matching set BEFORE pagination so the dashboard
+//     can render an accurate page count.
+//   - `hasMore` is `offset + items.length < total`.
+export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const group = await prisma.group.findUnique({
+      where: { id: groupId },
+      select: { id: true, gameId: true, softDeletedAt: true },
+    });
+    if (!group) throw Errors.notFound("group");
+    if (group.gameId !== gameId) throw Errors.notFound("group");
+    if (group.softDeletedAt !== null) throw Errors.notFound("group");
+
+    const parsed = listAdminGroupMembersQuery.safeParse({
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset"),
+      status: c.req.query("status"),
+      q: c.req.query("q"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, offset, status, q } = parsed.data;
+
+    // Build the where clause. The status filter is straightforward; the q
+    // filter has to traverse `JunjoUser -> ExternalIdentity (gameId, ...)`
+    // because the wire shape's `externalUserId` lives on a related row.
+    // Prisma's relation filters compose cleanly against the page query.
+    const where: Prisma.GroupMemberWhereInput = {
+      groupId,
+      ...(status !== "all" ? { status } : {}),
+      ...(q !== undefined
+        ? {
+            junjoUser: {
+              externalIdentities: {
+                some: {
+                  gameId,
+                  externalUserId: { contains: q, mode: "insensitive" },
+                },
+              },
+            },
+          }
+        : {}),
+    };
+
+    const [members, total] = await Promise.all([
+      prisma.groupMember.findMany({
+        where,
+        orderBy: [{ joinedAt: "desc" }, { id: "desc" }],
+        skip: offset,
+        take: limit,
+      }),
+      prisma.groupMember.count({ where }),
+    ]);
+
+    if (members.length === 0) {
+      return c.json<WireAdminGroupMemberList>({
+        items: [],
+        total,
+        hasMore: false,
+      });
+    }
+
+    const memberIds = members.map((m) => m.id);
+    const junjoUserIds = members.map((m) => m.junjoUserId);
+
+    const [memberRoleRows, identities] = await Promise.all([
+      prisma.memberRole.findMany({
+        where: { groupMemberId: { in: memberIds } },
+        select: { groupMemberId: true, roleId: true },
+      }),
+      prisma.externalIdentity.findMany({
+        where: { gameId, junjoUserId: { in: junjoUserIds } },
+        select: { junjoUserId: true, externalUserId: true },
+      }),
+    ]);
+
+    const roleIdsByMember = new Map<string, string[]>();
+    const allRoleIds = new Set<string>();
+    for (const row of memberRoleRows) {
+      const list = roleIdsByMember.get(row.groupMemberId);
+      if (list) list.push(row.roleId);
+      else roleIdsByMember.set(row.groupMemberId, [row.roleId]);
+      allRoleIds.add(row.roleId);
+    }
+
+    const roles =
+      allRoleIds.size === 0
+        ? []
+        : await prisma.role.findMany({
+            where: { id: { in: Array.from(allRoleIds) } },
+          });
+    const rolesById = new Map(roles.map((r) => [r.id, r]));
+
+    const identityById = new Map(identities.map((i) => [i.junjoUserId, i.externalUserId]));
+
+    const items = members.map((m) => {
+      const externalUserId = identityById.get(m.junjoUserId) ?? "";
+      const memberRoleIds = roleIdsByMember.get(m.id) ?? [];
+      const memberRoles = memberRoleIds
+        .map((id) => rolesById.get(id))
+        .filter((r): r is Role => r !== undefined)
+        .sort((a, b) => {
+          if (a.priority !== b.priority) return b.priority - a.priority;
+          return a.name.localeCompare(b.name);
+        });
+      return toWireAdminGroupMember(m, externalUserId, memberRoles);
+    });
+
+    return c.json<WireAdminGroupMemberList>({
+      items,
+      total,
+      hasMore: offset + items.length < total,
+    });
   };
 }

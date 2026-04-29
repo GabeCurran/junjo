@@ -45,10 +45,24 @@ export const listAdminGroupsQuery = z.object({
   order: z.enum(ADMIN_GROUP_SORT_ORDERS).default("desc"),
 });
 
+// Phase 11.5a: cross-game group detail + member listing for the dashboard's
+// group detail page (members tab). The status filter mirrors the four
+// `GroupMember.status` values plus the "all" wildcard.
+export const ADMIN_MEMBER_STATUSES = ["active", "left", "kicked", "invited", "all"] as const;
+
+export const listAdminGroupMembersQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  status: z.enum(ADMIN_MEMBER_STATUSES).default("active"),
+  q: z.string().min(1).max(255).optional(),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
 export type ListAdminGroupsQuery = z.infer<typeof listAdminGroupsQuery>;
+export type ListAdminGroupMembersQuery = z.infer<typeof listAdminGroupMembersQuery>;
 export type AdminGroupSortField = (typeof ADMIN_GROUP_SORT_FIELDS)[number];
 export type AdminGroupSortOrder = (typeof ADMIN_GROUP_SORT_ORDERS)[number];
 export type AdminGroupVisibility = (typeof ADMIN_GROUP_VISIBILITIES)[number];
+export type AdminMemberStatusFilter = (typeof ADMIN_MEMBER_STATUSES)[number];

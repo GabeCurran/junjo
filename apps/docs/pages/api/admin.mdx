@@ -475,6 +475,104 @@ interface WireAdminGroupList {
 | `bad_request` | 400 | Query validation failed, or `sort=memberCount` matched more than 500 rows after filtering. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/groups/:groupId
+
+Returns a single group's detail in the same wire shape as the list endpoint. Backs the dashboard's group detail page header so counts stay live (the list view's 60s revalidate cache could otherwise be stale relative to a recent membership change).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` the group belongs to. |
+| `groupId` | string | The `Group.id` to fetch. |
+
+### Response
+
+`200 OK` with a `WireAdminGroup` (same shape as the list endpoint above).
+
+### Behavior
+
+- 404 when the game does not exist OR when the group does not exist OR when the group exists but belongs to a different game OR when the group is soft-deleted. Cross-game existence is not leaked through the path scope.
+- `memberCount` is the active-member count, computed at request time.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` or `groupId` does not match, the group is in a different game, or the group is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/members
+
+Lists members in a single group with their roles populated. Backs the dashboard's group detail page (members tab) which renders a TanStack Table with role chips, status badges, and join timestamps.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` the group belongs to. |
+| `groupId` | string | The `Group.id` whose members to list. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Page size. |
+| `offset` | int >= 0 | 0 | Number of matching rows to skip before the page. |
+| `status` | `"active" \| "left" \| "kicked" \| "invited" \| "all"` | `active` | Filter by `GroupMember.status`. The `"all"` value drops the filter. |
+| `q` | string 1-255 | - | Case-insensitive substring search against the dev-supplied external user id (the `ExternalIdentity.externalUserId` field). Empty string is rejected; pass the parameter unset to drop the filter. |
+
+### Response
+
+`200 OK` with a `WireAdminGroupMemberList`:
+
+```ts
+interface WireAdminMemberRole {
+  id: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+}
+
+interface WireAdminGroupMember {
+  id: string;                    // GroupMember.id
+  groupId: string;
+  externalUserId: string;        // The dev-supplied user id (ExternalIdentity.externalUserId)
+  junjoUserId: string;           // The internal cross-game user id (JunjoUser.id)
+  status: "active" | "left" | "kicked" | "invited";
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;              // ISO 8601
+  leftAt: string | null;         // ISO 8601, null while still active
+  roles: WireAdminMemberRole[];  // Sorted by priority desc, then name asc
+}
+
+interface WireAdminGroupMemberList {
+  items: WireAdminGroupMember[];
+  total: number;                 // Matching rows BEFORE pagination
+  hasMore: boolean;              // offset + items.length < total
+}
+```
+
+### Behavior
+
+- Sorted by `(joinedAt desc, id desc)`. Newest joins first matches the per-game `members.list` route precedent and the dashboard's mental model.
+- Default `status=active` is the dominant view (the roster panel). `status=all` returns every status; the explicit individual values (`left`, `kicked`, `invited`) narrow to one.
+- `q` searches the dev-supplied external user id (the value the dev's auth adapter returned). Internal `junjoUserId` is not searched because operators recognize the external id, not the cross-game UUID.
+- Roles are populated via two batched queries (`MemberRole` join rows scoped to the page's member ids, then a single `Role` lookup for those role ids). The handler fans the results out to per-member arrays in memory; the per-member roles are sorted by `priority desc, name asc` so the highest-priority chip renders first.
+- 404 propagates from the same group existence checks the single-group endpoint enforces (missing / cross-game / soft-deleted).
+- `total` reflects the filtered count BEFORE pagination, so a TanStack Table consumer can render an accurate page count without a second round trip.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` or `groupId` does not match, the group is cross-game, or the group is soft-deleted. |
+| `bad_request` | 400 | Query validation failed (`limit` out of range, negative `offset`, unknown `status` value, empty `q`). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

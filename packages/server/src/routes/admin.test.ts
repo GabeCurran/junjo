@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { type Prisma, PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
@@ -827,6 +827,34 @@ type WireAdminGroup = {
 
 type WireAdminGroupList = {
   items: WireAdminGroup[];
+  total: number;
+  hasMore: boolean;
+};
+
+type WireAdminMemberRole = {
+  id: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+};
+
+type WireAdminGroupMember = {
+  id: string;
+  groupId: string;
+  externalUserId: string;
+  junjoUserId: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;
+  leftAt: string | null;
+  roles: WireAdminMemberRole[];
+};
+
+type WireAdminGroupMemberList = {
+  items: WireAdminGroupMember[];
   total: number;
   hasMore: boolean;
 };
@@ -1902,6 +1930,568 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups", () => 
     const game = await createGame("Alpha", prisma);
     const noTokenApp = createApp({ prisma, adminToken: undefined });
     const res = await noTokenApp.request(`/v1/admin/games/${game.id}/groups`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function getFetch(gameId: string, groupId: string, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games/${gameId}/groups/${groupId}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  it("returns the group's full wire shape", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "Sun Wukong",
+        visibility: "invite-only",
+        metadata: { theme: "fire" },
+      },
+    });
+    const role = await prisma.role.create({
+      data: { groupId: group.id, name: "Member", priority: 0 },
+    });
+    await prisma.group.update({
+      where: { id: group.id },
+      data: { defaultRoleId: role.id },
+    });
+
+    const res = await getFetch(game.id, group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WireAdminGroup;
+    expect(body.id).toBe(group.id);
+    expect(body.gameId).toBe(game.id);
+    expect(body.kind).toBe("guild");
+    expect(body.name).toBe("Sun Wukong");
+    expect(body.visibility).toBe("invite-only");
+    expect(body.metadata).toEqual({ theme: "fire" });
+    expect(body.defaultRoleId).toBe(role.id);
+    expect(body.parentGroupId).toBeNull();
+    expect(body.memberCount).toBe(0);
+    expect(body.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(body.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("counts active members for memberCount, excluding non-active", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+      },
+    });
+    for (const status of ["active", "active", "active", "left", "kicked", "invited"] as const) {
+      const u = await prisma.junjoUser.create({ data: {} });
+      await prisma.groupMember.create({
+        data: { groupId: group.id, junjoUserId: u.id, status },
+      });
+    }
+    const res = await getFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroup;
+    expect(body.memberCount).toBe(3);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await getFetch(game.id, "missing-group-id");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+        softDeletedAt: new Date(),
+      },
+    });
+    const res = await getFetch(game.id, group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group exists but belongs to a different game", async () => {
+    const a = await createGame("Alpha", prisma);
+    const b = await createGame("Beta", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: b.id,
+        kind: "guild",
+        name: "b-group",
+        visibility: "invite-only",
+      },
+    });
+    const res = await getFetch(a.id, group.id);
+    expect(res.status).toBe(404);
+    const ok = await getFetch(b.id, group.id);
+    expect(ok.status).toBe(200);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+      },
+    });
+    const res = await app.request(`/v1/admin/games/${game.id}/groups/${group.id}`, {
+      method: "GET",
+    });
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("invalid_admin_token");
+  });
+
+  it("rejects requests with the wrong admin token", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+      },
+    });
+    const res = await getFetch(game.id, group.id, "Bearer nope");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when the admin token is unset on the server", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+      },
+    });
+    const noTokenApp = createApp({ prisma, adminToken: undefined });
+    const res = await noTokenApp.request(`/v1/admin/games/${game.id}/groups/${group.id}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId/members", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function listFetch(
+    gameId: string,
+    groupId: string,
+    query = "",
+    header = `Bearer ${ADMIN_TOKEN}`,
+  ) {
+    return app.request(`/v1/admin/games/${gameId}/groups/${groupId}/members${query}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  // Seeds members in the supplied group; each member gets its own JunjoUser
+  // + ExternalIdentity, plus optional MemberRole join rows. Stagger between
+  // creates makes joinedAt-desc ordering deterministic across rows.
+  async function seedMembers(
+    gameId: string,
+    groupId: string,
+    plan: Array<{
+      external: string;
+      status?: "active" | "left" | "kicked" | "invited";
+      roles?: Array<{ name: string; priority?: number; color?: string }>;
+      notesPublic?: string;
+      notesPrivate?: string;
+      metadata?: Record<string, unknown>;
+    }>,
+    staggerMs = 2,
+  ) {
+    const created: Array<{ memberId: string; externalUserId: string }> = [];
+    for (const p of plan) {
+      const u = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, junjoUserId: u.id, externalUserId: p.external },
+      });
+      const member = await prisma.groupMember.create({
+        data: {
+          groupId,
+          junjoUserId: u.id,
+          status: p.status ?? "active",
+          notesPublic: p.notesPublic ?? null,
+          notesPrivate: p.notesPrivate ?? null,
+          metadata: (p.metadata ?? {}) as Prisma.InputJsonValue,
+        },
+      });
+      for (const r of p.roles ?? []) {
+        const role = await prisma.role.create({
+          data: {
+            groupId,
+            name: r.name,
+            priority: r.priority ?? 0,
+            color: r.color ?? null,
+          },
+        });
+        await prisma.memberRole.create({
+          data: { groupMemberId: member.id, roleId: role.id },
+        });
+      }
+      created.push({ memberId: member.id, externalUserId: p.external });
+      await new Promise((resolve) => setTimeout(resolve, staggerMs));
+    }
+    return created;
+  }
+
+  it("returns an empty page for a group with no members", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body).toEqual({ items: [], total: 0, hasMore: false });
+  });
+
+  it("returns members with full wire shape including roles and notes", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      {
+        external: "user_alice",
+        roles: [{ name: "Officer", priority: 100, color: "#ff0000" }],
+        notesPublic: "Founding member",
+        notesPrivate: "VIP",
+        metadata: { custom: "value" },
+      },
+    ]);
+    const res = await listFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.total).toBe(1);
+    expect(body.hasMore).toBe(false);
+    const item = body.items[0];
+    if (!item) throw new Error("expected one item");
+    expect(item.externalUserId).toBe("user_alice");
+    expect(typeof item.junjoUserId).toBe("string");
+    expect(item.junjoUserId.length).toBeGreaterThan(0);
+    expect(item.status).toBe("active");
+    expect(item.metadata).toEqual({ custom: "value" });
+    expect(item.notesPublic).toBe("Founding member");
+    expect(item.notesPrivate).toBe("VIP");
+    expect(item.joinedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(item.leftAt).toBeNull();
+    expect(item.roles).toHaveLength(1);
+    const role = item.roles[0];
+    if (!role) throw new Error("expected role chip");
+    expect(role.name).toBe("Officer");
+    expect(role.priority).toBe(100);
+    expect(role.color).toBe("#ff0000");
+    expect(role.isDefault).toBe(false);
+  });
+
+  it("orders members by joinedAt desc (newest first)", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      { external: "user_first" },
+      { external: "user_second" },
+      { external: "user_third" },
+    ]);
+    const res = await listFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.items.map((m) => m.externalUserId)).toEqual([
+      "user_third",
+      "user_second",
+      "user_first",
+    ]);
+  });
+
+  it("defaults to status=active and excludes non-active members", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      { external: "u_active", status: "active" },
+      { external: "u_left", status: "left" },
+      { external: "u_kicked", status: "kicked" },
+      { external: "u_invited", status: "invited" },
+    ]);
+    const res = await listFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.total).toBe(1);
+    expect(body.items.map((m) => m.externalUserId)).toEqual(["u_active"]);
+  });
+
+  it("supports status=all to return every status", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      { external: "u_active", status: "active" },
+      { external: "u_left", status: "left" },
+      { external: "u_kicked", status: "kicked" },
+      { external: "u_invited", status: "invited" },
+    ]);
+    const res = await listFetch(game.id, group.id, "?status=all");
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.total).toBe(4);
+    expect(body.items.map((m) => m.status).sort()).toEqual(["active", "invited", "kicked", "left"]);
+  });
+
+  it("supports status=left filter", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      { external: "u_active", status: "active" },
+      { external: "u_left_a", status: "left" },
+      { external: "u_left_b", status: "left" },
+    ]);
+    const res = await listFetch(game.id, group.id, "?status=left");
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.total).toBe(2);
+    expect(body.items.every((m) => m.status === "left")).toBe(true);
+  });
+
+  it("filters by case-insensitive externalUserId substring via q", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      { external: "user_alice" },
+      { external: "user_bob" },
+      { external: "user_charlie" },
+    ]);
+    const res = await listFetch(game.id, group.id, "?q=ALI");
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.items.map((m) => m.externalUserId)).toEqual(["user_alice"]);
+  });
+
+  it("paginates via offset + limit, surfacing total + hasMore", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(
+      game.id,
+      group.id,
+      Array.from({ length: 5 }, (_, i) => ({ external: `u${i}` })),
+    );
+    const first = await listFetch(game.id, group.id, "?limit=2&offset=0");
+    const firstBody = (await first.json()) as WireAdminGroupMemberList;
+    expect(firstBody.total).toBe(5);
+    expect(firstBody.hasMore).toBe(true);
+    expect(firstBody.items).toHaveLength(2);
+
+    const last = await listFetch(game.id, group.id, "?limit=2&offset=4");
+    const lastBody = (await last.json()) as WireAdminGroupMemberList;
+    expect(lastBody.total).toBe(5);
+    expect(lastBody.hasMore).toBe(false);
+    expect(lastBody.items).toHaveLength(1);
+  });
+
+  it("returns roles sorted by priority desc with name asc tiebreaker", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      {
+        external: "u_multi",
+        roles: [
+          { name: "Member", priority: 0 },
+          { name: "Officer", priority: 100 },
+          { name: "Veteran", priority: 50 },
+          { name: "Apprentice", priority: 50 },
+        ],
+      },
+    ]);
+    const res = await listFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    const item = body.items[0];
+    if (!item) throw new Error("expected one member");
+    expect(item.roles.map((r) => r.name)).toEqual(["Officer", "Apprentice", "Veteran", "Member"]);
+  });
+
+  it("returns members across multiple roles without duplicating the row", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    await seedMembers(game.id, group.id, [
+      {
+        external: "u_two_roles",
+        roles: [
+          { name: "Officer", priority: 100 },
+          { name: "Strategist", priority: 80 },
+        ],
+      },
+    ]);
+    const res = await listFetch(game.id, group.id);
+    const body = (await res.json()) as WireAdminGroupMemberList;
+    expect(body.total).toBe(1);
+    expect(body.items).toHaveLength(1);
+    const item = body.items[0];
+    if (!item) throw new Error("expected one member");
+    expect(item.roles).toHaveLength(2);
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await listFetch(game.id, "missing-group-id");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("returns 404 when the group is soft-deleted", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "g1",
+        visibility: "invite-only",
+        softDeletedAt: new Date(),
+      },
+    });
+    const res = await listFetch(game.id, group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the group belongs to a different game (cross-game)", async () => {
+    const a = await createGame("Alpha", prisma);
+    const b = await createGame("Beta", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: b.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(a.id, group.id);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects limit=0 with 400", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id, "?limit=0");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects limit > 100 with 400", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id, "?limit=101");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects negative offset with 400", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id, "?offset=-1");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects unknown status value with 400", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id, "?status=banned");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects empty q with 400", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await listFetch(game.id, group.id, "?q=");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const res = await app.request(`/v1/admin/games/${game.id}/groups/${group.id}/members`, {
+      method: "GET",
+    });
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("invalid_admin_token");
+  });
+
+  it("returns 401 when the admin token is unset on the server", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
+    });
+    const noTokenApp = createApp({ prisma, adminToken: undefined });
+    const res = await noTokenApp.request(`/v1/admin/games/${game.id}/groups/${group.id}/members`, {
       method: "GET",
       headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
     });
