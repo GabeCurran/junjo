@@ -3,8 +3,8 @@
 
 import { Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import { type CreateGameResult, createGameAction } from "../../app/(dashboard)/games/actions";
 import { Button } from "../ui/button";
@@ -34,7 +34,7 @@ function SubmitButton() {
 
 export function CreateGameDialog() {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(createGameAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(createGameAction, INITIAL_STATE);
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const nameInputId = useId();

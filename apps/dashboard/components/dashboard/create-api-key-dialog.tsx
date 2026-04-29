@@ -3,8 +3,8 @@
 
 import { Check, Copy, KeyRound, ShieldAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type CreateApiKeyResult,
@@ -38,7 +38,7 @@ function IssueButton() {
 
 export function CreateApiKeyDialog({ gameId }: CreateApiKeyDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(createApiKeyAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(createApiKeyAction, INITIAL_STATE);
   const [copied, setCopied] = useState(false);
   const router = useRouter();
 
@@ -65,7 +65,7 @@ export function CreateApiKeyDialog({ gameId }: CreateApiKeyDialogProps) {
       // cache invalidation; `router.refresh()` belt-and-suspenders the
       // current view.
       router.refresh();
-      // The action's state cannot be reset cleanly via useFormState; we
+      // The action's state cannot be reset cleanly via useActionState; we
       // accept that re-opening the dialog after a successful issue without
       // a hard refresh would show the previously-issued secret again.
       // The router.refresh() rerenders the parent and re-mounts this

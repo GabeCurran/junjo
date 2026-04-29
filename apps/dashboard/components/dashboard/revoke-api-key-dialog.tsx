@@ -2,8 +2,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type RevokeApiKeyResult,
@@ -39,7 +39,7 @@ function ConfirmButton() {
 
 export function RevokeApiKeyDialog({ gameId, keyId, prefix }: RevokeApiKeyDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(revokeApiKeyAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(revokeApiKeyAction, INITIAL_STATE);
   const router = useRouter();
 
   // Close on success and refresh the page so the key flips to "Revoked".

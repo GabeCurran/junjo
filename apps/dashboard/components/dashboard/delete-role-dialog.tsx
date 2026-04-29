@@ -2,8 +2,8 @@
 "use client";
 
 import { Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type DeleteRoleResult,
@@ -40,7 +40,7 @@ function ConfirmButton() {
 
 export function DeleteRoleDialog({ gameId, groupId, role }: DeleteRoleDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(deleteRoleAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(deleteRoleAction, INITIAL_STATE);
 
   useEffect(() => {
     if (state.ok && state.roleId) {

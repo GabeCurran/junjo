@@ -2,8 +2,8 @@
 "use client";
 
 import { Link2, Loader2, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useId, useState, useTransition } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState, useTransition } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type ClearRelationshipResult,
@@ -91,7 +91,7 @@ function SetRelationshipSubmitButton({ isEdit }: { isEdit: boolean }) {
 // contract that each direction is independent).
 function SetRelationshipDialog({ gameId, groupId, existing, trigger }: SetRelationshipDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(setRelationshipAction, INITIAL_SET_STATE);
+  const [state, formAction] = useActionState(setRelationshipAction, INITIAL_SET_STATE);
   const groupBIdInputId = useId();
   const typeInputId = useId();
   const mutualInputId = useId();
@@ -192,7 +192,7 @@ interface ClearRelationshipDialogProps {
 // operators can clear both directions in one shot. The plain-async
 // `clearRelationshipAction` is called imperatively from `onClick` so we
 // can read the checkbox state at the moment of the call (a
-// `useFormState` shape would force the checkbox into the form contract,
+// `useActionState` shape would force the checkbox into the form contract,
 // which is fine but heavier than needed for a single-button confirm).
 function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelationshipDialogProps) {
   const [open, setOpen] = useState(false);

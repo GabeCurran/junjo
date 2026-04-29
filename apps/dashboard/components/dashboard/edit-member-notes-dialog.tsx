@@ -2,8 +2,8 @@
 "use client";
 
 import { Pencil } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type UpdateMemberNotesResult,
@@ -52,7 +52,7 @@ export function EditMemberNotesDialog({
   notesPrivate,
 }: EditMemberNotesDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(updateMemberNotesAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(updateMemberNotesAction, INITIAL_STATE);
   const publicId = useId();
   const privateId = useId();
 

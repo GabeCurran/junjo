@@ -2,8 +2,8 @@
 "use client";
 
 import { UserMinus } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type KickMemberResult,
@@ -50,7 +50,7 @@ export function KickMemberDialog({
   status,
 }: KickMemberDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(kickMemberAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(kickMemberAction, INITIAL_STATE);
   const reasonId = useId();
   const isActive = status === "active";
 

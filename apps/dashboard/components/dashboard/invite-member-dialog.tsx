@@ -3,8 +3,8 @@
 
 import { Check, Copy, Link2, Mail, ShieldAlert, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type InviteMemberResult,
@@ -87,7 +87,7 @@ function SubmitButton({ mode }: { mode: InviteMode }) {
 export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<InviteMode>("userId");
-  const [state, formAction] = useFormState(inviteMemberAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(inviteMemberAction, INITIAL_STATE);
   const [copied, setCopied] = useState(false);
   const router = useRouter();
   const userIdId = useId();

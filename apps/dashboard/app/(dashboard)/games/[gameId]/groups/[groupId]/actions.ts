@@ -38,7 +38,7 @@ import {
 import { getInviteBaseUrl } from "../../../../../../lib/junjo";
 
 // Phase 11.5c-ii Server Actions wired to the iter-068 cross-game admin
-// row-action endpoints. The four `useFormState`-shaped actions back the
+// row-action endpoints. The four `useActionState`-shaped actions back the
 // dialogs (kick, edit notes, set override). The two plain-function
 // actions (`listMemberPermissionOverridesAction`,
 // `clearMemberPermissionOverrideAction`) are called from inside the
@@ -221,7 +221,7 @@ export interface ListPermissionOverridesResult {
   overrides?: AdminMemberPermissionOverride[];
 }
 
-// Plain-call action (not `useFormState`-shaped). Invoked from a `useEffect`
+// Plain-call action (not `useActionState`-shaped). Invoked from a `useEffect`
 // inside the view-overrides dialog when it opens; the dialog manages the
 // fetched list in local React state.
 export async function listMemberPermissionOverridesAction(
@@ -537,7 +537,7 @@ export async function deleteRoleAction(
 }
 
 // Phase 11.6c Server Actions backing the Permissions matrix tab. Plain
-// async functions (not `useFormState`-shaped) because the matrix calls
+// async functions (not `useActionState`-shaped) because the matrix calls
 // them imperatively from per-cell `onClick` handlers and tracks per-cell
 // pending state in React, mirroring `clearMemberPermissionOverrideAction`
 // and `listMemberPermissionOverridesAction`. Both return the post-state
@@ -618,7 +618,7 @@ export interface SetRelationshipResult {
   relationship?: AdminGroupRelationship;
 }
 
-// `useFormState`-shaped because the dialog wires `<form action={...}>`.
+// `useActionState`-shaped because the dialog wires `<form action={...}>`.
 // Validates the type cap client-side so a typo returns a clear error
 // without bouncing off the server. The other-group-id is delivered as
 // `groupBId` (the dialog's input field) so the dialog form does not need
@@ -705,7 +705,7 @@ export async function clearRelationshipAction(
 // Both flows call the same `setAdminGroupParent` wire helper with
 // different `targetGroupId` and `parentGroupId` arguments; the form's
 // hidden `targetGroupId` field disambiguates which group is being
-// mutated. The clear action is plain-async (not `useFormState`-shaped)
+// mutated. The clear action is plain-async (not `useActionState`-shaped)
 // because the per-row "Remove child" buttons and the standalone "Clear
 // parent" button both call it imperatively from `onClick`.
 
@@ -715,7 +715,7 @@ export interface SetParentResult {
   group?: AdminGroup;
 }
 
-// `useFormState`-shaped because both dialogs wire `<form action={...}>`.
+// `useActionState`-shaped because both dialogs wire `<form action={...}>`.
 // The form supplies `gameId`, `groupId` (the current group context, used
 // to revalidate the page's cache regardless of which group was mutated),
 // `targetGroupId` (the group whose parent is actually being set), and

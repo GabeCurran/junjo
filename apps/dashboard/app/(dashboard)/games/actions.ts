@@ -19,7 +19,7 @@ export interface CreateGameResult {
   gameId?: string;
 }
 
-// `useFormState`-compatible Server Action: takes `(prevState, formData)` and
+// `useActionState`-compatible Server Action: takes `(prevState, formData)` and
 // returns `CreateGameResult`. The dialog client component uses the result to
 // close on success and surface validation errors inline on failure.
 export async function createGameAction(

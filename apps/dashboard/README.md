@@ -79,7 +79,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   Component `<GamesList>` renders a five-column table (Name, Groups, Active
   members, API keys, Created) inside a `<Suspense>` boundary; `<CreateGameDialog>`
   in the topbar's `actions` slot wraps a `<form>` whose `action` prop is a
-  `useFormState`-bound Server Action that validates via Zod, calls
+  `useActionState`-bound Server Action that validates via Zod, calls
   `createAdminGame`, and `revalidatePath`s the games list. Hand-vendored shadcn
   `Dialog`, `Input`, `Label` primitives ship alongside, plus
   `tailwindcss-animate` for the dialog's transition classes.
@@ -138,7 +138,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `<KickMemberDialog>` (destructive confirmation with optional reason
   textarea; idempotent on already-kicked / left). Server Actions live
   in `app/(dashboard)/games/[gameId]/groups/[groupId]/actions.ts`. The
-  three form-driven dialogs use `useFormState` + `useFormStatus`; the
+  three form-driven dialogs use `useActionState` + `useFormStatus`; the
   view-overrides dialog calls plain-shape Server Actions from a
   `useEffect` on open and from per-row clear buttons. Hand-vendored
   shadcn `Textarea` primitive ships alongside.
@@ -223,7 +223,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   renders the `<RelationshipsTable>` Client Component. Each row
   carries the other group id, type, and `since` timestamp. The
   header "Add relationship" button opens a `<SetRelationshipDialog>`
-  that round-trips through a `useFormState`-bound
+  that round-trips through a `useActionState`-bound
   `setRelationshipAction`; per-row "Edit" reuses the same dialog
   with the row's `groupBId` locked + `type` pre-filled (PUT
   semantics on the underlying endpoint cover both create-new and
@@ -248,7 +248,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   parent-breadcrumb (showing the parent's id + Open link, or an
   empty state) and a hand-rolled children table (Name, Kind,
   Members, Created, Open + Remove actions). Three dialogs back the
-  four operations: `<SetParentDialog>` (form-driven, `useFormState`,
+  four operations: `<SetParentDialog>` (form-driven, `useActionState`,
   used for both Set parent and Edit parent), `<AddChildDialog>`
   (form-driven, same Server Action with `parentGroupId` fixed and
   `targetGroupId` user-supplied), and `<ClearParentDialog>`

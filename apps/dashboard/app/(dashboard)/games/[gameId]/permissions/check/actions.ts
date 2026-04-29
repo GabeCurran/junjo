@@ -8,7 +8,7 @@ import {
   fetchAdminPermissionCheck,
 } from "../../../../../../lib/admin";
 
-// Result type matches the `useFormState` shape used by every other
+// Result type matches the `useActionState` shape used by every other
 // Server Action in the dashboard (`{ ok: false }` initial state, then
 // `{ ok: true, result }` on success or `{ ok: false, error }` on
 // failure). `inputs` echo back whatever the operator submitted so the

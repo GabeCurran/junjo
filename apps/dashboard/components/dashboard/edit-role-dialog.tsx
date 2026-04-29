@@ -2,8 +2,8 @@
 "use client";
 
 import { Pencil } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type UpdateRoleResult,
@@ -42,7 +42,7 @@ function SubmitButton() {
 
 export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(updateRoleAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(updateRoleAction, INITIAL_STATE);
   const nameId = useId();
   const priorityId = useId();
   const colorId = useId();

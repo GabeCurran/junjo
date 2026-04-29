@@ -2,8 +2,8 @@
 "use client";
 
 import { CheckCircle2, MinusCircle, ShieldOff, UserX, XCircle } from "lucide-react";
-import { useId } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useId } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type CheckPermissionResult,
@@ -36,7 +36,7 @@ function SubmitButton() {
 }
 
 export function PermissionCheckTester({ gameId }: PermissionCheckTesterProps) {
-  const [state, formAction] = useFormState(checkPermissionAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(checkPermissionAction, INITIAL_STATE);
   const userIdId = useId();
   const groupIdId = useId();
   const permissionId = useId();

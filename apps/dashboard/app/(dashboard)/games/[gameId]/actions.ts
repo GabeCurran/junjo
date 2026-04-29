@@ -27,7 +27,7 @@ export interface RevokeApiKeyResult {
   apiKey?: AdminApiKey;
 }
 
-// `useFormState`-compatible Server Action for issuing a new API key. The
+// `useActionState`-compatible Server Action for issuing a new API key. The
 // dialog client component reads the result, displays the secret on success,
 // and surfaces errors inline on failure. The action also calls
 // `revalidatePath` so the API keys table re-fetches and shows the new key
@@ -56,7 +56,7 @@ export async function createApiKeyAction(
   }
 }
 
-// `useFormState`-compatible Server Action for revoking a key. Idempotent on
+// `useActionState`-compatible Server Action for revoking a key. Idempotent on
 // already-revoked (the server returns the unchanged row); the dialog UX
 // frames revoke as terminal so an accidental double-click does no harm.
 export async function revokeApiKeyAction(

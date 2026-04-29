@@ -2,8 +2,8 @@
 "use client";
 
 import { ShieldCheck } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type SetPermissionOverrideResult,
@@ -49,7 +49,7 @@ export function SetPermissionOverrideDialog({
   externalUserId,
 }: SetPermissionOverrideDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(setPermissionOverrideAction, INITIAL_STATE);
+  const [state, formAction] = useActionState(setPermissionOverrideAction, INITIAL_STATE);
   const permissionId = useId();
   const grantId = useId();
   const revokeId = useId();

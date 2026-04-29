@@ -12,8 +12,8 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useId, useState, useTransition } from "react";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState, useEffect, useId, useState, useTransition } from "react";
+import { useFormStatus } from "react-dom";
 
 import {
   type ClearParentResult,
@@ -116,7 +116,7 @@ function SetParentDialog({
   trigger,
 }: SetParentDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(setParentAction, INITIAL_SET_STATE);
+  const [state, formAction] = useActionState(setParentAction, INITIAL_SET_STATE);
   const parentInputId = useId();
 
   useEffect(() => {
@@ -197,7 +197,7 @@ function AddChildSubmitButton() {
 // than the server's `parent_cycle`.
 function AddChildDialog({ gameId, groupId }: AddChildDialogProps) {
   const [open, setOpen] = useState(false);
-  const [state, formAction] = useFormState(setParentAction, INITIAL_SET_STATE);
+  const [state, formAction] = useActionState(setParentAction, INITIAL_SET_STATE);
   const childInputId = useId();
 
   useEffect(() => {
@@ -276,7 +276,7 @@ interface ClearParentDialogProps {
 
 // Destructive-confirmation modal calling `clearParentAction` imperatively.
 // Mirrors the iter-079 `<ClearRelationshipDialog>` shape: plain async
-// action invoked from `onClick` via `useTransition`, no `useFormState`
+// action invoked from `onClick` via `useTransition`, no `useActionState`
 // because there's no form data to validate beyond the implicit
 // `targetGroupId` already known to the dialog.
 function ClearParentDialog({
