@@ -6,6 +6,7 @@ import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import {
+  clearAdminGroupRelationshipHandler,
   clearAdminMemberPermissionOverrideHandler,
   createAdminApiKeyHandler,
   createAdminGameHandler,
@@ -14,6 +15,7 @@ import {
   deleteAdminRoleHandler,
   getAdminGameHandler,
   getAdminGroupHandler,
+  getAdminGroupRelationshipHandler,
   getAdminStatsHandler,
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
@@ -22,6 +24,7 @@ import {
   listAdminGamesHandler,
   listAdminGroupAuditHandler,
   listAdminGroupMembersHandler,
+  listAdminGroupRelationshipsHandler,
   listAdminGroupRolesHandler,
   listAdminGroupsForGameHandler,
   listAdminMemberPermissionOverridesHandler,
@@ -29,6 +32,7 @@ import {
   listUserGamesHandler,
   revokeAdminApiKeyHandler,
   revokeAdminRolePermissionHandler,
+  setAdminGroupRelationshipHandler,
   setAdminMemberPermissionOverrideHandler,
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
@@ -255,6 +259,35 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/audit",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupAuditHandler(prisma),
+  );
+  // Admin-token-gated per-group relationships (Phase 11.7b-i). Mirrors
+  // the per-game `PUT/DELETE/GET /v1/groups/:a/relationships/:b` and
+  // `GET /v1/groups/:a/relationships` semantics byte-for-byte (same
+  // body / query shapes, same idempotence rules, same audit shapes,
+  // same `group.relationship.changed` JunjoEvent dispatch). Backs the
+  // dashboard's group detail Relationships tab (Phase 11.7b-ii). The
+  // set + clear handlers take the event hub so SSE subscribers and
+  // webhook endpoints see the same events a per-game-key call would
+  // emit; the get + list handlers are read-only.
+  v1.get(
+    "/admin/games/:gameId/groups/:a/relationships",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupRelationshipsHandler(prisma),
+  );
+  v1.put(
+    "/admin/games/:gameId/groups/:a/relationships/:b",
+    adminAuthMiddleware(opts.adminToken),
+    setAdminGroupRelationshipHandler(prisma, hub),
+  );
+  v1.delete(
+    "/admin/games/:gameId/groups/:a/relationships/:b",
+    adminAuthMiddleware(opts.adminToken),
+    clearAdminGroupRelationshipHandler(prisma, hub),
+  );
+  v1.get(
+    "/admin/games/:gameId/groups/:a/relationships/:b",
+    adminAuthMiddleware(opts.adminToken),
+    getAdminGroupRelationshipHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

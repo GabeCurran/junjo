@@ -9,6 +9,7 @@
 import type {
   GameId,
   GroupId,
+  GroupRelationshipChangedEvent,
   MemberInvitedEvent,
   MemberLeftEvent,
   PermissionGrantedEvent,
@@ -25,6 +26,7 @@ import type {
   Game,
   Group,
   GroupMember,
+  GroupRelationship,
   Invitation,
   MemberPermissionOverride,
   Prisma,
@@ -35,17 +37,24 @@ import type { Handler } from "hono";
 import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent, toPublicInvitation, toPublicRole } from "../events.js";
+import {
+  dispatchEvent,
+  toPublicGroupRelationship,
+  toPublicInvitation,
+  toPublicRole,
+} from "../events.js";
 import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  adminClearRelationshipQuery,
   adminCreateInvitationBody,
   adminCreateRoleBody,
   adminGrantPermissionBody,
   adminKickMemberBody,
   adminOverridePermissionBody,
+  adminSetRelationshipBody,
   adminUpdateMemberBody,
   adminUpdateRoleBody,
   createGameBody,
@@ -59,6 +68,8 @@ import type { WireAuditEntry } from "./audit.js";
 import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import type { WireInvitation } from "./invitations.js";
+import { serializeGroupRelationship } from "./relationships.js";
+import type { WireGroupRelationship } from "./relationships.js";
 
 export interface WireUserGameRow {
   gameId: string;
@@ -2169,5 +2180,275 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
       items: sliced.map(serializeAuditEntry),
       nextCursor,
     });
+  };
+}
+
+// `loadAdminScopedGroupPair(prisma, gameId, [a, b])` collapses the standard
+// 404-cause set for the two-group endpoints (set / clear / get): missing
+// group, cross-game group, or soft-deleted group on either side. Used by
+// `setAdminGroupRelationshipHandler`, `clearAdminGroupRelationshipHandler`,
+// and `getAdminGroupRelationshipHandler`. The single-group list endpoint
+// uses a separate inline lookup. Returns void on success; throws
+// `Errors.notFound("group")` on any failure cause.
+async function loadAdminScopedGroupPair(
+  prisma: PrismaClient,
+  gameId: string,
+  ids: [string, string],
+): Promise<void> {
+  const groups = await prisma.group.findMany({
+    where: { id: { in: ids }, gameId, softDeletedAt: null },
+    select: { id: true },
+  });
+  if (groups.length !== 2) throw Errors.notFound("group");
+}
+
+// `PUT /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
+// Mirrors the per-game route in `routes/groups.ts:1510` byte-for-byte:
+// body shape `{ type, mutual? }`, idempotent on each direction (already
+// matching `type` -> no DB write, no audit entry, no `since` bump), audit
+// entry `group.relationship.set` on the *origin* group's audit log per
+// changed direction (mutual writes can produce up to two audit entries),
+// `group.relationship.changed` JunjoEvent dispatched per changed direction
+// after the transaction commits, and self-relationships rejected with
+// `400 bad_request`. The 404 collapse covers missing / cross-game /
+// soft-deleted groups on either side via `loadAdminScopedGroupPair`.
+//
+// Reuses `serializeGroupRelationship` and `WireGroupRelationship` from
+// `routes/relationships.ts` (the same helper module the per-game routes
+// use). The dashboard's group detail Relationships tab (Phase 11.7b-ii)
+// will mirror the wire shape in `lib/admin.ts` byte-for-byte.
+//
+// `actorUserId` is null on the audit row (V1 has no auth-adapter actor
+// wired); same as the per-game route.
+export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!a) throw Errors.badRequest("groupA id is required");
+    if (!b) throw Errors.badRequest("groupB id is required");
+
+    if (a === b) throw Errors.badRequest("groupAId and groupBId must differ");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminSetRelationshipBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { type, mutual } = parsed.data;
+
+    await loadAdminScopedGroupPair(prisma, gameId, [a, b]);
+
+    const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
+    if (mutual) directions.push({ aId: b, bId: a });
+
+    const result = await prisma.$transaction(async (tx) => {
+      let primary: GroupRelationship | null = null;
+      const changed: GroupRelationship[] = [];
+      for (const dir of directions) {
+        const existing = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        if (existing && existing.type === type) {
+          if (dir.aId === a) primary = existing;
+          continue;
+        }
+
+        const upserted = await tx.groupRelationship.upsert({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+          create: { groupAId: dir.aId, groupBId: dir.bId, type, setByUserId: null },
+          update: { type, since: new Date() },
+        });
+        if (dir.aId === a) primary = upserted;
+        changed.push(upserted);
+
+        const auditPayload: Record<string, unknown> = {
+          groupAId: dir.aId,
+          groupBId: dir.bId,
+          type,
+          mutual: mutual === true,
+        };
+        if (existing) auditPayload.before = { type: existing.type };
+        await tx.auditEntry.create({
+          data: {
+            groupId: dir.aId,
+            actorUserId: null,
+            action: "group.relationship.set",
+            targetId: dir.bId,
+            payload: auditPayload as Prisma.InputJsonValue,
+          },
+        });
+      }
+      if (!primary) {
+        const reloaded = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: a, groupBId: b } },
+        });
+        if (!reloaded) throw new Error("relationship row missing after no-op upsert");
+        primary = reloaded;
+      }
+      return { primary, changed };
+    });
+
+    for (const rel of result.changed) {
+      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
+        type: "group.relationship.changed",
+        gameId: gameId as GameId,
+        groupId: rel.groupAId as GroupId,
+        otherGroupId: rel.groupBId as GroupId,
+        relationship: toPublicGroupRelationship(rel),
+      });
+    }
+
+    return c.json<WireGroupRelationship>(serializeGroupRelationship(result.primary));
+  };
+}
+
+// `DELETE /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
+// Mirrors the per-game route in `routes/groups.ts:1603` byte-for-byte:
+// idempotent on missing rows (no audit, no event, returns 204), audit
+// entry `group.relationship.cleared` per actually-deleted direction, and
+// `group.relationship.changed` JunjoEvent with `relationship: null`
+// dispatched per cleared direction after the transaction commits. The
+// `?mutual=true` query clears both directions; each direction is
+// independent. Self-relationships return `400 bad_request`. 404 collapses
+// missing / cross-game / soft-deleted groups via `loadAdminScopedGroupPair`.
+export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!a) throw Errors.badRequest("groupA id is required");
+    if (!b) throw Errors.badRequest("groupB id is required");
+
+    const parsedQuery = adminClearRelationshipQuery.safeParse({
+      mutual: c.req.query("mutual"),
+    });
+    if (!parsedQuery.success) {
+      const issues = parsedQuery.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const mutual = parsedQuery.data.mutual === "true";
+
+    if (a === b) throw Errors.badRequest("groupAId and groupBId must differ");
+
+    await loadAdminScopedGroupPair(prisma, gameId, [a, b]);
+
+    const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
+    if (mutual) directions.push({ aId: b, bId: a });
+
+    const cleared = await prisma.$transaction(async (tx) => {
+      const removed: Array<{ aId: string; bId: string }> = [];
+      for (const dir of directions) {
+        const existing = await tx.groupRelationship.findUnique({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        if (!existing) continue;
+
+        await tx.groupRelationship.delete({
+          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        });
+        await tx.auditEntry.create({
+          data: {
+            groupId: dir.aId,
+            actorUserId: null,
+            action: "group.relationship.cleared",
+            targetId: dir.bId,
+            payload: {
+              groupAId: dir.aId,
+              groupBId: dir.bId,
+              type: existing.type,
+              mutual,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        removed.push({ aId: dir.aId, bId: dir.bId });
+      }
+      return removed;
+    });
+
+    for (const dir of cleared) {
+      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
+        type: "group.relationship.changed",
+        gameId: gameId as GameId,
+        groupId: dir.aId as GroupId,
+        otherGroupId: dir.bId as GroupId,
+        relationship: null,
+      });
+    }
+
+    return c.body(null, 204);
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
+// Mirrors the per-game route in `routes/groups.ts:1674` byte-for-byte:
+// returns the directed A->B row when present, 404 when no such row
+// exists. Both groups must be in the calling game; cross-game lookups
+// collapse to 404 to avoid leaking existence (same rule as the per-game
+// route). Self-relationship lookups return 404 (the row cannot exist).
+//
+// Differs subtly from the per-game route: the per-game route throws
+// `Errors.notFound("relationship")` (the resource the caller asked
+// about), but the admin route also uses "relationship" to keep the wire
+// envelope identical for dashboard parsers.
+export function getAdminGroupRelationshipHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const a = c.req.param("a");
+    const b = c.req.param("b");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!a) throw Errors.badRequest("groupA id is required");
+    if (!b) throw Errors.badRequest("groupB id is required");
+
+    if (a === b) throw Errors.notFound("relationship");
+
+    const groups = await prisma.group.findMany({
+      where: { id: { in: [a, b] }, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (groups.length !== 2) throw Errors.notFound("relationship");
+
+    const rel = await prisma.groupRelationship.findUnique({
+      where: { groupAId_groupBId: { groupAId: a, groupBId: b } },
+    });
+    if (!rel) throw Errors.notFound("relationship");
+
+    return c.json<WireGroupRelationship>(serializeGroupRelationship(rel));
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:a/relationships` (Phase 11.7b-i).
+// Mirrors the per-game route in `routes/groups.ts:1701` byte-for-byte:
+// returns a bare `WireGroupRelationship[]` of every row where the group
+// is the A-side ("this group's outgoing stance"), sorted by `groupBId`
+// ascending. The B-side ("incoming") is left for a future
+// `?direction=incoming` filter as the per-game route documents. 404 on
+// missing / cross-game / soft-deleted A-side group.
+export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const a = c.req.param("a");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!a) throw Errors.badRequest("groupA id is required");
+
+    const group = await prisma.group.findFirst({
+      where: { id: a, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const rels = await prisma.groupRelationship.findMany({
+      where: { groupAId: group.id },
+      orderBy: { groupBId: "asc" },
+    });
+
+    return c.json<WireGroupRelationship[]>(rels.map(serializeGroupRelationship));
   };
 }

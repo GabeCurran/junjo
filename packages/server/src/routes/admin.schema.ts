@@ -147,6 +147,28 @@ export const adminGrantPermissionBody = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
 });
 
+// Phase 11.7b-i: cross-game group relationships. Body + query shapes mirror
+// the per-game `setRelationshipBody` / `clearRelationshipQuery` from
+// `routes/groups.schema.ts` byte-for-byte. The `type` cap (64) matches the
+// per-game `RELATIONSHIP_TYPE_MAX_LENGTH` (lifted to a const here so the
+// admin schema does not import across the cloud-only boundary). Mirrors
+// the iter-072 / iter-073 / iter-076 stance: structural duplication of
+// small body / query shapes is cheaper than coupling the modules.
+export const ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH = 64;
+
+export const adminSetRelationshipBody = z.object({
+  type: z.string().min(1).max(ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH),
+  mutual: z.boolean().optional(),
+});
+
+// Strict "true" / "false" matches the per-game route's precedent (which in
+// turn matches `listInvitationsQuery`'s `includeExpired` / `includeUsed`
+// flags). Anything else returns 400; the dashboard caller controls the URL
+// shape so a strict enum keeps it honest.
+export const adminClearRelationshipQuery = z.object({
+  mutual: z.enum(["true", "false"]).optional(),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -163,3 +185,5 @@ export type AdminCreateInvitationBody = z.infer<typeof adminCreateInvitationBody
 export type AdminCreateRoleBody = z.infer<typeof adminCreateRoleBody>;
 export type AdminUpdateRoleBody = z.infer<typeof adminUpdateRoleBody>;
 export type AdminGrantPermissionBody = z.infer<typeof adminGrantPermissionBody>;
+export type AdminSetRelationshipBody = z.infer<typeof adminSetRelationshipBody>;
+export type AdminClearRelationshipQuery = z.infer<typeof adminClearRelationshipQuery>;

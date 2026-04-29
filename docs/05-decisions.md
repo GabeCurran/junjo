@@ -3934,4 +3934,50 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** none for V1. The tab is a faithful presentation of the audit log; that is the entire feature.
 
+### Phase 11.7b-i: admin relationship handlers mirror per-game route semantics byte-for-byte
+
+**Decision:** the four admin relationship handlers (`setAdminGroupRelationshipHandler`, `clearAdminGroupRelationshipHandler`, `getAdminGroupRelationshipHandler`, `listAdminGroupRelationshipsHandler`) implement the same body / query / response shapes, idempotence rules, audit shapes, and `JunjoEvent` dispatch as the per-game routes in `routes/groups.ts`. ~120 lines of duplicated handler code lives in `routes/admin.ts` rather than calling into the per-game module across the cloud-only boundary.
+
+**Rationale:**
+- Behavior parity across the two surfaces is essential. SSE subscribers and webhook endpoints expect to see the same `group.relationship.changed` event regardless of whether the mutation came from a per-game API key or the admin token. Audit log readers expect the same payload shape so dashboards do not need to branch on a "source" discriminator.
+- The cloud-only boundary stance is consistent: admin handlers do not import implementation logic from per-game route modules. Schema bodies + wire shapes are duplicated where they are small (this iteration's `adminSetRelationshipBody` / `adminClearRelationshipQuery`); pure helpers without business logic (like `serializeGroupRelationship`, `serializeInvitation`, `serializeAuditEntry`) are reused across the boundary because they have no behavior, just shape.
+- Reuses the iter-072 (admin roles CRUD) / iter-073 (admin role-permission grant/revoke) precedent. Behavior parity is asserted in the test suite via shared expectations on event shape, audit payload, and idempotence.
+
+**Trade:** ~120 LoC of duplicated handler code in `admin.ts`. Acceptable: the duplication has held across 9 iterations of admin endpoints with zero drift; if a future change to the per-game route's semantics needs to land on both surfaces, the diff is local and reviewable.
+
+### Phase 11.7b-i: `loadAdminScopedGroupPair(prisma, gameId, [a, b])` extracted as a shared helper
+
+**Decision:** the standard 404-cause set for the two-group endpoints (missing / cross-game / soft-deleted on either side) is collapsed into one helper, `loadAdminScopedGroupPair(prisma, gameId, [a, b])`. Three of the four endpoints (`setAdminGroupRelationshipHandler`, `clearAdminGroupRelationshipHandler`, `getAdminGroupRelationshipHandler`) call it; the single-group `listAdminGroupRelationshipsHandler` uses an inline `findFirst` because its 404 envelope returns `"group"` not `"relationship"` (matching the per-game `GET /:a/relationships` route's shape).
+
+**Rationale:**
+- Three call sites is the extraction threshold for a shared helper (matches the iter-068 `loadAdminMemberContext` precedent and the iter-072 `loadAdminScopedRole` precedent).
+- The per-game routes inline this lookup because each route has only one such check; the admin module has three nearby sites that do the same thing, so extracting prevents the pattern from drifting.
+- The helper does NOT take an `errorCode` parameter to make the 404 envelope configurable; the `setAdminGroupRelationshipHandler` and `clearAdminGroupRelationshipHandler` callers want `"group"` (consistent with the per-game write/clear routes), and the `getAdminGroupRelationshipHandler` caller separately uses an inline lookup that throws `"relationship"` on the same 404 conditions (matching its per-game counterpart). The two error envelopes diverge intentionally at the read vs write boundary; the helper centralizes only the write/clear path.
+
+**Trade:** the get-relationship handler ends up with an inline lookup nearly identical to the helper's body. Acceptable - the envelope difference is the entire reason the get path stays inline; a configurable helper would be a leaky abstraction for a single special case.
+
+### Phase 11.7b-i: `WireGroupRelationship` is reused, not duplicated, across the cloud-only boundary
+
+**Decision:** the four admin relationship handlers import `serializeGroupRelationship` and `WireGroupRelationship` from `routes/relationships.ts` directly, NOT a new `WireAdminGroupRelationship` shape in `routes/admin.ts`.
+
+**Rationale:**
+- The directed-relationship row shape is functionally identical regardless of which surface fetched it (`groupAId` / `groupBId` / `type` / `since` / `setBy`). The dashboard already has the gameId on hand from URL context; there is nothing the admin route adds to the per-row shape that the per-game route doesn't already carry.
+- Reuses the iter-070 (admin invitations reuse `serializeInvitation` + `WireInvitation`) and iter-076 (admin per-group audit reuses `serializeAuditEntry` + `WireAuditEntry`) precedents: pure helpers without business logic are imported across the boundary because they have no behavior, just shape.
+- Avoids ~10 LoC of structural duplication and keeps the dashboard's `lib/admin.ts` mirror logic uniform across all four admin relationship endpoints (the dashboard's `AdminGroupRelationship` shape will mirror `WireGroupRelationship` byte-for-byte in 11.7b-ii).
+- The per-game `WireGroupRelationship` shape is itself stable (Phase 4.1 / iter-023; no schema migrations have touched it since); the cross-import is low risk.
+
+**Trade:** if a future cloud-only requirement adds a field that only the dashboard needs (e.g. a `setByGameRole` annotation), the dashboard would need either a richer admin-only shape OR an additive field on the public type. Acceptable: today there is no such requirement; pattern stays consistent across 4 admin endpoints.
+
+### Phase 11.7b-i: tests live in standalone `admin.relationships.test.ts`, not folded into `admin.test.ts`
+
+**Decision:** the 45 new tests for the four admin relationship endpoints live in a new file `routes/admin.relationships.test.ts`, not appended to the existing `routes/admin.test.ts`.
+
+**Rationale:**
+- Mirrors every prior file-per-feature precedent: iter-068 (`admin.rowActions.test.ts`), iter-070 (`admin.invitations.test.ts`), iter-072 (`admin.roles.test.ts`), iter-073 (`admin.permissions.test.ts`), iter-076 (`admin.audit.test.ts`).
+- `admin.test.ts` is already 2500 lines; adding 45 more tests would make `git blame` and IDE search slower and make the file harder to navigate.
+- The TRUNCATE list at the top of the new describe block is short (`"GroupRelationship", "AuditEntry", "Group", "ApiKey", "Game"`) because relationship tests don't touch the member / role / permission tables. A standalone file lets the truncate list stay focused.
+- Each split file's `describe` block is independently runnable via `npm test -- src/routes/admin.relationships.test.ts`, useful for tight feedback while iterating.
+
+**Trade:** the admin endpoint test surface is now spread across 7 files (`admin.test.ts` + 6 specialized files). Acceptable: the file-per-feature precedent has been consistent across 9 iterations; future readers can search for "admin relationships" or "admin roles" in the routes directory and immediately find the relevant file.
+
 

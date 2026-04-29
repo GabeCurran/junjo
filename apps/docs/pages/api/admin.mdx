@@ -1091,6 +1091,124 @@ Errors:
 | `bad_request` | 400 | `limit` out of range, `before` not parseable as ISO 8601, or `actions` includes an unknown value. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## PUT /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+**Phase 11.7b-i.** Set or update a directed relationship row from group `a` to group `b`. Backs the dashboard's group detail Relationships tab (Phase 11.7b-ii). Mirrors the per-game `PUT /v1/groups/:a/relationships/:b` semantics byte-for-byte: same body shape, same idempotence rules, same audit shape, same `group.relationship.changed` event dispatch.
+
+Path parameters:
+
+- `:gameId` - the game id; both groups must belong to it.
+- `:a` - the origin group id ("this group's stance").
+- `:b` - the other group.
+
+Request body (JSON):
+
+```ts
+{
+  type: string;     // 1-64 chars; dev-defined ("ally", "enemy", "vassal", etc.)
+  mutual?: boolean; // default false. When true, writes both A->B and B->A in the same transaction.
+}
+```
+
+Response: `200 OK` with the A->B `WireGroupRelationship` (the canonical "this group's stance" view):
+
+```ts
+interface WireGroupRelationship {
+  groupAId: string;
+  groupBId: string;
+  type: string;
+  since: string; // ISO 8601
+  setBy: string | null;
+}
+```
+
+Behavior:
+
+- Idempotent on each direction: if the existing row's `type` already equals the supplied value, that direction is a no-op (no DB write, no audit entry, no `since` bump). A fully no-op call still returns 200 with the unchanged A->B row.
+- A direction that does change writes one `group.relationship.set` audit entry on the origin group's audit log. `mutual: true` therefore produces up to 2 audit entries (one per changed direction, partial-mutual produces 1 if only the missing direction was written).
+- Audit `payload` is `{ groupAId, groupBId, type, mutual: boolean }` plus `before: { type }` only when the row already existed.
+- Dispatches one `group.relationship.changed` `JunjoEvent` per actually-changed direction (after the transaction commits) so SSE subscribers and webhook endpoints see the same events a per-game-key call would emit.
+- Self-relationships (`a == b`) return `400 bad_request`. `actorUserId` is null on the audit row (V1 has no auth-adapter actor wired).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `a == b`, missing / over-cap / non-string `type`, or malformed JSON body. |
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+**Phase 11.7b-i.** Clear the directed A->B relationship row. Mirrors the per-game `DELETE /v1/groups/:a/relationships/:b` semantics byte-for-byte: idempotent on missing rows, audit entry per actually-cleared direction, `group.relationship.changed` event with `relationship: null` per cleared direction.
+
+Path parameters: same as `PUT`.
+
+Query parameters:
+
+- `?mutual=true` - clears both directions in the same transaction. Strict `"true"` / `"false"` only; anything else returns 400.
+
+Response: `204 No Content` in every case (whether the row existed or not). Caller does not need to branch on whether something was actually deleted.
+
+Behavior:
+
+- Missing row is a no-op (no audit entry, no event). Same for the second direction when `?mutual=true` and only one side exists.
+- Each cleared direction writes a `group.relationship.cleared` audit entry on the origin group with payload `{ groupAId, groupBId, type, mutual }` carrying the *previous* `type`.
+- Dispatches one `group.relationship.changed` event per cleared direction with `relationship: null` (so subscribers can branch on the `null` payload to detect a clear vs a set).
+- Self-relationships (`a == b`) return `400 bad_request`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `a == b` or `?mutual` is not exactly `"true"` / `"false"`. |
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+**Phase 11.7b-i.** Fetch the directed A->B relationship row, or 404 if no such row exists. Mirrors the per-game `GET /v1/groups/:a/relationships/:b`.
+
+Path parameters: same as `PUT`.
+
+Response: `200 OK` with `WireGroupRelationship` (same shape as the `PUT` response).
+
+Behavior:
+
+- Existence is not leaked through cross-game lookups: if either group is in a different game (or missing or soft-deleted), the call returns 404 with the standard envelope.
+- Self-relationship lookups return 404 (the row cannot exist).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, is soft-deleted, the row does not exist for that direction, or `a == b`. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:a/relationships
+
+**Phase 11.7b-i.** List every directed relationship where group `a` is the A-side ("this group's stance toward others"). Mirrors the per-game `GET /v1/groups/:a/relationships`.
+
+Path parameters:
+
+- `:gameId` - the game id; the A-side group must belong to it.
+- `:a` - the origin group id.
+
+Response: `200 OK` with a bare `WireGroupRelationship[]` sorted by `groupBId` ascending. No pagination wrapper.
+
+Behavior:
+
+- Returns A-side rows only; the B-side ("incoming" relationships) is left for a future `?direction=incoming` filter as an additive change.
+- Symmetric pairs (set via `mutual: true`) appear once per direction; the dev queries the other group to see the reverse row.
+- Empty array when the group has no outgoing relationships.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
