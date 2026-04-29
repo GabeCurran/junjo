@@ -3073,3 +3073,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The same pattern is already in `routes/admin.ts:listUserGamesHandler` (Phase 10.2): one batched `findMany` plus an in-memory tally. Re-using it on the games-list endpoint keeps the file's count-strategy consistent.
 
 **Trade:** the games-list endpoint sends three queries even for the trivial empty-DB case; an empty-row-detection branch could short-circuit. Acceptable: an explicit empty-array short-circuit lives in the handler before the batched queries fire. The cost on a populated DB is one query per metric, regardless of game count.
+
+### Phase 11.3b splits b-i / b-ii: games list and create-game first, then game detail and key management
+
+**Decision:** Phase 11.3b ("Dashboard pages consuming the 11.3a admin endpoints") splits across two iterations. 11.3b-i (this iteration) ships `lib/admin.ts` client extensions for all six 11.3a endpoints, the games list page (`app/(dashboard)/games/page.tsx`), the create-game dialog (Client Component using shadcn Dialog), and the `createGameAction` Server Action with `revalidatePath` wiring. 11.3b-ii ships the per-game detail page (`app/(dashboard)/games/[gameId]/page.tsx`), the API keys section with show-once-on-create dialog, and the `createApiKeyAction` / `revokeApiKeyAction` Server Actions.
+
+**Rationale:**
+- A single iteration covering all six client helpers + two pages + four shadcn primitives + three Server Actions + a client-side reveal-once dialog produces a wide diff that is hard to review surgically.
+- The natural seam is "list view shipping plus the entry point for creating new games" vs "detail view with secret-handling UX". The first iteration unblocks Gabe to register games and observe them; the second adds key issuance once the operator can land on a game.
+- Mirrors the precedents that have worked across the loop: 11.1a/b, 11.2a/b, 11.3a/b, 5.1a/b/c, 5.3a/b, 7.5a/b/c.
+- All six client helpers ship in 11.3b-i (not just the three the games list needs) because they share infrastructure (`adminMutate`, types) and lifting only half of them would force 11.3b-ii to repeat the same wire-shape definitions.
+
+**Trade:** the games list ships before there is any UI to manage API keys, so an operator who lands on the dashboard, registers a game, and clicks "Open" lands on a 404. Acceptable: the iteration log calls out the gap; a one-iteration delay in shipping the detail page is the cost of a smaller, reviewable diff.
+
+### Phase 11.3b-i: shadcn Dialog + Input + Label primitives hand-vendored, plus tailwindcss-animate dependency
+
+**Decision:** new shadcn primitives (`components/ui/dialog.tsx`, `components/ui/input.tsx`, `components/ui/label.tsx`) hand-vendored from the shadcn registry per the iter 058 + iter 060 precedent. New Radix peer deps `@radix-ui/react-dialog` (^1.1.15) and `@radix-ui/react-label` (^2.1.8) added to `apps/dashboard/package.json`. New devDep `tailwindcss-animate` (^1.0.7) added because shadcn's Dialog uses `data-[state=open]:animate-in` Tailwind classes that the plugin generates.
+
+**Rationale:**
+- shadcn explicitly markets itself as "copy-paste components"; vendoring with the proprietary license header prepended preserves the upstream-merge path while keeping the dashboard's all-rights-reserved boundary intact.
+- The dialog needs Radix's portal + focus-trap + ARIA wiring, which is too subtle to hand-roll; Radix is the de facto choice across shadcn's component set.
+- `tailwindcss-animate` is shadcn's canonical animation companion (~5KB, pure config). Without it the dialog still functions; the fade and zoom transitions just no-op. Including it matches every other shadcn-using project's setup.
+- Three new primitives instead of pulling them piecemeal across 11.3b-i and 11.3b-ii: Dialog and Input are needed for the create-game flow now; Label is brought in alongside because it is the matching primitive for Input and 11.3b-ii's API key dialog will reuse it.
+
+**Trade:** four new packages (two Radix, one CVA-already-present, tailwindcss-animate) added in one iteration. Acceptable: each is small, targeted, and required for a primitive shadcn ships canonically. The alternative (rolling our own dialog without focus traps and portals) is a worse user experience.
+
+### Phase 11.3b-i: create-game flow uses Server Action + `useFormState` + `useFormStatus`, not a hand-rolled fetch
+
+**Decision:** the `<CreateGameDialog>` client component wraps a `<form>` whose `action` prop is `useFormState(createGameAction, INITIAL_STATE)`. The action lives in `app/(dashboard)/games/actions.ts` ("use server"), validates the form data via Zod (mirrors `createGameBody` server-side), calls `lib/admin.ts:createAdminGame`, and calls `revalidatePath("/games")` before returning. On success the dialog reads the action's return value via `useFormState` and closes.
+
+**Rationale:**
+- Server Actions are Next.js 15's first-class mutation primitive. They run server-side, automatically encode the form data, and integrate with `revalidatePath` to expire the games list's 60s cache on a successful create.
+- `useFormState` and `useFormStatus` are React 18's pendant hooks for surfacing pending state and result state to the UI. The submit button's "Creating..." label and the inline error banner both wire through them, no extra state machinery needed.
+- Validating with Zod client-side (in the action) instead of just trusting the server's 400 means a buggy client can't waste a network round trip for a name that's obviously empty. The server validates again - defense in depth.
+- The Server Action sits in the route group's `actions.ts` file (not in `lib/admin.ts`) so it stays close to the page that consumes it. Future pages can import the helpers directly from `lib/admin.ts` if they want hand-rolled fetches without `revalidatePath` (the path-revalidation is a UI-level concern).
+
+**Trade:** Server Actions ship the action's identity and arg shape over the wire as part of the form's `action="..."` attribute, so the action's signature must stay structurally compatible with `useFormState`. Acceptable: that compatibility is a boring `(prevState, formData) => Promise<TResult>` shape that's idiomatic across the React ecosystem.
+
+### Phase 11.3b-i: dashboard owns the typed wire shapes for all six admin endpoints, byte-for-byte mirroring server `WireAdmin*` types
+
+**Decision:** the dashboard's `lib/admin.ts` defines `AdminGame`, `AdminGameList`, `AdminApiKey`, `AdminApiKeyList`, `AdminApiKeyCreated` interfaces that mirror `packages/server/src/routes/admin.ts`'s wire types byte-for-byte. The dashboard does not depend on `@junjo/server` or pull these types from `@junjo/shared`.
+
+**Rationale:**
+- Same reason as iteration 060's `AdminStats` / `AdminAuditEntry` decision: the admin endpoints are intentionally not in the per-game `@junjo/sdk`, and adding a dependency edge from the proprietary dashboard into the OSS server package crosses the open-core boundary.
+- Lifting the types into `@junjo/shared` would force the OSS package to carry interfaces with no value outside the proprietary dashboard. The package would grow without paying its way.
+- Five small interfaces (~30 lines combined) is cheap and explicit about ownership. Drift between the server's wire format and the dashboard's view would surface in the existing server-side tests that exercise the wire shape end-to-end (`admin.test.ts` asserts on every field of every endpoint's response).
+
+**Trade:** any future addition to a wire shape requires editing two files instead of one. Acceptable: the wire surface is small (~30 lines total across all six endpoints) and stable; new fields are additive on both sides, and the cost of forgetting one would be a TypeScript error in a Server Component the next time someone reaches for it.
+
+### Phase 11.3b-i: games list uses a plain HTML table, not TanStack Table
+
+**Decision:** the games list (`components/dashboard/games-list.tsx`) renders rows in a `<table>` directly, with simple `Intl.NumberFormat` cell formatting. No TanStack Table, no sorting, no filtering, no client-side pagination.
+
+**Rationale:**
+- TanStack Table earns its weight when there are interactive columns: sortable, filterable, hide/show, multi-row selection. The games list has none of those today (capped at 200 rows, sorted server-side by `createdAt desc`, no filter UI).
+- VISION's Phase 11.3 spec doesn't ask for table interactivity on the games list - that's reserved for Phase 11.4 (the group browser), which has search-by-name, filter-by-kind, sort-by-name/member-count/created-at and is the natural first home for TanStack Table.
+- A flat table is easier to verify visually + via Playwright (Phase 14.12) than the TanStack-rendered one; less tooling-specific markup means more stable snapshots.
+
+**Trade:** if/when game-list interactivity becomes a real ask (search across many games, sort by group count), the page rewrites to TanStack Table. Acceptable: the rewrite is local to one component, the wire shape doesn't change, and the lift is small (~50 lines).

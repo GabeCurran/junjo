@@ -71,6 +71,18 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   React `Suspense` and cache for 60s via Next.js `revalidate`. Renders an inline
   empty state when `JUNJO_ADMIN_TOKEN` is unset rather than crashing the route.
   Hand-vendored shadcn `Card` primitive ships alongside.
-- 11.3 - 11.9: Games list, group browser, group detail tabs, audit viewer,
-  permission tester (one section per iteration).
+- 11.3a: cross-game games + API key management endpoints (`GET/POST /v1/admin/games`,
+  game detail, `GET/POST /v1/admin/games/:gameId/api-keys`, key revoke).
+- 11.3b-i (this iteration): games list page consuming those endpoints. Server
+  Component `<GamesList>` renders a five-column table (Name, Groups, Active
+  members, API keys, Created) inside a `<Suspense>` boundary; `<CreateGameDialog>`
+  in the topbar's `actions` slot wraps a `<form>` whose `action` prop is a
+  `useFormState`-bound Server Action that validates via Zod, calls
+  `createAdminGame`, and `revalidatePath`s the games list. Hand-vendored shadcn
+  `Dialog`, `Input`, `Label` primitives ship alongside, plus
+  `tailwindcss-animate` for the dialog's transition classes.
+- 11.3b-ii: game detail page (`(dashboard)/games/[gameId]/page.tsx`) with API
+  keys section (issue with show-once dialog, revoke).
+- 11.4 - 11.9: Group browser, group detail tabs, audit viewer, permission
+  tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

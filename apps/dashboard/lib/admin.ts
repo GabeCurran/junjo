@@ -78,3 +78,123 @@ export function fetchRecentAudit(limit = 20, opts?: FetchOptions): Promise<Admin
   const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
   return adminFetch<AdminAuditPage>(`/v1/admin/audit?limit=${safeLimit}`, opts);
 }
+
+// Phase 11.3a wire shapes mirrored byte-for-byte from
+// `packages/server/src/routes/admin.ts`. The dashboard's games list and
+// game detail pages drive every admin operation through these helpers; the
+// per-game `@junjo/sdk` does not carry cross-tenant queries.
+
+export interface AdminGame {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  groupCount: number;
+  activeMemberCount: number;
+  apiKeyCount: number;
+}
+
+export interface AdminGameList {
+  items: AdminGame[];
+}
+
+export interface AdminApiKey {
+  id: string;
+  gameId: string;
+  prefix: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface AdminApiKeyList {
+  items: AdminApiKey[];
+}
+
+// `key` carries the dev-facing `prefix.secret` form and only exists on the
+// create response. List and revoke responses return `AdminApiKey` (no key,
+// no secret); the secret is stored only as a scrypt hash and is
+// unrecoverable thereafter.
+export interface AdminApiKeyCreated extends AdminApiKey {
+  key: string;
+}
+
+interface MutationOptions {
+  signal?: AbortSignal;
+}
+
+async function adminMutate<TBody, TResult>(
+  method: "POST",
+  path: string,
+  body: TBody | null,
+  opts: MutationOptions = {},
+): Promise<TResult> {
+  const token = getAdminToken();
+  if (!token) throw new AdminDisabledError();
+  const baseUrl = getJunjoBaseUrl();
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  let serialized: string | undefined;
+  if (body !== null) {
+    headers["content-type"] = "application/json";
+    serialized = JSON.stringify(body);
+  }
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers,
+    body: serialized,
+    cache: "no-store",
+    signal: opts.signal,
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => null)) as {
+      code?: string;
+      message?: string;
+    } | null;
+    const detail = errBody?.message ?? `${res.status} ${res.statusText}`;
+    throw new Error(`admin request failed: ${detail}`);
+  }
+  return (await res.json()) as TResult;
+}
+
+export function fetchAdminGames(opts?: FetchOptions): Promise<AdminGameList> {
+  return adminFetch<AdminGameList>("/v1/admin/games", opts);
+}
+
+export function fetchAdminGame(gameId: string, opts?: FetchOptions): Promise<AdminGame> {
+  return adminFetch<AdminGame>(`/v1/admin/games/${encodeURIComponent(gameId)}`, opts);
+}
+
+export function fetchAdminApiKeys(gameId: string, opts?: FetchOptions): Promise<AdminApiKeyList> {
+  return adminFetch<AdminApiKeyList>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys`,
+    opts,
+  );
+}
+
+export function createAdminGame(name: string, opts?: MutationOptions): Promise<AdminGame> {
+  return adminMutate<{ name: string }, AdminGame>("POST", "/v1/admin/games", { name }, opts);
+}
+
+export function createAdminApiKey(
+  gameId: string,
+  opts?: MutationOptions,
+): Promise<AdminApiKeyCreated> {
+  return adminMutate<null, AdminApiKeyCreated>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys`,
+    null,
+    opts,
+  );
+}
+
+export function revokeAdminApiKey(
+  gameId: string,
+  keyId: string,
+  opts?: MutationOptions,
+): Promise<AdminApiKey> {
+  return adminMutate<null, AdminApiKey>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys/${encodeURIComponent(keyId)}/revoke`,
+    null,
+    opts,
+  );
+}
