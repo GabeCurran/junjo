@@ -1209,6 +1209,66 @@ Errors:
 | `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## PUT /v1/admin/games/:gameId/groups/:groupId/parent
+
+**Phase 11.7c-i.** Set or clear the sub-group / alliance parent of a group. Mirrors the per-game `PUT /v1/groups/:id/parent` byte-for-byte: body shape, idempotence rules, audit shape, cycle detection, and `group.updated` `JunjoEvent` dispatch.
+
+Path parameters:
+
+- `:gameId` - the game id; both the child and (when set) the candidate parent must belong to it.
+- `:groupId` - the child group id.
+
+Request body:
+
+```json
+{ "parentGroupId": "grp_abc" }
+```
+
+The `parentGroupId` field is required; omitting it returns 400. Pass `null` to clear the parent. A non-null value must reference a live group in the same game.
+
+Response: `200 OK` with the updated `WireAdminGroup` (the same shape as the single-group detail endpoint). `parentGroupId` reflects the post-state value (matches the requested `parentGroupId`).
+
+Behavior:
+
+- **Idempotent on matching value.** If the supplied `parentGroupId` already equals the stored value, the route returns the unchanged group with no DB write, no audit entry, and no `updatedAt` bump. No `JunjoEvent` is dispatched.
+- **Cycle detection.** Self-parent (`parentGroupId === groupId`) returns `400 parent_cycle`. The route also walks the candidate parent's ancestor chain (one Prisma round-trip per ancestor, bounded at 100 levels) and rejects with `400 parent_cycle` if the child group itself appears in the chain.
+- **Audit entry.** On a value change, one transaction updates the row and writes a single audit entry: `group.parent.set` when the new value is non-null; `group.parent.cleared` when it is null. The audit `payload` is `{ before, after }` (each may be null); the audit row's `targetId` is the new parent id (null when cleared); `actorUserId` is null in V1.
+- **Event dispatch.** A `group.updated` `JunjoEvent` is dispatched after the transaction commits (no dedicated `GroupParentChangedEvent` in the union, mirroring the per-game route's choice).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `parentGroupId`, empty string, non-string non-null, or malformed JSON. |
+| `parent_cycle` | 400 | Self-parent or any cycle in the candidate ancestor chain. |
+| `not_found` | 404 | Child group missing / cross-game / soft-deleted, OR candidate parent missing / cross-game / soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/children
+
+**Phase 11.7c-i.** List the direct children of a group. Mirrors the per-game `GET /v1/groups/:id/children` byte-for-byte.
+
+Path parameters:
+
+- `:gameId` - the game id; the parent must belong to it.
+- `:groupId` - the parent group id.
+
+Response: `200 OK` with a bare `WireAdminGroup[]`, sorted by `(createdAt desc, id desc)`. No pagination wrapper (a group's direct child set is conventionally small).
+
+Behavior:
+
+- **Direct children only.** Grandchildren are NOT recursed; the dashboard's Sub-groups tab navigates one level at a time.
+- **Soft-deleted children excluded.** Operators see the live hierarchy.
+- **`memberCount` populated** per child via a single batched `groupBy` (active-only count); avoids N round-trip counts for large child sets.
+- Empty array when the parent has no children.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

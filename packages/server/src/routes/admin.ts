@@ -10,6 +10,7 @@ import type {
   GameId,
   GroupId,
   GroupRelationshipChangedEvent,
+  GroupUpdatedEvent,
   MemberInvitedEvent,
   MemberLeftEvent,
   PermissionGrantedEvent,
@@ -39,6 +40,7 @@ import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import {
   dispatchEvent,
+  toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
   toPublicRole,
@@ -47,6 +49,7 @@ import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
+  ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   adminClearRelationshipQuery,
   adminCreateInvitationBody,
@@ -54,6 +57,7 @@ import {
   adminGrantPermissionBody,
   adminKickMemberBody,
   adminOverridePermissionBody,
+  adminSetParentBody,
   adminSetRelationshipBody,
   adminUpdateMemberBody,
   adminUpdateRoleBody,
@@ -2450,5 +2454,144 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
     });
 
     return c.json<WireGroupRelationship[]>(rels.map(serializeGroupRelationship));
+  };
+}
+
+// `PUT /v1/admin/games/:gameId/groups/:groupId/parent` (Phase 11.7c-i).
+// Mirrors the per-game route in `routes/groups.ts:1731` byte-for-byte:
+// body shape `{ parentGroupId: string | null }` (the field is required;
+// `null` clears, a non-null value sets); idempotent on matching value
+// (no DB write, no audit entry); cycle detection walks the candidate
+// parent's ancestor chain bounded at `ADMIN_MAX_PARENT_DEPTH = 100`;
+// self-parent and any cycle hit `400 parent_cycle`. The 404 collapse
+// covers missing / cross-game / soft-deleted groups on either the
+// child or the candidate parent. On a value change, one transaction
+// updates the row and writes a single audit entry: `group.parent.set`
+// when the new value is non-null; `group.parent.cleared` when it is
+// null. The audit `payload` is `{ before, after }` (each may be null);
+// the audit row's `targetId` is the new parent id (null when cleared);
+// `actorUserId` is null. Dispatches a `group.updated` JunjoEvent (no
+// dedicated `GroupParentChangedEvent` in the union, mirroring the
+// per-game route's choice).
+export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminSetParentBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { parentGroupId } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id: groupId, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    if (parentGroupId !== null) {
+      if (parentGroupId === group.id) throw Errors.parentCycle();
+
+      const parent = await prisma.group.findFirst({
+        where: { id: parentGroupId, gameId, softDeletedAt: null },
+        select: { id: true, parentGroupId: true },
+      });
+      if (!parent) throw Errors.notFound("group");
+
+      let cursor: { id: string; parentGroupId: string | null } | null = parent;
+      let depth = 0;
+      while (cursor && cursor.parentGroupId !== null && depth < ADMIN_MAX_PARENT_DEPTH) {
+        if (cursor.parentGroupId === group.id) throw Errors.parentCycle();
+        cursor = await prisma.group.findUnique({
+          where: { id: cursor.parentGroupId },
+          select: { id: true, parentGroupId: true },
+        });
+        depth++;
+      }
+    }
+
+    if (group.parentGroupId === parentGroupId) {
+      const memberCount = await prisma.groupMember.count({
+        where: { groupId: group.id, status: "active" },
+      });
+      return c.json<WireAdminGroup>(toWireAdminGroup(group, memberCount));
+    }
+
+    const previous = group.parentGroupId;
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.group.update({
+        where: { id: group.id },
+        data: { parentGroupId },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: parentGroupId === null ? "group.parent.cleared" : "group.parent.set",
+          targetId: parentGroupId,
+          payload: {
+            before: previous,
+            after: parentGroupId,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.id, status: "active" },
+    });
+    await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
+      type: "group.updated",
+      gameId: gameId as GameId,
+      groupId: updated.id as GroupId,
+      group: toPublicGroup(updated, memberCount),
+    });
+    return c.json<WireAdminGroup>(toWireAdminGroup(updated, memberCount));
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:groupId/children` (Phase 11.7c-i).
+// Mirrors the per-game route in `routes/groups.ts:1815` byte-for-byte:
+// returns a bare `WireAdminGroup[]` of direct children (groups whose
+// `parentGroupId` points at this one); grandchildren are NOT recursed.
+// Soft-deleted children are excluded. Sorted by `(createdAt desc, id
+// desc)` to match `groups.list` ordering. Each item carries a freshly
+// counted `memberCount` from a single batched `groupBy` (matches the
+// per-game route's pattern; avoids N round-trip counts for large child
+// sets). 404 collapses missing / cross-game / soft-deleted parent.
+export function listAdminGroupChildrenHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const group = await prisma.group.findFirst({
+      where: { id: groupId, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const children = await prisma.group.findMany({
+      where: { parentGroupId: group.id, gameId, softDeletedAt: null },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    if (children.length === 0) return c.json<WireAdminGroup[]>([]);
+
+    const counts = await batchActiveMemberCounts(
+      prisma,
+      children.map((g) => g.id),
+    );
+
+    return c.json<WireAdminGroup[]>(
+      children.map((g) => toWireAdminGroup(g, counts.get(g.id) ?? 0)),
+    );
   };
 }

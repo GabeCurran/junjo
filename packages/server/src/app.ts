@@ -23,6 +23,7 @@ import {
   listAdminGamePermissionsHandler,
   listAdminGamesHandler,
   listAdminGroupAuditHandler,
+  listAdminGroupChildrenHandler,
   listAdminGroupMembersHandler,
   listAdminGroupRelationshipsHandler,
   listAdminGroupRolesHandler,
@@ -32,6 +33,7 @@ import {
   listUserGamesHandler,
   revokeAdminApiKeyHandler,
   revokeAdminRolePermissionHandler,
+  setAdminGroupParentHandler,
   setAdminGroupRelationshipHandler,
   setAdminMemberPermissionOverrideHandler,
   updateAdminGroupMemberHandler,
@@ -288,6 +290,25 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:a/relationships/:b",
     adminAuthMiddleware(opts.adminToken),
     getAdminGroupRelationshipHandler(prisma),
+  );
+  // Admin-token-gated per-group sub-group hierarchy (Phase 11.7c-i).
+  // Mirrors the per-game `PUT /v1/groups/:id/parent` and
+  // `GET /v1/groups/:id/children` semantics byte-for-byte (same body
+  // shape, same idempotence rules, same audit shape, same cycle
+  // detection bounded at `ADMIN_MAX_PARENT_DEPTH`). Backs the
+  // dashboard's group detail Sub-groups tab (Phase 11.7c-ii). The set
+  // handler takes the event hub so SSE subscribers and webhook
+  // endpoints see the same `group.updated` event a per-game-key call
+  // would emit; the children list is read-only.
+  v1.put(
+    "/admin/games/:gameId/groups/:groupId/parent",
+    adminAuthMiddleware(opts.adminToken),
+    setAdminGroupParentHandler(prisma, hub),
+  );
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/children",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupChildrenHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

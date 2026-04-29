@@ -4028,4 +4028,48 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** mutual pairs render as two rows from the operator's perspective (one in A's view, one in B's view). Acceptable: the directed row count matches the underlying schema, and the dialog's mutual checkbox makes the create / clear flows symmetric across both directions in one call.
 
+### Phase 11.7c-i: admin sub-group endpoints mirror the per-game routes byte-for-byte
+
+**Decision:** `setAdminGroupParentHandler` and `listAdminGroupChildrenHandler` in `routes/admin.ts` duplicate the per-game `PUT /v1/groups/:id/parent` and `GET /v1/groups/:id/children` semantics from `routes/groups.ts` byte-for-byte (body shape, idempotence rules, audit shape, cycle detection, `JunjoEvent` dispatch, sort order, batched memberCount). ~80 LoC of duplicated handler code.
+
+**Rationale:**
+- Behavior parity is essential. SSE subscribers, webhook endpoints, audit log readers, and cache consumers must fire the same way regardless of which surface (per-game-key or admin-token) invoked the mutation. A separate semantic for the admin route would mean operators using the dashboard observe different behavior from their dev integration; that breaks the trust model.
+- Reuses the precedent set by every prior `routes/admin.ts` handler (iter-068 row actions, iter-070 invitation, iter-072 roles, iter-076 audit, iter-078 relationships): structural duplication of small per-game-mirror handlers is cheaper than coupling the cloud-only admin module to the OSS per-game module.
+- The admin handler returns `WireAdminGroup` (the dashboard's typed view) rather than the per-game `WireGroup`; the response shape diverges by design (the admin shape carries `parentGroupId` consistently, whereas the per-game shape was widened for parent in iter 024).
+- Cycle detection uses `ADMIN_MAX_PARENT_DEPTH = 100` (mirrors per-game `MAX_PARENT_DEPTH`) lifted to a const in `routes/admin.schema.ts` so the admin schema does not import across the cloud-only boundary. Same lift pattern as `ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH` from iter 078.
+
+**Trade:** if the per-game route's behavior changes in a future iteration, the admin route must change too (or operators get diverging behavior between surfaces). Acceptable: a comment header + the `mirrors the per-game route in routes/groups.ts:1731 byte-for-byte` callout makes the coupling explicit; the maintenance overhead is low because both handlers are in the same `packages/server` codebase reviewed in lockstep.
+
+### Phase 11.7c-i: setParent dispatches `group.updated`, not a dedicated `GroupParentChangedEvent`
+
+**Decision:** the admin set-parent handler dispatches a `group.updated` `JunjoEvent` (the same event the PATCH and restore routes dispatch), NOT a dedicated `GroupParentChangedEvent`. Mirrors the per-game route's choice exactly.
+
+**Rationale:**
+- The `JunjoEvent` union (per VISION 5.1b) intentionally has no `GroupParentChangedEvent` case. Adding one would be a wire-shape change requiring SDK + React-hook + dashboard consumers to update in lockstep.
+- Parent changes are a subset of group state; consumer reconcile logic for `group.updated` already covers "the group's `parentGroupId` field changed" without divergence. The event payload includes the full updated `Group` (via `toPublicGroup`), so subscribers see the new `parentGroupId` value.
+- Deviating from the per-game route's choice would be an admin-vs-per-game wire-divergence (the dashboard would receive a different event shape than a game server would for the same mutation). That's exactly the trust-model break the byte-for-byte mirroring rule prevents.
+
+**Trade:** consumers that want to react specifically to "the parent changed" (vs "any group field changed") have to inspect `event.group.parentGroupId` against the previous snapshot. Acceptable: the `useGroup` React hook from Phase 7.2 already handles `group.updated` by replacing the stored group, which is the right semantic here.
+
+### Phase 11.7c-i: tests live in standalone `admin.subGroups.test.ts`
+
+**Decision:** the 36 new tests live in a new file `packages/server/src/routes/admin.subGroups.test.ts`, not folded into `admin.test.ts` (which is already 2500 lines).
+
+**Rationale:**
+- Mirrors iter-068 / 070 / 072 / 073 / 076 / 078 file-per-feature precedents (`admin.rowActions.test.ts`, `admin.invitations.test.ts`, `admin.roles.test.ts`, `admin.permissions.test.ts`, `admin.audit.test.ts`, `admin.relationships.test.ts`).
+- The admin endpoint test surface is now spread across 8 files (admin.test.ts + 7 admin.<feature>.test.ts). File-per-feature keeps git blame legible and load time low.
+- Cumulative server count: 1056 -> 1092 (+36).
+
+### Phase 11.7c-i: `WireAdminGroup` is reused, not duplicated as `WireAdminChildGroup`
+
+**Decision:** the children list returns `WireAdminGroup[]` (the same shape Phase 11.4a defined for the cross-game group list and Phase 11.5a defined for the single-group detail), NOT a stripped-down `WireAdminChildGroup` shape.
+
+**Rationale:**
+- The dashboard's Sub-groups tab will render the same per-row data the groups browser already renders (group name + kind + visibility + memberCount + createdAt). Re-rendering the existing component is the right UX.
+- A stripped-down shape would force the dashboard to handle two different group serializations on the same page (the parent breadcrumb's full group + the children list's stripped group); that's needless cognitive load.
+- The `parentGroupId` field on `WireAdminGroup` already carries the parent reference for each child, which is useful for "open parent" affordances on the children list.
+- Reusing the shape costs ~one extra field on the wire (`parentGroupId`); the cost is trivial.
+
+**Trade:** the children list response is slightly larger than necessary (one extra string field per row). Acceptable: the field is small, and reusing the type keeps the dashboard's TanStack Table column definitions consistent across pages.
+
 

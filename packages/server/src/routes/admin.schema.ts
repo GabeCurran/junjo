@@ -169,6 +169,21 @@ export const adminClearRelationshipQuery = z.object({
   mutual: z.enum(["true", "false"]).optional(),
 });
 
+// Phase 11.7c-i: cross-game sub-group parent set / clear. Mirrors the
+// per-game `setParentBody` from `routes/groups.schema.ts` byte-for-byte:
+// the body must always carry the field (omitting it is rejected) so the
+// caller's intent is explicit; `parentGroupId: null` clears the parent.
+// Same structural-duplication stance as the relationship + role bodies.
+export const adminSetParentBody = z.object({
+  parentGroupId: z.string().min(1).nullable(),
+});
+
+// Hard upper bound on how deep the cycle-detection walk goes when
+// resolving a candidate ancestor chain. Mirrors the per-game
+// `MAX_PARENT_DEPTH` (lifted to a const here so the admin schema does
+// not import across the cloud-only boundary).
+export const ADMIN_MAX_PARENT_DEPTH = 100;
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -187,3 +202,4 @@ export type AdminUpdateRoleBody = z.infer<typeof adminUpdateRoleBody>;
 export type AdminGrantPermissionBody = z.infer<typeof adminGrantPermissionBody>;
 export type AdminSetRelationshipBody = z.infer<typeof adminSetRelationshipBody>;
 export type AdminClearRelationshipQuery = z.infer<typeof adminClearRelationshipQuery>;
+export type AdminSetParentBody = z.infer<typeof adminSetParentBody>;
