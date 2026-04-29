@@ -29,7 +29,7 @@ The response includes members in any status; historical rows (`left`, `kicked`) 
 
 ### See also
 
-- [`GET /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id/members/:userId`](/api-reference/groups) - the underlying HTTP route.
 
 ## `getById(id)` - shipped
 
@@ -49,7 +49,7 @@ Useful when you have already cached a member id (e.g. from a webhook event paylo
 
 ### See also
 
-- [`GET /v1/members/:id`](/api/members) - the underlying HTTP route.
+- [`GET /v1/members/:id`](/api-reference/members) - the underlying HTTP route.
 
 ## `list(groupId, opts?)` - shipped
 
@@ -97,7 +97,7 @@ V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the 
 
 ### See also
 
-- [`GET /v1/groups/:id/members`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id/members`](/api-reference/groups) - the underlying HTTP route.
 
 ## `listForUser(userId, opts?)` - shipped
 
@@ -129,7 +129,7 @@ for (const m of memberships) {
 
 ### See also
 
-- [`GET /v1/users/:userId/members`](/api/members) - the underlying HTTP route.
+- [`GET /v1/users/:userId/members`](/api-reference/members) - the underlying HTTP route.
 
 ## `setMetadata(groupId, userId, metadata)` - shipped
 
@@ -154,7 +154,7 @@ The server treats every supplied metadata as a change (it does not deep-equal ag
 
 ### See also
 
-- [`PATCH /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+- [`PATCH /v1/groups/:id/members/:userId`](/api-reference/groups) - the underlying HTTP route.
 
 ## `overridePermission(groupId, userId, permission, grant)` - shipped
 
@@ -192,7 +192,7 @@ The permission key is auto-registered into the per-game catalog on first sight (
 
 ### See also
 
-- [`POST /v1/groups/:id/members/:userId/permissions/:permission`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/members/:userId/permissions/:permission`](/api-reference/groups) - the underlying HTTP route.
 
 ## `clearPermissionOverride(groupId, userId, permission)` - shipped
 
@@ -217,7 +217,7 @@ After clearing, the member's effective permission for this key falls back to wha
 
 ### See also
 
-- [`DELETE /v1/groups/:id/members/:userId/permissions/:permission`](/api/groups) - the underlying HTTP route.
+- [`DELETE /v1/groups/:id/members/:userId/permissions/:permission`](/api-reference/groups) - the underlying HTTP route.
 
 ## `listPermissionOverrides(groupId, userId)` - shipped
 
@@ -248,7 +248,7 @@ A member with no overrides returns `[]`.
 
 ### See also
 
-- [`GET /v1/groups/:id/members/:userId/permissions`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id/members/:userId/permissions`](/api-reference/groups) - the underlying HTTP route.
 
 ## `assignRole(groupId, userId, roleId)` - shipped
 
@@ -277,7 +277,7 @@ A member in any status (`active`, `left`, `kicked`, `invited`) can have roles as
 
 ### See also
 
-- [`POST /v1/groups/:id/members/:userId/roles/:roleId`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/members/:userId/roles/:roleId`](/api-reference/groups) - the underlying HTTP route.
 
 ## `removeRole(groupId, userId, roleId)` - shipped
 
@@ -303,7 +303,7 @@ Other role assignments on the same member are preserved.
 
 ### See also
 
-- [`DELETE /v1/groups/:id/members/:userId/roles/:roleId`](/api/groups) - the underlying HTTP route.
+- [`DELETE /v1/groups/:id/members/:userId/roles/:roleId`](/api-reference/groups) - the underlying HTTP route.
 
 ## `setNotes(groupId, userId, input)` - shipped
 
@@ -348,4 +348,4 @@ await junjo.members.setNotes("grp_xyz" as GroupId, "user_alice" as UserId, {
 
 ### See also
 
-- [`PATCH /v1/groups/:id/members/:userId`](/api/groups) - the underlying HTTP route.
+- [`PATCH /v1/groups/:id/members/:userId`](/api-reference/groups) - the underlying HTTP route.

@@ -6,12 +6,12 @@ This is the fastest way to drop Junjo activity into a Discord channel without a 
 
 ## Setup
 
-1. In Discord, open the channel settings, go to **Integrations**, click **Create Webhook**, then **Copy Webhook URL**. Discord webhook URLs look like `https://discord.com/api/webhooks/<channel-id>/<token>`.
+1. In Discord, open the channel settings, go to **Integrations**, click **Create Webhook**, then **Copy Webhook URL**. Discord webhook URLs look like `https://discord.com/api-reference/webhooks/<channel-id>/<token>`.
 2. Create the Junjo endpoint with `format: "discord"`:
 
 ```ts
 const endpoint = await junjo.webhooks.endpoints.create({
-  url: "https://discord.com/api/webhooks/123/abc...",
+  url: "https://discord.com/api-reference/webhooks/123/abc...",
   format: "discord",
   events: ["member.joined", "member.left", "group.deleted"],
 });

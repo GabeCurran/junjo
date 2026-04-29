@@ -687,7 +687,7 @@ interface WireAdminMemberPermissionOverride {
 - Idempotent on matching `grant` (no audit entry, no DB write, no `setAt` bump).
 - On a change writes one `permission.override.set` audit entry with `payload: { memberId, permission, grant }`. On an update the payload also carries `before: { grant }` with the previous value.
 - The permission key is auto-registered into `PermissionDef (gameId, key)` on first sight per game. Mirrors the `roles.grantPermission` and per-game override route convention; the registry is monotonic per game.
-- Override semantics: an override (in either direction) wins over any role-derived grant during permission resolution (see `/api/permissions`). Setting an override does not touch role assignments.
+- Override semantics: an override (in either direction) wins over any role-derived grant during permission resolution (see `/api-reference/permissions`). Setting an override does not touch role assignments.
 - Invalidates the in-memory permission cache for the group after commit so the next `permissions.check` reflects the new value.
 
 ### Errors

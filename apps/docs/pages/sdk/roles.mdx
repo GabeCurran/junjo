@@ -42,7 +42,7 @@ const officer = await junjo.roles.create("grp_xyz" as GroupId, {
 
 ### See also
 
-- [`POST /v1/groups/:id/roles`](/api/roles) - the underlying HTTP route.
+- [`POST /v1/groups/:id/roles`](/api-reference/roles) - the underlying HTTP route.
 
 ## `get(id)` - shipped
 
@@ -65,7 +65,7 @@ role.color;
 
 ### See also
 
-- [`GET /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+- [`GET /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
 ## `list(groupId)` - shipped
 
@@ -89,7 +89,7 @@ Roles in V1 are a small list per group (10s, not 1000s); pagination is not provi
 
 ### See also
 
-- [`GET /v1/groups/:id/roles`](/api/roles) - the underlying HTTP route.
+- [`GET /v1/groups/:id/roles`](/api-reference/roles) - the underlying HTTP route.
 
 ## `update(id, input)` - shipped
 
@@ -124,7 +124,7 @@ Each field is diffed per-field against the stored row; supplying the same value 
 
 ### See also
 
-- [`PATCH /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+- [`PATCH /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
 ## `delete(id)` - shipped
 
@@ -146,7 +146,7 @@ If the role has any member assignments, the call throws `JunjoError` with `code:
 
 ### See also
 
-- [`DELETE /v1/roles/:id`](/api/roles) - the underlying HTTP route.
+- [`DELETE /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
 ## `grantPermission(roleId, permission)` - shipped
 
@@ -169,7 +169,7 @@ The call is idempotent: granting a permission the role already has returns the u
 
 ### See also
 
-- [`POST /v1/roles/:id/permissions`](/api/roles) - the underlying HTTP route.
+- [`POST /v1/roles/:id/permissions`](/api-reference/roles) - the underlying HTTP route.
 
 ## `revokePermission(roleId, permission)` - shipped
 
@@ -189,4 +189,4 @@ role.permissions; // no longer includes "invite_member"
 
 ### See also
 
-- [`DELETE /v1/roles/:id/permissions/:permission`](/api/roles) - the underlying HTTP route.
+- [`DELETE /v1/roles/:id/permissions/:permission`](/api-reference/roles) - the underlying HTTP route.

@@ -99,17 +99,25 @@ export function MobileNav() {
         }`}
       />
 
-      {/* Drop-down menu. Sits below the sticky top bar (top-14). Full
-       * width. Uses max-h + opacity + origin-top scale for a smooth
-       * accordion-style reveal that does not push page content. */}
+      {/* Drop-down menu. Sits below the sticky top bar (top-14), full
+       * width. Outer container clips with overflow-hidden + max-h
+       * transitioning from 0 to 80vh - this is the actual "drop down"
+       * motion (the menu's bottom edge sweeps downward over ~250ms).
+       * The inner panel additionally translates from -8px to 0 to add
+       * a subtle slide-in feel as it appears. Opacity removed: it was
+       * what made the previous version look like a fade. */}
       <nav
         id="mobile-nav-drawer"
         aria-label="Site navigation"
-        className={`fixed left-0 right-0 top-14 z-40 origin-top overflow-hidden transition-all duration-300 ease-in-out md:hidden ${
-          open ? "max-h-[80vh] opacity-100" : "pointer-events-none max-h-0 opacity-0"
+        className={`fixed left-0 right-0 top-14 z-40 overflow-hidden transition-[max-height] duration-300 ease-out md:hidden ${
+          open ? "max-h-[80vh]" : "pointer-events-none max-h-0"
         }`}
       >
-        <div className="border-b border-border bg-card shadow-lg">
+        <div
+          className={`border-b border-border bg-card shadow-lg transition-transform duration-300 ease-out ${
+            open ? "translate-y-0" : "-translate-y-2"
+          }`}
+        >
           <SidebarNav />
         </div>
       </nav>

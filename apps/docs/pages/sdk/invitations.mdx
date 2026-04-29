@@ -45,7 +45,7 @@ do {
 
 ### See also
 
-- [`GET /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
 ## `get(code)` - shipped
 
@@ -77,7 +77,7 @@ if (invitation.usedAt) {
 
 ### See also
 
-- [`GET /v1/invitations/:code`](/api/invitations) - the underlying HTTP route.
+- [`GET /v1/invitations/:code`](/api-reference/invitations) - the underlying HTTP route.
 
 ## `revoke(code)` - shipped
 
@@ -103,4 +103,4 @@ await junjo.invitations.revoke("abcd1234abcd1234");
 
 ### See also
 
-- [`DELETE /v1/invitations/:code`](/api/invitations) - the underlying HTTP route.
+- [`DELETE /v1/invitations/:code`](/api-reference/invitations) - the underlying HTTP route.

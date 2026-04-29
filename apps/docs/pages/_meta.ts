@@ -6,6 +6,6 @@ export default {
   sdk: "SDK",
   react: "React",
   roblox: "Roblox",
-  api: "API",
+  "api-reference": "API",
   auth: "Auth",
 };

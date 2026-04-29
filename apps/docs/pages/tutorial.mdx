@@ -154,7 +154,7 @@ subscription.close();
 
 For React apps, `useGroup` and `useMembers` open and manage subscriptions for you; see the [React reference](/react).
 
-For server-to-server delivery (your backend reacting to events from another process), use [webhooks](/api/webhooks). Webhooks are HMAC-signed and retry with exponential backoff up to 6 attempts. The SDK provides `junjo.webhooks.verify` and `junjo.webhooks.middleware` for the receiver side.
+For server-to-server delivery (your backend reacting to events from another process), use [webhooks](/api-reference/webhooks). Webhooks are HMAC-signed and retry with exponential backoff up to 6 attempts. The SDK provides `junjo.webhooks.verify` and `junjo.webhooks.middleware` for the receiver side.
 
 ## What you built
 
@@ -172,6 +172,6 @@ Everything else in Junjo is a variation on these primitives: more groups, more r
 
 - **[SDK reference](/sdk)** - every namespace, every method, every option.
 - **[React reference](/react)** - drop-in hooks: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`.
-- **[Webhooks](/api/webhooks)** - dispatch events to your own backend, or pipe them to Discord and Slack.
+- **[Webhooks](/api-reference/webhooks)** - dispatch events to your own backend, or pipe them to Discord and Slack.
 - **[Auth adapters](/auth)** - so the user id you pass to Junjo is the verified user id from your auth provider.
 - **[API reference](/api)** - the raw HTTP surface, for languages Junjo does not yet ship a native client for.

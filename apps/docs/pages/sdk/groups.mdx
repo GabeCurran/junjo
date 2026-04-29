@@ -41,7 +41,7 @@ group.softDeletedAt; // null
 
 ### See also
 
-- [`POST /v1/groups`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups`](/api-reference/groups) - the underlying HTTP route.
 
 ## `get(id)` - shipped
 
@@ -66,7 +66,7 @@ group.memberCount; // active member count, computed server-side
 
 ### See also
 
-- [`GET /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
 ## `list(opts?)` - shipped
 
@@ -111,7 +111,7 @@ do {
 
 ### See also
 
-- [`GET /v1/groups`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups`](/api-reference/groups) - the underlying HTTP route.
 
 ## `update(id, input)` - shipped
 
@@ -151,7 +151,7 @@ updated.updatedAt;  // Date - bumped only when something actually changed
 
 ### See also
 
-- [`PATCH /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+- [`PATCH /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
 ## `delete(id, opts?)` - shipped
 
@@ -182,7 +182,7 @@ await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
 
 ### See also
 
-- [`DELETE /v1/groups/:id`](/api/groups) - the underlying HTTP route.
+- [`DELETE /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
 ## `restore(id)` - shipped
 
@@ -207,7 +207,7 @@ group.softDeletedAt; // null
 
 ### See also
 
-- [`POST /v1/groups/:id/restore`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/restore`](/api-reference/groups) - the underlying HTTP route.
 
 ## `inviteByUserId(groupId, userId, opts?)` - shipped
 
@@ -247,7 +247,7 @@ invitation.createdAt;     // Date
 
 ### See also
 
-- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
 ## `inviteByCode(groupId, input?)` - shipped
 
@@ -286,7 +286,7 @@ invitation.expiresAt;     // Date | null
 
 ### See also
 
-- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
 ## `inviteByLink(groupId, input?)` - shipped
 
@@ -336,7 +336,7 @@ Same as `inviteByCode`. `inviteByLink` does not add any error cases of its own; 
 
 ### See also
 
-- [`POST /v1/groups/:id/invitations`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
 ## `acceptInvitation(code, userId)` - shipped
 
@@ -382,7 +382,7 @@ The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox Use
 
 ### See also
 
-- [`POST /v1/invitations/:code/accept`](/api/invitations) - the underlying HTTP route.
+- [`POST /v1/invitations/:code/accept`](/api-reference/invitations) - the underlying HTTP route.
 
 ## `declineInvitation(code, opts?)` - shipped
 
@@ -422,7 +422,7 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 ### See also
 
-- [`POST /v1/invitations/:code/decline`](/api/invitations) - the underlying HTTP route.
+- [`POST /v1/invitations/:code/decline`](/api-reference/invitations) - the underlying HTTP route.
 
 ## `leave(groupId, userId)` - shipped
 
@@ -456,7 +456,7 @@ The `userId` is the dev's external user id. As with `acceptInvitation`, V1's tru
 
 ### See also
 
-- [`POST /v1/groups/:id/leave`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/leave`](/api-reference/groups) - the underlying HTTP route.
 
 ## `kick(groupId, userId, opts?)` - shipped
 
@@ -493,7 +493,7 @@ member.status; // "kicked"
 
 ### See also
 
-- [`POST /v1/groups/:id/members/:userId/kick`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/members/:userId/kick`](/api-reference/groups) - the underlying HTTP route.
 
 ## `bulkInvite(groupId, csv, opts?)` - shipped
 
@@ -547,7 +547,7 @@ result.errors;  // []
 
 ### See also
 
-- [`POST /v1/groups/:id/bulk-invite`](/api/groups) - the underlying HTTP route.
+- [`POST /v1/groups/:id/bulk-invite`](/api-reference/groups) - the underlying HTTP route.
 
 ## `setRelationship(groupAId, groupBId, type, opts?)` - shipped
 
@@ -589,7 +589,7 @@ interface GroupRelationship {
 
 ### See also
 
-- [`PUT /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+- [`PUT /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
 ## `clearRelationship(groupAId, groupBId, opts?)` - shipped
 
@@ -612,7 +612,7 @@ Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missin
 
 ### See also
 
-- [`DELETE /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+- [`DELETE /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
 ## `getRelationship(groupAId, groupBId)` - shipped
 
@@ -627,7 +627,7 @@ Fetch the directed A->B row, or `null` when no row exists for that direction. To
 
 ### See also
 
-- [`GET /v1/groups/:a/relationships/:b`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
 ## `listRelationships(groupId)` - shipped
 
@@ -645,7 +645,7 @@ Return every directed row where this group is the A-side ("this group's stance t
 
 ### See also
 
-- [`GET /v1/groups/:a/relationships`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:a/relationships`](/api-reference/groups) - the underlying HTTP route.
 
 ## `setParent(groupId, parentGroupId)` - shipped
 
@@ -675,7 +675,7 @@ The updated `Group` (including the new `parentGroupId`).
 
 ### See also
 
-- [`PUT /v1/groups/:id/parent`](/api/groups) - the underlying HTTP route.
+- [`PUT /v1/groups/:id/parent`](/api-reference/groups) - the underlying HTTP route.
 
 ## `listChildren(groupId)` - shipped
 
@@ -695,7 +695,7 @@ A group with no live children returns `[]`.
 
 ### See also
 
-- [`GET /v1/groups/:id/children`](/api/groups) - the underlying HTTP route.
+- [`GET /v1/groups/:id/children`](/api-reference/groups) - the underlying HTTP route.
 
 ## `subscribe(groupId, handler, opts?)` - shipped
 
@@ -738,7 +738,7 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 ### Behavior
 
 - **Single group per stream.** One connection covers one group; subscribe to N groups with N calls.
-- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api/audit) (Phase 5.2) or webhooks (Phase 5.3) for durable propagation.
+- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) (Phase 5.2) or webhooks (Phase 5.3) for durable propagation.
 - **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
 - **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
 
@@ -751,4 +751,4 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 
 ### See also
 
-- [`GET /v1/events/:groupId`](/api/events) - the underlying HTTP route.
+- [`GET /v1/events/:groupId`](/api-reference/events) - the underlying HTTP route.

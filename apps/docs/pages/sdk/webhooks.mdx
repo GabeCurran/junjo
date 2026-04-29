@@ -3,7 +3,7 @@
 Two responsibilities live under this namespace:
 
 1. **`endpoints`** - CRUD for the webhook endpoints Junjo POSTs to.
-2. **`verify` / `middleware`** - receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts---shipped) values. Pair with the [HTTP wire format](../api/webhooks) docs for the corresponding server side.
+2. **`verify` / `middleware`** - receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts---shipped) values. Pair with the [HTTP wire format](../api-reference/webhooks) docs for the corresponding server side.
 
 `webhooks.verify` and `webhooks.middleware` are server-only helpers (they run on the dev's backend that receives webhooks). The signing math is HMAC-SHA256 via the Web Crypto API, so the same code runs on Node 19+ and modern browsers without `node:crypto` or `@types/node`.
 
@@ -30,7 +30,7 @@ app.post(
 
 ## `verify(rawBody, headers, secret, opts?)` - shipped
 
-Returns `Promise<JunjoEvent>`. Throws [`JunjoError`](../api/index#errors) on any verification failure.
+Returns `Promise<JunjoEvent>`. Throws [`JunjoError`](../api-reference/index#errors) on any verification failure.
 
 ```ts
 verify(
@@ -139,7 +139,7 @@ export const WEBHOOK_DEFAULT_TOLERANCE_MS = 5 * 60_000;
 
 ## `endpoints` - shipped
 
-CRUD for the webhook endpoints Junjo POSTs to. Endpoints are scoped per game; the calling API key determines which game the endpoint belongs to. Mirror counterpart of the [`/v1/webhooks` API routes](../api/webhooks#endpoint-configuration).
+CRUD for the webhook endpoints Junjo POSTs to. Endpoints are scoped per game; the calling API key determines which game the endpoint belongs to. Mirror counterpart of the [`/v1/webhooks` API routes](../api-reference/webhooks#endpoint-configuration).
 
 ```ts
 class WebhookEndpointsApi {
@@ -182,12 +182,12 @@ If `secret` is omitted (the common case), the server generates a 32-byte base64u
 
 `events` defaults to `[]` (match-all). Pass a non-empty array to filter to specific event types; unknown event types are rejected with a 400.
 
-`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api/webhooks-discord) or `"slack"` to produce a [Slack Block Kit message](../api/webhooks-slack) before POSTing - the URL is then a provider-issued webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (the provider receives the delivery directly).
+`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api-reference/webhooks-discord) or `"slack"` to produce a [Slack Block Kit message](../api-reference/webhooks-slack) before POSTing - the URL is then a provider-issued webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (the provider receives the delivery directly).
 
 ```ts
 // Pipe Junjo events to a Discord channel
 await junjo.webhooks.endpoints.create({
-  url: "https://discord.com/api/webhooks/123/abc...",
+  url: "https://discord.com/api-reference/webhooks/123/abc...",
   format: "discord",
   events: ["member.joined", "member.left", "group.deleted"],
 });
