@@ -94,7 +94,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 - 11.4a: cross-game admin endpoint backing the group browser
   (`GET /v1/admin/games/:gameId/groups` with q + kind + visibility filters,
   createdAt / name / memberCount sort, offset pagination).
-- 11.4b (this iteration, closes Phase 11.4): groups page at
+- 11.4b (closes Phase 11.4): groups page at
   `(dashboard)/games/[gameId]/groups/page.tsx`. Server Component parses
   `searchParams` into a typed `GroupsQueryState` (lenient: invalid values
   fall through to defaults rather than 400) and forwards it to
@@ -105,8 +105,25 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   selects forward `kind` and `visibility` to the URL, sortable column
   headers cycle desc -> asc -> desc on the three server-supported fields,
   pagination has Previous / Next plus a page-size selector. Row click and
-  the "Open" affordance navigate to `/games/[gameId]/groups/[groupId]`
-  (which 404s today; Phase 11.5 fills it in).
-- 11.5 - 11.9: Group detail tabs, audit viewer, permission tester
-  (one section per iteration).
+  the "Open" affordance navigate to `/games/[gameId]/groups/[groupId]`.
+- 11.5a: cross-game admin endpoints backing the group detail page (the
+  single-group fetch reuses `WireAdminGroup`; the members list at
+  `GET /v1/admin/games/:gameId/groups/:groupId/members` with q +
+  status filters, offset pagination, role chips populated).
+- 11.5b (this iteration): group detail page at
+  `(dashboard)/games/[gameId]/groups/[groupId]/page.tsx`. Server
+  Component renders `<GroupDetailHeader>` (group name + kind badge +
+  visibility badge with lock / eye / eye-off icon + creation/updated
+  timestamps + a single Active members stat tile) plus a Client
+  Component `<MembersTable>` (TanStack Table v8 with server-driven
+  sorting / filtering / pagination, role chips with colored dots, status
+  Badge per row, public-note truncation with `title` tooltip, 350ms
+  debounced search, status select with the four statuses + an `all`
+  wildcard, page-size selector, Previous / Next pagination). The members
+  tab is read-only in 11.5b; 11.5c adds row actions (kick / override /
+  edit notes / view all overrides) and 11.5d adds the "Invite member"
+  tabbed dialog.
+- 11.5c, 11.5d, 11.6 - 11.9: members-tab row actions, invite dialog,
+  the roles + permissions + audit + relationships + sub-groups tabs,
+  audit viewer, permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

@@ -270,3 +270,96 @@ export function fetchAdminGroupsForGame(
   const search = qs.toString();
   return adminFetch<AdminGroupList>(search ? `${path}?${search}` : path, opts);
 }
+
+// Phase 11.5a wire shapes mirrored byte-for-byte from
+// `packages/server/src/routes/admin.ts:WireAdminMemberRole`,
+// `WireAdminGroupMember`, and `WireAdminGroupMemberList`. The dashboard's
+// group detail page (members tab) consumes the single-group fetch
+// (`fetchAdminGroup`, reusing `AdminGroup`) plus the paginated members
+// fetch (`fetchAdminGroupMembers`).
+
+export type AdminMemberStatus = "active" | "left" | "kicked" | "invited";
+export type AdminMemberStatusFilter = AdminMemberStatus | "all";
+
+export const ADMIN_MEMBER_STATUSES: readonly AdminMemberStatus[] = [
+  "active",
+  "left",
+  "kicked",
+  "invited",
+];
+export const ADMIN_MEMBER_STATUS_FILTERS: readonly AdminMemberStatusFilter[] = [
+  "active",
+  "left",
+  "kicked",
+  "invited",
+  "all",
+];
+// The route caps `limit` at 100; the dashboard never asks for more than this
+// even on its largest page-size selector.
+export const ADMIN_MEMBERS_PAGE_SIZE_OPTIONS: readonly number[] = [10, 25, 50, 100];
+export const ADMIN_MEMBERS_DEFAULT_PAGE_SIZE = 50;
+
+export interface AdminMemberRole {
+  id: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+}
+
+export interface AdminGroupMember {
+  id: string;
+  groupId: string;
+  externalUserId: string;
+  junjoUserId: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;
+  leftAt: string | null;
+  roles: AdminMemberRole[];
+}
+
+export interface AdminGroupMemberList {
+  items: AdminGroupMember[];
+  total: number;
+  hasMore: boolean;
+}
+
+export function fetchAdminGroup(
+  gameId: string,
+  groupId: string,
+  opts?: FetchOptions,
+): Promise<AdminGroup> {
+  return adminFetch<AdminGroup>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}`,
+    opts,
+  );
+}
+
+export interface FetchAdminGroupMembersParams {
+  limit?: number;
+  offset?: number;
+  status?: AdminMemberStatusFilter;
+  q?: string;
+}
+
+// `q` is dropped from the wire request when empty so the server schema
+// (which rejects empty strings) does not 400 on a stale URL. `status`
+// forwards verbatim including the `all` wildcard.
+export function fetchAdminGroupMembers(
+  gameId: string,
+  groupId: string,
+  params: FetchAdminGroupMembersParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupMemberList> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(params.offset));
+  if (params.status !== undefined) qs.set("status", params.status);
+  if (params.q !== undefined && params.q.length > 0) qs.set("q", params.q);
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupMemberList>(search ? `${path}?${search}` : path, opts);
+}

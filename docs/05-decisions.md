@@ -3344,4 +3344,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** an operator looking for a member by their public note text cannot do so via this endpoint in V1. Acceptable: notes are a dev-supplied free-text field, not a primary identifier; `ExternalIdentity.externalUserId` is the canonical "who is this member" lookup.
 
+### Phase 11.5b: dashboard group detail page is a Server Component (lenient `searchParams` parse) + Client Component (TanStack Table-backed members tab)
+
+**Decision:** the group detail page at `apps/dashboard/app/(dashboard)/games/[gameId]/groups/[groupId]/page.tsx` follows the same Server-fetches / Client-interacts split established by Phase 11.4b's groups page (iter 065). Server Component lenient-parses `searchParams` into a typed `MembersQueryState`, fetches group + members concurrently (each in its own `<Suspense>` boundary), and forwards the query to the Client Component `<MembersTable>`. The Client Component owns all interaction (debounced search, status select, page-size select, pagination buttons) and pushes URL updates via `router.replace(..., { scroll: false })`. URL state is the single source of truth; TanStack Table runs in `manualSorting` / `manualFiltering` / `manualPagination` mode.
+
+**Rationale:**
+- Same precedent as iter 062 (games list) / 063 (game detail) / 065 (groups browser). The split has been re-validated five times; consistency lowers reviewer cognitive load.
+- Admin token stays server-side via `import "server-only"` on `lib/admin.ts`; a Client Component cannot accidentally leak the token into the browser bundle.
+- Lenient parsing keeps URL bookmarks robust against deploy-time enum changes (e.g. if a future Phase 11.6 widens the status taxonomy, an old URL with the missing-now value falls through to the default rather than 400-ing the page).
+- TanStack Table at `manualSorting` / `manualFiltering` / `manualPagination` makes the library a pure column-definition + render-helper layer. The server owns the active-only default + `q`-searches-externalUserId-only semantics; a client-side TanStack store would either contradict the server or be unused.
+
+**Trade:** the page makes two separate fetches (group detail + members) for the initial render. Acceptable: each `<Suspense>` boundary streams independently so the slower fetch does not block the faster one; each fetch is also independently cacheable via `next: { revalidate: 60 }`; refresh-on-mutation in 11.5c will only invalidate the relevant boundary via `revalidatePath`.
+
+### Phase 11.5b: members tab is read-only; row actions and invite dialog land in 11.5c / 11.5d
+
+**Decision:** the 11.5b iteration ships the members tab as read-only - rows render but have no actions (no kick button, no override, no notes editor, no invite-member affordance). Public notes are visually truncated with a `title` tooltip; the full note is not editable. 11.5c will add row actions (kick / override permission / edit notes / view all overrides) and 11.5d will add the "Invite member" tabbed dialog (by-userId / by-code / by-link).
+
+**Rationale:**
+- Each row action is its own destructive-confirmation or PATCH-style dialog with its own Server Action. Bundling four dialogs + their server actions + the invite dialog into the read-only iteration would mix three concerns and produce a 5+ surface diff.
+- VISION's Phase 11.5 explicitly lists the read-only members tab as the headline deliverable; the row actions are spec'd as separate UI affordances ("Row actions: edit notes, kick member, override permission, view all overrides"). Splitting them into 11.5c is a natural seam.
+- The invite-member dialog has three tabs each with its own form fields and SDK call; folding it into row actions or the read-only iteration would obscure the diff.
+- The split mirrors the 11.3b-i / 11.3b-ii precedent (iter 062 / 063): the games list landed first as read-only, then the API key issuance / revocation dialogs landed in a separate iteration.
+
+**Trade:** the members tab is operationally limited until 11.5c lands - operators can see who is in a group but cannot kick or edit. Acceptable: the read-only view is itself useful (current dashboard has no group detail at all), and the row-action surface is independently testable via 11.5c.
+
+### Phase 11.5b: page loads group detail and members in two independent `<Suspense>` boundaries
+
+**Decision:** the page renders `<GroupBody>` and `<MembersBody>` as siblings, each wrapped in its own `<Suspense>` boundary with its own skeleton fallback. The two fetches run concurrently; either can fail or stream independently. The members `<Suspense>` `key` is `JSON.stringify(query)` so the skeleton flashes when any URL param changes.
+
+**Rationale:**
+- The group detail and the members list are functionally independent panels. A slow members fetch should not delay the header from rendering; a slow header fetch should not delay the table.
+- Same Suspense-key-on-query trick as Phase 11.4b's groups page; without the key React reuses the previous boundary while the server re-runs, leaving stale data on screen during the fetch.
+- React 18 streaming flushes each panel as soon as its fetch resolves; skeleton fallbacks avoid layout shift.
+
+**Trade:** if both fetches fail with the same not-found envelope (the group doesn't exist), Next.js's `notFound()` from `<GroupBody>` propagates and tears down the entire route segment - including the in-flight `<MembersBody>`. Acceptable: the route is a single semantic unit ("this group's detail"); if the group doesn't exist, the whole page should 404.
+
+### Phase 11.5b: members table is hand-rolled (TanStack columns + plain HTML `<table>`) not the shadcn Table primitive
+
+**Decision:** `<MembersTable>` builds its `<table>` element by hand via `flexRender` from TanStack Table. The dashboard does NOT pull in shadcn's `<Table>` / `<TableHeader>` / `<TableBody>` / `<TableRow>` / `<TableCell>` primitive family.
+
+**Rationale:**
+- Mirrors the Phase 11.4b `<GroupsTable>` precedent (iter 065) which also uses a hand-rolled table for the same reasons.
+- shadcn's Table primitive is a thin Tailwind wrapper around plain HTML elements; it does not add accessibility, keyboard navigation, or selection semantics that matter for V1. Importing it would add five new files to `components/ui/` for ~40 lines of styling that already lives inline.
+- The hand-rolled table reads more linearly: one `<table>` -> one `<thead>` -> one `<tbody>` with no abstraction layer between TanStack's column definitions and the rendered DOM.
+- Future iterations can adopt the shadcn primitive as a refactor if the styling diverges; the current shape is local to one component and easy to swap.
+
+**Trade:** if a future iteration needs sticky headers or row selection, the hand-rolled table will need to grow those features inline rather than getting them for free from a primitive. Acceptable: V1 doesn't need either, and the shadcn primitive doesn't ship those features either.
+
+### Phase 11.5b: role chips render with a colored dot (not a colored background)
+
+**Decision:** each `<RoleChip>` is a `Badge variant="muted"` with a small colored dot (8px circle) inline before the role name. The dot's `background-color` is the role's `color` field; the chip's text color is the muted-foreground default. Roles without a color render the chip with no dot.
+
+**Rationale:**
+- Role colors are dev-supplied hex strings without contrast guarantees against the dashboard's dark-or-light theme. Using the role color as the chip background risks unreadable text (e.g. yellow text on yellow background) and would force the dashboard to compute a contrasting foreground per role.
+- The dot is a visual hint, not the whole UI signal. The role name is always readable at the muted-foreground contrast level the rest of the dashboard uses.
+- Chip variant is `muted` (border + neutral background) which gives every role chip the same visual weight regardless of color; priority sort order (highest priority first) carries the actual hierarchy signal.
+- Stripe / GitHub / Linear all use a similar dot-and-label pattern for tag chips; matches operator expectations.
+
+**Trade:** roles with very similar colors will look identical in the chip. Acceptable: the role name is the disambiguator; the color is a quick visual scan, not a primary identifier.
+
 
