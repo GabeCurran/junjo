@@ -3,9 +3,9 @@ import type { DocsThemeConfig } from "nextra-theme-docs";
 const config: DocsThemeConfig = {
   logo: <span style={{ fontWeight: 600 }}>Junjo</span>,
   project: {
-    link: "https://github.com/gabe-curran/junjo",
+    link: "https://github.com/GabeCurran/junjo",
   },
-  docsRepositoryBase: "https://github.com/gabe-curran/junjo/tree/main/apps/docs",
+  docsRepositoryBase: "https://github.com/GabeCurran/junjo/tree/main/apps/docs",
   footer: {
     content: "Junjo",
   },

@@ -30,7 +30,7 @@ Optional but recommended:
 
 ## Docker
 
-The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container in V1; both background tasks are in-process `setInterval` schedulers (the rationale for that choice is in [`docs/03-architecture.md`](https://github.com/gabe-curran/junjo/blob/main/docs/03-architecture.md) under Background sweeps).
+The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container in V1; both background tasks are in-process `setInterval` schedulers (the rationale for that choice is in [`docs/03-architecture.md`](https://github.com/GabeCurran/junjo/blob/main/docs/03-architecture.md) under Background sweeps).
 
 ```sh
 docker run \
@@ -99,7 +99,7 @@ For production, change `POSTGRES_PASSWORD`, point `JUNJO_BASE_URL` at your publi
 If you are evaluating Junjo, contributing, or want to pin to a specific commit:
 
 ```sh
-git clone https://github.com/gabe-curran/junjo
+git clone https://github.com/GabeCurran/junjo
 cd junjo
 npm install
 export DATABASE_URL=postgres://...
@@ -124,7 +124,7 @@ node packages/server/dist/index.js
 | `NODE_ENV` | no | `development` | One of `development`, `test`, `production`. Outside production, the Prisma client is cached on `globalThis` so `tsx watch` does not leak connections on hot reload. |
 | `JUNJO_BASE_URL` | no | | Public base URL of this server. Used when the SDK's `inviteByLink` builds the share URL; if you do not set it, the SDK falls back to its own `inviteBaseUrl` config. Optional during local dev. |
 
-Validation lives in [`packages/server/src/env.ts`](https://github.com/gabe-curran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
+Validation lives in [`packages/server/src/env.ts`](https://github.com/GabeCurran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
 
 There is no `JUNJO_API_KEY` env var on the server. API keys are per-game database rows that the server validates against the `ApiKey` table; the server itself has no master key. Issue keys with `npm run db:seed` (see below).
 
@@ -226,7 +226,7 @@ The unversioned root `GET /` returns the server name and version, useful for con
 
 Two `setInterval` schedulers run inside the server process:
 
-- **Soft-delete sweeper** (one tick per hour): deletes `Group` rows whose `softDeletedAt` is older than 7 days. The interval handle is `unref`'d so it never keeps the process alive on its own. Documented in [`docs/03-architecture.md`](https://github.com/gabe-curran/junjo/blob/main/docs/03-architecture.md) under Background sweeps.
+- **Soft-delete sweeper** (one tick per hour): deletes `Group` rows whose `softDeletedAt` is older than 7 days. The interval handle is `unref`'d so it never keeps the process alive on its own. Documented in [`docs/03-architecture.md`](https://github.com/GabeCurran/junjo/blob/main/docs/03-architecture.md) under Background sweeps.
 - **Webhook delivery worker** (one tick per 5 seconds, batch=50): polls `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api-reference/webhooks.mdx`](/api-reference/webhooks).
 
 Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
