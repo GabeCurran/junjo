@@ -46,11 +46,12 @@ import {
   toPublicRole,
 } from "../events.js";
 import { findJunjoUserId } from "../identity.js";
-import { permissionCache } from "../permissionCache.js";
+import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  adminCheckPermissionQuery,
   adminClearRelationshipQuery,
   adminCreateInvitationBody,
   adminCreateRoleBody,
@@ -73,6 +74,7 @@ import type { WireAuditEntry } from "./audit.js";
 import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import type { WireInvitation } from "./invitations.js";
+import { resolvePermission } from "./permissions.js";
 import { serializeGroupRelationship } from "./relationships.js";
 import type { WireGroupRelationship } from "./relationships.js";
 
@@ -2715,5 +2717,75 @@ export function listAdminGroupChildrenHandler(prisma: PrismaClient): Handler {
     return c.json<WireAdminGroup[]>(
       children.map((g) => toWireAdminGroup(g, counts.get(g.id) ?? 0)),
     );
+  };
+}
+
+export interface CheckAdminPermissionHandlerOptions {
+  cache?: PermissionCache;
+}
+
+// `GET /v1/admin/games/:gameId/permissions/check?userId=&groupId=&permission=`.
+//
+// Phase 11.9a-i. Mirrors the per-game `GET /v1/permissions/check` (iter
+// 022) byte-for-byte: same query shape, same `PermissionCheckResult` wire
+// format, same resolution order (member-status gate -> override -> role
+// -> default), same in-process cache. Backs the dashboard's permission
+// check tester (Phase 11.9a-ii) which composes a form taking
+// (userId, groupId, permission) and renders the result with badges.
+//
+// The admin and per-game routes share the singleton `permissionCache`
+// so a poke-around session in the dashboard hydrates the same cache the
+// dev's runtime queries hit, and a mutation through any surface
+// (per-game roles routes, per-game override routes, or the admin
+// counterparts shipped in 11.5c-i / 11.6a-i / 11.6a-ii) invalidates the
+// shared cache via `invalidateGroup`. Behavior parity is essential: the
+// answer to "can user X do Y in group Z?" must be identical regardless
+// of which surface asked.
+//
+// 404 collapses missing / cross-game / soft-deleted-group into one
+// envelope (matches the per-group / per-member admin handlers'
+// existence-not-leaked rule). The `gameId` path parameter scopes the
+// `ExternalIdentity` and cache key, so a userId from a different game
+// resolves to `source: "none"` rather than leaking through.
+export function checkAdminPermissionHandler(
+  prisma: PrismaClient,
+  opts: CheckAdminPermissionHandlerOptions = {},
+): Handler {
+  const cache = opts.cache ?? permissionCache;
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const parsed = adminCheckPermissionQuery.safeParse({
+      userId: c.req.query("userId"),
+      groupId: c.req.query("groupId"),
+      permission: c.req.query("permission"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { userId, groupId, permission } = parsed.data;
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const group = await prisma.group.findFirst({
+      where: { id: groupId, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const cached = cache.get(gameId, group.id, userId, permission);
+    if (cached) return c.json(cached);
+
+    const result = await resolvePermission(prisma, gameId, group.id, userId, permission);
+    cache.set(gameId, group.id, userId, permission, result);
+    return c.json(result);
   };
 }

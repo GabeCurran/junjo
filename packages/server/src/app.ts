@@ -6,6 +6,7 @@ import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import {
+  checkAdminPermissionHandler,
   clearAdminGroupRelationshipHandler,
   clearAdminMemberPermissionOverrideHandler,
   createAdminApiKeyHandler,
@@ -323,6 +324,16 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/children",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupChildrenHandler(prisma),
+  );
+  // Admin-token-gated cross-game permission check (Phase 11.9a-i).
+  // Mirrors the per-game `GET /v1/permissions/check` byte-for-byte (same
+  // query shape, same `PermissionCheckResult` wire format, same in-process
+  // cache via the `permissionCache` singleton). Backs the dashboard's
+  // permission check tester (Phase 11.9a-ii).
+  v1.get(
+    "/admin/games/:gameId/permissions/check",
+    adminAuthMiddleware(opts.adminToken),
+    checkAdminPermissionHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

@@ -222,6 +222,20 @@ export const listAdminGameAuditQuery = z.object({
   targetId: z.string().min(1).max(ADMIN_AUDIT_TARGET_ID_MAX_LENGTH).optional(),
 });
 
+// Phase 11.9a-i: cross-game permission check. Mirrors the per-game
+// `checkPermissionQuery` from `routes/permissions.schema.ts` byte-for-byte
+// (same `userId` / `groupId` / `permission` shape, same caps). Lifted to
+// the admin schema rather than imported across the cloud-only boundary;
+// matches the iter-072 / iter-073 / iter-076 / iter-078 / iter-080
+// structural-duplication stance for small body / query shapes. The
+// `permission` cap (128) reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (the
+// shared cap used by member overrides + role permissions).
+export const adminCheckPermissionQuery = z.object({
+  userId: z.string().min(1),
+  groupId: z.string().min(1),
+  permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -242,3 +256,4 @@ export type AdminSetRelationshipBody = z.infer<typeof adminSetRelationshipBody>;
 export type AdminClearRelationshipQuery = z.infer<typeof adminClearRelationshipQuery>;
 export type AdminSetParentBody = z.infer<typeof adminSetParentBody>;
 export type ListAdminGameAuditQuery = z.infer<typeof listAdminGameAuditQuery>;
+export type AdminCheckPermissionQuery = z.infer<typeof adminCheckPermissionQuery>;

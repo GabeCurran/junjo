@@ -4254,3 +4254,58 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Mirrors the open-core boundary stance: admin endpoints intentionally not in `@junjo/sdk`; lifting types into `@junjo/shared` would force the OSS package to carry types with no value outside the proprietary dashboard.
 
 **Trade:** one extra interface (`AdminGameAuditPage`) on top of the existing `AdminAuditEntry`. Acceptable; the page envelope is one new line of type code while the row shape stays consistent across both feeds.
+
+### Phase 11.9 splits a-i / a-ii: server admin permission check endpoint, then dashboard tester page
+
+**Decision:** Phase 11.9 ("Permission check tester") splits across two iterations mirroring every prior 11.x precedent (11.2a/b, 11.3a/b, 11.4a/b, 11.5a/b/c-i/c-ii/d-i/d-ii, 11.6a-i/a-ii/b/c, 11.7a-i/a-ii/b-i/b-ii/c-i/c-ii, 11.8a/b). 11.9a-i (this iteration) ships the cross-game admin permission check endpoint (`GET /v1/admin/games/:gameId/permissions/check`). 11.9a-ii ships the dashboard page (`apps/dashboard/app/(dashboard)/games/[gameId]/permissions/check/page.tsx`) that consumes it - a form taking (userId, groupId, permission) plus a result panel rendering the full `PermissionCheckResult` with badges and a one-line plain-English explanation per the `source` taxonomy.
+
+**Rationale:**
+- The dashboard's per-game `JUNJO_ADMIN_API_KEY` SDK singleton (set up in iter 057) is wired against a single game; the dashboard is a cross-game admin surface and operators need to debug permissions in any game on the deployment. The per-game `GET /v1/permissions/check` is wrong-shape for cross-game admin tooling.
+- Bundling the server endpoint with the dashboard form + Server Action + result rendering UX into one iteration would mix two concerns. The natural seam is: invisible API surface (this) vs visible UI + result-rendering logic (next).
+- The server endpoint is independently testable end-to-end; the dashboard iteration that consumes it can focus purely on form ergonomics + result-panel composition.
+
+**Trade:** the new endpoint has no consumer until 11.9a-ii lands. Acceptable: tests cover behavior parity with the per-game route, and a future operator can call it via curl immediately.
+
+### Phase 11.9a-i: admin permission check handler mirrors per-game route semantics byte-for-byte and reuses `resolvePermission`
+
+**Decision:** `checkAdminPermissionHandler(prisma, opts?)` (`GET /v1/admin/games/:gameId/permissions/check?userId=&groupId=&permission=`) mirrors the per-game `checkPermissionHandler` (iter 022) exactly: same query shape, same `PermissionCheckResult` wire format, same resolution order, same in-process cache through the singleton `permissionCache`. The handler reuses `resolvePermission` from `routes/permissions.ts` directly (cross-imports a pure helper across the cloud-only boundary); ~50 lines of duplicated handler code wraps the shared resolver with the admin-specific 404-collapse, query parsing, and cache read/write.
+
+**Rationale:**
+- Behavior parity is essential. The answer to "can user X do Y in group Z?" must be identical regardless of which surface asked. The dashboard operator looking at the result needs to know they're seeing the same answer the dev's `junjo.can()` call sees at runtime - that's the entire point of a "permission check tester".
+- Reuses the iter-070 / iter-076 / iter-082 precedent for cross-importing pure helpers from per-game route modules. `resolvePermission` is a deterministic function over `(gameId, groupId, externalUserId, permission)` plus the Prisma client; it has no per-game-route side effects to leak through the boundary.
+- The duplicated handler shell (404-collapse, query parsing, cache read/write) is necessary because the admin route reads `gameId` from the path while the per-game route reads it from `c.var.gameId` (set by the API key middleware). The wrapper accepts the structural overhead in exchange for not coupling the two routes' middleware chains.
+- Same stance applied to roles CRUD (iter-072), role-permission grant/revoke (iter-073), audit (iter-076), and relationships (iter-078). Consistent across every prior 11.x admin handler.
+
+**Trade:** the admin handler shell is structurally similar to the per-game handler shell (~25 lines each); a future refactor could extract a shared "scope-resolved permission check" helper. Acceptable for V1; the duplication is small and the extraction is non-obvious because the gameId source differs between surfaces.
+
+### Phase 11.9a-i: admin and per-game routes share the singleton `permissionCache`
+
+**Decision:** the admin permission check handler reads + writes through the same singleton `permissionCache` the per-game route uses. A miss runs `resolvePermission` and populates the cache; mutations through any surface (per-game or admin) call `permissionCache.invalidateGroup(groupId)` after committing.
+
+**Rationale:**
+- Behavior parity (above) requires shared cache state. If the dashboard's tester returned `allowed: true` from a stale entry while the per-game route saw the post-revoke `allowed: false`, the tester would lie about the actual runtime answer.
+- The cache is per-process (no Redis dependency); mutations through the admin row-action handlers (iter-068), admin role permission handlers (iter-073), or admin role CRUD handler (iter-072 delete) already invalidate the same singleton. The check handler benefits from those invalidations for free.
+- A poke-around session in the dashboard hydrates the cache, which means subsequent runtime `junjo.can(...)` calls in the dev's game server may hit the cache faster than they otherwise would. Net positive.
+
+**Trade:** if a future architectural change moves the cache to a per-tenant or per-process-pool shape, the admin handler will need to be updated alongside the per-game handler. Acceptable: the indirection is one module import; both call sites are easy to find via grep.
+
+### Phase 11.9a-i: 404 collapses missing gameId, missing/cross-game/soft-deleted group into one envelope
+
+**Decision:** the admin route 404s with `not_found` for: a `gameId` that doesn't exist, a `groupId` that doesn't exist, a `groupId` belonging to a different game, and a soft-deleted group. The four causes share one envelope; existence is not leaked through differential responses.
+
+**Rationale:**
+- Existence-not-leaked is the standard rule for admin-token-gated endpoints scoped through a game id (matches the iter-066 / iter-067 / iter-076 / iter-080 / iter-082 precedent). An attacker with a valid admin token but no specific knowledge should not be able to enumerate gameIds or groupIds via 200-vs-404 differentials.
+- The path scoping via `:gameId` plus the resolver's `gameId` parameter together enforce cross-game isolation: a `userId` registered in game A cannot resolve to membership in game B's group through this route. The `ExternalIdentity` lookup inside `resolvePermission` is scoped to the supplied gameId, so a wrong-game `userId` returns `source: "none"` rather than leaking.
+- Self-relationship-style bad inputs are not relevant here (the route is a single-resource lookup), so the only 400 cases are missing query parameters and over-cap permission keys.
+
+**Trade:** an operator pasting a valid groupId from a different game into the dashboard's tester sees a 404 and may be confused. Acceptable: the dashboard's group-pickers should restrict to the scoped game; the rare hand-edited URL case is fixable by re-checking the gameId.
+
+### Phase 11.9a-i: `adminCheckPermissionQuery` schema is a structural duplicate of the per-game `checkPermissionQuery`
+
+**Decision:** the new schema lives in `routes/admin.schema.ts` as a byte-for-byte copy of `routes/permissions.schema.ts:checkPermissionQuery`. Same `userId` / `groupId` `min(1)` constraints, same `permission` 1-128 cap (reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` = 128, the same constant shared with member overrides since iter-068).
+
+**Rationale:**
+- Same structural-duplication stance as the iter-072 `adminCreateRoleBody`, iter-073 `adminGrantPermissionBody`, iter-078 `adminSetRelationshipBody`, iter-080 `adminSetParentBody`. Admin schemas do not import across the cloud-only boundary; ~5 lines of duplicate is cheaper than coupling the modules and leaves the cloud-only seam clean for a future self-host build flag.
+- Reusing `ADMIN_PERMISSION_KEY_MAX_LENGTH` (already shared between admin row actions and admin role-permission grants) keeps the cap consistent across every admin endpoint that takes a permission key in the body or query.
+
+**Trade:** if the per-game `checkPermissionQuery` ever changes shape (e.g., adds an optional `traceId` for debugging), the admin schema needs to mirror the change in lockstep. Acceptable: the schemas are 5 lines each; cross-references at the top of each file flag the duplication; reviewable.

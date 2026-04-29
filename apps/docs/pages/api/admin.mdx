@@ -1330,6 +1330,69 @@ Errors:
 | `bad_request` | 400 | `limit` out of range; `before` / `since` not parseable as ISO 8601; `actions` includes an unknown value; `actorUserId` / `targetId` empty or over 255 chars. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/permissions/check
+
+**Phase 11.9a-i.** Resolves the canonical answer to "can user X do Y in group Z?" for any game on the deployment. Mirrors the per-game `GET /v1/permissions/check` (iter 022) byte-for-byte: same query shape, same `PermissionCheckResult` wire format, same resolution order, same in-process cache. Backs the dashboard's permission check tester (Phase 11.9a-ii).
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Scopes the `ExternalIdentity` lookup, the group membership join, and the cache key. |
+
+Query parameters (all required):
+
+| Name | Type | Notes |
+|------|------|-------|
+| `userId` | string 1-N | The dev-supplied external user id (NOT the internal `JunjoUser.id`). |
+| `groupId` | string 1-N | The group whose membership + roles + overrides drive the resolution. |
+| `permission` | string 1-128 | The permission key. Cap matches `ADMIN_PERMISSION_KEY_MAX_LENGTH`. |
+
+Response: `200 OK` with `PermissionCheckResult`. Wire format:
+
+```ts
+type PermissionSource = "none" | "default" | "role" | "override";
+
+interface PermissionCheckResult {
+  allowed: boolean;
+  source: PermissionSource;
+  viaRoleId?: string; // Only set when source === "role"
+}
+```
+
+Resolution order (mirrors the per-game route):
+
+1. **`source: "none"`** when the user has no `ExternalIdentity` for this game, or no `GroupMember` row in this group, or the member is non-active (left / kicked / invited). The lifecycle gate stops at the read path.
+2. **`source: "override"`** when a `MemberPermissionOverride` row exists for this (member, permission) pair. The override wins regardless of direction. `allowed = override.grant`.
+3. **`source: "role"`** when any of the member's roles has the permission via `RolePermission`. `allowed = true`. `viaRoleId` is the highest-priority granting role (priority desc, role id desc as tiebreaker so the answer is stable across ties).
+4. **`source: "default"`** when the member is in-group with no override and no granting role. `allowed = false`. The default state for any permission the dev has not explicitly configured.
+
+Behavior:
+
+- **404 collapse.** Missing `gameId`, missing `groupId`, soft-deleted group, and cross-game `groupId` all return `404 not_found` with the same envelope. Existence is not leaked through differential responses.
+- **Cross-game ExternalIdentity isolation.** A `userId` registered in another game (with the same external string) does NOT resolve through the path `:gameId`; the lookup is scoped to the calling game and returns `source: "none"` on the wrong-game case.
+- **Shared cache.** The route reads + writes through the same singleton `permissionCache` the per-game `/v1/permissions/check` and every mutation route uses. A hit is served from memory; a miss calls `resolvePermission` and populates the cache. Mutation routes (per-game or admin) call `permissionCache.invalidateGroup(groupId)` after committing, so stale answers wait at most one round-trip.
+- **Behavior parity with the per-game route is essential.** The answer to "can user X do Y in group Z?" must be identical regardless of which surface asked. ~50 lines of duplicated handler code (the cross-game route mirrors the per-game route's resolution + cache logic exactly) is acceptable to preserve this.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist; `groupId` does not exist, is soft-deleted, or belongs to a different game. |
+| `bad_request` | 400 | Missing or empty `userId` / `groupId` / `permission`; `permission` over 128 chars. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/permissions/check?userId=user_alice&groupId=cm_group_xyz&permission=guild.kick"
+```
+
+```json
+{ "allowed": true, "source": "role", "viaRoleId": "cm_role_officer" }
+```
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
