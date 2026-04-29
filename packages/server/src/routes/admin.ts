@@ -6,12 +6,14 @@
 // intentionally NOT shipped in V1 per VISION; the dashboard calls these
 // endpoints directly via fetch.
 
+import type { GameId, GroupId, MemberLeftEvent, UserId } from "@junjo/shared";
 import type {
   ApiKey,
   AuditEntry,
   Game,
   Group,
   GroupMember,
+  MemberPermissionOverride,
   Prisma,
   PrismaClient,
   Role,
@@ -19,8 +21,16 @@ import type {
 import type { Handler } from "hono";
 import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
+import type { EventHub } from "../eventHub.js";
+import { dispatchEvent } from "../events.js";
+import { findJunjoUserId } from "../identity.js";
+import { permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
+  ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  adminKickMemberBody,
+  adminOverridePermissionBody,
+  adminUpdateMemberBody,
   createGameBody,
   listAdminGamesQuery,
   listAdminGroupMembersQuery,
@@ -959,5 +969,453 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
       total,
       hasMore: offset + items.length < total,
     });
+  };
+}
+
+// =====================================================================
+// Phase 11.5c-i: cross-game member row actions
+// (kick, edit notes / metadata, override permission set / clear, list overrides)
+// =====================================================================
+
+// Wire format for member-level permission overrides on the admin surface.
+// Identical shape to the per-game route's response (the dashboard renders
+// the same data either way); duplicated here so admin handlers do not
+// reach across into the per-game `routes/members.ts` module for a single
+// helper.
+export interface WireAdminMemberPermissionOverride {
+  groupId: string;
+  userId: string;
+  permission: string;
+  grant: boolean;
+  setAt: string;
+  setBy: string | null;
+}
+
+function toWireAdminMemberPermissionOverride(
+  row: MemberPermissionOverride,
+  groupId: string,
+  externalUserId: string,
+): WireAdminMemberPermissionOverride {
+  return {
+    groupId,
+    userId: externalUserId,
+    permission: row.permissionKey,
+    grant: row.grant,
+    setAt: row.setAt.toISOString(),
+    setBy: null,
+  };
+}
+
+interface AdminMemberContext {
+  group: Group;
+  member: GroupMember;
+  junjoUserId: string;
+  externalUserId: string;
+}
+
+// Resolve the (gameId, groupId, externalUserId) tuple to a concrete
+// `Group` + `GroupMember`. Collapses every "doesn't exist" cause - missing
+// game-scope, soft-deleted group, no `ExternalIdentity` for the user, no
+// `GroupMember` row - into a single 404 to avoid leaking existence through
+// the path scope. Mirrors the per-game leave / kick / patch precedent.
+async function loadAdminMemberContext(
+  prisma: PrismaClient,
+  gameId: string,
+  groupId: string,
+  externalUserId: string,
+): Promise<AdminMemberContext> {
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) throw Errors.notFound("member");
+  if (group.gameId !== gameId) throw Errors.notFound("member");
+  if (group.softDeletedAt !== null) throw Errors.notFound("member");
+
+  const junjoUserId = await findJunjoUserId(prisma, gameId, externalUserId);
+  if (!junjoUserId) throw Errors.notFound("member");
+
+  const member = await prisma.groupMember.findUnique({
+    where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+  });
+  if (!member) throw Errors.notFound("member");
+
+  return { group, member, junjoUserId, externalUserId };
+}
+
+// Reload a single GroupMember row, its roles, and its identity to build
+// the post-mutation `WireAdminGroupMember` response. Same role-sort rule
+// as the list endpoint (priority desc, name asc tiebreaker).
+async function loadAdminGroupMemberAfterMutation(
+  prisma: PrismaClient,
+  gameId: string,
+  memberId: string,
+  externalUserId: string,
+): Promise<WireAdminGroupMember> {
+  const member = await prisma.groupMember.findUnique({ where: { id: memberId } });
+  if (!member) throw Errors.notFound("member");
+
+  const memberRoleRows = await prisma.memberRole.findMany({
+    where: { groupMemberId: member.id },
+    select: { roleId: true },
+  });
+  const roleIds = memberRoleRows.map((r) => r.roleId);
+  const roles =
+    roleIds.length === 0
+      ? []
+      : await prisma.role.findMany({
+          where: { id: { in: roleIds } },
+        });
+  roles.sort((a, b) => {
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    return a.name.localeCompare(b.name);
+  });
+  // `gameId` is in scope for callers; declared here only to mark the
+  // identity lookup as scoped (the row's externalUserId is the caller's
+  // path parameter so we round-trip it directly without re-querying).
+  void gameId;
+  return toWireAdminGroupMember(member, externalUserId, roles);
+}
+
+// `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/kick`
+// kicks a member from the group. Mirrors the per-game route's semantics
+// exactly: only transitions an active member to "kicked"; non-active
+// rows return their current state with no audit entry. The optional
+// `reason` lands on the audit `payload`. `actorUserId` is null on the
+// admin surface (no auth-adapter actor wired); the operator is the
+// dashboard itself, behind the admin token. Dispatches a `member.left`
+// event with `reason: "kicked"` so SSE subscribers and webhooks see the
+// change just like a per-game-key kick.
+export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    const userId = c.req.param("userId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    if (!userId) throw Errors.badRequest("userId is required");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminKickMemberBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const reasonValue = parsed.data.reason ?? null;
+
+    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+
+    if (member.status !== "active") {
+      const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, member.id, userId);
+      return c.json<WireAdminGroupMember>(wire);
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data: { status: "kicked", leftAt: new Date() },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.kicked",
+          targetId: userId,
+          payload: {
+            memberId: result.id,
+            reason: reasonValue,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    await dispatchEvent<MemberLeftEvent>(prisma, hub, {
+      type: "member.left",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      reason: "kicked",
+    });
+
+    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
+    return c.json<WireAdminGroupMember>(wire);
+  };
+}
+
+// `PATCH /v1/admin/games/:gameId/groups/:groupId/members/:userId`
+// updates a member's metadata and / or notes. Body is partial:
+// `{ metadata?, notesPublic?, notesPrivate? }`. Empty body returns 400.
+// Metadata replaces wholesale and is always treated as a change when
+// supplied (jsonb storage may not preserve key order; matches the
+// `groups.update` precedent). Notes fields are diffed per-field; a
+// notes-only PATCH where every supplied field equals the stored value is
+// a no-op (no DB write, no audit). Up to two audit entries fire per call:
+// `member.metadata.updated` and `member.notes.updated`. No JunjoEvent
+// fires for either action (per VISION 5.1b: notes / metadata mutations
+// have no `JunjoEvent`-union counterpart). `actorUserId` is null.
+export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    const userId = c.req.param("userId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    if (!userId) throw Errors.badRequest("userId is required");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminUpdateMemberBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+
+    const data: Prisma.GroupMemberUpdateInput = {};
+    const metadataChanged = body.metadata !== undefined;
+    if (metadataChanged) {
+      data.metadata = body.metadata as Prisma.InputJsonValue;
+    }
+
+    const notesBefore: Record<string, string | null> = {};
+    const notesAfter: Record<string, string | null> = {};
+    if (body.notesPublic !== undefined && body.notesPublic !== member.notesPublic) {
+      notesBefore.notesPublic = member.notesPublic;
+      notesAfter.notesPublic = body.notesPublic;
+      data.notesPublic = body.notesPublic;
+    }
+    if (body.notesPrivate !== undefined && body.notesPrivate !== member.notesPrivate) {
+      notesBefore.notesPrivate = member.notesPrivate;
+      notesAfter.notesPrivate = body.notesPrivate;
+      data.notesPrivate = body.notesPrivate;
+    }
+    const notesChanged = Object.keys(notesAfter).length > 0;
+
+    if (Object.keys(data).length === 0) {
+      const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, member.id, userId);
+      return c.json<WireAdminGroupMember>(wire);
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data,
+      });
+      if (metadataChanged) {
+        await tx.auditEntry.create({
+          data: {
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.metadata.updated",
+            targetId: userId,
+            payload: {
+              before: { metadata: (member.metadata ?? {}) as Prisma.InputJsonValue },
+              after: { metadata: body.metadata as Prisma.InputJsonValue },
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      if (notesChanged) {
+        await tx.auditEntry.create({
+          data: {
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.notes.updated",
+            targetId: userId,
+            payload: {
+              before: notesBefore,
+              after: notesAfter,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      return result;
+    });
+
+    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
+    return c.json<WireAdminGroupMember>(wire);
+  };
+}
+
+// `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
+// sets or updates a member-level permission override. Body: `{ grant }`.
+// Idempotent on matching `grant` (no audit, no DB write, no setAt bump).
+// On change writes one `permission.override.set` audit entry with
+// `before/after`. The permission key is auto-registered into
+// `PermissionDef` on first sight per game (matches `roles.grantPermission`
+// and the per-game override route). Invalidates the in-memory permission
+// cache for the group after commit so the next `permissions.check`
+// reflects the new value. `actorUserId` is null.
+export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    const userId = c.req.param("userId");
+    const permission = c.req.param("permission");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    if (!userId) throw Errors.badRequest("userId is required");
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+    if (permission.length > ADMIN_PERMISSION_KEY_MAX_LENGTH) {
+      throw Errors.badRequest(
+        `permission must be at most ${ADMIN_PERMISSION_KEY_MAX_LENGTH} characters`,
+      );
+    }
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminOverridePermissionBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { grant } = parsed.data;
+
+    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+
+    const existing = await prisma.memberPermissionOverride.findUnique({
+      where: {
+        groupMemberId_permissionKey: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+        },
+      },
+    });
+    if (existing && existing.grant === grant) {
+      return c.json<WireAdminMemberPermissionOverride>(
+        toWireAdminMemberPermissionOverride(existing, group.id, userId),
+      );
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.permissionDef.upsert({
+        where: { gameId_key: { gameId, key: permission } },
+        create: { gameId, key: permission },
+        update: {},
+      });
+      const upserted = await tx.memberPermissionOverride.upsert({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: permission,
+          },
+        },
+        create: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+          grant,
+          setByUserId: null,
+        },
+        update: { grant, setAt: new Date() },
+      });
+      const auditPayload: Record<string, unknown> = {
+        memberId: member.id,
+        permission,
+        grant,
+      };
+      if (existing) auditPayload.before = { grant: existing.grant };
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "permission.override.set",
+          targetId: userId,
+          payload: auditPayload as Prisma.InputJsonValue,
+        },
+      });
+      return upserted;
+    });
+    permissionCache.invalidateGroup(group.id);
+
+    return c.json<WireAdminMemberPermissionOverride>(
+      toWireAdminMemberPermissionOverride(result, group.id, userId),
+    );
+  };
+}
+
+// `DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
+// clears a member-level permission override. Idempotent: a missing row
+// returns 204 with no audit entry. The `PermissionDef` registry row is
+// preserved across clears (matches the per-game route's monotonic-catalog
+// stance). Invalidates the in-memory permission cache after commit.
+export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    const userId = c.req.param("userId");
+    const permission = c.req.param("permission");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    if (!userId) throw Errors.badRequest("userId is required");
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+
+    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+
+    const existing = await prisma.memberPermissionOverride.findUnique({
+      where: {
+        groupMemberId_permissionKey: {
+          groupMemberId: member.id,
+          permissionKey: permission,
+        },
+      },
+    });
+    if (!existing) return c.body(null, 204);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.memberPermissionOverride.delete({
+        where: {
+          groupMemberId_permissionKey: {
+            groupMemberId: member.id,
+            permissionKey: permission,
+          },
+        },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "permission.override.cleared",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            permission,
+            grant: existing.grant,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+    permissionCache.invalidateGroup(group.id);
+
+    return c.body(null, 204);
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions`
+// lists a member's permission overrides. Returns a bare array (no
+// pagination wrapper); a member typically has a handful of overrides, not
+// thousands. Sorted by `permissionKey` ascending for deterministic output.
+export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    const userId = c.req.param("userId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    if (!userId) throw Errors.badRequest("userId is required");
+
+    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+
+    const overrides = await prisma.memberPermissionOverride.findMany({
+      where: { groupMemberId: member.id },
+      orderBy: { permissionKey: "asc" },
+    });
+
+    return c.json<WireAdminMemberPermissionOverride[]>(
+      overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, userId)),
+    );
   };
 }

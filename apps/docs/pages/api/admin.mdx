@@ -573,6 +573,174 @@ interface WireAdminGroupMemberList {
 | `bad_request` | 400 | Query validation failed (`limit` out of range, negative `offset`, unknown `status` value, empty `q`). |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/kick
+
+Kicks a member from the group. Mirrors the per-game `POST /v1/groups/:id/members/:userId/kick` route's semantics exactly, with the `gameId` lifted into the path scope so cross-game existence does not leak.
+
+### Path parameters
+
+| Name | Notes |
+|------|-------|
+| `gameId` | The game the group belongs to. |
+| `groupId` | The group from which to kick the member. |
+| `userId` | The dev-supplied external user id (URL-encoded). |
+
+### Request body (optional)
+
+```ts
+interface AdminKickMemberBody {
+  reason?: string | null;        // Up to 500 chars; lands on the audit payload
+}
+```
+
+A missing body or empty object both land `reason: null` on the audit entry.
+
+### Response
+
+`200 OK` with the post-state `WireAdminGroupMember` (the same wire shape returned by `GET .../members`). Roles are populated and sorted by `priority desc, name asc`.
+
+### Behavior
+
+- Only transitions an `active` member to `kicked`. Non-active rows (`left`, `kicked`, `invited`) return their current state with no audit entry and no `leftAt` bump.
+- On a real transition writes one `member.kicked` audit entry with `actorUserId: null`, `targetId` set to the external user id, and `payload: { memberId, reason }`.
+- Dispatches a `member.left` event with `reason: "kicked"` so SSE subscribers and webhook endpoints see the same broadcast a per-game-key kick would emit.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The four causes collapse to one envelope to avoid existence enumeration. |
+| `bad_request` | 400 | `reason` longer than 500 characters. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PATCH /v1/admin/games/:gameId/groups/:groupId/members/:userId
+
+Updates a member's metadata and / or notes. Mirrors the per-game `PATCH /v1/groups/:id/members/:userId` route's semantics.
+
+### Request body
+
+```ts
+interface AdminUpdateMemberBody {
+  metadata?: Record<string, unknown>;   // Replaces wholesale; no deep merge
+  notesPublic?: string | null;          // Up to 5000 chars; null clears
+  notesPrivate?: string | null;         // Up to 5000 chars; null clears
+}
+```
+
+At least one field must be present; an empty body returns `400 bad_request`.
+
+### Response
+
+`200 OK` with the post-state `WireAdminGroupMember`.
+
+### Behavior
+
+- `metadata` is treated as a change whenever supplied (jsonb storage may not preserve key order, so a deep-equal check is unreliable; matches the `groups.update` precedent). When `metadata` is supplied a `member.metadata.updated` audit entry fires with `payload: { before: { metadata }, after: { metadata } }`.
+- Notes fields are diffed per-field against the stored row; a notes-only PATCH where every supplied field equals the stored value is a no-op (no DB write, no audit entry). When at least one notes field changed, a `member.notes.updated` audit entry fires with `payload: { before, after }` containing only the changed fields.
+- A PATCH that changes both metadata and notes writes two distinct audit entries inside one transaction.
+- No `JunjoEvent` fires for either action (per VISION 5.1b: notes / metadata mutations have no event-union counterpart).
+- Members in any status (`active`, `left`, `kicked`, `invited`) can be updated; the lifecycle gate is enforced by leave / kick, not by metadata / notes edits.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `bad_request` | 400 | Empty body, notes field over 5000 chars, or invalid JSON. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission
+
+Sets or updates a member-level permission override. Mirrors the per-game `POST /v1/groups/:id/members/:userId/permissions/:permission` route's semantics.
+
+### Path parameters
+
+| Name | Notes |
+|------|-------|
+| `permission` | The permission key (URL-encoded). 1-128 chars. |
+
+### Request body
+
+```ts
+interface AdminOverridePermissionBody {
+  grant: boolean;
+}
+```
+
+### Response
+
+`200 OK` with the post-state override:
+
+```ts
+interface WireAdminMemberPermissionOverride {
+  groupId: string;
+  userId: string;                // The dev-supplied external user id
+  permission: string;
+  grant: boolean;
+  setAt: string;                 // ISO 8601
+  setBy: string | null;          // null in V1 (no auth-adapter actor wired)
+}
+```
+
+### Behavior
+
+- Idempotent on matching `grant` (no audit entry, no DB write, no `setAt` bump).
+- On a change writes one `permission.override.set` audit entry with `payload: { memberId, permission, grant }`. On an update the payload also carries `before: { grant }` with the previous value.
+- The permission key is auto-registered into `PermissionDef (gameId, key)` on first sight per game. Mirrors the `roles.grantPermission` and per-game override route convention; the registry is monotonic per game.
+- Override semantics: an override (in either direction) wins over any role-derived grant during permission resolution (see `/api/permissions`). Setting an override does not touch role assignments.
+- Invalidates the in-memory permission cache for the group after commit so the next `permissions.check` reflects the new value.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `bad_request` | 400 | `grant` missing or non-boolean, permission key over 128 chars, or invalid JSON. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission
+
+Clears a member-level permission override. Mirrors the per-game `DELETE` counterpart's semantics.
+
+### Response
+
+`204 No Content` in every case. The body is empty.
+
+### Behavior
+
+- Idempotent: a missing override returns 204 with no audit entry. The handler does not 404 on "no override exists for this key" since the join row is the only state that matters.
+- On a real delete writes one `permission.override.cleared` audit entry with `payload: { memberId, permission, grant }`, where `grant` is the previous (now-cleared) value.
+- The `PermissionDef` registry row is preserved across clears (matches the `roles.revokePermission` precedent: the catalog is monotonic per game).
+- Invalidates the in-memory permission cache for the group after commit.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions
+
+Lists a member's permission overrides.
+
+### Response
+
+`200 OK` with a bare array of `WireAdminMemberPermissionOverride` rows (no pagination wrapper). Sorted by `permissionKey` ascending for deterministic output.
+
+### Behavior
+
+- Returns `[]` for a member with no overrides (active or not).
+- Scoped to a single member; other members in the same group are not included.
+- The bare-array shape is intentional. A member typically has a handful of overrides, not thousands; pagination would be over-engineering.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

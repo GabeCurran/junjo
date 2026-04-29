@@ -3403,4 +3403,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** roles with very similar colors will look identical in the chip. Acceptable: the role name is the disambiguator; the color is a quick visual scan, not a primary identifier.
 
+### Phase 11.5c splits a/b: server admin endpoints, then dashboard row-action dialogs
+
+**Decision:** Phase 11.5c ("Row actions: kick member, override permission, edit notes, view all overrides") splits across iterations mirroring the established 11.1a/b, 11.2a/b, 11.3a/b/b-i/b-ii, 11.4a/b, and 11.5a/b precedents. 11.5c-i (this iteration) ships five cross-game admin endpoints under `/v1/admin/games/:gameId/groups/:groupId/members/:userId/...` (kick, PATCH for notes/metadata, override permission set, override permission clear, list overrides). 11.5c-ii ships the dashboard's MembersTable row-action dialogs (`<KickMemberDialog>`, `<EditNotesDialog>`, `<OverridePermissionDialog>`, `<ViewOverridesDialog>`) plus the route-scoped Server Actions and `lib/admin.ts` mutation helpers consuming them.
+
+**Rationale:**
+- Bundling four dialogs + their Server Actions + their `lib/admin.ts` helpers + the new server endpoints + tests for all of them into one iteration would produce a 5+ surface diff. The natural seam is invisible API surface (this) vs visible UI (next), same as every 11.x and 5.x precedent.
+- The five endpoints share infrastructure (`loadAdminMemberContext`, `loadAdminGroupMemberAfterMutation`, the `routes/admin.schema.ts` body schemas) so they belong together. Splitting the endpoints into multiple iterations would force later iterations to rediscover the helper shapes.
+- Each row action's dialog is its own destructive-confirmation or PATCH-style modal with its own form fields and Server Action; bundling them with their endpoints would mix five concerns.
+- The dashboard MembersTable in 11.5b is read-only today and renders nothing for these endpoints; 11.5c-ii is the first consumer. Acceptable that 11.5c-i ships endpoints with no UI consumer for one iteration.
+
+**Trade:** an operator who pulls 11.5c-i without 11.5c-ii has admin endpoints they can curl but cannot reach from the dashboard. Acceptable - same trade made on every a/b split in this loop.
+
+### Phase 11.5c-i: row-action endpoints mirror per-game route semantics exactly
+
+**Decision:** the five new admin endpoints mirror the per-game `routes/groups.ts` row-action handlers (`r.post(":id/members/:userId/kick", ...)`, `r.patch(":id/members/:userId", ...)`, `r.post(":id/members/:userId/permissions/:permission", ...)`, `r.delete(...)`, `r.get(...)`) exactly: same idempotence rules (no-op on already-kicked / matching-grant / missing-override-on-clear), same audit-entry shapes (`member.kicked` / `member.metadata.updated` / `member.notes.updated` / `permission.override.set` / `permission.override.cleared`), same JunjoEvent dispatch (only kick fires `member.left`; metadata / notes / overrides have no event-union counterpart), same `actorUserId: null` rule (V1 has no auth-adapter actor wired), same body schemas (re-exported from `admin.schema.ts` as `adminKickMemberBody` / `adminUpdateMemberBody` / `adminOverridePermissionBody`).
+
+**Rationale:**
+- Behavior parity is essential: a kick triggered from the dashboard should be indistinguishable from a kick triggered through the dev's own backend. SSE subscribers, webhook endpoints, audit log readers, and permission-cache invalidation all have to fire the same way regardless of which surface invoked the mutation.
+- Re-implementing the bodies with subtle differences (e.g. a different `actorUserId` field meaning) would require future code reviewers and dashboard operators to learn two semantically-distinct surfaces. The cost of duplicating ~150 lines of handler logic is much smaller than the cost of behavioral drift.
+- The schemas live in `admin.schema.ts` (cloud-only) rather than importing from `members.schema.ts` so the cloud-only boundary stays clean: a self-host build that excludes admin routes excludes admin schemas; the per-game schemas continue to live with their per-game routes. Code duplication across the boundary is the lesser of the two evils.
+
+**Trade:** ~150 lines of duplicated handler code. Acceptable for behavior parity. If a future iteration needs to extract a shared `kickMember(prisma, group, member, reason, audit)` helper that both surfaces call, it can; today the two surfaces stay independent.
+
+### Phase 11.5c-i: handlers share `loadAdminMemberContext` and `loadAdminGroupMemberAfterMutation` helpers
+
+**Decision:** the four mutation handlers (kick, PATCH, override-set, override-clear) all call `loadAdminMemberContext(prisma, gameId, groupId, externalUserId)` to 404-collapse the four "doesn't exist" cases (missing game-scope, soft-deleted group, no `ExternalIdentity`, no `GroupMember` row) into a single envelope. The kick + PATCH handlers also call `loadAdminGroupMemberAfterMutation(prisma, gameId, memberId, externalUserId)` to reload the post-mutation row with roles populated and serialize as `WireAdminGroupMember`.
+
+**Rationale:**
+- Four call sites is the threshold for shared-helper extraction (the per-game routes inline this pattern at three sites and don't extract; we have four). Without extraction the 404-collapse logic appears verbatim four times.
+- The 404-collapse is security-relevant (it prevents existence enumeration through the path scope). Centralizing it ensures every handler enforces the same envelope; an inlined version risks one handler diverging.
+- `loadAdminGroupMemberAfterMutation` solves the "post-mutation rehydrate" problem for the kick + PATCH handlers. Both return `WireAdminGroupMember` (matching the shape `GET .../members` produces) so the dashboard can splice the updated row into its TanStack Table state in 11.5c-ii without a separate refetch. The helper batches the role lookup into two queries (`memberRole.findMany` + `role.findMany`) and sorts by `priority desc, name asc` exactly like the list endpoint.
+- Override-set / override-clear / list-overrides do NOT use `loadAdminGroupMemberAfterMutation` because their response shape is `WireAdminMemberPermissionOverride` (or array thereof), not the full member row.
+
+**Trade:** the helpers are local to `routes/admin.ts` and not exported, so a future surface that needs the same 404-collapse pattern would need to copy or extract them. Acceptable - keeping them private avoids cross-module coupling, and three usages in one file is fine.
+
+### Phase 11.5c-i: `WireAdminMemberPermissionOverride` is a structural duplicate of the per-game wire shape
+
+**Decision:** the new `WireAdminMemberPermissionOverride` interface in `routes/admin.ts` has the same six fields (`groupId`, `userId`, `permission`, `grant`, `setAt`, `setBy`) as `WireMemberPermissionOverride` in `routes/members.ts`. The admin handlers do not import `serializeMemberPermissionOverride` or the type from `routes/members.ts`; they ship their own `toWireAdminMemberPermissionOverride(row, groupId, externalUserId)` helper.
+
+**Rationale:**
+- Same cloud-only-boundary stance as the body schemas. `routes/admin.ts` is `// @cloud-only`; `routes/members.ts` is not. Importing across that boundary makes a future self-host build flag harder to apply (the build would need to either include `routes/members.ts` or shim the helper).
+- The wire shape is small (six fields, no nested types). The cost of structural duplication is ~20 lines.
+- The dashboard's `lib/admin.ts` will mirror this shape in 11.5c-ii as `AdminMemberPermissionOverride` (same byte-for-byte mirror precedent as Phase 11.5a's `AdminGroupMember` mirroring `WireAdminGroupMember`). Two duplications instead of one is acceptable for the open-core boundary cleanliness it buys.
+
+**Trade:** if the per-game wire shape ever grows a field, the admin shape needs the same field added. Acceptable - the field set has been stable for ~50 iterations and the duplication is shallow (no nested types).
+
+### Phase 11.5c-i: only the kick handler dispatches a `JunjoEvent`; the other four mutations are audit-only
+
+**Decision:** `kickAdminGroupMemberHandler` takes the `EventHub` and dispatches a `member.left` event with `reason: "kicked"`. The other four mutation handlers (`updateAdminGroupMemberHandler`, `setAdminMemberPermissionOverrideHandler`, `clearAdminMemberPermissionOverrideHandler`, `listAdminMemberPermissionOverridesHandler`) do NOT take the hub and emit no event - only audit entries.
+
+**Rationale:**
+- Per VISION 5.1b, the `JunjoEvent` union is exhaustive: `member.left` covers kick + leave; `member.metadata.updated` / `member.notes.updated` / `permission.override.set` / `permission.override.cleared` are audit actions WITHOUT a corresponding event-union case. Mutations whose audit action has no event-union counterpart publish nothing; the audit log + webhook delivery worker handle durable propagation, the SSE stream is for transient real-time UX.
+- The per-game `routes/groups.ts` handlers follow this same rule (only `kick` and `leave` dispatch; the metadata / notes / override mutations don't). Behavior parity demands the admin handlers do too.
+- Consequence: a dashboard-triggered kick fires the same SSE event a per-game-key kick would, so React `useGroup` consumers see the kick live. A dashboard-triggered metadata edit does not fire SSE; consumers reconcile via the audit log or a refetch.
+
+**Trade:** dashboard operators editing notes will not see other connected clients' UIs update live. Acceptable - V1 explicitly punts this (per VISION 5.1b's exhaustive list). A future iteration could add `member.metadata.updated` / `member.notes.updated` to the event union additively; today it's not in scope.
+
 

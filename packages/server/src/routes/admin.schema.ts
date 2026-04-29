@@ -57,6 +57,35 @@ export const listAdminGroupMembersQuery = z.object({
   q: z.string().min(1).max(255).optional(),
 });
 
+// Phase 11.5c-i: member row-action bodies. Re-exported from the per-game
+// schemas verbatim so the admin and per-game routes accept identical
+// payloads. The admin endpoints add the `gameId` path scope; everything
+// else is shared.
+export const ADMIN_MEMBER_NOTES_MAX_LENGTH = 5000;
+export const ADMIN_MEMBER_KICK_REASON_MAX_LENGTH = 500;
+export const ADMIN_PERMISSION_KEY_MAX_LENGTH = 128;
+
+export const adminKickMemberBody = z
+  .object({
+    reason: z.string().max(ADMIN_MEMBER_KICK_REASON_MAX_LENGTH).nullable().optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export const adminUpdateMemberBody = z
+  .object({
+    metadata: z.record(z.unknown()).optional(),
+    notesPublic: z.string().max(ADMIN_MEMBER_NOTES_MAX_LENGTH).nullable().optional(),
+    notesPrivate: z.string().max(ADMIN_MEMBER_NOTES_MAX_LENGTH).nullable().optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: "at least one field is required",
+  });
+
+export const adminOverridePermissionBody = z.object({
+  grant: z.boolean(),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -66,3 +95,6 @@ export type AdminGroupSortField = (typeof ADMIN_GROUP_SORT_FIELDS)[number];
 export type AdminGroupSortOrder = (typeof ADMIN_GROUP_SORT_ORDERS)[number];
 export type AdminGroupVisibility = (typeof ADMIN_GROUP_VISIBILITIES)[number];
 export type AdminMemberStatusFilter = (typeof ADMIN_MEMBER_STATUSES)[number];
+export type AdminKickMemberBody = z.infer<typeof adminKickMemberBody>;
+export type AdminUpdateMemberBody = z.infer<typeof adminUpdateMemberBody>;
+export type AdminOverridePermissionBody = z.infer<typeof adminOverridePermissionBody>;

@@ -6,18 +6,23 @@ import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import {
+  clearAdminMemberPermissionOverrideHandler,
   createAdminApiKeyHandler,
   createAdminGameHandler,
   getAdminGameHandler,
   getAdminGroupHandler,
   getAdminStatsHandler,
+  kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
   listAdminGamesHandler,
   listAdminGroupMembersHandler,
   listAdminGroupsForGameHandler,
+  listAdminMemberPermissionOverridesHandler,
   listRecentAuditHandler,
   listUserGamesHandler,
   revokeAdminApiKeyHandler,
+  setAdminMemberPermissionOverrideHandler,
+  updateAdminGroupMemberHandler,
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
@@ -136,6 +141,36 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/members",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupMembersHandler(prisma),
+  );
+  // Admin-token-gated member row actions (Phase 11.5c-i). Back the
+  // dashboard's MembersTable row action dialogs (kick / edit notes /
+  // override permission / view all overrides). The kick handler takes
+  // the event hub so SSE subscribers and webhook endpoints see the same
+  // `member.left` event a per-game-key kick would emit.
+  v1.post(
+    "/admin/games/:gameId/groups/:groupId/members/:userId/kick",
+    adminAuthMiddleware(opts.adminToken),
+    kickAdminGroupMemberHandler(prisma, hub),
+  );
+  v1.patch(
+    "/admin/games/:gameId/groups/:groupId/members/:userId",
+    adminAuthMiddleware(opts.adminToken),
+    updateAdminGroupMemberHandler(prisma),
+  );
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/members/:userId/permissions",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminMemberPermissionOverridesHandler(prisma),
+  );
+  v1.post(
+    "/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
+    adminAuthMiddleware(opts.adminToken),
+    setAdminMemberPermissionOverrideHandler(prisma),
+  );
+  v1.delete(
+    "/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
+    adminAuthMiddleware(opts.adminToken),
+    clearAdminMemberPermissionOverrideHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
