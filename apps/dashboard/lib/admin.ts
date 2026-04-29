@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import "server-only";
 
-import { getAdminToken, getJunjoBaseUrl } from "./junjo.js";
+import { getAdminToken, getJunjoBaseUrl } from "./junjo";
 
 // Wire shapes mirror `WireAdminStats` and `WireAdminAuditEntry` from
 // `packages/server/src/routes/admin.ts`. The admin endpoints are

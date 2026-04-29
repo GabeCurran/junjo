@@ -2,7 +2,7 @@
 import "server-only";
 
 import { Junjo } from "@junjo/sdk";
-import { loadDashboardEnv } from "./env.js";
+import { loadDashboardEnv } from "./env";
 
 let cached: Junjo | null = null;
 
