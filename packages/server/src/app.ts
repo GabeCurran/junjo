@@ -9,6 +9,7 @@ import {
   clearAdminMemberPermissionOverrideHandler,
   createAdminApiKeyHandler,
   createAdminGameHandler,
+  createAdminGroupInvitationHandler,
   getAdminGameHandler,
   getAdminGroupHandler,
   getAdminStatsHandler,
@@ -171,6 +172,16 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
     adminAuthMiddleware(opts.adminToken),
     clearAdminMemberPermissionOverrideHandler(prisma),
+  );
+  // Admin-token-gated invitation creation (Phase 11.5d-i). Backs the
+  // dashboard's MembersTable invite-member dialog (three tabs:
+  // by-userId / by-code / by-link). Takes the event hub so SSE
+  // subscribers and webhook endpoints see the same `member.invited`
+  // event a per-game-key invite would emit.
+  v1.post(
+    "/admin/games/:gameId/groups/:groupId/invitations",
+    adminAuthMiddleware(opts.adminToken),
+    createAdminGroupInvitationHandler(prisma, hub),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

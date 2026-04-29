@@ -6,13 +6,14 @@
 // intentionally NOT shipped in V1 per VISION; the dashboard calls these
 // endpoints directly via fetch.
 
-import type { GameId, GroupId, MemberLeftEvent, UserId } from "@junjo/shared";
+import type { GameId, GroupId, MemberInvitedEvent, MemberLeftEvent, UserId } from "@junjo/shared";
 import type {
   ApiKey,
   AuditEntry,
   Game,
   Group,
   GroupMember,
+  Invitation,
   MemberPermissionOverride,
   Prisma,
   PrismaClient,
@@ -22,12 +23,13 @@ import type { Handler } from "hono";
 import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent } from "../events.js";
+import { dispatchEvent, toPublicInvitation } from "../events.js";
 import { findJunjoUserId } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  adminCreateInvitationBody,
   adminKickMemberBody,
   adminOverridePermissionBody,
   adminUpdateMemberBody,
@@ -37,6 +39,8 @@ import {
   listAdminGroupsQuery,
   listRecentAuditQuery,
 } from "./admin.schema.js";
+import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
+import type { WireInvitation } from "./invitations.js";
 
 export interface WireUserGameRow {
   gameId: string;
@@ -1417,5 +1421,124 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
     return c.json<WireAdminMemberPermissionOverride[]>(
       overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, userId)),
     );
+  };
+}
+
+// =====================================================================
+// Phase 11.5d-i: cross-game invitation creation
+// =====================================================================
+
+// `POST /v1/admin/games/:gameId/groups/:groupId/invitations` creates an
+// invitation for a group on the cross-game admin surface. Mirrors the
+// per-game `POST /v1/groups/:id/invitations` semantics exactly so a
+// dashboard caller and a per-game-key caller can ship the same JSON
+// payload and observe the same behavior:
+//
+//   - Body shape is `{ targetUserId?, roleId?, expiresIn? }`. Body itself
+//     is optional and may be omitted entirely (for an open-code invitation
+//     with no role and no expiry).
+//   - When `targetUserId` is set, the invitation is direct (only that
+//     user can accept). When it is absent, the invitation is open-code
+//     (anyone with the code can accept).
+//   - When `expiresIn` is set, it's a `<positive integer><unit>` string
+//     (units `s|m|h|d`) and the route stamps `expiresAt = now() + expiresIn`.
+//     Non-positive durations (e.g. `0d`) return 400.
+//   - `roleId` is forwarded verbatim and not validated against `Role`
+//     (matches the per-game route; an invalid roleId surfaces at accept
+//     time when the dev's flow tries to assign it).
+//
+// Audit + event semantics match per-game:
+//
+//   - One `member.invited` audit entry per call. `actorUserId` is null
+//     (the admin endpoint has no auth-adapter actor wired; the operator
+//     is the dashboard itself behind the admin token). `targetId` is the
+//     `targetUserId` for direct invitations, null for open-code.
+//   - `payload` carries `{ invitationId, code, targetUserId, roleId,
+//     expiresAt: ISO8601|null, source: "admin" }`. The `source` discriminator
+//     lets audit consumers distinguish admin-issued invitations from
+//     per-game-key calls (which set `source: "bulk-invite"` for bulk
+//     operations and omit `source` entirely otherwise).
+//   - Dispatches a `member.invited` JunjoEvent so SSE subscribers and
+//     webhook endpoints see the same event shape a per-game-key invite
+//     would emit.
+//
+// 404 collapses missing / soft-deleted / cross-game group, mirroring the
+// row-action handlers' contract.
+//
+// The dashboard's "Invite member" dialog (Phase 11.5d-ii) calls this
+// endpoint for all three tabs (by-userId / by-code / by-link); the
+// by-link tab additionally builds a URL client-side from the response's
+// `code`.
+export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const json = await c.req.json().catch(() => null);
+    if (json === null) throw Errors.badRequest("malformed JSON");
+    const parsed = adminCreateInvitationBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    let expiresAt: Date | null = null;
+    if (body.expiresIn !== undefined) {
+      const ms = parseDurationMs(body.expiresIn);
+      if (ms === null) throw Errors.badRequest("expiresIn must be a positive duration");
+      expiresAt = new Date(Date.now() + ms);
+    }
+
+    const group = await prisma.group.findUnique({ where: { id: groupId } });
+    if (!group) throw Errors.notFound("group");
+    if (group.gameId !== gameId) throw Errors.notFound("group");
+    if (group.softDeletedAt !== null) throw Errors.notFound("group");
+
+    const targetUserId = body.targetUserId ?? null;
+    const roleId = body.roleId ?? null;
+
+    const invitation: Invitation = await prisma.$transaction(async (tx) => {
+      const created = await tx.invitation.create({
+        data: {
+          groupId: group.id,
+          code: generateInvitationCode(),
+          roleId,
+          targetUserId,
+          createdByUserId: null,
+          expiresAt,
+        },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.invited",
+          targetId: targetUserId,
+          payload: {
+            invitationId: created.id,
+            code: created.code,
+            targetUserId,
+            roleId,
+            expiresAt: expiresAt ? expiresAt.toISOString() : null,
+            source: "admin",
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return created;
+    });
+
+    await dispatchEvent<MemberInvitedEvent>(prisma, hub, {
+      type: "member.invited",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      invitation: toPublicInvitation(invitation),
+    });
+
+    return c.json<WireInvitation>(serializeInvitation(invitation), 201);
   };
 }

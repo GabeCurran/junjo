@@ -3505,3 +3505,59 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** more state-management code than the form-driven dialogs. Acceptable - the dialog has more state to manage (loading / loaded / error skeletons, per-row clearing flags, per-row error placement) and `useFormState` does not buy that complexity. The pattern is reusable for any future dialog with a similar fetch-then-row-action shape (e.g. a future "view audit entries for this member" dialog).
 
+### Phase 11.5d-i: Phase 11.5d splits a/b mirroring every prior 11.x and 5.x precedent
+
+**Decision:** Phase 11.5d ships in two iterations. 11.5d-i (this iteration) ships the cross-game admin invitation endpoint (`POST /v1/admin/games/:gameId/groups/:groupId/invitations`) plus tests + docs. 11.5d-ii ships the dashboard MembersTable invite-member dialog (three tabs: by-userId / by-code / by-link) plus a Server Action consuming the new endpoint.
+
+**Rationale:**
+- Mirrors 11.5a / 11.5b / 11.5c-i / 11.5c-ii (and 11.1a/b, 11.2a/b, 11.3a/b/b-i/b-ii, 11.4a/b before that). Each split puts invisible API surface ahead of the visible UI that consumes it. The seam is consistent.
+- Bundling the endpoint, the schema, the tests, the dashboard dialog with three tabs, the Server Action, and the new `lib/admin.ts` helper into one iteration would produce a 6+ surface diff that's harder to review than two surgical commits.
+- The dialog has three tabs each with its own form fields (by-userId requires `targetUserId`; by-code wants `roleId` + `expiresIn`; by-link wants the same as by-code plus a generated URL builder). Splitting the work also lets 11.5d-ii focus on UX concerns (tab state, link copying, secret-presence-on-create UX) without the infrastructure underneath shifting.
+
+**Trade:** the dashboard's existing "Invite member" affordance does not work between iterations 070 and 071. Acceptable; the endpoint exists and is exercised by tests, and the dialog ships next iteration.
+
+### Phase 11.5d-i: admin invitation endpoint mirrors per-game route semantics exactly
+
+**Decision:** `POST /v1/admin/games/:gameId/groups/:groupId/invitations` is byte-for-byte identical in body shape, response shape, audit-entry shape, and event-dispatch behavior to the per-game `POST /v1/groups/:id/invitations`. The admin route reuses `serializeInvitation` and `WireInvitation` from `routes/invitations.ts` without inventing a parallel `WireAdminInvitation` shape.
+
+**Rationale:**
+- The dashboard's invite-member dialog and a per-game-key caller produce the same observable effect (an `Invitation` row, an audit entry, a `member.invited` JunjoEvent fanned out to SSE subscribers and webhook endpoints). Behavior parity across surfaces is essential - a downstream webhook receiver must not need to special-case admin-issued invitations.
+- The same pattern was set in Phase 11.5c-i (kick / patch / override-set / override-clear / list-overrides all mirror per-game semantics exactly). Phase 11.5d-i extends it to invitation creation. Future admin endpoints continue the pattern.
+- The wire shape is byte-identical so the dashboard's `lib/admin.ts` can mirror the existing `WireInvitation` interface without inventing a duplicate.
+- The audit `payload` carries an additional `source: "admin"` discriminator distinguishing admin-issued invitations from per-game-key calls (which set `source: "bulk-invite"` for bulk operations and omit `source` entirely for the regular per-game route). The discriminator is additive on the per-game read path - existing audit consumers ignore unknown payload fields.
+
+**Trade:** ~80 lines of handler code duplicated from the per-game route (transactional invitation create + audit entry, expiresIn parsing, dispatchEvent call). Acceptable - hoisting a shared helper would couple the admin module to the per-game module across the cloud-only boundary and complicate the per-game route's existing structure. The duplication is bounded and will not grow.
+
+### Phase 11.5d-i: admin invite body is required (a JSON body must be sent, even if empty `{}`)
+
+**Decision:** `adminCreateInvitationBody` requires a JSON body. A request with no body, missing Content-Type / empty payload, or a malformed JSON body returns 400. To create an open-code invitation with no role and no expiry, callers send `{}`.
+
+**Rationale:**
+- The dashboard's Server Action POST always JSON-encodes its body, so "send at least `{}`" is trivial for the consumer and there's no real ergonomic benefit to making the body optional.
+- Tightening the contract lets the route distinguish "operator forgot to send a body" / "Server Action serialization is broken" from "operator wants an empty open-code invitation", which is a real diagnostic improvement during development.
+- Other admin row-action endpoints (kick / patch) accept an optional body because their semantic naturally allows "no extra fields" (kick: optional reason; patch: empty body invalid because the schema requires at least one field). The invite endpoint's semantic is different - it always creates a row, so a body is always meaningful even when empty.
+
+**Trade:** callers cannot send a bodyless POST and get an open-code invitation. The dashboard never does this; future automation users would discover the requirement on their first call (the 400 carries a "malformed JSON" message). Acceptable.
+
+### Phase 11.5d-i: admin invite handler takes the EventHub (member.invited dispatched)
+
+**Decision:** `createAdminGroupInvitationHandler(prisma, hub)` takes the event hub and dispatches `member.invited` after the transaction commits (mirrors the per-game route at `routes/groups.ts`). All other Phase 11.5c-i admin row-action handlers except `kickAdminGroupMember` are audit-only because their corresponding mutations have no `JunjoEvent`-union counterpart.
+
+**Rationale:**
+- Per VISION 5.1b, `member.invited` is one of the eleven `JunjoEvent` cases. SSE subscribers and webhook endpoints expect to see a `member.invited` event regardless of which surface created the invitation. Skipping the dispatch for the admin route would create a silent gap in real-time consumers.
+- The pattern is consistent with `kickAdminGroupMember` (which dispatches `member.left` because that's a JunjoEvent case too). Per-game vs admin surface should not affect what events the system emits.
+- The hub threading via `app.ts` was already in place from Phase 11.5c-i (the kick handler takes the hub the same way). One more handler added to that wiring is a small, mechanical change.
+
+**Trade:** the admin handler depends on the event hub even though the dashboard does not consume SSE itself. Acceptable; the dashboard isn't the only consumer (game servers and webhook receivers also subscribe), and the hub is already in scope via `createApp`.
+
+### Phase 11.5d-i: admin invite tests live in a new `admin.invitations.test.ts`, not in `admin.test.ts`
+
+**Decision:** the 20 new tests for the admin invitation endpoint live in `packages/server/src/routes/admin.invitations.test.ts`, not appended to the existing `admin.test.ts` (which is already 2500 lines).
+
+**Rationale:**
+- Mirrors the Phase 11.5c-i precedent: `admin.rowActions.test.ts` was created as a sibling file because `admin.test.ts` had become unwieldy. The 11.5d-i tests follow the same pattern.
+- A future Phase 11.5d-ii Playwright test of the dashboard dialog will live in a different package entirely (Phase 14.12 owns the dashboard's E2E surface), so the server-side tests don't need to live with any UI tests.
+- File-per-feature keeps `git blame` legible and keeps test-file load time low for iterators running a focused subset.
+
+**Trade:** four admin test files now live in `routes/`: `admin.test.ts` (Phase 10.2, 11.2a, 11.3a, 11.4a, 11.5a), `admin.rowActions.test.ts` (11.5c-i), `admin.invitations.test.ts` (11.5d-i, this iteration), plus the implicit cross-package dashboard tests in 14.12. Acceptable - test files are cheap and the alternative (one mega-file) is worse.
+

@@ -741,6 +741,60 @@ Lists a member's permission overrides.
 | `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## POST /v1/admin/games/:gameId/groups/:groupId/invitations
+
+Creates an invitation for a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/invitations` semantics exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior. Backs the dashboard's "Invite member" dialog (Phase 11.5d-ii) which has three tabs (by-userId / by-code / by-link); all three call this endpoint.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Body (required, JSON):
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `targetUserId` | string \| omitted | `null` | When set, the invitation is **direct** (only that user can accept). When omitted, the invitation is **open-code** (anyone with the code can accept). 1-255 chars. |
+| `roleId` | string \| omitted | `null` | Optional role to assign on accept; forwarded verbatim and not validated against `Role` (matches the per-game route; an invalid roleId surfaces at accept time). 1-255 chars. |
+| `expiresIn` | string \| omitted | `null` | Optional duration `<positive integer><unit>` where unit is `s\|m\|h\|d` (e.g. `7d`, `30m`). Server stamps `expiresAt = now() + expiresIn` at create time. Non-positive values (`0d`) return 400. |
+
+The body is required - send at least `{}` for an open-code invitation with no role and no expiry. A missing or malformed JSON body returns `400 bad_request`.
+
+Response: `201 Created` with `WireInvitation`:
+
+```ts
+interface WireInvitation {
+  id: string;
+  groupId: string;
+  code: string;            // 16 hex chars; URL-safe
+  roleId: string | null;
+  targetUserId: string | null;
+  createdBy: string | null;        // always null on the admin surface
+  createdAt: string;               // ISO 8601
+  expiresAt: string | null;        // ISO 8601
+  usedAt: string | null;
+  usedBy: string | null;
+}
+```
+
+Behavior:
+
+- One `member.invited` audit entry per call. `actorUserId` is `null` (the admin endpoint has no auth-adapter actor wired). `targetId` is `targetUserId` for direct invitations, `null` for open-code.
+- Audit `payload`: `{ invitationId, code, targetUserId, roleId, expiresAt: ISO8601 | null, source: "admin" }`. The `source` discriminator distinguishes admin-issued invitations from per-game-key calls (which set `source: "bulk-invite"` for bulk operations and omit `source` entirely for the regular per-game route).
+- Dispatches a `member.invited` `JunjoEvent` so SSE subscribers and webhook endpoints see the same event shape a per-game-key invite would emit.
+- Code generation: 16 random hex chars (8 bytes from `node:crypto`), URL-safe and unambiguous.
+- `createdByUserId` on the row is `null` (V1 has no auth-adapter actor wired on the admin surface).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing, malformed JSON, `targetUserId` empty / over 255 chars, `roleId` empty / over 255 chars, `expiresIn` malformed regex, `expiresIn` non-positive (e.g. `0d`). |
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game (cross-game scope). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

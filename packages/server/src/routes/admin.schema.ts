@@ -86,6 +86,32 @@ export const adminOverridePermissionBody = z.object({
   grant: z.boolean(),
 });
 
+// Phase 11.5d-i: cross-game invitation creation. Mirrors the per-game
+// `createInvitationBody` shape exactly so a dashboard caller can ship the
+// same JSON payload either through the admin endpoint or, eventually, a
+// per-game-key path. The expiresIn regex matches the per-game schema; the
+// route handler runs the same `parseDurationMs` post-validation arithmetic.
+const adminExpiresInPattern = /^\d+[smhd]$/;
+
+export const ADMIN_INVITATION_USER_ID_MAX_LENGTH = 255;
+export const ADMIN_INVITATION_ROLE_ID_MAX_LENGTH = 255;
+
+// The body is required (the route handler rejects a malformed/missing
+// JSON body with 400); inside the body every field is optional so an
+// empty `{}` produces an open-code invitation with no role and no
+// expiry. Same shape as the per-game `createInvitationBody`.
+export const adminCreateInvitationBody = z.object({
+  targetUserId: z.string().min(1).max(ADMIN_INVITATION_USER_ID_MAX_LENGTH).optional(),
+  roleId: z.string().min(1).max(ADMIN_INVITATION_ROLE_ID_MAX_LENGTH).optional(),
+  expiresIn: z
+    .string()
+    .regex(
+      adminExpiresInPattern,
+      "expiresIn must match <positive integer><unit> where unit is s|m|h|d",
+    )
+    .optional(),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -98,3 +124,4 @@ export type AdminMemberStatusFilter = (typeof ADMIN_MEMBER_STATUSES)[number];
 export type AdminKickMemberBody = z.infer<typeof adminKickMemberBody>;
 export type AdminUpdateMemberBody = z.infer<typeof adminUpdateMemberBody>;
 export type AdminOverridePermissionBody = z.infer<typeof adminOverridePermissionBody>;
+export type AdminCreateInvitationBody = z.infer<typeof adminCreateInvitationBody>;
