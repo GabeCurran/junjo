@@ -50,11 +50,20 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 - Data fetching happens in Server Components. Mutations go through Server Actions.
 - The Junjo SDK singleton lives in `lib/junjo.ts` and is `import "server-only"`-guarded.
 - Tailwind v3 with shadcn-style CSS variables in `app/globals.css`.
+- Authenticated pages live in the `app/(dashboard)/` route group (Next.js route-group
+  syntax: parentheses keep the segment out of the URL while sharing a layout).
+- shadcn primitives are hand-vendored into `components/ui/` (one primitive per file)
+  rather than installed via the shadcn CLI. Vendor on demand: pull a primitive in the
+  iteration that first needs it, not before. Source matches the canonical registry
+  byte-for-byte (with the proprietary license header prepended).
+- Theme switching uses `next-themes`. The toggle in the topbar flips between dark and
+  light via the `.dark` class on `<html>`.
 
 ## What ships when
 
-- 11.1a (this iteration): Tailwind toolchain, HTTP Basic Auth middleware, SDK singleton.
-- 11.1b: shadcn/ui CLI + sidebar layout shell + nav routes + theme toggle.
+- 11.1a: Tailwind toolchain, HTTP Basic Auth middleware, SDK singleton.
+- 11.1b (this iteration): sidebar + topbar layout shell, four nav-route stubs,
+  light/dark theme toggle, hand-vendored shadcn `Button` primitive.
 - 11.2 - 11.9: Home, games list, group browser, group detail tabs, audit viewer,
   permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

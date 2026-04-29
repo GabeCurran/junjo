@@ -1,5 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import type { ReactNode } from "react";
+
+import { ThemeProvider } from "../components/theme-provider";
 import "./globals.css";
 
 export const metadata = {
@@ -9,8 +11,12 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <body className="min-h-screen bg-background text-foreground antialiased">{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-screen bg-background text-foreground antialiased">
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+          {children}
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

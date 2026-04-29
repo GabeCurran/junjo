@@ -268,16 +268,20 @@ local allowed = junjo:can(userIds:resolve(player), group.id, "invite_member") --
 
 The admin + analytics dashboard at `apps/dashboard/` is proprietary (its `LICENSE` is "All Rights Reserved"; see Phase 11 / 12 in the V1 roadmap). Self-hosters get the server + SDKs; the dashboard is exclusive to the cloud product.
 
-Phase 11.1a (the toolchain foundation) ships:
+Phase 11.1a + 11.1b (the toolchain + visible-shell foundation) ships:
 
-- **Stack:** Next.js 15 App Router, TypeScript strict, React 18, Tailwind v3 (with shadcn-compatible CSS-variable theming), zod (env validation), `clsx` + `tailwind-merge` (for shadcn-style class composition coming in 11.1b).
+- **Stack:** Next.js 15 App Router, TypeScript strict, React 18, Tailwind v3 with shadcn-compatible CSS-variable theming, zod (env validation), `clsx` + `tailwind-merge` (shadcn-style class composition), `next-themes` (theme switching), `lucide-react` (icons), `class-variance-authority` (shadcn variant API), `@radix-ui/react-slot` (Button `asChild`).
 - **License header:** every TypeScript file under `apps/dashboard/` starts with `// @license All Rights Reserved (see apps/dashboard/LICENSE)`.
 - **Auth gate:** `apps/dashboard/middleware.ts` runs HTTP Basic Auth via Next.js middleware. Reads `DASHBOARD_ADMIN_USER` / `DASHBOARD_ADMIN_PASSWORD`; if either is unset, every request returns `401` with the explicit "credentials are not configured" message. The credential compare is constant-time (hand-rolled XOR-OR loop, since the Edge runtime where middleware executes lacks `node:crypto.timingSafeEqual`). Production deployments are expected to layer this behind a stronger auth proxy (Clerk, Auth0, Cloudflare Access, corporate SSO).
 - **SDK singleton:** `apps/dashboard/lib/junjo.ts` exports `getJunjo()` returning a lazily-constructed `Junjo` instance configured from `JUNJO_BASE_URL` + `JUNJO_ADMIN_API_KEY`. The lazy construction is deliberate: missing env vars throw on the first request that needs them rather than at module load (which would crash `next build`'s static-route discovery on a deploy where one of these variables is intentionally absent). The module is `import "server-only"`-guarded so a Client Component that accidentally imports it fails the build instead of leaking the API key into the browser bundle. `getAdminToken()` returns the optional `JUNJO_ADMIN_TOKEN` (Phase 10.2's cross-game admin secret), used by hand-rolled `fetch` calls for endpoints the per-game SDK does not expose.
 - **Env validation:** `apps/dashboard/lib/env.ts` is a Zod schema that parses `process.env` into `DashboardEnv`. Cached after first successful parse. The cache is reset via the test-only `resetDashboardEnvCache()` escape hatch.
-- **Tailwind theming:** `app/globals.css` carries the shadcn-style `--background` / `--foreground` / `--primary` / etc. CSS variables in both `:root` (light) and `.dark` blocks; `tailwind.config.ts` extends the theme to consume them via `hsl(var(...))`. The root layout sets `<html lang="en" className="dark">` so dark mode is the default; 11.1b will add a runtime toggle.
+- **Tailwind theming:** `app/globals.css` carries the shadcn-style `--background` / `--foreground` / `--primary` / etc. CSS variables in both `:root` (light) and `.dark` blocks; `tailwind.config.ts` extends the theme to consume them via `hsl(var(...))`.
+- **Theme switching:** `app/layout.tsx` wraps `<body>` in a `ThemeProvider` (a thin client wrapper around `next-themes`) configured with `attribute="class"`, `defaultTheme="dark"`, `enableSystem`, `disableTransitionOnChange`. The hardcoded `className="dark"` on `<html>` is removed; `next-themes` injects the class via an inline script before hydration. `suppressHydrationWarning` on `<html>` accepts the className mismatch the inline script intentionally creates. `components/theme-toggle.tsx` is a Sun/Moon icon button that calls `setTheme()`.
+- **Layout shell:** every authenticated dashboard page lives in the `app/(dashboard)/` route group. The group's `layout.tsx` provides a sidebar (`components/dashboard/sidebar-nav.tsx`: a brand block plus a `<nav>` of icon-and-label `<Link>`s, with `usePathname` driving the active-route highlight) plus a flex column for page content. Each page renders its own `<Topbar>` (`components/dashboard/topbar.tsx`) so the title, description, and any per-page actions sit close to the page they describe. The sidebar is hidden below the `md` breakpoint (V1 dashboard targets desk-bound operators; mobile parity comes later if it becomes a real requirement).
+- **Nav routes:** `(dashboard)/page.tsx` (home), `(dashboard)/games/page.tsx`, `(dashboard)/audit/page.tsx`, `(dashboard)/permissions/page.tsx`, `(dashboard)/analytics/page.tsx`. Each is a placeholder pointing at the iteration that will fill it in. The home was relocated from `app/page.tsx` (which was deleted) so the home renders inside the route-group layout.
+- **shadcn primitives:** populated by hand-vendoring the canonical shadcn registry source into `components/ui/` rather than running the interactive shadcn CLI. Phase 11.1b ships `button.tsx` only (the only primitive the layout shell + theme toggle currently need); future iterations add primitives to the same directory as features land that need them. The vendored source carries the proprietary license header but is otherwise byte-identical to the upstream registry, so `git diff`-against-upstream merges of future fixes stay cheap.
 
-What 11.1b adds: the shadcn/ui CLI install, a sidebar layout shell with breadcrumb header, the four nav routes (Games, Audit, Permissions, Analytics), and the light/dark toggle. What 11.2 - 11.9 add: the actual data-bound pages.
+What 11.2 - 11.9 add: the actual data-bound pages. What 12.1 - 12.5 add: the analytics surface.
 
 The dashboard does NOT use Vitest in V1 (per VISION's Phase 11 conventions; Server Components are awkward to test in isolation, and the value is shipping a usable UI not test coverage). Phase 14.12 will add Playwright smoke tests.
 
@@ -347,16 +351,30 @@ junjo/
 │   ├── dashboard/            (admin + analytics dashboard, Next.js; proprietary)
 │   │   ├── app/
 │   │   │   ├── globals.css
-│   │   │   ├── layout.tsx
-│   │   │   └── page.tsx
-│   │   ├── components/       (shadcn primitives land in 11.1b)
+│   │   │   ├── layout.tsx                    (root: ThemeProvider + body)
+│   │   │   └── (dashboard)/                  (route group: sidebar + topbar shell)
+│   │   │       ├── layout.tsx
+│   │   │       ├── page.tsx                  (home; lands in 11.2)
+│   │   │       ├── games/page.tsx            (lands in 11.3)
+│   │   │       ├── audit/page.tsx            (lands in 11.8)
+│   │   │       ├── permissions/page.tsx      (lands in 11.9)
+│   │   │       └── analytics/page.tsx        (lands in 12.1-12.5)
+│   │   ├── components/
+│   │   │   ├── theme-provider.tsx            (next-themes wrapper)
+│   │   │   ├── theme-toggle.tsx              (Sun/Moon icon button)
+│   │   │   ├── dashboard/
+│   │   │   │   ├── sidebar-nav.tsx           (Brand + active-route highlight)
+│   │   │   │   └── topbar.tsx                (per-page title + actions slot)
+│   │   │   └── ui/
+│   │   │       └── button.tsx                (shadcn primitive, hand-vendored)
 │   │   ├── lib/
-│   │   │   ├── env.ts        (zod-validated dashboard env)
-│   │   │   └── junjo.ts      (server-only Junjo SDK singleton)
-│   │   ├── middleware.ts     (HTTP Basic Auth gate)
+│   │   │   ├── env.ts                        (zod-validated dashboard env)
+│   │   │   ├── junjo.ts                      (server-only Junjo SDK singleton)
+│   │   │   └── utils.ts                      (cn helper: clsx + tailwind-merge)
+│   │   ├── middleware.ts                     (HTTP Basic Auth gate)
 │   │   ├── tailwind.config.ts
 │   │   ├── postcss.config.mjs
-│   │   ├── LICENSE           (All Rights Reserved)
+│   │   ├── LICENSE                           (All Rights Reserved)
 │   │   └── package.json
 │   └── docs/                 (docs site - Docusaurus or Nextra)
 ├── examples/

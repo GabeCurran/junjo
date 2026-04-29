@@ -2852,3 +2852,50 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Dark mode default matches VISION's "look-and-feel target: Vercel dashboard / Stripe dashboard / Linear admin" stance. Operators who want light mode toggle it explicitly.
 
 **Trade:** Tailwind v4 ships meaningful perf wins. Acceptable: dashboard build perf is not a V1 bottleneck, and switching to v4 later is a contained migration (config file shape changes, but the CSS-variable theming shape is preserved).
+
+### Phase 11.1b: shadcn primitives are hand-vendored, not installed via the shadcn CLI
+
+**Decision:** `apps/dashboard/components/ui/` is populated by hand-writing the shadcn primitive code directly (canonical registry source) rather than running `npx shadcn@latest init` and `npx shadcn add ...`. Phase 11.1b ships only the primitives the layout shell + theme toggle actually need (`button.tsx`); future iterations add primitives to the same directory as features land that need them.
+
+**Rationale:**
+- The shadcn CLI is interactive; running it inside a non-interactive loop iteration would either get stuck on a prompt or require crafting a `components.json` ahead of time. Skipping the CLI removes one failure mode and keeps the iteration deterministic.
+- shadcn explicitly markets itself as "copy-paste components"; the registry source is the contract, not the CLI. Vendoring the source byte-identical (with the proprietary license header prepended) preserves the shadcn upgrade path - a future iteration can `git diff` against the upstream registry to merge upstream fixes.
+- Aligns with the iteration 057 stance ("shadcn-canonical CSS-variable theming") and VISION's "pull components into `components/ui/` as they're needed (don't bulk-install)" rule. Bulk-installing all 30+ shadcn primitives at once would inflate the surface area before any of them have a caller; hand-vendoring on demand keeps the directory honest.
+- The `button.tsx` source is a verbatim copy of shadcn's published Button (including `cva` variants and `Slot` `asChild`); no behavior changes from the canonical version.
+
+**Trade:** future maintainers cannot run `npx shadcn add input` and have the CLI know about the existing `components.json`. They have to copy-paste the source manually. Acceptable: copy-paste IS shadcn's intended workflow; the CLI is a convenience layer on top.
+
+### Phase 11.1b: theme switching via `next-themes` with `defaultTheme: "dark"` + `enableSystem`
+
+**Decision:** the root layout wraps `<body>` in a `ThemeProvider` (a thin client wrapper around `next-themes`) configured with `attribute="class"` (writes `class="dark"` or `class="light"` on `<html>`), `defaultTheme="dark"`, `enableSystem` (respects `prefers-color-scheme` when no localStorage value is present), and `disableTransitionOnChange` (prevents Tailwind's transition utilities from running during a theme flip). The hardcoded `className="dark"` from iteration 057's `<html>` element is removed; `next-themes` injects the class via an inline script before hydration.
+
+**Rationale:**
+- `next-themes` is the dominant React theme-switching library (~1.2M weekly downloads, written by the Next.js team). Hand-rolling localStorage + system-preference + SSR-safe class-injection logic is ~80 lines of subtle code; the dep is ~3 KB minified.
+- `attribute="class"` matches Tailwind's `darkMode: "class"` config (set in `tailwind.config.ts` in iteration 057). Switching to a `data-theme` attribute would require also flipping Tailwind's config.
+- `defaultTheme="dark"` matches VISION's "look-and-feel target" (Vercel / Stripe / Linear). `enableSystem` is the polite default - users who prefer light themes get them on first visit without action.
+- `disableTransitionOnChange` is the standard recipe to avoid the "every element flashes" bug when the theme flips: Tailwind transitions interpolate background-color through hideous greys.
+- `suppressHydrationWarning` on `<html>` (already in place from iteration 057) accommodates the className mismatch that next-themes' inline script intentionally creates between SSR HTML and hydrated DOM.
+
+**Trade:** loading `next-themes` adds one more npm package and one more layer of indirection. Acceptable: the package is tiny, well-maintained, and saves us from owning a non-trivial cross-cutting concern.
+
+### Phase 11.1b: layout shell uses a Next.js route group `(dashboard)`, not a wrapper component
+
+**Decision:** every authenticated dashboard page lives under `apps/dashboard/app/(dashboard)/`. The route group's `layout.tsx` provides the sidebar + main-content shell; pages render their own `<Topbar>` so each can carry route-specific title + description text. The previous `apps/dashboard/app/page.tsx` was deleted; the new home is `app/(dashboard)/page.tsx`.
+
+**Rationale:**
+- Route groups are Next.js's idiomatic way to share a layout across a subset of routes without leaking into the URL. The path is still `/`, `/games`, `/audit`, etc. - the `(dashboard)` segment is a directory-only convention.
+- This pattern leaves room for future non-dashboard routes (e.g., a future `/login` page that should NOT have the sidebar; or a `/share/[token]` public preview page). Wrapping every page in `<DashboardShell>{...}</DashboardShell>` would require manual opt-out at every site that doesn't want the shell.
+- Per-page `<Topbar>` (rather than per-layout topbar reading metadata) keeps the title + description close to the page they describe and lets pages render route-specific actions in the topbar's `actions` slot. Matches the convention used by Stripe's dashboard and Linear's admin.
+
+**Trade:** four nav-route stubs now exist as boilerplate placeholders that will be rewritten in 11.2-11.9 + 12.1-12.5. Acceptable: each stub is ~20 lines, the route exists so the sidebar links resolve correctly, and the active-route highlight in the sidebar is visible end-to-end from this iteration onward.
+
+### Phase 11.1b: sidebar is hand-written, not the shadcn `<Sidebar>` composite
+
+**Decision:** the sidebar lives in `components/dashboard/sidebar-nav.tsx` as two small components (`SidebarBrand`, `SidebarNav`), composed inline by the route-group layout. The shadcn registry's `<Sidebar>` primitive (a complex composite involving `<Sheet>`, collapsibles, mobile-drawer state, and ~600 lines of component code) is intentionally NOT vendored.
+
+**Rationale:**
+- The shadcn `<Sidebar>` is overkill for V1: it solves the mobile-drawer + collapsible-rail + nested-section problems, none of which the V1 dashboard surfaces today. The hand-written sidebar is ~50 lines of straightforward JSX.
+- Mobile collapse is hidden behind `md:block` for now (sidebar disappears below md breakpoint; main content gets the full width). A future iteration can swap to the shadcn composite if mobile dashboard use becomes a real requirement; the swap is local to the layout.
+- Active-route detection uses `usePathname` + a small `pathname.startsWith(...)` check. The home (`/`) special-cases exact match so it doesn't highlight on every route.
+
+**Trade:** the dashboard is unusable on mobile (the sidebar is hidden, no replacement nav shows up). Acceptable: dashboard consumers are operators sitting at a desk; mobile parity isn't a V1 goal and the trade-off is documented in the roadmap.
