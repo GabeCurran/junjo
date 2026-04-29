@@ -155,9 +155,9 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       throw Errors.permissionDenied("this invitation is for a different user");
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const junjoUserId = await findOrCreateJunjoUser(tx, gameId, userId);
+    const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
 
+    const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.groupMember.findUnique({
         where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
       });
@@ -230,8 +230,9 @@ export function declineInvitationByCodeHandler(prisma: PrismaClient): Handler {
       throw Errors.permissionDenied("this invitation is for a different user");
     }
 
+    const junjoUserId = userId ? await findOrCreateJunjoUser(prisma, gameId, userId) : null;
+
     await prisma.$transaction(async (tx) => {
-      const junjoUserId = userId ? await findOrCreateJunjoUser(tx, gameId, userId) : null;
       await tx.invitation.update({
         where: { id: invitation.id },
         data: { usedAt: new Date(), usedByUserId: junjoUserId },

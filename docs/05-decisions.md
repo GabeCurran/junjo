@@ -2660,3 +2660,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - PascalCase filename (`RobloxUserId.lua` not `robloxUserId.lua`) matches the existing convention for class-shaped helpers (`JunjoError.lua`, `Http.lua`, `Null.lua`). Lowercase namespace files (`groups.lua`, `members.lua`) are reserved for namespace tables.
 
 **Trade:** one more directory in the source tree for one file. Acceptable: future adapters are expected (Phase 8 in VISION calls Phase 8.3 the start of the adapter family even though only one ships in V1), and the subfolder convention is what every contributor will reach for first when adding the second one.
+
+### Phase 10.1: `findOrCreateJunjoUser` recovers from P2002 by catching + re-selecting, not by upsert
+
+**Decision:** the race-safety pattern is "try the two-row create in its own transaction; if it fails with P2002 on the `(gameId, externalUserId)` unique index, re-select the winner's mapping and return its `junjoUserId`." Not an upsert, not a DB-level advisory lock, not a single-statement INSERT-ON-CONFLICT.
+
+**Rationale:**
+- The two-row create has a structural ordering constraint: `ExternalIdentity.junjoUserId` is a foreign key, so the `JunjoUser` has to exist before the `ExternalIdentity` row. A naive `prisma.externalIdentity.upsert` can't express the "create the parent JunjoUser if and only if we're inserting" branch.
+- Both rows have to commit atomically. If we created the JunjoUser first outside a transaction and then lost the ExternalIdentity race, the JunjoUser would orphan. The inner `prisma.$transaction` ensures the JunjoUser create rolls back when the ExternalIdentity unique-violation fires (Postgres marks the transaction failed, Prisma surfaces it as P2002, no row commits). So the loser leaves no orphan.
+- A Postgres advisory lock would serialize concurrent creates without surfacing failures, but introduces lock-management failure modes (orphaned locks if the process dies between acquire and release) for a problem the unique index already solves correctly.
+- The pattern is symmetric with how every other Junjo route handles unique-constraint races (PrimaryKey-on-content tables: `RolePermission`, `MemberRole`, `MemberPermissionOverride`, `Invitation.code`): catch P2002, treat as "someone else won," recover.
+
+**Trade:** the recover path opens a fresh transaction even when there's no actual race. Acceptable: the fast-path `findUnique` covers the common case (existing identity), and the slow path runs once per brand-new external id per game.
+
+### Phase 10.1: `findOrCreateJunjoUser` requires a top-level `PrismaClient`, not a `Prisma.TransactionClient`
+
+**Decision:** the helper's first argument is typed as `PrismaClient` (was `IdentityClient = PrismaClient | Prisma.TransactionClient`). Callers that need atomicity with downstream writes (the accept and decline routes both wrote `GroupMember` + `AuditEntry` + `Invitation.update` alongside the find-or-create) pre-resolve the user first, then enter their main transaction with the resolved `junjoUserId`.
+
+**Rationale:**
+- Postgres marks a transaction as failed after a unique-constraint violation and refuses subsequent statements until rollback. The recovery path (catch P2002, re-select winner) needs to issue queries that commit independently of any caller transaction; that's only possible if the helper owns its own transaction. Calling the helper from inside `prisma.$transaction(async (tx) => ...)` would poison the outer transaction on a race.
+- The pre-resolved `junjoUserId` is idempotent (the next call returns the same id), so if the main transaction subsequently fails (e.g., `already_member`), the JunjoUser stays. Not a leak: the row is reused on the next attempt.
+- The atomic group of writes that actually needs co-commit is `GroupMember` + `AuditEntry` + `Invitation.update`. The JunjoUser/ExternalIdentity create predates the redemption logic and has its own atomicity guarantees inside the helper.
+
+**Trade:** the route handler now does two round trips (resolve, then transaction) instead of one. Acceptable: the throughput cost is negligible (an extra microsecond on the resolved-already path; one transaction commit on the brand-new path), and the alternative (transaction inside transaction with manual SAVEPOINT management) is not exposed by Prisma's API.
+
+### Phase 10.1: per-request `c.var.junjoUserId` cache deferred to a future wire-shape change
+
+**Decision:** Phase 10.1 ships the race-safe `findOrCreateJunjoUser` helper but does NOT integrate it into `apiKeyMiddleware` to populate `c.var.junjoUserId`. Routes continue to call the helper themselves with the userId carried in their request body or path.
+
+**Rationale:**
+- VISION's spec for 10.1 asks for "Cache the mapping per request via `c.var.junjoUserId` so downstream handlers don't re-query." The cache only pays off if a single request resolves the same external user id twice; today no V1 route does that (`bulkInvite` already batches its lookups; every other authed route needs at most one resolve).
+- Middleware integration requires a single-source-of-truth wire convention for "the current authenticated user" (e.g., a request-wide `X-Junjo-Authenticated-User: <externalId>` header set by every SDK call after auth-adapter verification). V1 doesn't have that convention: routes carry user ids per-route via body or path, and many routes (group list, role get, audit list, permission check) have no current-user semantic at all.
+- Adding the header now would be a wire-shape change touching the SDK and every authed route. That's a separate iteration; folding it into 10.1 would expand scope past "ExternalIdentity resolution flow."
+
+**Trade:** the helper's call sites repeat the resolve pattern. Acceptable: only two call sites today (accept, decline), both already explicit; future routes get the same explicit call pattern. When a header convention lands (probably bundled with the auth-adapter-server-side work hinted at in VISION), middleware integration is a small additive change that uses the same helper unchanged.
+
+### Phase 10.1: race test fires N concurrent calls, asserts on row counts
+
+**Decision:** the concurrent-create test fires `Promise.all` over 8 calls to `findOrCreateJunjoUser` for the same brand-new `(gameId, externalUserId)` pair, then asserts: every call returns the same id, exactly one `JunjoUser` row exists, exactly one `ExternalIdentity` row exists. Not a mock-based test, not a manually-injected delay, not a single deterministic conflict.
+
+**Rationale:**
+- Real concurrent calls against the same Postgres database give the unique-constraint serializer the opportunity to fire. The test exercises the actual recovery path (one winner, N-1 losers each catching P2002 and re-selecting).
+- Mocking the conflict would test the catch-and-re-select branch in isolation, but would not exercise the integration: that the `prisma.$transaction` rollback discards the loser's candidate `JunjoUser`, that the unique index is wired to the right column pair, that the re-select sees the winner's committed row.
+- N=8 is more than enough to make the race actually happen on the test runner (the unique constraint serializes inserts, so at least N-1 of them WILL hit P2002 and exercise the recovery path on every run). N=2 would be flaky on a fast machine where the first call commits before the second begins.
+- A second test ("recovers when the first call wins and a concurrent second call hits the unique constraint") verifies the deterministic case where the existing identity is read on the fast path AND new concurrent racers all converge to the same id.
+
+**Trade:** the test is non-deterministic in WHICH winner appears (the test doesn't assert which `junjoUserId` value is returned, just that all callers agree). Acceptable: the spec is "no duplicates"; the winner's identity is irrelevant to correctness.
+
+### Phase 10.1: identity tests live in `identity.test.ts`, not folded into route tests
+
+**Decision:** the new test file `packages/server/src/identity.test.ts` exercises `findOrCreateJunjoUser` and `findJunjoUserId` directly, separate from the route-test files (`routes/groups.test.ts`, `routes/invitations.test.ts`) that already exercise these helpers indirectly through the accept / leave / kick flows.
+
+**Rationale:**
+- The race-safety and concurrent-create scenarios spec'd in VISION are properties of the helper, not properties of any route. Putting them in a route test file conflates "did the route's audit entry shape change?" with "is the helper race-safe?" - failures would be ambiguous.
+- The route tests cover the integration path (helper called inside a real route handler with API-key middleware in scope); the identity tests cover the unit path (helper called directly with a `PrismaClient`). Both paths matter; neither subsumes the other.
+- Future identity work (the cross-game admin lookup in Phase 10.2, an eventual `c.var.junjoUserId` middleware integration) gets a natural home in `identity.test.ts` instead of bloating route test files.
+
+**Trade:** one more test file in `packages/server/src`. Acceptable: matches the precedent of `softDelete.test.ts`, `apiKey.test.ts`, `errors.test.ts`, `permissionCache.test.ts` - module-scoped tests next to their module.
+

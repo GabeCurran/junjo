@@ -1,34 +1,60 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 
 type IdentityClient = PrismaClient | Prisma.TransactionClient;
 
 // Resolves a dev's external user id (Clerk sub, Supabase uuid, Roblox UserId
 // as string) to an internal JunjoUser id, creating both the user and the
-// ExternalIdentity row on first sight. Phase 10 will extend this with the
-// cross-game cloud-only resolution; the V1 self-host pathway needs the same
-// find-or-create at minimum to seat a `GroupMember` row.
+// ExternalIdentity row on first sight. The returned junjoUserId is the
+// stable cross-game identifier; downstream rows (GroupMember, AuditEntry)
+// reference it.
 //
-// Pass a transaction client when this is part of a multi-write flow so the
-// user-create and the consuming write commit atomically. The unique index
-// on `(gameId, externalUserId)` keeps double-writes safe under contention:
-// a racing transaction can lose the create but its retry path will read the
-// winner via findUnique.
+// Race-safe: the unique index on `(gameId, externalUserId)` serializes
+// concurrent first-time creates. The loser of the race catches Prisma's
+// P2002 unique-constraint violation, lets its inner transaction roll back
+// (so its candidate JunjoUser never lands), and re-selects the winner's
+// mapping.
+//
+// Must be called with a top-level PrismaClient, not a Prisma.TransactionClient.
+// Postgres marks a transaction as failed after a unique-constraint violation
+// and refuses subsequent statements until rollback, so the helper can only
+// recover when it owns the failing transaction. Callers that need atomicity
+// with downstream writes (GroupMember + AuditEntry + Invitation update)
+// should resolve the user first via this helper, then enter their main
+// transaction with the resolved junjoUserId.
 export async function findOrCreateJunjoUser(
-  client: IdentityClient,
+  prisma: PrismaClient,
   gameId: string,
   externalUserId: string,
 ): Promise<string> {
-  const existing = await client.externalIdentity.findUnique({
+  const existing = await prisma.externalIdentity.findUnique({
     where: { gameId_externalUserId: { gameId, externalUserId } },
     select: { junjoUserId: true },
   });
   if (existing) return existing.junjoUserId;
 
-  const user = await client.junjoUser.create({ data: {} });
-  await client.externalIdentity.create({
-    data: { gameId, junjoUserId: user.id, externalUserId },
-  });
-  return user.id;
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const user = await tx.junjoUser.create({ data: {} });
+      await tx.externalIdentity.create({
+        data: { gameId, junjoUserId: user.id, externalUserId },
+      });
+      return user.id;
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      const winner = await prisma.externalIdentity.findUnique({
+        where: { gameId_externalUserId: { gameId, externalUserId } },
+        select: { junjoUserId: true },
+      });
+      if (winner) return winner.junjoUserId;
+      // Vanishingly rare: the winner's transaction also rolled back between
+      // their commit and our re-select. Retry once; further conflicts are
+      // legitimate persistent failures and surface as P2002 on the next pass.
+      return findOrCreateJunjoUser(prisma, gameId, externalUserId);
+    }
+    throw err;
+  }
 }
 
 // Read-only counterpart for routes that operate on an existing user
