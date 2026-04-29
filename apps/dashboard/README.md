@@ -193,7 +193,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   same `Page<WireAuditEntry>` response shape). Reuses
   `serializeAuditEntry` and `WireAuditEntry` from `routes/audit.ts`
   directly.
-- 11.7a-ii (this iteration): group detail page grows a fourth tab
+- 11.7a-ii: group detail page grows a fourth tab
   (Audit) under the same `?tab=` navigation. The Server Component
   reads namespaced `auditActions` / `auditBefore` / `auditLimit`
   query params (lenient parse; invalid values fall through to
@@ -209,8 +209,31 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   because cursor-based pagination cannot run the inverse query of
   `createdAt < before`. A "Jump to newest" affordance clears the
   cursor when the operator is past the first page.
-- 11.7b-i, 11.7b-ii, 11.7c-i, 11.7c-ii: Relationships tab + Sub-groups
-  tab (each split into server-endpoints + UI iterations).
+- 11.7b-i: cross-game admin relationships endpoints
+  (`PUT/DELETE/GET /v1/admin/games/:gameId/groups/:a/relationships/:b`,
+  `GET .../relationships`) shipped on the server. Mirror the per-game
+  Phase 4.1 routes byte-for-byte (idempotence, audit shapes,
+  `group.relationship.changed` JunjoEvent dispatch). Reuse
+  `serializeGroupRelationship` + `WireGroupRelationship` from
+  `routes/relationships.ts` directly.
+- 11.7b-ii (this iteration): group detail page grows a fifth tab
+  (Relationships) under the same `?tab=` navigation. The Server
+  Component fetches the outgoing directed links via
+  `fetchAdminGroupRelationships` and renders the `<RelationshipsTable>`
+  Client Component. Each row carries the other group id, type,
+  and `since` timestamp. The header "Add relationship" button
+  opens a `<SetRelationshipDialog>` that round-trips through a
+  `useFormState`-bound `setRelationshipAction`; per-row "Edit" reuses
+  the same dialog with the row's `groupBId` locked + `type` pre-filled
+  (PUT semantics on the underlying endpoint cover both
+  create-new and edit-type). Per-row "Clear" opens a
+  destructive-confirmation dialog with an optional `mutual`
+  checkbox so the operator can clear both directions in one shot;
+  the dialog calls `clearRelationshipAction` imperatively from
+  `onClick` (matches the iter-069 view-overrides precedent for plain
+  async actions invoked outside a `<form>`).
+- 11.7c-i, 11.7c-ii: Sub-groups tab (split into server-endpoints + UI
+  iterations).
 - 11.8 - 11.9: audit viewer, permission tester (one section per
   iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

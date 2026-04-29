@@ -3,9 +3,9 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Phase 11.6b + 11.6c + 11.7a-ii: tab navigation for the group detail
-// page. Four tabs ship today (Members + Roles + Permissions + Audit);
-// 11.7b / 11.7c will add Relationships and Sub-groups. The active tab is
+// Phase 11.6b + 11.6c + 11.7a-ii + 11.7b-ii: tab navigation for the group
+// detail page. Five tabs ship today (Members + Roles + Permissions +
+// Audit + Relationships); 11.7c will add Sub-groups. The active tab is
 // selected via a URL `?tab=` parameter that the page lenient-parses;
 // switching is just an anchor `<Link>` so the browser's Back button
 // restores prior tab state without per-tab JS state.
@@ -15,7 +15,13 @@ import { cn } from "../../lib/utils";
 // matches the page's overall composition (Suspense boundaries + Server
 // Components + occasional Client islands).
 
-export const GROUP_DETAIL_TABS = ["members", "roles", "permissions", "audit"] as const;
+export const GROUP_DETAIL_TABS = [
+  "members",
+  "roles",
+  "permissions",
+  "audit",
+  "relationships",
+] as const;
 export type GroupDetailTab = (typeof GROUP_DETAIL_TABS)[number];
 
 export const GROUP_DETAIL_DEFAULT_TAB: GroupDetailTab = "members";
@@ -51,6 +57,12 @@ const TAB_DEFS: readonly TabDef[] = [
     label: "Audit",
     description:
       "Every state change in this group, newest first. Filter by action and page through history.",
+  },
+  {
+    value: "relationships",
+    label: "Relationships",
+    description:
+      "Outgoing directed links from this group to others in the same game. Set, edit, or clear ally / rival / vassal relationships.",
   },
 ];
 

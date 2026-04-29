@@ -18,6 +18,7 @@ import {
   MembersTable,
 } from "../../../../../../components/dashboard/members-table";
 import { PermissionsMatrix } from "../../../../../../components/dashboard/permissions-matrix";
+import { RelationshipsTable } from "../../../../../../components/dashboard/relationships-table";
 import { RolesTable } from "../../../../../../components/dashboard/roles-table";
 import { Topbar } from "../../../../../../components/dashboard/topbar";
 import {
@@ -38,6 +39,7 @@ import {
   type AdminGroup,
   type AdminGroupAuditPage,
   type AdminGroupMemberList,
+  type AdminGroupRelationship,
   type AdminMemberStatusFilter,
   type AdminPermissionDef,
   type AdminRole,
@@ -45,6 +47,7 @@ import {
   fetchAdminGroup,
   fetchAdminGroupAudit,
   fetchAdminGroupMembers,
+  fetchAdminGroupRelationships,
   fetchAdminGroupRoles,
 } from "../../../../../../lib/admin";
 
@@ -399,6 +402,61 @@ async function AuditBody({
   return <AuditFeed page={page} query={query} />;
 }
 
+function RelationshipsSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="h-4 w-32 rounded bg-muted" />
+        <CardDescription className="h-3 w-80 rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between border-b border-border py-3 last:border-0"
+            >
+              <div className="h-4 w-1/3 rounded bg-muted" />
+              <div className="flex gap-3">
+                <div className="h-6 w-20 rounded bg-muted" />
+                <div className="h-4 w-24 rounded bg-muted" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function RelationshipsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
+  let relationships: AdminGroupRelationship[];
+  try {
+    relationships = await fetchAdminGroupRelationships(gameId, groupId);
+  } catch (err) {
+    if (err instanceof AdminDisabledError) {
+      return (
+        <ErrorCard
+          title="Cross-game access is disabled"
+          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load relationships."
+        />
+      );
+    }
+    // The relationships fetch shares the 404-collapse contract with the
+    // group fetch; when the group itself is missing, the parent
+    // <GroupBody> already calls notFound(). Reaching here means a
+    // transient backend error.
+    return (
+      <ErrorCard
+        title="Could not load relationships"
+        body={err instanceof Error ? err.message : "unknown error fetching relationships"}
+      />
+    );
+  }
+
+  return <RelationshipsTable relationships={relationships} gameId={gameId} groupId={groupId} />;
+}
+
 async function PermissionsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
   let roles: AdminRole[];
   let catalog: AdminPermissionDef[];
@@ -514,6 +572,10 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
           ) : activeTab === "audit" ? (
             <Suspense key={auditKey} fallback={<AuditSkeleton />}>
               <AuditBody gameId={params.gameId} groupId={params.groupId} query={auditQuery} />
+            </Suspense>
+          ) : activeTab === "relationships" ? (
+            <Suspense fallback={<RelationshipsSkeleton />}>
+              <RelationshipsBody gameId={params.gameId} groupId={params.groupId} />
             </Suspense>
           ) : (
             <Suspense key={membersKey} fallback={<MembersSkeleton />}>

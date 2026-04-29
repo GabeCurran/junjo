@@ -3980,4 +3980,52 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the admin endpoint test surface is now spread across 7 files (`admin.test.ts` + 6 specialized files). Acceptable: the file-per-feature precedent has been consistent across 9 iterations; future readers can search for "admin relationships" or "admin roles" in the routes directory and immediately find the relevant file.
 
+### Phase 11.7b-ii: PUT method added to `adminMutate` helper instead of a separate `adminPut`
+
+**Decision:** the internal `adminMutate<TBody, TResult>` helper in `apps/dashboard/lib/admin.ts` widens its method parameter from `"POST" | "PATCH" | "DELETE"` to `"POST" | "PATCH" | "PUT" | "DELETE"` so the new `setAdminGroupRelationship` helper can use the same code path as the existing `setAdminMemberPermissionOverride` (POST), `updateAdminGroupMember` (PATCH), and `revokeAdminRolePermission` (DELETE) helpers.
+
+**Rationale:**
+- The set-relationship endpoint uses PUT to match the per-game route shape (idempotent upsert: same body twice produces the same final state, with no extra audit / event on the second call). PUT is the right verb for the operation; the dashboard helper should not paper over it with POST.
+- A separate `adminPut` helper would be a structural duplicate of `adminMutate` minus one branch (PUT bodies behave like POST / PATCH bodies: JSON-encoded, response parsed as the post-state). Widening one parameter is ~5 LoC; copy-pasting `adminMutate` is ~25 LoC.
+- The `adminDelete` helper stays separate because DELETE responses can be 204 (no body) on idempotent or no-op cases, and the type narrowing is cleaner with a dedicated helper than a `Promise<TResult | void>` union return.
+- PUT-with-body-and-typed-response is exactly what the four DRY mutation methods (POST / PATCH / PUT / DELETE-with-body) all share; a future iteration that needs a fifth shape can extend `adminMutate` again or split off if the divergence is real.
+
+**Trade:** the helper now accepts four HTTP verbs in one signature. Acceptable: the four verbs all share the same body-encode-and-parse-response code path; the only branching is on whether `body` is null (the POST-with-no-body cases like `createAdminApiKey` and `revokeAdminRolePermission`). Future readers see one helper and one code path, not two.
+
+### Phase 11.7b-ii: set-relationship dialog is form-driven; clear-relationship dialog is plain-async-driven
+
+**Decision:** `<SetRelationshipDialog>` wires `<form action={setRelationshipAction}>` via `useFormState` + `useFormStatus`; `<ClearRelationshipDialog>` calls `clearRelationshipAction` imperatively from `onClick` via `useTransition`.
+
+**Rationale:**
+- The two dialogs have different shapes. The set dialog has three form fields (`groupBId` text input, `type` text input, `mutual` checkbox) that all need form-validation framing - a `useFormState`-shaped action is the natural fit because it surfaces validation errors inline above the submit button without manual state plumbing. Mirrors the iter-074 `<CreateRoleDialog>` precedent.
+- The clear dialog has only one decision point (the `mutual` checkbox) and a single confirmation button. Plumbing it through `<form>` would force the checkbox state into the form data envelope, which is fine but heavier than needed; `useTransition` + a plain async call reads the checkbox state at the moment of click, surfaces the pending state on the button, and reverts to idle on completion. Mirrors the iter-069 `<ViewPermissionOverridesDialog>`'s per-row clear button shape.
+- The two patterns coexist cleanly because both Server Actions return typed results (`SetRelationshipResult` / `ClearRelationshipResult`). The shape of the dialog dictates the consumption path, not the action signature.
+- Documented in the file comments so a future iteration considering a refactor knows why the two patterns are intentional.
+
+**Trade:** two distinct invocation patterns inside one Client Component file. Acceptable: each pattern matches its dialog naturally, and the comments call out the distinction explicitly.
+
+### Phase 11.7b-ii: per-row Edit reuses the same dialog as Add (with `groupBId` locked); no separate `<EditRelationshipDialog>`
+
+**Decision:** `<SetRelationshipDialog>` accepts an optional `existing?: AdminGroupRelationship` prop. When set, the dialog renders an "Edit" header, locks the `groupBId` input via `readOnly`, pre-fills the `type` field from `existing.type`, and the submit button reads "Save" / "Saving...". When unset, the dialog renders an "Add" header with both inputs editable and a "Set relationship" submit button.
+
+**Rationale:**
+- The underlying server endpoint is `PUT /v1/admin/games/:gameId/groups/:a/relationships/:b` with idempotent-upsert semantics (the same body produces the same final state regardless of whether a row exists at the directed key). Add and Edit are semantically the same operation; only the UI framing differs.
+- A separate `<EditRelationshipDialog>` component would duplicate ~80 LoC of form rendering for a one-line difference (the `existing` lookup). The iter-074 Roles dialogs DO ship as separate Create / Edit / Delete components, each ~100 LoC, but those dialogs render four fields (name / priority / color / isDefault) with field-specific validation and the Edit dialog needs to pre-fill all four from the row. Relationships are simpler (two text fields + one checkbox), and the dialog renders identically except for the readonly flag.
+- Re-targeting an existing relationship (changing `groupBId`) is intentionally a clear-then-set flow rather than an in-place edit. The audit log preserves history of "ally with B then ally with C" via two clear + one set audit entries; an in-place re-target would conflate two semantic operations.
+- Mutual is treated as create-time-only on the dialog: editing the type of an already-mutual pair from the A-side does not flip the B-side type unless the operator re-checks the box, matching the per-game route's contract that each direction is independent.
+
+**Trade:** the dialog component carries a small amount of conditional rendering (`isEdit` flag determines header text, submit button text, and one input's `readOnly` attribute). Acceptable: ~15 LoC of conditional rendering vs ~80 LoC of duplicated component code; the iter-074 split made sense for the four-field role dialogs but not for the two-field relationship dialog.
+
+### Phase 11.7b-ii: Relationships tab renders A-side rows only (V1 limitation surfaced inline)
+
+**Decision:** `<RelationshipsTable>` renders one row per outgoing direction (A->B). The card description explicitly notes that "mutual" pairs render as one row each from both sides; the table does not auto-aggregate the two rows into a single "mutual" pill.
+
+**Rationale:**
+- The server's `GET /v1/admin/games/:gameId/groups/:a/relationships` endpoint returns the A-side rows only (mirrors the per-game `GET /v1/groups/:a/relationships` route's "this group's outgoing stance" contract). Aggregating mutual pairs client-side would require the dashboard to maintain a separate "incoming" fetch and merge the two arrays, which doubles the round-trip cost and introduces a divergence between the server's data model (directed) and the dashboard's view (mutual-as-aggregate).
+- The per-game route documents B-side ("incoming") as a future `?direction=incoming` filter. When that filter lands on the server side, the dashboard can either ship a tab toggle or aggregate mutual pairs into a single row; both options stay open under the current design.
+- Operators who want to see "what does B think of A" can navigate to B's detail page and view B's outgoing relationships there. Until cross-group navigation in the dashboard is more polished (some kind of "open group" link from a relationship row, which is a future iteration concern), the directed view matches the data model.
+- The card description carries the V1 limitation inline so operators reading the table know what they're seeing and what they're not.
+
+**Trade:** mutual pairs render as two rows from the operator's perspective (one in A's view, one in B's view). Acceptable: the directed row count matches the underlying schema, and the dialog's mutual checkbox makes the create / clear flows symmetric across both directions in one call.
+
 

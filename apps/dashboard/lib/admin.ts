@@ -123,7 +123,7 @@ interface MutationOptions {
 }
 
 async function adminMutate<TBody, TResult>(
-  method: "POST" | "PATCH" | "DELETE",
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   body: TBody | null,
   opts: MutationOptions = {},
@@ -834,4 +834,85 @@ export function fetchAdminGroupAudit(
   const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/audit`;
   const search = qs.toString();
   return adminFetch<AdminGroupAuditPage>(search ? `${path}?${search}` : path, opts);
+}
+
+// Phase 11.7b-i wire shape mirroring `WireGroupRelationship` from
+// `packages/server/src/routes/relationships.ts` (which the admin handlers
+// reuse verbatim per the iter-070 / iter-076 precedent of cross-importing
+// pure helpers from per-game route modules). Five fields total; the
+// directed pair `(groupAId, groupBId)` is the unique key in the schema and
+// the `since` timestamp bumps on every type change. `setBy` is null today
+// because the admin handlers always pass `null` for `setByUserId` (no
+// auth-adapter actor wired); reserved for a future iteration that threads
+// an admin actor identifier through `adminAuthMiddleware`.
+export interface AdminGroupRelationship {
+  groupAId: string;
+  groupBId: string;
+  type: string;
+  since: string;
+  setBy: string | null;
+}
+
+// Mirrors the server-side cap in `routes/admin.schema.ts:adminSetRelationshipBody`
+// so the dashboard's set-relationship dialog can enforce the same limit
+// via input maxLength attributes without a round trip to learn what the
+// server accepts. Surfaced here so consumers can hand-edit URLs / forms
+// without bouncing off the server with a generic 400.
+export const ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH = 64;
+
+export interface SetAdminGroupRelationshipInput {
+  type: string;
+  // When true, writes both A->B and B->A directions in one call. Each
+  // direction is independent at the audit / event layer (the server emits
+  // up to two `group.relationship.changed` events and up to two audit
+  // entries per call). Default false (one-way only).
+  mutual?: boolean;
+}
+
+export function fetchAdminGroupRelationships(
+  gameId: string,
+  groupId: string,
+  opts?: FetchOptions,
+): Promise<AdminGroupRelationship[]> {
+  return adminFetch<AdminGroupRelationship[]>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/relationships`,
+    opts,
+  );
+}
+
+// PUT semantics: idempotent on each direction (already-matching `type` ->
+// no DB write, no audit, no `since` bump). Always returns the A->B row;
+// `mutual: true` writes both directions but the caller still gets the
+// directed primary back. Server returns 200 with the post-state row.
+export function setAdminGroupRelationship(
+  gameId: string,
+  groupAId: string,
+  groupBId: string,
+  input: SetAdminGroupRelationshipInput,
+  opts?: MutationOptions,
+): Promise<AdminGroupRelationship> {
+  const body: Record<string, unknown> = { type: input.type };
+  if (input.mutual !== undefined) body.mutual = input.mutual;
+  return adminMutate<Record<string, unknown>, AdminGroupRelationship>(
+    "PUT",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`,
+    body,
+    opts,
+  );
+}
+
+// Idempotent on missing rows (no audit, no event, server returns 204
+// regardless). When `mutual: true`, clears both A->B and B->A
+// independently; each direction emits its own audit + event when actually
+// cleared. Default false (one-way only).
+export function clearAdminGroupRelationship(
+  gameId: string,
+  groupAId: string,
+  groupBId: string,
+  mutual: boolean,
+  opts?: MutationOptions,
+): Promise<void> {
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`;
+  const search = mutual ? "?mutual=true" : "";
+  return adminDelete(`${path}${search}`, opts);
 }

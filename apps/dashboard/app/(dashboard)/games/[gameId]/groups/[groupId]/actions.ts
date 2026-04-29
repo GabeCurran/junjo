@@ -10,13 +10,16 @@ import {
   ADMIN_MEMBER_KICK_REASON_MAX_LENGTH,
   ADMIN_MEMBER_NOTES_MAX_LENGTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH,
   ADMIN_ROLE_COLOR_PATTERN,
   ADMIN_ROLE_NAME_MAX_LENGTH,
   AdminDisabledError,
   type AdminGroupMember,
+  type AdminGroupRelationship,
   type AdminInvitation,
   type AdminMemberPermissionOverride,
   type AdminRole,
+  clearAdminGroupRelationship,
   clearAdminMemberPermissionOverride,
   createAdminGroupInvitation,
   createAdminGroupRole,
@@ -25,6 +28,7 @@ import {
   kickAdminGroupMember,
   listAdminMemberPermissionOverrides,
   revokeAdminRolePermission,
+  setAdminGroupRelationship,
   setAdminMemberPermissionOverride,
   updateAdminGroupMember,
   updateAdminRole,
@@ -593,6 +597,100 @@ export async function revokeRolePermissionAction(
     const role = await revokeAdminRolePermission(gameId, roleId, v.permission);
     refreshGroup(gameId, groupId);
     return { ok: true, role };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+// Phase 11.7b-ii Server Actions backing the Relationships tab. Wired to
+// the iter-078 cross-game admin relationship endpoints. The set action
+// covers both create-new and edit-type-of-existing because the underlying
+// PUT is upsert-shaped (idempotent on type-equal, bumps `since` on type
+// change). The clear action takes a `mutual` flag matching the wire
+// query so a single call can remove both directions when the operator
+// chooses.
+
+export interface SetRelationshipResult {
+  ok: boolean;
+  error?: string;
+  relationship?: AdminGroupRelationship;
+}
+
+// `useFormState`-shaped because the dialog wires `<form action={...}>`.
+// Validates the type cap client-side so a typo returns a clear error
+// without bouncing off the server. The other-group-id is delivered as
+// `groupBId` (the dialog's input field) so the dialog form does not need
+// to know which side is "this" group; the page passes it in via a hidden
+// input.
+export async function setRelationshipAction(
+  _prev: SetRelationshipResult,
+  formData: FormData,
+): Promise<SetRelationshipResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  const groupBId = readStringField(formData, "groupBId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (!groupBId) return { ok: false, error: "other group id is required" };
+  if (groupBId === groupId) {
+    return { ok: false, error: "a group cannot have a relationship with itself" };
+  }
+
+  const typeRaw = formData.get("type");
+  const type = typeof typeRaw === "string" ? typeRaw.trim() : "";
+  if (type.length === 0) return { ok: false, error: "relationship type is required" };
+  if (type.length > ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `type must be at most ${ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH} characters`,
+    };
+  }
+
+  const mutual = readBoolField(formData, "mutual") ?? false;
+
+  try {
+    const relationship = await setAdminGroupRelationship(gameId, groupId, groupBId, {
+      type,
+      mutual,
+    });
+    refreshGroup(gameId, groupId);
+    return { ok: true, relationship };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+export interface ClearRelationshipResult {
+  ok: boolean;
+  error?: string;
+  // Echoed so the optimistic-removal logic in the dialog knows which
+  // pair was cleared; the dialog removes the row from local state
+  // before `revalidatePath` propagates.
+  groupBId?: string;
+  mutual?: boolean;
+}
+
+// Plain-call action invoked from the per-row "Clear" button. The
+// Relationships table calls it imperatively from `onClick`, then on
+// success removes the row optimistically before `revalidatePath`
+// flushes. Mirrors the `clearMemberPermissionOverrideAction` shape from
+// 11.5c-ii.
+export async function clearRelationshipAction(
+  gameId: string,
+  groupId: string,
+  groupBId: string,
+  mutual: boolean,
+): Promise<ClearRelationshipResult> {
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (groupBId.length === 0) return { ok: false, error: "other group id is required" };
+  if (groupBId === groupId) {
+    return { ok: false, error: "a group cannot have a relationship with itself" };
+  }
+  try {
+    await clearAdminGroupRelationship(gameId, groupId, groupBId, mutual);
+    refreshGroup(gameId, groupId);
+    return { ok: true, groupBId, mutual };
   } catch (err) {
     return { ok: false, error: describeError(err) };
   }
