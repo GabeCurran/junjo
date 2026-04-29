@@ -1,6 +1,6 @@
 # Roblox SDK
 
-`junjo-roblox` is the Luau client for Roblox game servers. It wraps `HttpService` for outbound REST calls, mirrors the TypeScript SDK's `JunjoConfig` shape, and surfaces server errors as a typed `JunjoError` table.
+`junjo-roblox` is the Luau client for Roblox game servers. It wraps `HttpService` for outbound REST calls, mirrors the TypeScript SDK's `JunjoConfig` shape, exposes per-namespace methods that match the TS SDK surface, and surfaces server errors as a typed `JunjoError` table.
 
 The package is distributed as a Roblox model (`.rbxm`) on each GitHub release and (later) on the Roblox marketplace. It is not on npm.
 
@@ -12,12 +12,18 @@ The package is distributed as a Roblox model (`.rbxm`) on each GitHub release an
 | HTTP wrapper (`junjo.http:get / :post / :patch / :put / :delete`) | shipped (Phase 8.1). Auto-encodes JSON bodies, parses JSON responses, throws `JunjoError` on non-2xx. |
 | `Junjo.Null` sentinel for explicit JSON nulls in PATCH bodies | shipped (Phase 8.1). |
 | `HttpService:GetSecret(...)` lookup with `apiKey` fallback | shipped (Phase 8.1). |
-| `junjo.groups`, `junjo.roles`, `junjo.members`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks` namespace methods | lands in Phase 8.2. |
-| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | lands in Phase 8.2. |
+| `junjo.groups:create / get / list / update / delete / restore` | shipped (Phase 8.2). |
+| `junjo.groups` membership: `inviteByUserId / inviteByCode / inviteByLink / bulkInvite / acceptInvitation / declineInvitation / leave / kick` | shipped (Phase 8.2). |
+| `junjo.groups` relationships: `setRelationship / clearRelationship / getRelationship / listRelationships` | shipped (Phase 8.2). |
+| `junjo.groups` sub-groups: `setParent / listChildren` | shipped (Phase 8.2). |
+| `junjo.members:get / getById / list / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | shipped (Phase 8.2). |
+| `junjo.roles:create / get / list / update / delete / grantPermission / revokePermission` | shipped (Phase 8.2). |
+| `junjo.invitations:list / get / revoke` | shipped (Phase 8.2). |
+| `junjo.audit:list` | shipped (Phase 8.2). |
+| `junjo.webhooks.endpoints:create / list / update / delete` | shipped (Phase 8.2). |
+| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | shipped (Phase 8.2). |
 | `Junjo.RobloxUserIdAdapter()` | lands in Phase 8.3. |
-| Real-time subscriptions (SSE-equivalent via `MessagingService`) | post-V1. The TypeScript SDK's `groups.subscribe` is not yet mirrored on Roblox; Roblox's `HttpService` does not stream. |
-
-Until Phase 8.2 lands, you can already call any Junjo route by hand through `junjo.http`. The wrapper is intentionally thin so the eventual namespace methods will be a layer on top, not a replacement.
+| `groups.subscribe` (SSE) and `webhooks:verify` / `:middleware` (receiver-side) | not planned for V1. Roblox `HttpService` does not stream, and a Roblox game server cannot expose an HTTP endpoint to receive webhooks. The `MessagingService`-backed replacement for real-time is deferred post-V1. |
 
 ## Construct a client
 
@@ -43,7 +49,7 @@ local junjo = Junjo.new({
 | `apiKey` | yes (or `apiKeySecret`) | A `prefix.secret` string OR a `Secret` userdata returned by `HttpService:GetSecret`. Concatenated into the `Authorization: Bearer ...` header; Roblox interpolates the actual secret value at request time when a `Secret` is passed through. |
 | `apiKeySecret` | no | A Roblox secret-store name. The SDK calls `HttpService:GetSecret(apiKeySecret)`. If the call errors (the secret is not registered, HttpService is disabled, etc.) the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. |
 | `baseUrl` | no | Override the API root. Trailing slashes are trimmed. Defaults to `https://api.junjo.io`. |
-| `inviteBaseUrl` | no | Base URL used by the eventual `groups.inviteByLink` (Phase 8.2). Defaults to `baseUrl`. Trailing slashes are trimmed. |
+| `inviteBaseUrl` | no | Base URL used by `groups:inviteByLink`. Defaults to `baseUrl`. Trailing slashes are trimmed. |
 | `httpService` | no | Override the `HttpService` reference. Used to inject a fake during unit testing of higher-level wrappers; production reads `game:GetService("HttpService")`. |
 
 ## Errors
@@ -54,7 +60,7 @@ Every method that talks to the server raises a `JunjoError`-shaped Lua error tab
 local Junjo = require(ReplicatedStorage.Junjo)
 
 local ok, result = pcall(function()
-  return junjo.http:post("/v1/groups", {
+  return junjo.groups:create({
     kind = "guild",
     name = "",
   })
@@ -76,19 +82,129 @@ Branch on `error.code`, not on `error.message`. Codes are stable; messages are n
 
 The `JunjoError` table is a Lua object with `name`, `message`, `code`, and `status` fields plus a `__tostring` metamethod, so `print(err)` and `tostring(err)` produce a readable summary.
 
+## User ids on Roblox
+
+The TypeScript SDK treats user ids as opaque strings. Roblox's `Player.UserId` is a number; convert to a string with `tostring(...)` at the call site so the cross-runtime user-id contract holds (the server stores them as strings; mixing numeric and string ids creates duplicate `ExternalIdentity` rows).
+
+```lua
+local userId = tostring(player.UserId)
+
+local allowed = junjo:can(userId, groupId, "invite_member")
+```
+
 ## Sending JSON null in PATCH bodies
 
 Lua tables treat `nil` as "key absent", so a literal table cannot express a JSON `null`. Use the `Junjo.Null` sentinel for fields that must be cleared:
 
 ```lua
-junjo.http:patch("/v1/groups/" .. groupId, {
+junjo.groups:update(groupId, {
   defaultRoleId = Junjo.Null, -- sends `"defaultRoleId": null`
 })
 ```
 
 A field set to `nil` is omitted from the request body entirely (matching every other Junjo PATCH route's "absent means no change" convention). Use `Junjo.Null` only when you specifically want to clear a server-side value.
 
-## Error codes you may see from Phase 8.1
+`groups:setParent` is the one exception: passing either `nil` OR `Junjo.Null` clears the parent (the server requires the field to be present, so the SDK substitutes `Null` when the caller passes nil):
+
+```lua
+junjo.groups:setParent(groupId, nil)        -- clears parent
+junjo.groups:setParent(groupId, Junjo.Null) -- clears parent (explicit)
+junjo.groups:setParent(groupId, parentId)   -- sets parent
+```
+
+## Namespace surface at a glance
+
+```lua
+-- Groups
+local group = junjo.groups:create({ kind = "guild", name = "Crimson Wolves" })
+local g     = junjo.groups:get(groupId)              -- nil on 404
+local page  = junjo.groups:list({ limit = 50 })
+junjo.groups:update(groupId, { name = "Renamed" })
+junjo.groups:delete(groupId)                          -- soft delete
+junjo.groups:delete(groupId, { hard = true })         -- bypass undo window
+junjo.groups:restore(groupId)
+
+-- Membership
+junjo.groups:inviteByUserId(groupId, userId, { roleId = "member" })
+local invite = junjo.groups:inviteByCode(groupId, { roleId = "member", expiresIn = "7d" })
+local result = junjo.groups:inviteByLink(groupId)     -- { invitation, url }
+junjo.groups:bulkInvite(groupId, "user_alpha\nuser_beta\n", { roleId = "member" })
+junjo.groups:acceptInvitation(invite.code, userId)
+junjo.groups:declineInvitation(invite.code)
+junjo.groups:leave(groupId, userId)
+junjo.groups:kick(groupId, userId, { reason = "afk" })
+
+-- Group relationships
+junjo.groups:setRelationship(allyA, allyB, "alliance", { mutual = true })
+junjo.groups:clearRelationship(allyA, allyB, { mutual = true })
+local rel  = junjo.groups:getRelationship(allyA, allyB) -- nil on 404
+local rels = junjo.groups:listRelationships(allyA)
+
+-- Sub-groups
+junjo.groups:setParent(childId, parentId)
+junjo.groups:setParent(childId, nil)                  -- clear parent
+junjo.groups:listChildren(parentId)
+
+-- Members
+local m  = junjo.members:get(groupId, userId)         -- nil on 404
+local m2 = junjo.members:getById(memberId)            -- nil on 404
+junjo.members:list(groupId, { limit = 50 })
+junjo.members:listForUser(userId)
+junjo.members:setMetadata(groupId, userId, { rank = "officer" })
+junjo.members:setNotes(groupId, userId, { notesPublic = "Recruited by Alex" })
+junjo.members:assignRole(groupId, userId, roleId)
+junjo.members:removeRole(groupId, userId, roleId)
+junjo.members:overridePermission(groupId, userId, "vault.withdraw", true)
+junjo.members:clearPermissionOverride(groupId, userId, "vault.withdraw")
+junjo.members:listPermissionOverrides(groupId, userId)
+
+-- Roles
+junjo.roles:create(groupId, { name = "Officer", priority = 100, color = "#ff0000" })
+junjo.roles:get(roleId)                                -- nil on 404
+junjo.roles:list(groupId)
+junjo.roles:update(roleId, { name = "Captain" })
+junjo.roles:delete(roleId)
+junjo.roles:grantPermission(roleId, "invite_member")
+junjo.roles:revokePermission(roleId, "invite_member")
+
+-- Invitations
+junjo.invitations:list(groupId, { limit = 50, includeExpired = true })
+junjo.invitations:get(code)                            -- nil on 404
+junjo.invitations:revoke(code)
+
+-- Audit
+local page = junjo.audit:list(groupId, { limit = 50 })
+local next = junjo.audit:list(groupId, { before = page.nextCursor, limit = 50 })
+
+-- Webhooks (CRUD only; no receiver-side helpers)
+local endpoint = junjo.webhooks.endpoints:create({
+  url = "https://example.com/junjo-hook",
+  events = { "member.joined", "member.left" },
+})
+junjo.webhooks.endpoints:list()
+junjo.webhooks.endpoints:update(endpoint.id, { disabled = true })
+junjo.webhooks.endpoints:delete(endpoint.id)
+
+-- Top-level permission checks
+local allowed = junjo:can(userId, groupId, "invite_member")
+local result  = junjo:check(userId, groupId, "invite_member")
+-- { allowed = true, source = "role", viaRoleId = "..." }
+```
+
+## Response shapes
+
+Every namespace method returns the parsed server response verbatim (a Lua table, string, number, or `nil`). The SDK does not deserialize timestamp fields into a Roblox-specific type: ISO 8601 strings stay as strings on the wire, so callers who want a `DateTime` value call `DateTime.fromIsoDate(s)` themselves.
+
+```lua
+local group = junjo.groups:create({ kind = "guild", name = "Crimson Wolves" })
+
+print(group.id)                            -- "grp_..."
+print(group.kind)                          -- "guild"
+print(group.createdAt)                     -- "2026-04-28T00:00:00.000Z"
+print(DateTime.fromIsoDate(group.createdAt):FormatLocalTime("LL", "en-us"))
+```
+
+## Error codes you may see
 
 | `code` | When |
 |--------|------|
@@ -97,12 +213,20 @@ A field set to `nil` is omitted from the request body entirely (matching every o
 | `internal` | A non-2xx response whose body could not be parsed as the canonical `{ code, status, message }` envelope, or a 2xx response whose body was not valid JSON. |
 | `<server-supplied>` | Any value the server returned in the JSON envelope (`not_found`, `bad_request`, `permission_denied`, `invitation_used`, `parent_cycle`, etc.). The full code list is documented in the per-route pages under [API](/api). |
 
-## Manual verification (Phase 8.1)
+Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `members:get`, `members:getById`, `roles:get`, `invitations:get`) catch the `not_found` error inside the SDK and translate it to `nil`. Every other error code (`bad_request`, `permission_denied`, etc.) re-throws verbatim so callers can branch on it via `pcall`.
 
-The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/Junjo.lua` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
+## Manual verification (Phase 8.1 + 8.2)
+
+The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
 
 - `Junjo.new({ apiKey = "..." })` constructs without error in Roblox Studio.
-- `junjo.http:get("/v1/whoami")` (or any other 2xx route) returns a parsed Lua table.
-- A 4xx response is surfaced as a Lua error whose `code`, `status`, and `message` fields match the server envelope.
+- `junjo.groups:create({ kind = "guild", name = "Test" })` returns a parsed Lua table whose `id` is a string.
+- `junjo.groups:get("does-not-exist")` returns `nil` (not an error).
+- `junjo.groups:get(group.id)` returns the same table (round-trip).
+- `junjo.members:list(group.id, { limit = 5 })` returns a `{ items, nextCursor }` table.
+- `junjo:can(userId, group.id, "some_permission")` returns a Lua boolean.
+- A 4xx response is surfaced as a Lua error whose `code`, `status`, and `message` fields match the server envelope (assert via `pcall` + `Junjo.JunjoError.is(err)`).
 - `Junjo.new({ apiKeySecret = "JUNJO_API_KEY" })` reads from `HttpService:GetSecret` when the secret is registered.
 - `Junjo.new({ apiKeySecret = "MISSING", apiKey = "fallback" })` falls back to the literal apiKey when the secret is missing.
+- `junjo.groups:update(group.id, { defaultRoleId = Junjo.Null })` clears the field (verify by re-reading `junjo.groups:get(group.id).defaultRoleId == nil`).
+- `junjo.groups:setParent(child, nil)` clears the parent (verify same way).

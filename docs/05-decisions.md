@@ -2544,3 +2544,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Phase 8.1 is small enough (one page) that a single `roblox/index.mdx` with a "what ships today / what lands later" status table is the right shape today. The directory makes future expansion (one page per namespace) drop-in: just add `roblox/groups.mdx` plus a row in `_meta.json`.
 
 **Trade:** new top-level section adds one nav entry. Acceptable: the Junjo nav is already eight entries deep, one more is cheap; and the alternative (burying Roblox under `/sdk/roblox`) would imply the Roblox client is a sub-variant of the TypeScript SDK rather than a sibling.
+
+### Phase 8.2: Roblox SDK source splits into `init.lua` + per-namespace siblings + extracted `JunjoError` / `Http` / `Null` modules
+
+**Decision:** the Phase 8.1 single-file `Junjo.lua` is renamed to `init.lua` and joined by sibling ModuleScripts: `JunjoError.lua` (the error class), `Null.lua` (the JSON-null sentinel), `Http.lua` (the HTTP wrapper class), and per-namespace `groups.lua` / `members.lua` / `roles.lua` / `invitations.lua` / `audit.lua` / `webhooks.lua`. The composition (config validation, namespace wiring, top-level `:can` / `:check`) lives in `init.lua`. Iteration 052's decision forecast that this transition would happen in 8.2; this iteration carries it out.
+
+**Rationale:**
+- VISION's Phase 8.2 spec is explicit: "Each namespace is its own Luau module under `packages/sdk-roblox/src/` (e.g., `groups.lua`, `members.lua`)". Mirrors the TypeScript SDK's per-resource layout (`packages/sdk/src/groups.ts` / `members.ts` / etc.).
+- Roblox's `init.lua` convention works the same as Python's `__init__.py`: a file named `init.lua` inside a folder *becomes* the ModuleScript at the folder level, with sibling files exposed as child ModuleScripts. So `require(ReplicatedStorage.Junjo)` continues to resolve to `init.lua` after Rojo / Wally / model-export sync; consumers see no churn at the 8.1 -> 8.2 transition.
+- Extracting `JunjoError` to its own file is required: every namespace module needs `JunjoError.is(value)` for the `tryGet` "translate not_found to nil" pattern. Putting it in `init.lua` would create a circular `require` (init -> namespace -> init) that Lua does not deadlock on but does return an empty intermediate state, leading to nil-method bugs.
+- Extracting `Http` and `Null` to their own files is the same reasoning: namespace files need them, init also needs them, and Lua's `require` cache guarantees every consumer gets the same module instance (so `Junjo.Null == require(script.Parent.Null)` holds across all callers, which the body-encoder's reference-equality check relies on).
+- Lowercase namespace filenames (`groups.lua` vs `Groups.lua`) match VISION's spec verbatim. PascalCase for class-shaped helpers (`JunjoError.lua`, `Http.lua`, `Null.lua`) differentiates "this is a class / sentinel" from "this is a namespace table".
+
+**Trade:** more files (10 instead of 1). Acceptable: the alternative is a single 800+-line `init.lua` with everything inline, which would obscure the per-namespace surface and make code review harder. Each namespace file is now ~50-150 lines and reads top-to-bottom as the TS SDK module it mirrors.
+
+### Phase 8.2: Roblox namespace methods are colon-style (`junjo.groups:create({...})`) returning the parsed wire shape verbatim
+
+**Decision:** every per-namespace method follows the colon-call convention (`junjo.groups:create({...})`, `junjo.members:assignRole(g, u, r)`, `junjo:can(u, g, p)`). Methods receive the namespace's `self` (which carries the `_http` reference) and return the parsed server response verbatim - no deserialization layer, no Date rehydration, no branded-id tagging. Timestamps stay as ISO 8601 strings; the consumer calls `DateTime.fromIsoDate(s)` if they want a Roblox `DateTime` value.
+
+**Rationale:**
+- VISION's Phase 8.2 spec uses colon-call syntax in its example (`junjo.groups:create({ kind = "guild", name = "..." })`). Matches Lua-class idiom (the `:` syntax is the standard way to express "method with implicit self") and reads naturally for Roblox developers.
+- Skipping deserialization keeps the Roblox SDK thin and predictable: what the server sends is what the consumer sees. The TypeScript SDK rehydrates `Date` because JS has a built-in `Date` type with idiomatic `.getTime()` / `.toISOString()` semantics. Roblox has `DateTime` (strict-month-not-zero-indexed) and `os.time` (Unix epoch seconds) - both Roblox-specific - so picking either as the SDK-default would force the choice on consumers who might prefer the other.
+- Branded-id types (`GroupId`, `RoleId`, etc.) are TypeScript-only - they compile away to plain strings. Lua has no equivalent type system, so there is nothing to preserve at runtime. Wire ids stay as strings.
+- The lookup-returns-nil-on-404 contract (`groups:get`, `members:get`, etc.) is preserved via a private `tryGet` helper in each namespace that wraps the call in `pcall` and translates `JunjoError({code = "not_found"})` to `nil`. Every other error code re-throws verbatim.
+
+**Trade:** consumers who want timestamps as numbers / DateTimes pay one `DateTime.fromIsoDate(s)` call per field. Acceptable: most consumers either render the ISO string verbatim (logs, debugging) or convert per-call where they need it. The alternative (deserializing by default) imposes a runtime cost on every response and forces the ISO-vs-DateTime-vs-os.time choice on consumers who don't care.
+
+### Phase 8.2: `groups:setParent` accepts both `nil` and `Junjo.Null` to clear; every other "clear" path requires `Junjo.Null` explicitly
+
+**Decision:** `junjo.groups:setParent(groupId, parentGroupId)` treats `nil` AND `Junjo.Null` identically (both clear the parent on the server). Every other PATCH-style mutation (`groups:update`, `members:setNotes`, `members:setMetadata`, etc.) requires the caller to pass `Junjo.Null` explicitly when they want to clear a server-side field; passing plain `nil` omits the field from the request body (the "absent means no change" convention).
+
+**Rationale:**
+- Lua tables cannot carry plain `nil` values: `{ k = nil }` is exactly `{}` after construction. So a Lua API that takes a `string | nil` argument has no way to distinguish "the caller explicitly chose nil" from "the caller forgot to pass anything". For a single positional arg like `setParent(groupId, parentGroupId)`, treating both as "clear" is the only useful behavior.
+- For partial-update bodies (`groups:update(id, { name = ..., defaultRoleId = ... })`), the caller has full control over which keys appear in the table. Passing `{ name = "Renamed" }` reasonably means "update only name"; passing `{ name = "Renamed", defaultRoleId = nil }` is also `{ name = "Renamed" }` (Lua absorbs the nil). So the body-side convention "nil is absent; Junjo.Null is explicit null" matches Lua's own semantics and matches every other Junjo PATCH route's contract.
+- The asymmetry between `setParent` and `update` is intentional: `setParent` has a single "this field" semantic, so mapping nil to "clear that field" is unambiguous. `update` has many fields, so mapping nil to "clear all the fields you didn't mention" would be a footgun.
+- VISION does not call out this rule explicitly; the SDK chooses the most useful behavior at each call site.
+
+**Trade:** documenting the asymmetry takes a paragraph in the docs page. Acceptable: a single asymmetric callout is cheaper than always requiring `Junjo.Null` (which would force `setParent(g, Junjo.Null)` for the most common "remove from hierarchy" operation; that reads worse than `setParent(g, nil)` or `setParent(g)`).
+
+### Phase 8.2: Roblox SDK does NOT mirror `groups.subscribe` (SSE) or `webhooks:verify` / `:middleware` (receiver-side)
+
+**Decision:** the per-namespace surface mirrors the TS SDK's `groups`, `members`, `roles`, `invitations`, `audit`, `webhooks.endpoints` namespaces and the top-level `:can` / `:check`. The TS SDK's `groups.subscribe(groupId, handler)` (SSE stream) and `junjo.webhooks:verify(...)` / `junjo.webhooks:middleware(...)` (HTTP receiver helpers) are intentionally not mirrored on Roblox in V1.
+
+**Rationale:**
+- `groups.subscribe`: Roblox's `HttpService:RequestAsync` does not stream; it reads the full response body before resolving. SSE is a streaming protocol. Adding `groups.subscribe` would either fake-stream by polling (wrong semantics, bad UX) or wait for `MessagingService` integration (post-V1). VISION's Phase 8.2 spec calls this out: "skip `subscribe` / SSE for V1 since Roblox HttpService doesn't do streaming; revisit with MessagingService later".
+- `webhooks:verify` / `:middleware`: a Roblox game server cannot expose an HTTP endpoint (Roblox's network model is outbound-only HttpService + Roblox-internal RemoteEvents / RemoteFunctions). So a Roblox game is never a webhook receiver, and helpers for receiver-side delivery validation have no use case. The `webhooks.endpoints` CRUD surface (creating / updating / listing webhook configurations) IS mirrored, since a Roblox game might programmatically configure its own webhook endpoints.
+
+**Trade:** the Roblox SDK is a strict subset of the TS SDK. Acceptable: the missing pieces are runtime-defined, not design choices. A consumer who needs SSE-equivalent live updates between Roblox servers uses `MessagingService` directly (the post-V1 plan); a consumer who needs to receive Junjo webhooks runs a separate Node service.
+
+### Phase 8.2: `Http` exposes a `:postRaw(path, body, contentType)` method for non-JSON bodies (`groups:bulkInvite`)
+
+**Decision:** the HTTP wrapper grows a `:postRaw(path, body, contentType)` method that POSTs the body verbatim with a caller-supplied `Content-Type` header, skipping the JSON encode + `Junjo.Null` substitution path. Used internally by `groups:bulkInvite` to deliver a CSV body with `text/csv`. Mirrors the TS SDK's `HttpClient.postRaw` from iteration 017.
+
+**Rationale:**
+- `bulkInvite` is the only V1 route that takes a non-JSON body; carving out a single helper keeps the JSON-default path simple (every other namespace method goes through `:post(path, body)`). Adding a content-type optional arg to `:post` would conflate two axes (JSON vs non-JSON, and POST vs non-POST) and complicate the wrapper signature for everyone.
+- The TS SDK chose the same shape for the same reason. Consistency between SDKs reduces cognitive load for consumers reading both.
+- The Roblox version of `bulkInvite` accepts only a string body (the TS SDK additionally accepts `ReadableStream<Uint8Array>`); Roblox's `HttpService` does not consume streams, so the SDK signature drops the stream variant. The string-only path covers the realistic Roblox use case (a CSV built in-memory or read from a Roblox `DataStore` blob).
+
+**Trade:** one extra public method on `junjo.http`. Acceptable: bulk-invite is a documented use case in Phase 2.8; the Roblox SDK without a way to deliver CSV bodies would silently miss one TS-SDK feature. Naming `postRaw` matches the TS SDK exactly so consumers searching documentation find both.

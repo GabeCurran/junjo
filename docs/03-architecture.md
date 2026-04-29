@@ -208,17 +208,31 @@ Roblox model bundling a Luau module. Wraps `HttpService` for outbound REST and (
 
 #### File layout
 
-The `packages/sdk-roblox/src/` tree:
+The `packages/sdk-roblox/src/` tree (Phase 8.2 layout):
 
-- `Junjo.lua` - the single Phase 8.1 source file. Exports the `Junjo` table with `Junjo.new(config)`, `Junjo.JunjoError`, `Junjo.Null`, and `Junjo.DEFAULT_BASE_URL`. The instance returned by `Junjo.new` carries a normalized `config` table (`baseUrl`, `inviteBaseUrl` with trailing slashes trimmed) and an `http` reference to the internal HTTP wrapper class. Phase 8.2 will split into per-namespace siblings (`Groups.lua`, `Members.lua`, etc.) with `Junjo.lua` renamed to `init.lua` so `require(ReplicatedStorage.Junjo)` keeps working.
+- `init.lua` - the entry point. `require(ReplicatedStorage.Junjo)` resolves to this file when the source folder is sync'd as a folder named `Junjo` (Roblox's `init.lua` convention is the same as Python's `__init__.py`: a file named `init.lua` inside a folder *becomes* the ModuleScript at the folder level, with sibling files exposed as child ModuleScripts). Composes the namespace tables, validates the config, and exposes the public surface (`Junjo.new`, `Junjo.Null`, `Junjo.JunjoError`, `Junjo.DEFAULT_BASE_URL`) plus the top-level `:can` / `:check` permission helpers.
+- `Null.lua` - the `Junjo.Null` sentinel (a `newproxy(false)` userdata token). Required by `Http.lua` and by `groups.lua` (for the `setParent` clear path).
+- `JunjoError.lua` - the `JunjoError` class with `JunjoError.new`, `JunjoError.is`, and `JunjoError.raise` (the `error(table, 0)` raise convention used everywhere the SDK reports a non-2xx, network failure, or config error).
+- `Http.lua` - the internal HTTP wrapper class exposed on every Junjo instance as `junjo.http`. Methods: `:request(method, path, body)`, `:get(path)`, `:post(path, body)`, `:postRaw(path, body, contentType)`, `:patch(path, body)`, `:put(path, body)`, `:delete(path)`, `:encode(value)`. Namespaces consume `:encode(...)` for URL-encoding path / query segments rather than grabbing their own HttpService reference.
+- `groups.lua` / `members.lua` / `roles.lua` / `invitations.lua` / `audit.lua` / `webhooks.lua` - per-namespace modules, one method per TS-SDK method. Each exposes a `<Namespace>.new(http, ...)` factory; `init.lua` constructs them and attaches them to the Junjo instance. Methods are colon-style (`junjo.groups:create({...})`) to match VISION's spec and Lua-class idiom.
 
 #### HTTP wrapper
 
-Internal `Http` class inside `Junjo.lua`; exposed on the instance as `junjo.http`. Methods: `:request(method, path, body)`, `:get(path)`, `:post(path, body)`, `:patch(path, body)`, `:put(path, body)`, `:delete(path)`. Auto-encodes JSON request bodies via `HttpService:JSONEncode`, parses JSON responses via `HttpService:JSONDecode`, sets the `Authorization: Bearer <apiKey>` and `Content-Type: application/json` headers, and pcall-wraps `HttpService:RequestAsync` so network-level failures (HttpService disabled, DNS, TLS) surface as `JunjoError({ code = "network" })`. Non-2xx responses parse the server envelope and raise `JunjoError({ code, status, message })` mirroring the TypeScript SDK's contract; 204 + empty 2xx bodies return `nil`. Body-encoding handles the `Junjo.Null` sentinel (a unique `newproxy` value): the encoder substitutes a randomized placeholder string before `JSONEncode` runs, then string-replaces it with literal `null` afterwards, so callers can express `{ defaultRoleId = Junjo.Null }` to send `"defaultRoleId": null` (Lua's `nil` means key-absent and cannot serialize as JSON null).
+Lives in `Http.lua` and is exposed on the instance as `junjo.http`. Auto-encodes JSON request bodies via `HttpService:JSONEncode`, parses JSON responses via `HttpService:JSONDecode`, sets the `Authorization: Bearer <apiKey>` and `Content-Type: application/json` headers, and pcall-wraps `HttpService:RequestAsync` so network-level failures (HttpService disabled, DNS, TLS) surface as `JunjoError({ code = "network" })`. Non-2xx responses parse the server envelope and raise `JunjoError({ code, status, message })` mirroring the TypeScript SDK's contract; 204 + empty 2xx bodies return `nil`. Body-encoding handles the `Junjo.Null` sentinel (a unique `newproxy` value): the encoder substitutes a randomized placeholder string before `JSONEncode` runs, then string-replaces it with literal `null` afterwards, so callers can express `{ defaultRoleId = Junjo.Null }` to send `"defaultRoleId": null` (Lua's `nil` means key-absent and cannot serialize as JSON null). The `:postRaw(path, body, contentType)` method skips the JSON path and sends the body verbatim with a caller-supplied content-type; used by `groups:bulkInvite` to deliver a CSV body.
+
+#### Per-namespace modules
+
+Every namespace is a small Lua class wrapping `junjo.http`. Each method builds a path (URL-encoding any segment via `self._http:encode(...)`), optionally builds a body (passing `Junjo.Null` for explicit clears), and calls into the http wrapper. Lookups that the TS SDK signals as `Promise<X | null>` (`groups:get`, `members:get`, `roles:get`, `invitations:get`, etc.) wrap the call in `pcall` and translate `not_found` errors to `nil` via a private `tryGet` helper; every other error code re-throws verbatim. The Roblox SDK does NOT mirror the TS SDK's `groups.subscribe` (HttpService does not stream) or the receiver-side webhook helpers `webhooks:verify` / `webhooks:middleware` (a Roblox game server cannot expose an HTTP endpoint and is therefore never a webhook receiver).
+
+Response shapes are returned verbatim: timestamp fields stay as ISO 8601 strings on the wire (consumers call `DateTime.fromIsoDate(s)` when they want a Roblox `DateTime`). User ids that originate from `Player.UserId` are numeric in Roblox; consumers convert to a string with `tostring(...)` at the call site to keep the cross-runtime user-id contract (the server stores them as strings; mixing numeric and string ids creates duplicate `ExternalIdentity` rows).
 
 #### Config + GetSecret fallback
 
 `JunjoConfig` mirrors the TypeScript SDK's shape: `apiKey` (string OR Roblox `Secret` userdata), optional `apiKeySecret` (a Roblox secret-store name), `baseUrl` (defaults to `https://api.junjo.io`), `inviteBaseUrl` (defaults to `baseUrl`), `httpService` (defaults to `game:GetService("HttpService")`; injectable for tests). When `apiKeySecret` is supplied the SDK calls `HttpService:GetSecret(apiKeySecret)`; on success the returned `Secret` userdata is concatenated into the auth header (Roblox interpolates the actual secret value at request time without ever exposing it as a Lua string). On failure the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. Specifying only `apiKey` skips the secret lookup entirely and uses the literal value (the cloud-Studio testing path).
+
+#### Top-level permission checks
+
+`junjo:check(userId, groupId, permission)` GETs `/v1/permissions/check` with the three required query params and returns the parsed envelope (`{ allowed, source, viaRoleId? }`). `junjo:can(...)` is a boolean wrapper: it calls `:check` and returns `result.allowed == true` so callers can use the natural `if junjo:can(...) then` gate. Both methods live on the Junjo instance directly (not under a sub-namespace) to match the TypeScript SDK shape and the cross-cutting nature of permission checks.
 
 #### Errors
 
@@ -229,16 +243,16 @@ local Junjo = require(ReplicatedStorage.Junjo)
 
 local junjo = Junjo.new({
   apiKey = game:GetService("HttpService"):GetSecret("JUNJO_API_KEY"),
-  authAdapter = Junjo.RobloxUserIdAdapter(), -- uses Players service (Phase 8.3)
+  authAdapter = Junjo.RobloxUserIdAdapter(), -- Phase 8.3
 })
 
-local group = junjo.groups:create({                      -- Phase 8.2
+local group = junjo.groups:create({                                  -- Phase 8.2
+  kind = "guild",
   name = "Crimson Wolves",
-  kind = "clan",
   defaultRoleId = "member",
 })
 
-local allowed = junjo:can(player.UserId, group.id, "invite_member") -- Phase 8.2
+local allowed = junjo:can(tostring(player.UserId), group.id, "invite_member") -- Phase 8.2
 ```
 
 ## Auth adapter pattern
