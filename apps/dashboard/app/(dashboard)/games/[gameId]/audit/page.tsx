@@ -32,11 +32,12 @@ import {
 } from "../../../../../lib/admin";
 
 interface AuditPageProps {
-  params: { gameId: string };
-  searchParams: Record<string, string | string[] | undefined>;
+  params: Promise<{ gameId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-export async function generateMetadata({ params }: AuditPageProps) {
+export async function generateMetadata(props: AuditPageProps) {
+  const params = await props.params;
   // Best-effort title; the page body itself shows a friendlier empty
   // state when the lookup fails. Mirrors the precedent in `[gameId]/page.tsx`.
   try {
@@ -203,7 +204,9 @@ async function AuditBody({
   return <GameAuditFeed page={page} query={query} gameName={game.name} />;
 }
 
-export default function GameAuditPage({ params, searchParams }: AuditPageProps) {
+export default async function GameAuditPage(props: AuditPageProps) {
+  const params = await props.params;
+  const searchParams = await props.searchParams;
   const query = parseQuery(searchParams);
   // The Suspense `key` is the serialized query so the skeleton flashes
   // when the operator changes a filter or page. Without the key React

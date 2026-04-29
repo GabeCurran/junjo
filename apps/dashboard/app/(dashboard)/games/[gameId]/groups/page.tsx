@@ -35,8 +35,8 @@ export const metadata = {
 };
 
 interface GroupsPageProps {
-  params: { gameId: string };
-  searchParams: Record<string, string | string[] | undefined>;
+  params: Promise<{ gameId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const SEARCH_LIMIT_MAX = 100;
@@ -196,7 +196,9 @@ async function GroupsBrowser({
   return <GroupsTable gameId={gameId} data={page} query={query} kindOptions={kindOptions} />;
 }
 
-export default function GroupsPage({ params, searchParams }: GroupsPageProps) {
+export default async function GroupsPage(props: GroupsPageProps) {
+  const params = await props.params;
+  const searchParams = await props.searchParams;
   const query = parseQuery(searchParams);
   // The Suspense `key` is the serialized query so the skeleton flashes when
   // the operator changes a filter, sort, or page. Without the key the React

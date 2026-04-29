@@ -54,14 +54,15 @@ import {
 } from "../../../../../../lib/admin";
 
 interface GroupDetailPageProps {
-  params: { gameId: string; groupId: string };
-  searchParams: Record<string, string | string[] | undefined>;
+  params: Promise<{ gameId: string; groupId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const SEARCH_VALUE_MAX = 255;
 const SEARCH_LIMIT_MAX = 100;
 
-export async function generateMetadata({ params }: GroupDetailPageProps) {
+export async function generateMetadata(props: GroupDetailPageProps) {
+  const params = await props.params;
   // Best-effort title: fall back to a generic label if the lookup fails. The
   // page body itself surfaces a more descriptive empty state on failure.
   try {
@@ -606,7 +607,9 @@ async function MembersBody({
   return <MembersTable data={page} query={query} gameId={gameId} groupId={groupId} />;
 }
 
-export default function GroupDetailPage({ params, searchParams }: GroupDetailPageProps) {
+export default async function GroupDetailPage(props: GroupDetailPageProps) {
+  const params = await props.params;
+  const searchParams = await props.searchParams;
   const activeTab = parseActiveTab(searchParams);
   const query = parseQuery(searchParams);
   const auditQuery = parseAuditQuery(searchParams);

@@ -33,11 +33,12 @@ import {
 import { getDocsBaseUrl } from "../../../../../lib/junjo";
 
 interface AnalyticsPageProps {
-  params: { gameId: string };
-  searchParams: Record<string, string | string[] | undefined>;
+  params: Promise<{ gameId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-export async function generateMetadata({ params }: AnalyticsPageProps) {
+export async function generateMetadata(props: AnalyticsPageProps) {
+  const params = await props.params;
   // Best-effort title; the page body itself shows a friendlier empty
   // state when the lookup fails. Mirrors the precedent in `[gameId]/page.tsx`
   // and `[gameId]/audit/page.tsx`.
@@ -181,7 +182,9 @@ async function AnalyticsBody({
   );
 }
 
-export default function GameAnalyticsPage({ params, searchParams }: AnalyticsPageProps) {
+export default async function GameAnalyticsPage(props: AnalyticsPageProps) {
+  const params = await props.params;
+  const searchParams = await props.searchParams;
   const query = parseQuery(searchParams);
 
   // Suspense `key` is the serialized query so the skeleton flashes when

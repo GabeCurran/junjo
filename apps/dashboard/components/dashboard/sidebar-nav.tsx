@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { Activity, BarChart3, Gamepad2, Home, ScrollText, ShieldCheck } from "lucide-react";
+import { Activity, Gamepad2, Home } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -13,12 +13,13 @@ interface NavItem {
   icon: typeof Home;
 }
 
+// Sidebar shows only truly global routes. Audit / Permissions / Analytics
+// are game-scoped and live in the per-page topbar action cluster instead;
+// keeping them out of the sidebar avoids visual duplication where the
+// labels are identical but the scopes differ.
 const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Dashboard", icon: Home },
   { href: "/games", label: "Games", icon: Gamepad2 },
-  { href: "/audit", label: "Audit", icon: ScrollText },
-  { href: "/permissions", label: "Permissions", icon: ShieldCheck },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
 export function SidebarNav() {

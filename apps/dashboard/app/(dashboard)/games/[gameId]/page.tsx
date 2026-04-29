@@ -17,10 +17,11 @@ import {
 import { AdminDisabledError, type AdminGame, fetchAdminGame } from "../../../../lib/admin";
 
 interface GameDetailPageProps {
-  params: { gameId: string };
+  params: Promise<{ gameId: string }>;
 }
 
-export async function generateMetadata({ params }: GameDetailPageProps) {
+export async function generateMetadata(props: GameDetailPageProps) {
+  const params = await props.params;
   // Best-effort title: fall back to the gameId if the lookup fails. The page
   // body itself shows a more descriptive empty state when the lookup fails;
   // the title only uses the name when we can fetch it cheaply.
@@ -114,7 +115,8 @@ async function GameBody({ gameId }: { gameId: string }) {
   );
 }
 
-export default function GameDetailPage({ params }: GameDetailPageProps) {
+export default async function GameDetailPage(props: GameDetailPageProps) {
+  const params = await props.params;
   return (
     <>
       <Topbar

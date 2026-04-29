@@ -7,10 +7,11 @@ import { Topbar } from "../../../../../../components/dashboard/topbar";
 import { fetchAdminGame } from "../../../../../../lib/admin";
 
 interface PermissionCheckPageProps {
-  params: { gameId: string };
+  params: Promise<{ gameId: string }>;
 }
 
-export async function generateMetadata({ params }: PermissionCheckPageProps) {
+export async function generateMetadata(props: PermissionCheckPageProps) {
+  const params = await props.params;
   // Best-effort title; the page body itself works fine even when the
   // game lookup fails (the form does not depend on the game name).
   // Mirrors the precedent in `[gameId]/page.tsx` and
@@ -23,7 +24,8 @@ export async function generateMetadata({ params }: PermissionCheckPageProps) {
   }
 }
 
-export default function PermissionCheckPage({ params }: PermissionCheckPageProps) {
+export default async function PermissionCheckPage(props: PermissionCheckPageProps) {
+  const params = await props.params;
   return (
     <>
       <Topbar
