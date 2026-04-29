@@ -73,7 +73,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   Hand-vendored shadcn `Card` primitive ships alongside.
 - 11.3a: cross-game games + API key management endpoints (`GET/POST /v1/admin/games`,
   game detail, `GET/POST /v1/admin/games/:gameId/api-keys`, key revoke).
-- 11.3b-i (this iteration): games list page consuming those endpoints. Server
+- 11.3b-i: games list page consuming those endpoints. Server
   Component `<GamesList>` renders a five-column table (Name, Groups, Active
   members, API keys, Created) inside a `<Suspense>` boundary; `<CreateGameDialog>`
   in the topbar's `actions` slot wraps a `<form>` whose `action` prop is a
@@ -81,8 +81,16 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `createAdminGame`, and `revalidatePath`s the games list. Hand-vendored shadcn
   `Dialog`, `Input`, `Label` primitives ship alongside, plus
   `tailwindcss-animate` for the dialog's transition classes.
-- 11.3b-ii: game detail page (`(dashboard)/games/[gameId]/page.tsx`) with API
-  keys section (issue with show-once dialog, revoke).
+- 11.3b-ii (this iteration, closes Phase 11.3): game detail page at
+  `(dashboard)/games/[gameId]/page.tsx`. Renders a header with the game's name
+  and three stat tiles (groups, active members, active API keys), then an API
+  keys section that lists every key (active + revoked) with a `Revoke` button
+  per row. Issuing a new key opens a dialog whose Server Action returns the
+  full `prefix.secret` form once; the dialog displays it in a copy-to-clipboard
+  affordance with a destructive "store this now" warning. Revoke confirmation
+  is a separate dialog. The page calls `notFound()` when the gameId is not
+  resolvable, so the route returns Next.js's 404 page rather than a generic
+  error card. Hand-vendored shadcn `Badge` primitive ships alongside.
 - 11.4 - 11.9: Group browser, group detail tabs, audit viewer, permission
   tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

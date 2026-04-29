@@ -3131,3 +3131,48 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - A flat table is easier to verify visually + via Playwright (Phase 14.12) than the TanStack-rendered one; less tooling-specific markup means more stable snapshots.
 
 **Trade:** if/when game-list interactivity becomes a real ask (search across many games, sort by group count), the page rewrites to TanStack Table. Acceptable: the rewrite is local to one component, the wire shape doesn't change, and the lift is small (~50 lines).
+
+### Phase 11.3b-ii: API key issuance dialog stays open after success to expose the secret
+
+**Decision:** the `<CreateApiKeyDialog>` Client Component flips between two render branches based on the action result. Before submit it shows a confirmation form with an "Issue key" submit button. After the Server Action returns success it stays open and shows the full `prefix.secret` form in a copy-to-clipboard affordance with an amber "store this now; we cannot recover it" warning. The dialog only closes when the operator explicitly clicks "Done" (or the `X` close button). Closing then triggers `router.refresh()` so the keys table picks up the new row.
+
+**Rationale:**
+- The server stores only a scrypt hash. After the dialog closes there is no way to recover the secret. Auto-closing the dialog on success would lose the secret silently and force the operator to revoke + re-issue. Stripe's API key issuance dialog uses the same pattern for the same reason.
+- `useFormState` exposes the action result without auto-closing, so a single component can model both "before issuance" and "after issuance" states by branching on `state.ok && state.apiKey`.
+- The clipboard copy is a UX nicety; the secret is also visible inline so a non-secure context (HTTP) or denied permission falls back to manual copy without the operator losing the secret.
+- The dialog calls `router.refresh()` on close (after a successful issue) so the new key appears in the parent list. The Server Action also calls `revalidatePath`; doubling up is belt-and-suspenders for the case where the cache is somehow not invalidated by the time the dialog closes.
+
+**Trade:** an operator who closes the dialog without copying loses the secret. Acceptable: the dialog's amber warning is explicit, the prefix half stays resolvable in the table, and revoke + re-issue is a one-click recovery. The alternative ("never close on the secret view") would require a destructive "I have copied it, dismiss" button that adds zero value.
+
+### Phase 11.3b-ii: revoke uses a separate confirmation dialog, not an inline button
+
+**Decision:** the per-row "Revoke" button on the API keys table opens a `<RevokeApiKeyDialog>` (a modal with explicit "Revoke key" / "Cancel" buttons) rather than triggering revocation directly on click. The dialog shows the prefix being revoked and the consequences ("any client using this key will be rejected on its next request"); only the destructive button triggers the Server Action.
+
+**Rationale:**
+- Revocation is destructive in effect (every client using that key fails on next request). A button that fires immediately on click invites accidental revocation; a confirm dialog adds one click of friction that prevents the accidental case.
+- The pattern matches the destructive-action UX of every operator dashboard the loop targets (Stripe key revoke, GitHub PAT delete, Vercel deploy delete). Operators expect the friction.
+- The server's revoke endpoint is idempotent on already-revoked, so a double-click after the first success is harmless. The friction is for the pre-first-click case.
+
+**Trade:** revoking N keys requires N dialog confirmations. Acceptable: API key revocation is a rare operation (in practice once per key lifecycle), and bulk-revoke is not a V1 feature. If/when bulk-revoke matters, the dialog rework is local to one component.
+
+### Phase 11.3b-ii: page calls `notFound()` for unresolvable gameIds
+
+**Decision:** when `fetchAdminGame(gameId)` throws an error whose message matches `/not.?found/i` (the substring the dashboard's `lib/admin.ts` produces from the server's `JunjoError({ code: "not_found" })` envelope), the page calls Next.js's `notFound()` helper. The render path produces Next.js's standard 404 page rather than a generic "could not load" empty state.
+
+**Rationale:**
+- The "Open" link in the games list points at `/games/[gameId]`. If the operator has the games list open in two tabs and another operator deletes a game in tab A, clicking it in tab B should produce a 404, not a misleading "could not load" card. The 404 page is the correct surface for "this resource does not exist."
+- Other failure modes (`AdminDisabledError`, generic server error) still render inline empty states because they are recoverable: setting the env var or fixing the server brings the page back without a navigation. A 404 is not recoverable from this URL.
+- The substring match (`/not.?found/i`) is intentionally narrow. The server's wire envelope is `{ code: "not_found", message: "game not found" }`; the dashboard's `lib/admin.ts` translates it to `Error("admin request failed: game not found")`. A future change to the message format would harmlessly fall through to the generic empty state.
+
+**Trade:** the page's 404 mapping depends on a string-match in production. Acceptable: server-side tests already exercise the wire envelope (`admin.test.ts` asserts on the message); a drift would surface immediately in those tests, and the dashboard's render is structurally identical between the two failure modes (one shows a Next.js 404 page, the other shows a card with "could not load"). A more robust mapping would require the dashboard's HTTP helpers to surface `code` directly on the thrown error; that refactor is local and can land later additively if it becomes worthwhile.
+
+### Phase 11.3b-ii: Badge primitive added for status pills, not the larger lucide-react chip family
+
+**Decision:** Phase 11.3b-ii ships `components/ui/badge.tsx` as a hand-vendored shadcn Badge primitive. Variants: `default`, `secondary`, `destructive`, `outline`, `muted`. Used to render Active / Revoked status pills on each API key row.
+
+**Rationale:**
+- shadcn Badge is the canonical small-text-pill primitive across the shadcn registry; matches the precedent of pulling primitives in the iteration that first needs them.
+- The five variants cover the entire dashboard's foreseeable status-pill UX: `secondary` (positive / "active"), `muted` (neutral / "revoked"), `destructive` (warning / "blocked"), `outline` (neutral container), `default` (brand emphasis). Future iterations can either reuse these or add a variant inline; the cost of either is small.
+- Using `lucide-react` icons instead of badges (e.g., a green check for active, a grey X for revoked) was considered but rejected: the status word ("Active" / "Revoked") carries both semantic meaning and screen-reader accessibility. Icons-only would force an `aria-label` per row.
+
+**Trade:** one more primitive to maintain. Acceptable: shadcn primitives are vendored byte-identical and rarely change upstream; the marginal cost is ~30 lines of code. Future iterations can extend or replace it without the API breaking (the Badge primitive's interface is stable across the shadcn registry).
