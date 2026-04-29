@@ -1,21 +1,23 @@
 -- Junjo Luau client. Mirrors the TypeScript SDK's `JunjoConfig` shape and
 -- wraps Roblox's HttpService for outbound REST calls. Phase 8.1 shipped
--- the HTTP wrapper and `Junjo.new` factory; Phase 8.2 layers per-namespace
+-- the HTTP wrapper and `Junjo.new` factory; Phase 8.2 layered per-namespace
 -- methods on top (groups / members / roles / invitations / audit /
--- webhooks) plus the top-level `:can` and `:check` permission checks.
--- Phase 8.3 will add the `RobloxUserIdAdapter`.
+-- webhooks) plus the top-level `:can` and `:check` permission checks;
+-- Phase 8.3 adds `Junjo.RobloxUserIdAdapter`.
 --
 -- File layout under `packages/sdk-roblox/src/`:
---   - init.lua        - this file (composes the namespaces)
---   - JunjoError.lua  - the error class raised on non-2xx responses
---   - Null.lua        - the JSON-null sentinel
---   - Http.lua        - the internal HTTP wrapper exposed as junjo.http
---   - groups.lua      - groups namespace (groups + membership lifecycle)
---   - members.lua     - members namespace (lookups + roles + overrides)
---   - roles.lua       - roles namespace (CRUD + permission grants)
---   - invitations.lua - invitations namespace (list / get / revoke)
---   - audit.lua       - audit namespace (list)
---   - webhooks.lua    - webhooks.endpoints sub-namespace (CRUD)
+--   - init.lua             - this file (composes the namespaces)
+--   - JunjoError.lua       - the error class raised on non-2xx responses
+--   - Null.lua             - the JSON-null sentinel
+--   - Http.lua             - the internal HTTP wrapper exposed as junjo.http
+--   - groups.lua           - groups namespace (groups + membership lifecycle)
+--   - members.lua          - members namespace (lookups + roles + overrides)
+--   - roles.lua            - roles namespace (CRUD + permission grants)
+--   - invitations.lua      - invitations namespace (list / get / revoke)
+--   - audit.lua            - audit namespace (list)
+--   - webhooks.lua         - webhooks.endpoints sub-namespace (CRUD)
+--   - adapters/
+--     - RobloxUserId.lua   - the RobloxUserIdAdapter factory (Phase 8.3)
 
 local HttpService = game:GetService("HttpService")
 
@@ -28,6 +30,7 @@ local Roles = require(script.roles)
 local Invitations = require(script.invitations)
 local Audit = require(script.audit)
 local Webhooks = require(script.webhooks)
+local RobloxUserIdAdapter = require(script.adapters.RobloxUserId)
 
 local DEFAULT_BASE_URL = "https://api.junjo.io"
 
@@ -37,6 +40,7 @@ Junjo.__index = Junjo
 Junjo.Null = Null
 Junjo.JunjoError = JunjoError
 Junjo.DEFAULT_BASE_URL = DEFAULT_BASE_URL
+Junjo.RobloxUserIdAdapter = RobloxUserIdAdapter
 
 local function trimTrailingSlashes(s)
 	return (string.gsub(s, "/+$", ""))

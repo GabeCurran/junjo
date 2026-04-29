@@ -2602,3 +2602,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The Roblox version of `bulkInvite` accepts only a string body (the TS SDK additionally accepts `ReadableStream<Uint8Array>`); Roblox's `HttpService` does not consume streams, so the SDK signature drops the stream variant. The string-only path covers the realistic Roblox use case (a CSV built in-memory or read from a Roblox `DataStore` blob).
 
 **Trade:** one extra public method on `junjo.http`. Acceptable: bulk-invite is a documented use case in Phase 2.8; the Roblox SDK without a way to deliver CSV bodies would silently miss one TS-SDK feature. Naming `postRaw` matches the TS SDK exactly so consumers searching documentation find both.
+
+### Phase 8.3: `RobloxUserIdAdapter` is a renderer (`:resolve(value?)`), not a TypeScript-style `AuthAdapter`
+
+**Decision:** the built-in adapter shipped at `packages/sdk-roblox/src/adapters/RobloxUserId.lua` exposes a single method `:resolve(value?)` that converts a `Player`, a positive integer, an explicit string, or a nil-meaning-`Players.LocalPlayer` to the opaque-string user id Junjo persists. It is NOT the TypeScript `AuthAdapter` shape (no `verifyToken`, no async, no `Promise<{ userId } | null>` return) and is NOT passed to `Junjo.new(config)` as a `authAdapter` field. The adapter is used standalone (`Junjo.RobloxUserIdAdapter()`) and called explicitly from the consumer's request-building code.
+
+**Rationale:**
+- VISION's Phase 8.3 spec describes the adapter as "Reads `game:GetService("Players").LocalPlayer.UserId` in client contexts, or accepts an explicit UserId for server-side / tests. Returns the id as a string." That is a renderer specification, not a verifier.
+- Roblox does not give the dev's backend a session token for the player. The trust boundary in Roblox is the game server itself: when `Players.PlayerAdded` fires with a `Player` instance, the script already trusts that the player is authenticated (Roblox handled the platform-level auth before populating the `Player`). The TypeScript `AuthAdapter` interface exists because in a Node backend the dev DOES receive an opaque session token from the client and needs to verify it against an upstream provider; that flow has no Roblox counterpart.
+- Even if the adapter were async + token-shaped, the `Junjo.new(config)` factory shipped in Phase 8.1 doesn't have an `authAdapter` config field (the Roblox SDK doesn't have a `whoami` flow that would consume one). Wiring an unused option just to match the TS shape would be fake.
+- Calling `:resolve(player)` explicitly at the request-building site (`junjo.groups:inviteByUserId(group.id, userIds:resolve(player))`) is more readable than a hidden `Junjo.new({ authAdapter = ... })` config that gets called somewhere down the stack. It's a thin function disguised as an adapter; the explicit-call shape advertises that.
+
+**Trade:** the Roblox adapter is asymmetric with the three TS SDK adapters (`jwt`, `clerk`, `supabase`) which all implement `AuthAdapter.verifyToken`. Acceptable: the asymmetry reflects a real runtime difference. The shared concept ("a thing that knows how to produce a Junjo user id") is preserved by both API shapes; the implementation detail (token-verifier vs renderer) tracks the runtime's actual contract.
+
+### Phase 8.3: `:resolve(value?)` accepts four argument shapes (Player, integer, string, nil)
+
+**Decision:** the adapter's single method accepts: a `Player` instance (or stub table with a numeric `UserId` field), a positive integer (rendered with `tostring`), a non-empty string (returned verbatim), or `nil` (reads `Players.LocalPlayer.UserId`). Every failure raises `JunjoError({ code = "invalid_config" })`.
+
+**Rationale:**
+- The `Player`-instance shape is the dominant case (server-side scripts have a `Player` from a `PlayerAdded` event or a `RemoteEvent` invocation).
+- The integer shape covers the case where the consumer already extracted the UserId for some reason and just wants the adapter for the `tostring` conversion.
+- The string shape is a passthrough: useful when chaining adapters (a layered "first one that produces a string wins" pattern would be common in multi-tenant games), or when the consumer has an id from a different source (e.g. a teamspeak handle stored on a player) and is funneling everything through one adapter.
+- The nil shape is for `LocalScript` contexts (client-side) where `Players.LocalPlayer` is populated. Server-side this raises `invalid_config` because `LocalPlayer` is `nil` server-side; raising explicitly with a useful message is better than a downstream "attempt to index a nil value" Lua error.
+- All four shapes feed into the same downstream string id, so consumers can substitute one for another without changing call shape elsewhere.
+
+**Trade:** more validation surface (four kinds to type-check). Acceptable: each branch is 3-5 lines; the alternative of "only accept Player" forces consumers to write `tostring(player.UserId)` or `tostring(userId)` themselves, which defeats the adapter's whole purpose of centralizing the conversion.
+
+### Phase 8.3: `explicitUserId` constructor option for tests / scripted automation
+
+**Decision:** `Junjo.RobloxUserIdAdapter({ explicitUserId = "12345" })` returns an adapter whose `:resolve()` ignores its argument and always returns `"12345"`. Accepts a non-empty string OR a positive integer (rendered with `tostring`). Documented as "tests / scripted automation only".
+
+**Rationale:**
+- Mirrors the TS SDK's `staticUserAdapter` recipe in `apps/docs/pages/auth/byo.mdx` (recipe 4): a "skip verification entirely" passthrough for testing.
+- Without it, tests that exercise Junjo wrappers around the adapter need to either construct a fake `Players` service with a `LocalPlayer.UserId` (verbose) or build a stub Player table (also verbose). One option-bag field collapses both to one line.
+- The "tests only" warning in the docs body matches the same warning the TS `staticUserAdapter` recipe uses; copying the warning verbatim keeps the failure-mode story consistent across SDKs.
+
+**Trade:** misuse risk. A production deployment with this option set returns the same id for every player, which is exactly wrong. Acceptable: the option is opt-in (the default `RobloxUserIdAdapter()` reads from the `Player` argument), the warning lives in both the inline doc-comment and the user-facing docs page, and the alternative (no test-friendly path) would push consumers toward shipping bespoke fakes that diverge from the production adapter.
+
+### Phase 8.3: adapter raises `JunjoError({ code = "invalid_config" })` on every failure path; never produces a server-defined code
+
+**Decision:** every error the adapter raises uses `code = "invalid_config"`. Empty strings, zero, negative numbers, non-integer numbers, missing `UserId` field on a Player, server-side calls without a Player argument, malformed `explicitUserId` - all `invalid_config`.
+
+**Rationale:**
+- The adapter never calls the Junjo API, so it cannot produce a server-side error code (`not_found`, `permission_denied`, etc.). Every failure is a programmer error: passing the wrong argument, calling `:resolve()` from the wrong context, supplying a malformed config option.
+- Matches the TS SDK's three adapters (`jwt`, `clerk`, `supabase`) which all reserve `invalid_config` for setup-time misconfiguration that should fail loud at startup. The adapter follows the same throw-vs-null contract: if the runtime contract is broken, throw; if the contract is honored, return a value.
+- Roblox's `Players.LocalPlayer` being `nil` on the server is not a runtime failure - it is a context error (the consumer called the wrong method shape for the wrong context), so it raises with a message guiding the consumer to `:resolve(player)`.
+
+**Trade:** consumers branching on `err.code` to distinguish "bad input" vs "wrong context" cannot do so via the code. Acceptable: the message text carries the distinguishing detail (`expected a Player; got nil`, `Players.LocalPlayer is nil`), and adding a second code (`wrong_context`?) for one adapter would diverge from the TS adapter contract for no gain.
+
+### Phase 8.3: adapter under `packages/sdk-roblox/src/adapters/` (subfolder), not as a sibling top-level file
+
+**Decision:** the adapter lives at `packages/sdk-roblox/src/adapters/RobloxUserId.lua`, in its own subfolder, and is required via `require(script.adapters.RobloxUserId)` from `init.lua`. This matches the TypeScript SDK's `packages/sdk/src/adapters/{jwt,clerk,supabase}.ts` layout (subfolder per SDK for adapter modules).
+
+**Rationale:**
+- Roblox's folder-as-ModuleScript convention means a subfolder reads as a sub-namespace at the require level. A future second adapter (a JWT-token-verifier for Roblox-hosted REST APIs that DO issue session tokens, for instance) lands as `adapters/JwtUserId.lua` without polluting the top-level file list.
+- Mirrors the TS SDK layout, so a developer reading both SDKs sees the same `adapters/` shape on both sides.
+- PascalCase filename (`RobloxUserId.lua` not `robloxUserId.lua`) matches the existing convention for class-shaped helpers (`JunjoError.lua`, `Http.lua`, `Null.lua`). Lowercase namespace files (`groups.lua`, `members.lua`) are reserved for namespace tables.
+
+**Trade:** one more directory in the source tree for one file. Acceptable: future adapters are expected (Phase 8 in VISION calls Phase 8.3 the start of the adapter family even though only one ships in V1), and the subfolder convention is what every contributor will reach for first when adding the second one.

@@ -22,7 +22,7 @@ The package is distributed as a Roblox model (`.rbxm`) on each GitHub release an
 | `junjo.audit:list` | shipped (Phase 8.2). |
 | `junjo.webhooks.endpoints:create / list / update / delete` | shipped (Phase 8.2). |
 | `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | shipped (Phase 8.2). |
-| `Junjo.RobloxUserIdAdapter()` | lands in Phase 8.3. |
+| `Junjo.RobloxUserIdAdapter(opts?)` | shipped (Phase 8.3). |
 | `groups.subscribe` (SSE) and `webhooks:verify` / `:middleware` (receiver-side) | not planned for V1. Roblox `HttpService` does not stream, and a Roblox game server cannot expose an HTTP endpoint to receive webhooks. The `MessagingService`-backed replacement for real-time is deferred post-V1. |
 
 ## Construct a client
@@ -91,6 +91,54 @@ local userId = tostring(player.UserId)
 
 local allowed = junjo:can(userId, groupId, "invite_member")
 ```
+
+## RobloxUserIdAdapter
+
+`Junjo.RobloxUserIdAdapter(opts?)` is the built-in adapter that resolves a Roblox `Player` (or a numeric `UserId`) to the opaque-string user id Junjo expects. The `tostring(player.UserId)` rule above is exactly what the adapter encapsulates; using it everywhere a route call needs a user id keeps the conversion in one place and removes the chance of a forgotten `tostring` creating a numeric / string duplicate in `ExternalIdentity`.
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local adapter = Junjo.RobloxUserIdAdapter()
+
+local function onJoin(player)
+  local userId = adapter:resolve(player)
+  junjo.groups:acceptInvitation(invite.code, userId)
+end
+```
+
+The `:resolve(value?)` method accepts four call shapes:
+
+| Argument | Behavior |
+|----------|----------|
+| `Player` (a real Roblox `Player` instance, or a stub table with a numeric `UserId` field) | Reads `value.UserId`, converts to string. Throws `invalid_config` if the field is missing or not a positive integer. |
+| number (positive integer) | Returns `tostring(value)`. Throws `invalid_config` for zero, negative, or non-integer values. |
+| string (non-empty) | Returns the string verbatim (treated as already-resolved). Empty strings throw `invalid_config`. |
+| nil (no argument) | Reads `Players.LocalPlayer.UserId`. Throws `invalid_config` on the server side, where `LocalPlayer` is `nil`; pass the `Player` explicitly from server scripts. |
+
+The adapter is purely a renderer; it does not call the Junjo API and never throws a `JunjoError` with a non-`invalid_config` code. There is no token to verify (Roblox does not give the dev's backend a session token for the player; the trust boundary is the Roblox game server itself, which already trusts the `Player` instance it received), so the adapter is intentionally narrower than the TypeScript `AuthAdapter` interface (which is async and returns `null` on verification failure).
+
+### Options
+
+```lua
+local adapter = Junjo.RobloxUserIdAdapter({
+  explicitUserId = "12345",         -- optional; tests / scripted contexts
+  players = mockPlayersService,     -- optional; inject for unit testing
+})
+```
+
+| Option | Notes |
+|--------|-------|
+| `explicitUserId` | Hard-coded id returned by every `:resolve()` call regardless of input. Accepts a non-empty string OR a positive integer (which is rendered with `tostring`). Use only in tests or scripted automation; a production deployment with this option set returns the same id for every player. |
+| `players` | Inject a fake `Players` service for unit tests. Defaults to `game:GetService("Players")`. The fake just needs a `LocalPlayer` field carrying a `UserId`. |
+
+### Server-side vs client-side
+
+Roblox scripts run on either the server (`Script` instances) or the client (`LocalScript` instances). `Players.LocalPlayer` is only populated on the client. Pattern by context:
+
+- **Server scripts** (the common case for Junjo calls): always pass the `Player` reference you already have on hand from a `Players.PlayerAdded` callback or a `RemoteEvent` invocation. `adapter:resolve(player)` does the `tostring(player.UserId)` conversion for you.
+- **Client scripts**: `adapter:resolve()` (no argument) reads from `LocalPlayer`. Useful when a `LocalScript` builds a Junjo call before forwarding to a server-side handler.
+- **Tests**: construct with `explicitUserId` so the adapter never touches the Roblox `Players` service.
 
 ## Sending JSON null in PATCH bodies
 
@@ -215,7 +263,7 @@ print(DateTime.fromIsoDate(group.createdAt):FormatLocalTime("LL", "en-us"))
 
 Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `members:get`, `members:getById`, `roles:get`, `invitations:get`) catch the `not_found` error inside the SDK and translate it to `nil`. Every other error code (`bad_request`, `permission_denied`, etc.) re-throws verbatim so callers can branch on it via `pcall`.
 
-## Manual verification (Phase 8.1 + 8.2)
+## Manual verification (Phase 8.1 + 8.2 + 8.3)
 
 The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
 
@@ -230,3 +278,8 @@ The Roblox model is not built on every commit; the Luau code lands as source und
 - `Junjo.new({ apiKeySecret = "MISSING", apiKey = "fallback" })` falls back to the literal apiKey when the secret is missing.
 - `junjo.groups:update(group.id, { defaultRoleId = Junjo.Null })` clears the field (verify by re-reading `junjo.groups:get(group.id).defaultRoleId == nil`).
 - `junjo.groups:setParent(child, nil)` clears the parent (verify same way).
+- `Junjo.RobloxUserIdAdapter():resolve(player)` returns `tostring(player.UserId)` for a real `Player` instance triggered by `Players.PlayerAdded`.
+- `Junjo.RobloxUserIdAdapter():resolve()` (no argument) reads `Players.LocalPlayer.UserId` from a `LocalScript` and returns it as a string.
+- `Junjo.RobloxUserIdAdapter():resolve()` from a server-side `Script` raises a `JunjoError` with `code = "invalid_config"` (because `Players.LocalPlayer` is `nil` server-side).
+- `Junjo.RobloxUserIdAdapter({ explicitUserId = "12345" }):resolve()` returns `"12345"` regardless of context.
+- `Junjo.RobloxUserIdAdapter():resolve(0)` raises `JunjoError({ code = "invalid_config" })` (zero is not a positive integer).

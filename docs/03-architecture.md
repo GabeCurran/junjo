@@ -208,13 +208,14 @@ Roblox model bundling a Luau module. Wraps `HttpService` for outbound REST and (
 
 #### File layout
 
-The `packages/sdk-roblox/src/` tree (Phase 8.2 layout):
+The `packages/sdk-roblox/src/` tree (Phase 8.2 layout, Phase 8.3 adds the `adapters/` subfolder):
 
-- `init.lua` - the entry point. `require(ReplicatedStorage.Junjo)` resolves to this file when the source folder is sync'd as a folder named `Junjo` (Roblox's `init.lua` convention is the same as Python's `__init__.py`: a file named `init.lua` inside a folder *becomes* the ModuleScript at the folder level, with sibling files exposed as child ModuleScripts). Composes the namespace tables, validates the config, and exposes the public surface (`Junjo.new`, `Junjo.Null`, `Junjo.JunjoError`, `Junjo.DEFAULT_BASE_URL`) plus the top-level `:can` / `:check` permission helpers.
+- `init.lua` - the entry point. `require(ReplicatedStorage.Junjo)` resolves to this file when the source folder is sync'd as a folder named `Junjo` (Roblox's `init.lua` convention is the same as Python's `__init__.py`: a file named `init.lua` inside a folder *becomes* the ModuleScript at the folder level, with sibling files exposed as child ModuleScripts). Composes the namespace tables, validates the config, and exposes the public surface (`Junjo.new`, `Junjo.Null`, `Junjo.JunjoError`, `Junjo.DEFAULT_BASE_URL`, `Junjo.RobloxUserIdAdapter`) plus the top-level `:can` / `:check` permission helpers.
 - `Null.lua` - the `Junjo.Null` sentinel (a `newproxy(false)` userdata token). Required by `Http.lua` and by `groups.lua` (for the `setParent` clear path).
 - `JunjoError.lua` - the `JunjoError` class with `JunjoError.new`, `JunjoError.is`, and `JunjoError.raise` (the `error(table, 0)` raise convention used everywhere the SDK reports a non-2xx, network failure, or config error).
 - `Http.lua` - the internal HTTP wrapper class exposed on every Junjo instance as `junjo.http`. Methods: `:request(method, path, body)`, `:get(path)`, `:post(path, body)`, `:postRaw(path, body, contentType)`, `:patch(path, body)`, `:put(path, body)`, `:delete(path)`, `:encode(value)`. Namespaces consume `:encode(...)` for URL-encoding path / query segments rather than grabbing their own HttpService reference.
 - `groups.lua` / `members.lua` / `roles.lua` / `invitations.lua` / `audit.lua` / `webhooks.lua` - per-namespace modules, one method per TS-SDK method. Each exposes a `<Namespace>.new(http, ...)` factory; `init.lua` constructs them and attaches them to the Junjo instance. Methods are colon-style (`junjo.groups:create({...})`) to match VISION's spec and Lua-class idiom.
+- `adapters/RobloxUserId.lua` - the built-in `Junjo.RobloxUserIdAdapter(opts?)` factory (Phase 8.3). Returns an adapter object with one method `:resolve(value?)` that converts a `Player` instance, a numeric `UserId`, an explicit string, or a nil-value-meaning-`Players.LocalPlayer` to the opaque-string user id Junjo persists. The adapter is purely a renderer (it does not call the Junjo API, never throws a non-`invalid_config` `JunjoError`); the trust boundary in Roblox is the game server, which already trusts the `Player` instance it received, so unlike the TypeScript `AuthAdapter` shape there is no token to verify and the method is sync.
 
 #### HTTP wrapper
 
@@ -234,6 +235,12 @@ Response shapes are returned verbatim: timestamp fields stay as ISO 8601 strings
 
 `junjo:check(userId, groupId, permission)` GETs `/v1/permissions/check` with the three required query params and returns the parsed envelope (`{ allowed, source, viaRoleId? }`). `junjo:can(...)` is a boolean wrapper: it calls `:check` and returns `result.allowed == true` so callers can use the natural `if junjo:can(...) then` gate. Both methods live on the Junjo instance directly (not under a sub-namespace) to match the TypeScript SDK shape and the cross-cutting nature of permission checks.
 
+#### RobloxUserIdAdapter (Phase 8.3)
+
+`Junjo.RobloxUserIdAdapter(opts?)` is the built-in adapter that resolves a Roblox `Player` (or a numeric `UserId`) to the opaque-string user id Junjo persists. It is intentionally NOT a TypeScript-style `AuthAdapter` (no `verifyToken`, no async flow, no `Promise<{ userId } | null>` return shape) and is NOT passed to `Junjo.new(config)` as a config field; the trust boundary in Roblox is the game server itself, which already trusts the `Player` instance it received from a `Players.PlayerAdded` callback or a `RemoteEvent`. The adapter is a renderer that encapsulates the cross-runtime user-id contract (numerics serialized as strings) in one place.
+
+`:resolve(value?)` accepts: a `Player` (or stub table with a numeric `UserId` field), a positive integer, a non-empty string (treated as already-resolved), or `nil` (reads `Players.LocalPlayer.UserId`; only valid in client-side `LocalScript` contexts, raises `invalid_config` server-side where `LocalPlayer` is `nil`). The constructor accepts `explicitUserId` (a hard-coded id returned by every `:resolve` call; tests and scripted automation only) and `players` (a `Players` service injection seam for unit tests). Every failure path raises `JunjoError({ code = "invalid_config" })`; the adapter never produces a non-`invalid_config` error code.
+
 #### Errors
 
 `JunjoError` is a Lua object built with `setmetatable({}, JunjoError)` and a `__tostring` metamethod. Fields: `name` ("JunjoError"), `message`, `code`, `status` (number or `nil`). The exported `Junjo.JunjoError.is(value)` helper returns `true` when `value` was raised by the SDK (so consumers can branch on `if Junjo.JunjoError.is(err) then ... else error(err) end` after `pcall`). Errors are raised with `error(table, 0)` to suppress Lua's automatic file:line prefix, so the error value `pcall` returns is the raw `JunjoError` table.
@@ -241,10 +248,10 @@ Response shapes are returned verbatim: timestamp fields stay as ISO 8601 strings
 ```lua
 local Junjo = require(ReplicatedStorage.Junjo)
 
-local junjo = Junjo.new({
+local junjo = Junjo.new({                                            -- Phase 8.1
   apiKey = game:GetService("HttpService"):GetSecret("JUNJO_API_KEY"),
-  authAdapter = Junjo.RobloxUserIdAdapter(), -- Phase 8.3
 })
+local userIds = Junjo.RobloxUserIdAdapter()                          -- Phase 8.3
 
 local group = junjo.groups:create({                                  -- Phase 8.2
   kind = "guild",
@@ -252,7 +259,7 @@ local group = junjo.groups:create({                                  -- Phase 8.
   defaultRoleId = "member",
 })
 
-local allowed = junjo:can(tostring(player.UserId), group.id, "invite_member") -- Phase 8.2
+local allowed = junjo:can(userIds:resolve(player), group.id, "invite_member") -- Phase 8.2 + 8.3
 ```
 
 ## Auth adapter pattern
