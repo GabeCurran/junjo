@@ -2959,3 +2959,60 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - `groupSoftDeleted` is computed server-side from `softDeletedAt !== null` and surfaced as a boolean to keep the wire format JSON-friendly (the dashboard does not need the timestamp, just the flag).
 
 **Trade:** if the dashboard later wants the timestamp itself (e.g., to render "deleted 3h ago"), the wire format will need an additive `groupSoftDeletedAt` field. Acceptable: additive; the boolean covers V1 and the timestamp can be introduced when needed.
+
+### Phase 11.2b: dashboard home composes two Server Components inside Suspense boundaries
+
+**Decision:** `app/(dashboard)/page.tsx` renders `<StatsCards />` and `<RecentActivityFeed />` as separate Server Components, each wrapped in a `<Suspense fallback={...}>` with its own skeleton placeholder. Both components do their own `fetch` (with `next: { revalidate: 60 }`); neither blocks the other.
+
+**Rationale:**
+- The two panels are functionally independent. One slow request should not delay the other.
+- React 18 streaming + Suspense boundaries let the framework flush each panel as soon as its fetch resolves. The slower panel ships its skeleton in the initial HTML and swaps to the real markup when ready.
+- Putting both fetches in one parent Server Component would mean the page can only stream after the slower of the two completes (effectively waterfalling the user-perceived render).
+- Skeleton fallbacks (matching the final layout's grid/divider geometry) avoid layout shift when the real content lands.
+
+**Trade:** two fetches per render (versus one combined endpoint that returns `{ stats, recentAudit }`). Acceptable: the two endpoints already exist and are independently useful, the 60s `revalidate` collapses traffic, and a future combined endpoint stays additive (the components could swap to it without changing the page shape).
+
+### Phase 11.2b: `lib/admin.ts` introduces `AdminDisabledError` sentinel for the unset-token path
+
+**Decision:** `fetchAdminStats()` and `fetchRecentAudit()` throw a dedicated `AdminDisabledError` (a class extending `Error`) when `JUNJO_ADMIN_TOKEN` is unset. Both consuming components branch on `err instanceof AdminDisabledError` to render a "set `JUNJO_ADMIN_TOKEN` to enable this view" empty state distinct from the generic-error empty state.
+
+**Rationale:**
+- "Operator did not configure the cross-game admin token" is a different failure from "the server returned 500" or "the network was unreachable". Surfacing both as a generic `Error("admin lookup failed: 401")` would be misleading: the operator could fix the unset-token case in 30 seconds with the right hint.
+- A sentinel class is the standard JS pattern for "this is a known recoverable condition the caller might want to handle differently". Comparing on `err.message` would be brittle.
+- Consistent with the SDK's `JunjoError` precedent (typed errors carry semantic codes; consumers branch on them).
+
+**Trade:** one extra exported symbol (`AdminDisabledError`) the consumer must import to branch on. Acceptable: the symbol stays internal to the dashboard (`lib/admin.ts`); no consumer outside `apps/dashboard/` ever sees it.
+
+### Phase 11.2b: home page `StatsCards` and `RecentActivityFeed` handle errors inline, not via error.tsx boundary
+
+**Decision:** both Server Components catch their own fetch errors and render an empty state inside their normal layout (e.g., a card-styled "could not load" message). Neither crashes up to a Next.js `error.tsx` boundary or `notFound()`.
+
+**Rationale:**
+- A Junjo server hiccup or transient network blip should not blank out the entire dashboard home page. The other panel might still render fine; the operator can refresh the page or wait for the next 60s revalidate.
+- Inline empty states give the operator the actual error message (e.g., "503 Service Unavailable") so they can diagnose without checking the server logs.
+- An `error.tsx` boundary would also catch unrelated bugs in the page (like a typo in the JSX), which is the wrong granularity for a "the cross-game stats endpoint is down" condition.
+
+**Trade:** each component re-implements its own try/catch + error-shaped Card. Acceptable: it's ~10 lines per component; abstracting prematurely (an `<AsyncCard fetcher={...}>` HOC) would lock in a generic shape before the other 11.x pages reveal what shape actually fits.
+
+### Phase 11.2b: dashboard owns its own typed wire shapes for admin endpoints
+
+**Decision:** `apps/dashboard/lib/admin.ts` redeclares `AdminStats`, `AdminAuditEntry`, `AdminAuditPage` rather than importing them from `@junjo/server`. The shapes mirror `WireAdminStats` / `WireAdminAuditEntry` / `WireAdminAuditPage` byte-for-byte.
+
+**Rationale:**
+- The dashboard does not depend on `@junjo/server` (and shouldn't: the server is an OSS package, the dashboard is proprietary; a dependency edge that crosses the open-core boundary is a smell).
+- The admin endpoints are intentionally not in the per-game `@junjo/sdk` surface (per Phase 10.2 + 11.2a decisions); there is no existing module that exports the shapes.
+- Lifting the types into `@junjo/shared` would force the open-source package to carry types that have no value outside the proprietary dashboard.
+- Duplicating three small interfaces is cheap and explicit about ownership.
+
+**Trade:** the wire shapes can drift between server and dashboard. Acceptable: the test surface on the server (`packages/server/src/routes/admin.test.ts`) pins the wire format with full-shape assertions; a dashboard-side mismatch will surface immediately when developing against a local server.
+
+### Phase 11.2b: relative timestamps via `Intl.RelativeTimeFormat`, no third-party date library
+
+**Decision:** the activity feed renders relative timestamps ("3 minutes ago", "2 days ago") via a hand-rolled helper that picks the largest fitting unit and feeds it to `Intl.RelativeTimeFormat`. No `date-fns`, no `dayjs`, no `luxon`.
+
+**Rationale:**
+- Node 18+ and every modern browser ship `Intl.RelativeTimeFormat` natively. Free, zero install cost, no bundle weight.
+- The helper is ~20 lines including the unit ladder. Adding a date library to render one timestamp format is overkill.
+- A future need for richer formatting (calendar dates, durations) can pull in a library when it exists; today there is none.
+
+**Trade:** the unit-picker is hand-rolled (not pulled from a battle-tested library). Acceptable: tested implicitly by inspection during dev; the failure mode (wrong unit) is visual and not security-relevant.

@@ -268,7 +268,7 @@ local allowed = junjo:can(userIds:resolve(player), group.id, "invite_member") --
 
 The admin + analytics dashboard at `apps/dashboard/` is proprietary (its `LICENSE` is "All Rights Reserved"; see Phase 11 / 12 in the V1 roadmap). Self-hosters get the server + SDKs; the dashboard is exclusive to the cloud product.
 
-Phase 11.1a + 11.1b (the toolchain + visible-shell foundation) ships:
+Phase 11.1a + 11.1b (the toolchain + visible-shell foundation) plus Phase 11.2a + 11.2b (cross-game admin endpoints + the home page that consumes them) ship:
 
 - **Stack:** Next.js 15 App Router, TypeScript strict, React 18, Tailwind v3 with shadcn-compatible CSS-variable theming, zod (env validation), `clsx` + `tailwind-merge` (shadcn-style class composition), `next-themes` (theme switching), `lucide-react` (icons), `class-variance-authority` (shadcn variant API), `@radix-ui/react-slot` (Button `asChild`).
 - **License header:** every TypeScript file under `apps/dashboard/` starts with `// @license All Rights Reserved (see apps/dashboard/LICENSE)`.
@@ -279,9 +279,11 @@ Phase 11.1a + 11.1b (the toolchain + visible-shell foundation) ships:
 - **Theme switching:** `app/layout.tsx` wraps `<body>` in a `ThemeProvider` (a thin client wrapper around `next-themes`) configured with `attribute="class"`, `defaultTheme="dark"`, `enableSystem`, `disableTransitionOnChange`. The hardcoded `className="dark"` on `<html>` is removed; `next-themes` injects the class via an inline script before hydration. `suppressHydrationWarning` on `<html>` accepts the className mismatch the inline script intentionally creates. `components/theme-toggle.tsx` is a Sun/Moon icon button that calls `setTheme()`.
 - **Layout shell:** every authenticated dashboard page lives in the `app/(dashboard)/` route group. The group's `layout.tsx` provides a sidebar (`components/dashboard/sidebar-nav.tsx`: a brand block plus a `<nav>` of icon-and-label `<Link>`s, with `usePathname` driving the active-route highlight) plus a flex column for page content. Each page renders its own `<Topbar>` (`components/dashboard/topbar.tsx`) so the title, description, and any per-page actions sit close to the page they describe. The sidebar is hidden below the `md` breakpoint (V1 dashboard targets desk-bound operators; mobile parity comes later if it becomes a real requirement).
 - **Nav routes:** `(dashboard)/page.tsx` (home), `(dashboard)/games/page.tsx`, `(dashboard)/audit/page.tsx`, `(dashboard)/permissions/page.tsx`, `(dashboard)/analytics/page.tsx`. Each is a placeholder pointing at the iteration that will fill it in. The home was relocated from `app/page.tsx` (which was deleted) so the home renders inside the route-group layout.
-- **shadcn primitives:** populated by hand-vendoring the canonical shadcn registry source into `components/ui/` rather than running the interactive shadcn CLI. Phase 11.1b ships `button.tsx` only (the only primitive the layout shell + theme toggle currently need); future iterations add primitives to the same directory as features land that need them. The vendored source carries the proprietary license header but is otherwise byte-identical to the upstream registry, so `git diff`-against-upstream merges of future fixes stay cheap.
+- **shadcn primitives:** populated by hand-vendoring the canonical shadcn registry source into `components/ui/` rather than running the interactive shadcn CLI. Phase 11.1b shipped `button.tsx`; Phase 11.2b shipped `card.tsx` (Card / CardHeader / CardTitle / CardDescription / CardContent / CardFooter, the standard shadcn container family). Future iterations add primitives to the same directory as features land that need them. The vendored source carries the proprietary license header but is otherwise byte-identical to the upstream registry, so `git diff`-against-upstream merges of future fixes stay cheap.
+- **Admin API client:** `apps/dashboard/lib/admin.ts` is a `import "server-only"`-guarded module exporting `fetchAdminStats()` and `fetchRecentAudit(limit)` plus the typed wire shapes `AdminStats`, `AdminAuditEntry`, `AdminAuditPage`. Both functions read `getAdminToken()` from the SDK singleton's helper; if the token is unset the function throws `AdminDisabledError` (a sentinel class the consumer branches on to render a "set `JUNJO_ADMIN_TOKEN` to enable this view" empty state instead of a generic crash). Each call passes `next: { revalidate: 60 }` so Next.js caches the response for 60 seconds. The wire types mirror `WireAdminStats` / `WireAdminAuditEntry` from `packages/server/src/routes/admin.ts` but live in the dashboard repo because the admin endpoints are intentionally not in the per-game `@junjo/sdk` surface (per Phase 10.2 + 11.2a decisions).
+- **Home page (Phase 11.2b):** `app/(dashboard)/page.tsx` composes two Server Components (`StatsCards` and `RecentActivityFeed`, in `components/dashboard/`) inside React `<Suspense>` boundaries with skeleton fallbacks so the cards and feed stream independently. `StatsCards` calls `fetchAdminStats()` and renders four overview cards (games, groups, active members, audit events in last 24h) using the vendored `Card` primitive plus lucide icons. `RecentActivityFeed` calls `fetchRecentAudit(20)` and renders the latest 20 audit entries across every game with `<game> / <group>` headings (soft-deleted groups get a strike-through and a "soft-deleted" tag), the action key in monospace, and a relative timestamp via `Intl.RelativeTimeFormat`. Both components handle three failure modes inline: admin-token-unset (`AdminDisabledError` sentinel) renders a "set `JUNJO_ADMIN_TOKEN`" hint; any other error renders the error message in a styled empty card; an empty result renders a "nothing has happened yet" empty state.
 
-What 11.2 - 11.9 add: the actual data-bound pages. What 12.1 - 12.5 add: the analytics surface.
+What 11.3 - 11.9 add: the per-game data-bound pages (games list + group browser + group detail + audit + permissions). What 12.1 - 12.5 add: the analytics surface.
 
 The dashboard does NOT use Vitest in V1 (per VISION's Phase 11 conventions; Server Components are awkward to test in isolation, and the value is shipping a usable UI not test coverage). Phase 14.12 will add Playwright smoke tests.
 
@@ -354,7 +356,7 @@ junjo/
 │   │   │   ├── layout.tsx                    (root: ThemeProvider + body)
 │   │   │   └── (dashboard)/                  (route group: sidebar + topbar shell)
 │   │   │       ├── layout.tsx
-│   │   │       ├── page.tsx                  (home; lands in 11.2)
+│   │   │       ├── page.tsx                  (home: StatsCards + RecentActivityFeed)
 │   │   │       ├── games/page.tsx            (lands in 11.3)
 │   │   │       ├── audit/page.tsx            (lands in 11.8)
 │   │   │       ├── permissions/page.tsx      (lands in 11.9)
@@ -364,12 +366,16 @@ junjo/
 │   │   │   ├── theme-toggle.tsx              (Sun/Moon icon button)
 │   │   │   ├── dashboard/
 │   │   │   │   ├── sidebar-nav.tsx           (Brand + active-route highlight)
-│   │   │   │   └── topbar.tsx                (per-page title + actions slot)
+│   │   │   │   ├── topbar.tsx                (per-page title + actions slot)
+│   │   │   │   ├── stats-cards.tsx           (4 overview cards; admin/stats)
+│   │   │   │   └── recent-activity-feed.tsx  (latest 20 audit entries; admin/audit)
 │   │   │   └── ui/
-│   │   │       └── button.tsx                (shadcn primitive, hand-vendored)
+│   │   │       ├── button.tsx                (shadcn primitive, hand-vendored)
+│   │   │       └── card.tsx                  (shadcn primitive, hand-vendored)
 │   │   ├── lib/
 │   │   │   ├── env.ts                        (zod-validated dashboard env)
 │   │   │   ├── junjo.ts                      (server-only Junjo SDK singleton)
+│   │   │   ├── admin.ts                      (cross-game admin endpoints client)
 │   │   │   └── utils.ts                      (cn helper: clsx + tailwind-merge)
 │   │   ├── middleware.ts                     (HTTP Basic Auth gate)
 │   │   ├── tailwind.config.ts

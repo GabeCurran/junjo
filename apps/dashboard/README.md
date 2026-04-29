@@ -62,8 +62,15 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 ## What ships when
 
 - 11.1a: Tailwind toolchain, HTTP Basic Auth middleware, SDK singleton.
-- 11.1b (this iteration): sidebar + topbar layout shell, four nav-route stubs,
-  light/dark theme toggle, hand-vendored shadcn `Button` primitive.
-- 11.2 - 11.9: Home, games list, group browser, group detail tabs, audit viewer,
+- 11.1b: sidebar + topbar layout shell, four nav-route stubs, light/dark theme
+  toggle, hand-vendored shadcn `Button` primitive.
+- 11.2a: cross-game admin endpoints (`GET /v1/admin/stats`, `GET /v1/admin/audit`).
+- 11.2b (this iteration): home page consuming those endpoints. Four overview
+  cards (games, groups, active members, audit events in 24h) + a recent activity
+  feed (latest 20 audit entries across every game). Both panels stream via
+  React `Suspense` and cache for 60s via Next.js `revalidate`. Renders an inline
+  empty state when `JUNJO_ADMIN_TOKEN` is unset rather than crashing the route.
+  Hand-vendored shadcn `Card` primitive ships alongside.
+- 11.3 - 11.9: Games list, group browser, group detail tabs, audit viewer,
   permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).
