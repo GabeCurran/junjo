@@ -6,10 +6,11 @@
 // intentionally NOT shipped in V1 per VISION; the dashboard calls these
 // endpoints directly via fetch.
 
-import type { AuditEntry, Game, Group, PrismaClient } from "@prisma/client";
+import type { ApiKey, AuditEntry, Game, Group, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
+import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
-import { listRecentAuditQuery } from "./admin.schema.js";
+import { createGameBody, listAdminGamesQuery, listRecentAuditQuery } from "./admin.schema.js";
 
 export interface WireUserGameRow {
   gameId: string;
@@ -242,5 +243,283 @@ export function listRecentAuditHandler(prisma: PrismaClient): Handler {
     return c.json<WireAdminAuditPage>({
       items: rows.map(serializeAdminAuditEntry),
     });
+  };
+}
+
+// =====================================================================
+// Phase 11.3a: cross-game games + API key management
+// =====================================================================
+
+export interface WireAdminGame {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  groupCount: number;
+  activeMemberCount: number;
+  apiKeyCount: number;
+}
+
+export interface WireAdminGameList {
+  items: WireAdminGame[];
+}
+
+export interface WireAdminApiKey {
+  id: string;
+  gameId: string;
+  prefix: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface WireAdminApiKeyList {
+  items: WireAdminApiKey[];
+}
+
+// The dev-facing key string `prefix.secret` is included only on the create
+// response. Subsequent `GET /v1/admin/games/:gameId/api-keys` calls return
+// `WireAdminApiKey` (no key, no secret) - the secret is stored only as a
+// scrypt hash and cannot be recovered. Mirrors the webhook endpoint
+// `secret`-on-create-only convention from Phase 5.5.
+export interface WireAdminApiKeyCreated extends WireAdminApiKey {
+  key: string;
+}
+
+function toWireGame(
+  row: Game,
+  stats: { groupCount: number; activeMemberCount: number; apiKeyCount: number },
+): WireAdminGame {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    groupCount: stats.groupCount,
+    activeMemberCount: stats.activeMemberCount,
+    apiKeyCount: stats.apiKeyCount,
+  };
+}
+
+function toWireApiKey(row: ApiKey): WireAdminApiKey {
+  return {
+    id: row.id,
+    gameId: row.gameId,
+    prefix: row.prefix,
+    createdAt: row.createdAt.toISOString(),
+    revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
+  };
+}
+
+// `GET /v1/admin/games?limit=100` returns every game with batched stats per
+// game (group / active member / non-revoked API key counts).
+//
+// Behavior:
+//
+//   - Sorted by `(createdAt desc, id desc)`. Newest games first matches the
+//     dashboard's games list page; the id tiebreaker keeps ordering stable
+//     across same-millisecond rows.
+//   - `groupCount` and `activeMemberCount` exclude soft-deleted groups
+//     (mirrors `WireAdminStats`: active-set semantics).
+//   - `apiKeyCount` excludes revoked keys (the dashboard cares about
+//     "currently usable keys", not lifetime issuance).
+//   - No pagination cursor; capped at 200 rows, default 100. Additive
+//     pagination is fine if a deployment grows past that.
+//
+// Implementation note: stats per game are computed via three batched
+// queries (one Prisma `groupBy` for groups, one `findMany` over members
+// joined to their group, one `groupBy` for API keys), tallied in memory.
+// Avoids 3*N round-trips for N games.
+export function listAdminGamesHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const parsed = listAdminGamesQuery.safeParse({ limit: c.req.query("limit") });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit } = parsed.data;
+
+    const games = await prisma.game.findMany({
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit,
+    });
+
+    if (games.length === 0) {
+      return c.json<WireAdminGameList>({ items: [] });
+    }
+
+    const gameIds = games.map((g) => g.id);
+
+    const [groupRows, memberRows, apiKeyRows] = await Promise.all([
+      prisma.group.groupBy({
+        by: ["gameId"],
+        where: { gameId: { in: gameIds }, softDeletedAt: null },
+        _count: { _all: true },
+      }),
+      prisma.groupMember.findMany({
+        where: {
+          status: "active",
+          group: { gameId: { in: gameIds }, softDeletedAt: null },
+        },
+        select: { group: { select: { gameId: true } } },
+      }),
+      prisma.apiKey.groupBy({
+        by: ["gameId"],
+        where: { gameId: { in: gameIds }, revokedAt: null },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const groupCounts = new Map<string, number>();
+    for (const row of groupRows) groupCounts.set(row.gameId, row._count._all);
+
+    const apiKeyCounts = new Map<string, number>();
+    for (const row of apiKeyRows) apiKeyCounts.set(row.gameId, row._count._all);
+
+    const memberCounts = new Map<string, number>();
+    for (const row of memberRows) {
+      const id = row.group.gameId;
+      memberCounts.set(id, (memberCounts.get(id) ?? 0) + 1);
+    }
+
+    return c.json<WireAdminGameList>({
+      items: games.map((g) =>
+        toWireGame(g, {
+          groupCount: groupCounts.get(g.id) ?? 0,
+          activeMemberCount: memberCounts.get(g.id) ?? 0,
+          apiKeyCount: apiKeyCounts.get(g.id) ?? 0,
+        }),
+      ),
+    });
+  };
+}
+
+// `POST /v1/admin/games` with `{ name }` creates a new game. Returns
+// `201 Created` with the full `WireAdminGame` shape (zero counts on a
+// brand-new game). Names are not unique (matches the schema; the dashboard
+// can enforce a UX-level uniqueness guard).
+export function createAdminGameHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const json = await c.req.json().catch(() => null);
+    if (json === null) throw Errors.badRequest("malformed JSON");
+    const parsed = createGameBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid body");
+    }
+    const { name } = parsed.data;
+    const game = await prisma.game.create({ data: { name } });
+    return c.json<WireAdminGame>(
+      toWireGame(game, { groupCount: 0, activeMemberCount: 0, apiKeyCount: 0 }),
+      201,
+    );
+  };
+}
+
+// `GET /v1/admin/games/:gameId` returns the same shape as the list, scoped
+// to a single game. The dashboard uses this on the game detail page so the
+// counts stay live (the list view's 60s `revalidate` cache could otherwise
+// be stale relative to a recent membership change).
+export function getAdminGameHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (!game) throw Errors.notFound("game");
+
+    const [groupCount, activeMemberCount, apiKeyCount] = await Promise.all([
+      prisma.group.count({ where: { gameId, softDeletedAt: null } }),
+      prisma.groupMember.count({
+        where: {
+          status: "active",
+          group: { gameId, softDeletedAt: null },
+        },
+      }),
+      prisma.apiKey.count({ where: { gameId, revokedAt: null } }),
+    ]);
+
+    return c.json<WireAdminGame>(toWireGame(game, { groupCount, activeMemberCount, apiKeyCount }));
+  };
+}
+
+// `GET /v1/admin/games/:gameId/api-keys` lists every API key for a game,
+// active and revoked. The `revokedAt` field lets the dashboard render
+// revoked badges on past keys without losing them from the operator's
+// view. The secret is never on the wire (stored only as a scrypt hash).
+export function listAdminApiKeysHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const rows = await prisma.apiKey.findMany({
+      where: { gameId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    return c.json<WireAdminApiKeyList>({ items: rows.map(toWireApiKey) });
+  };
+}
+
+// `POST /v1/admin/games/:gameId/api-keys` issues a fresh API key. The
+// returned `key` field carries the dev-facing `prefix.secret` form and is
+// the ONLY time the secret will appear on the wire (it is stored only as
+// scrypt-hashed). The dashboard surfaces `key` in a copy-to-clipboard
+// dialog and warns the operator that they will not see it again.
+//
+// Mirrors `seed.createApiKey` and the webhook-secret-on-create-only
+// convention from Phase 5.5.
+export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const raw = await generateApiKey();
+    const apiKey = await prisma.apiKey.create({
+      data: { gameId, prefix: raw.prefix, hashedSecret: raw.hashedSecret },
+    });
+
+    return c.json<WireAdminApiKeyCreated>({ ...toWireApiKey(apiKey), key: raw.full }, 201);
+  };
+}
+
+// `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke` flips `revokedAt`
+// to now() if not already set. Idempotent on already-revoked: returns the
+// unchanged row without bumping the timestamp (the original revoke
+// timestamp is the one operators care about). The row is never hard-
+// deleted so the historic prefix can resolve in audit/log lookups.
+//
+// Cross-game scope: a key id that exists but belongs to a different game
+// returns 404 (existence is not leaked across the gameId path scope).
+export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const keyId = c.req.param("keyId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!keyId) throw Errors.badRequest("keyId is required");
+
+    const existing = await prisma.apiKey.findUnique({ where: { id: keyId } });
+    if (!existing || existing.gameId !== gameId) {
+      throw Errors.notFound("api key");
+    }
+    if (existing.revokedAt) {
+      return c.json<WireAdminApiKey>(toWireApiKey(existing));
+    }
+    const updated = await prisma.apiKey.update({
+      where: { id: keyId },
+      data: { revokedAt: new Date() },
+    });
+    return c.json<WireAdminApiKey>(toWireApiKey(updated));
   };
 }

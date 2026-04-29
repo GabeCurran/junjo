@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
-import { createGame } from "../seed";
+import { createApiKey, createGame } from "../seed";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
@@ -784,5 +784,692 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("invalid_admin_token");
+  });
+});
+
+// =====================================================================
+// Phase 11.3a: cross-game games + API key management
+// =====================================================================
+
+type WireGame = {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  groupCount: number;
+  activeMemberCount: number;
+  apiKeyCount: number;
+};
+
+type WireApiKey = {
+  id: string;
+  gameId: string;
+  prefix: string;
+  createdAt: string;
+  revokedAt: string | null;
+};
+
+type WireApiKeyCreated = WireApiKey & { key: string };
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function listFetch(query = "", header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games${query}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  it("returns an empty items array when no games exist", async () => {
+    const res = await listFetch();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items).toEqual([]);
+  });
+
+  it("returns games with zero counts on a fresh database", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await listFetch();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toEqual({
+      id: game.id,
+      name: "Alpha",
+      createdAt: game.createdAt.toISOString(),
+      updatedAt: game.updatedAt.toISOString(),
+      groupCount: 0,
+      activeMemberCount: 0,
+      apiKeyCount: 0,
+    });
+  });
+
+  it("orders games by createdAt desc, id desc (newest first)", async () => {
+    const older = await createGame("Older", prisma);
+    // Force a fresh timestamp so the second row is unambiguously newer.
+    await new Promise((r) => setTimeout(r, 5));
+    const newer = await createGame("Newer", prisma);
+    const res = await listFetch();
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items.map((g) => g.id)).toEqual([newer.id, older.id]);
+  });
+
+  it("counts groups per game, excluding soft-deleted", async () => {
+    const game = await createGame("Alpha", prisma);
+    await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "live-1", visibility: "invite-only" },
+    });
+    await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "live-2", visibility: "invite-only" },
+    });
+    await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "deleted",
+        visibility: "invite-only",
+        softDeletedAt: new Date(),
+      },
+    });
+    const res = await listFetch();
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items[0]?.groupCount).toBe(2);
+  });
+
+  it("counts active members per game, excluding non-active and soft-deleted-group members", async () => {
+    const game = await createGame("Alpha", prisma);
+    const live = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "live", visibility: "invite-only" },
+    });
+    const dead = await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "dead",
+        visibility: "invite-only",
+        softDeletedAt: new Date(),
+      },
+    });
+    for (const status of ["active", "active", "left", "kicked", "invited"] as const) {
+      const u = await prisma.junjoUser.create({ data: {} });
+      await prisma.groupMember.create({
+        data: { groupId: live.id, junjoUserId: u.id, status },
+      });
+    }
+    // Active member in the soft-deleted group should NOT count.
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.groupMember.create({
+      data: { groupId: dead.id, junjoUserId: u.id, status: "active" },
+    });
+    const res = await listFetch();
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items[0]?.activeMemberCount).toBe(2);
+  });
+
+  it("counts non-revoked API keys per game", async () => {
+    const game = await createGame("Alpha", prisma);
+    await createApiKey(game.id, prisma);
+    await createApiKey(game.id, prisma);
+    const revoked = await createApiKey(game.id, prisma);
+    await prisma.apiKey.update({
+      where: { id: revoked.apiKey.id },
+      data: { revokedAt: new Date() },
+    });
+    const res = await listFetch();
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items[0]?.apiKeyCount).toBe(2);
+  });
+
+  it("isolates counts across games", async () => {
+    const a = await createGame("Alpha", prisma);
+    const b = await createGame("Beta", prisma);
+    await prisma.group.create({
+      data: { gameId: a.id, kind: "guild", name: "ag1", visibility: "invite-only" },
+    });
+    await prisma.group.create({
+      data: { gameId: a.id, kind: "guild", name: "ag2", visibility: "invite-only" },
+    });
+    await prisma.group.create({
+      data: { gameId: b.id, kind: "guild", name: "bg1", visibility: "invite-only" },
+    });
+    await createApiKey(a.id, prisma);
+    const res = await listFetch();
+    const body = (await res.json()) as { items: WireGame[] };
+    const byId = new Map(body.items.map((g) => [g.id, g]));
+    expect(byId.get(a.id)?.groupCount).toBe(2);
+    expect(byId.get(a.id)?.apiKeyCount).toBe(1);
+    expect(byId.get(b.id)?.groupCount).toBe(1);
+    expect(byId.get(b.id)?.apiKeyCount).toBe(0);
+  });
+
+  it("forwards a custom limit", async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await createGame(`Game-${i}`, prisma);
+    }
+    const res = await listFetch("?limit=3");
+    const body = (await res.json()) as { items: WireGame[] };
+    expect(body.items).toHaveLength(3);
+  });
+
+  it("rejects limit=0 with 400", async () => {
+    const res = await listFetch("?limit=0");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects limit > 200 with 400", async () => {
+    const res = await listFetch("?limit=201");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects non-integer limit with 400", async () => {
+    const res = await listFetch("?limit=abc");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const res = await app.request("/v1/admin/games", { method: "GET" });
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("invalid_admin_token");
+  });
+
+  it("rejects requests with the wrong admin token", async () => {
+    const res = await listFetch("", "Bearer nope");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when the admin token is unset on the server", async () => {
+    const noTokenApp = createApp({ prisma, adminToken: undefined });
+    const res = await noTokenApp.request("/v1/admin/games", {
+      method: "GET",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function postFetch(body: unknown, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request("/v1/admin/games", {
+      method: "POST",
+      headers: { authorization: header, "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  it("creates a game with zero counts and returns 201", async () => {
+    const res = await postFetch({ name: "MyGame" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as WireGame;
+    expect(body.name).toBe("MyGame");
+    expect(body.groupCount).toBe(0);
+    expect(body.activeMemberCount).toBe(0);
+    expect(body.apiKeyCount).toBe(0);
+    expect(body.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const stored = await prisma.game.findUnique({ where: { id: body.id } });
+    expect(stored?.name).toBe("MyGame");
+  });
+
+  it("allows duplicate names (no uniqueness constraint at the server level)", async () => {
+    await postFetch({ name: "Same" });
+    const res = await postFetch({ name: "Same" });
+    expect(res.status).toBe(201);
+    const total = await prisma.game.count();
+    expect(total).toBe(2);
+  });
+
+  it("rejects missing name with 400", async () => {
+    const res = await postFetch({});
+    expect(res.status).toBe(400);
+    const total = await prisma.game.count();
+    expect(total).toBe(0);
+  });
+
+  it("rejects empty name with 400", async () => {
+    const res = await postFetch({ name: "" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects over-cap name with 400", async () => {
+    const res = await postFetch({ name: "x".repeat(201) });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects non-string name with 400", async () => {
+    const res = await postFetch({ name: 123 });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects malformed JSON with 400", async () => {
+    const res = await postFetch("{not-json");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const res = await app.request("/v1/admin/games", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Whatever" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when the admin token is unset on the server", async () => {
+    const noTokenApp = createApp({ prisma, adminToken: undefined });
+    const res = await noTokenApp.request("/v1/admin/games", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Whatever" }),
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function getFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games/${gameId}`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  it("returns the game with computed counts", async () => {
+    const game = await createGame("Alpha", prisma);
+    const live = await prisma.group.create({
+      data: { gameId: game.id, kind: "guild", name: "live", visibility: "invite-only" },
+    });
+    await prisma.group.create({
+      data: {
+        gameId: game.id,
+        kind: "guild",
+        name: "dead",
+        visibility: "invite-only",
+        softDeletedAt: new Date(),
+      },
+    });
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.groupMember.create({
+      data: { groupId: live.id, junjoUserId: u.id, status: "active" },
+    });
+    await createApiKey(game.id, prisma);
+
+    const res = await getFetch(game.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WireGame;
+    expect(body.id).toBe(game.id);
+    expect(body.name).toBe("Alpha");
+    expect(body.groupCount).toBe(1);
+    expect(body.activeMemberCount).toBe(1);
+    expect(body.apiKeyCount).toBe(1);
+  });
+
+  it("returns 404 for a missing game", async () => {
+    const res = await getFetch("nonexistent_id");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("not_found");
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await app.request(`/v1/admin/games/${game.id}`, { method: "GET" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects requests with the wrong admin token", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await getFetch(game.id, "Bearer nope");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/api-keys", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function listFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games/${gameId}/api-keys`, {
+      method: "GET",
+      headers: { authorization: header },
+    });
+  }
+
+  it("returns an empty items array when the game has no keys", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await listFetch(game.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: WireApiKey[] };
+    expect(body.items).toEqual([]);
+  });
+
+  it("returns keys sorted by createdAt desc, id desc", async () => {
+    const game = await createGame("Alpha", prisma);
+    const k1 = await createApiKey(game.id, prisma);
+    await new Promise((r) => setTimeout(r, 5));
+    const k2 = await createApiKey(game.id, prisma);
+    const res = await listFetch(game.id);
+    const body = (await res.json()) as { items: WireApiKey[] };
+    expect(body.items.map((k) => k.id)).toEqual([k2.apiKey.id, k1.apiKey.id]);
+  });
+
+  it("includes revoked keys in the listing", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    const revokedAt = new Date();
+    await prisma.apiKey.update({
+      where: { id: seeded.apiKey.id },
+      data: { revokedAt },
+    });
+    const res = await listFetch(game.id);
+    const body = (await res.json()) as { items: WireApiKey[] };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]?.revokedAt).toBe(revokedAt.toISOString());
+  });
+
+  it("never exposes the secret or hashed secret on the wire", async () => {
+    const game = await createGame("Alpha", prisma);
+    await createApiKey(game.id, prisma);
+    const res = await listFetch(game.id);
+    const body = (await res.json()) as { items: Record<string, unknown>[] };
+    expect(body.items[0]).toBeDefined();
+    const item = body.items[0] ?? {};
+    expect(item).not.toHaveProperty("secret");
+    expect(item).not.toHaveProperty("hashedSecret");
+    expect(item).not.toHaveProperty("key");
+  });
+
+  it("scopes listings to the requested game", async () => {
+    const a = await createGame("Alpha", prisma);
+    const b = await createGame("Beta", prisma);
+    await createApiKey(a.id, prisma);
+    await createApiKey(b.id, prisma);
+    await createApiKey(b.id, prisma);
+    const res = await listFetch(a.id);
+    const body = (await res.json()) as { items: WireApiKey[] };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]?.gameId).toBe(a.id);
+  });
+
+  it("returns 404 for a missing game", async () => {
+    const res = await listFetch("nonexistent_id");
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await app.request(`/v1/admin/games/${game.id}/api-keys`, { method: "GET" });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function postFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games/${gameId}/api-keys`, {
+      method: "POST",
+      headers: { authorization: header },
+    });
+  }
+
+  it("issues a fresh key with the prefix.secret form returned once", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await postFetch(game.id);
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as WireApiKeyCreated;
+    expect(body.gameId).toBe(game.id);
+    expect(body.prefix).toMatch(/^jk_[A-Za-z0-9_-]+$/);
+    expect(body.key).toMatch(/^jk_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(body.key.startsWith(body.prefix)).toBe(true);
+    expect(body.key.split(".")[0]).toBe(body.prefix);
+    expect(body.revokedAt).toBeNull();
+
+    const stored = await prisma.apiKey.findUnique({ where: { id: body.id } });
+    expect(stored?.prefix).toBe(body.prefix);
+    expect(stored?.hashedSecret).toMatch(/^scrypt\$/);
+  });
+
+  it("issues distinct keys on subsequent calls", async () => {
+    const game = await createGame("Alpha", prisma);
+    const r1 = await postFetch(game.id);
+    const r2 = await postFetch(game.id);
+    const k1 = (await r1.json()) as WireApiKeyCreated;
+    const k2 = (await r2.json()) as WireApiKeyCreated;
+    expect(k1.id).not.toBe(k2.id);
+    expect(k1.prefix).not.toBe(k2.prefix);
+    expect(k1.key).not.toBe(k2.key);
+  });
+
+  it("the issued key shows up in the list endpoint without the secret", async () => {
+    const game = await createGame("Alpha", prisma);
+    const created = (await (await postFetch(game.id)).json()) as WireApiKeyCreated;
+    const list = (await (
+      await app.request(`/v1/admin/games/${game.id}/api-keys`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+      })
+    ).json()) as { items: Record<string, unknown>[] };
+    expect(list.items).toHaveLength(1);
+    expect(list.items[0]?.id).toBe(created.id);
+    expect(list.items[0]).not.toHaveProperty("key");
+    expect(list.items[0]).not.toHaveProperty("secret");
+  });
+
+  it("returns 404 for a missing game and creates no key", async () => {
+    const res = await postFetch("nonexistent_id");
+    expect(res.status).toBe(404);
+    const total = await prisma.apiKey.count();
+    expect(total).toBe(0);
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await app.request(`/v1/admin/games/${game.id}/api-keys`, { method: "POST" });
+    expect(res.status).toBe(401);
+    const total = await prisma.apiKey.count();
+    expect(total).toBe(0);
+  });
+
+  it("rejects requests with the wrong admin token", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await postFetch(game.id, "Bearer nope");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys/:keyId/revoke", () => {
+  let prisma: PrismaClient;
+  let app: Hono;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+    app = createApp({ prisma, adminToken: ADMIN_TOKEN });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  function revokeFetch(gameId: string, keyId: string, header = `Bearer ${ADMIN_TOKEN}`) {
+    return app.request(`/v1/admin/games/${gameId}/api-keys/${keyId}/revoke`, {
+      method: "POST",
+      headers: { authorization: header },
+    });
+  }
+
+  it("revokes an active key and stamps revokedAt", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    const before = Date.now();
+    const res = await revokeFetch(game.id, seeded.apiKey.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WireApiKey;
+    expect(body.id).toBe(seeded.apiKey.id);
+    expect(body.revokedAt).not.toBeNull();
+    if (body.revokedAt === null) return;
+    const ts = new Date(body.revokedAt).getTime();
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(Date.now() + 1000);
+
+    const stored = await prisma.apiKey.findUnique({ where: { id: seeded.apiKey.id } });
+    expect(stored?.revokedAt).not.toBeNull();
+  });
+
+  it("is idempotent on already-revoked keys (no timestamp bump)", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    const original = new Date(Date.now() - 24 * 60 * 60 * 1000); // 1 day ago
+    await prisma.apiKey.update({
+      where: { id: seeded.apiKey.id },
+      data: { revokedAt: original },
+    });
+    const res = await revokeFetch(game.id, seeded.apiKey.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as WireApiKey;
+    expect(body.revokedAt).toBe(original.toISOString());
+    const stored = await prisma.apiKey.findUnique({ where: { id: seeded.apiKey.id } });
+    expect(stored?.revokedAt?.toISOString()).toBe(original.toISOString());
+  });
+
+  it("never hard-deletes the row (the prefix stays resolvable for audit)", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    await revokeFetch(game.id, seeded.apiKey.id);
+    const stored = await prisma.apiKey.findUnique({ where: { id: seeded.apiKey.id } });
+    expect(stored).not.toBeNull();
+    expect(stored?.prefix).toBe(seeded.apiKey.prefix);
+  });
+
+  it("returns 404 when the key id does not exist", async () => {
+    const game = await createGame("Alpha", prisma);
+    const res = await revokeFetch(game.id, "nonexistent_id");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when the key exists but belongs to a different game", async () => {
+    const a = await createGame("Alpha", prisma);
+    const b = await createGame("Beta", prisma);
+    const seeded = await createApiKey(b.id, prisma);
+    const res = await revokeFetch(a.id, seeded.apiKey.id);
+    expect(res.status).toBe(404);
+    const stored = await prisma.apiKey.findUnique({ where: { id: seeded.apiKey.id } });
+    expect(stored?.revokedAt).toBeNull();
+  });
+
+  it("rejects requests with no Authorization header", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    const res = await app.request(
+      `/v1/admin/games/${game.id}/api-keys/${seeded.apiKey.id}/revoke`,
+      { method: "POST" },
+    );
+    expect(res.status).toBe(401);
+    const stored = await prisma.apiKey.findUnique({ where: { id: seeded.apiKey.id } });
+    expect(stored?.revokedAt).toBeNull();
+  });
+
+  it("returns 401 when the admin token is unset on the server", async () => {
+    const game = await createGame("Alpha", prisma);
+    const seeded = await createApiKey(game.id, prisma);
+    const noTokenApp = createApp({ prisma, adminToken: undefined });
+    const res = await noTokenApp.request(
+      `/v1/admin/games/${game.id}/api-keys/${seeded.apiKey.id}/revoke`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+      },
+    );
+    expect(res.status).toBe(401);
   });
 });

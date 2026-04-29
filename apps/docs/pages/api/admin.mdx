@@ -196,6 +196,220 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
   "https://api.junjo.io/v1/admin/audit?limit=20"
 ```
 
+## `GET /v1/admin/games`
+
+Lists every game on the deployment with batched per-game stats. Used by the dashboard's games list page (Phase 11.3) to render a table of every game alongside its group / member / API-key counts.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-200 | `100` | Maximum number of games returned. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "game_clxxx...",
+      "name": "Alpha",
+      "createdAt": "2026-04-29T10:14:51.000Z",
+      "updatedAt": "2026-04-29T10:14:51.000Z",
+      "groupCount": 12,
+      "activeMemberCount": 87,
+      "apiKeyCount": 2
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `Game.id`. |
+| `items[].name` | string | The dev-supplied game name. Names are not unique on the server side. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+| `items[].updatedAt` | string | ISO 8601 timestamp. Bumps when a game is renamed (no rename endpoint in V1). |
+| `items[].groupCount` | number | Groups where `softDeletedAt: null`. Soft-deleted-but-undeleted-soon groups are excluded. |
+| `items[].activeMemberCount` | number | `GroupMember` rows in `status: "active"` whose group is not soft-deleted. Matches the `Group.memberCount` precedent. |
+| `items[].apiKeyCount` | number | API keys with `revokedAt: null`. Reflects "currently usable keys", not lifetime issuance. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. Newest games first; the id tiebreaker keeps ordering stable across same-millisecond rows.
+- Stats are computed via three batched Prisma queries (one `groupBy` for groups, one `findMany` joined to `group.gameId` for active members, one `groupBy` for API keys), tallied in memory. Avoids 3*N round-trips for N games.
+- No pagination cursor; capped at 200 rows. A future deployment that grows past that can add an offset/cursor additively.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` is not an integer in `[1, 200]`. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+## `POST /v1/admin/games`
+
+Creates a new game. The dashboard uses this from the create-game dialog on the games list page.
+
+### Request body
+
+```json
+{ "name": "MyGame" }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string (1-200 chars) | yes | The dev-facing game name. The server does not enforce uniqueness; the dashboard's create-game dialog may add a UX-level guard. |
+
+### Response
+
+`201 Created` with the same `WireAdminGame` shape as the list (`groupCount`, `activeMemberCount`, `apiKeyCount` all start at `0`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body is malformed JSON, `name` is missing, empty, longer than 200 chars, or not a string. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+## `GET /v1/admin/games/:gameId`
+
+Returns a single game with the same shape as the list endpoint. The dashboard uses this on the game detail page so the counts stay live (the list page's 60s `revalidate` cache could otherwise be stale relative to a recent membership change).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id`. |
+
+### Response
+
+`200 OK` with `WireAdminGame` (same shape as `items[]` on the list).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `GET /v1/admin/games/:gameId/api-keys`
+
+Lists every API key for a game, active and revoked. The dashboard renders revoked keys with a badge so operators can audit history without losing them from the view.
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "key_clxxx...",
+      "gameId": "game_clxxx...",
+      "prefix": "jk_AbCdEfGhIjKlMn",
+      "createdAt": "2026-04-29T10:14:51.000Z",
+      "revokedAt": null
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `ApiKey.id`. |
+| `items[].gameId` | string | The owning game's id. |
+| `items[].prefix` | string | The display prefix shown to the dev. The full key is `prefix.secret`; the secret is never on this endpoint. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+| `items[].revokedAt` | string \| null | ISO 8601 timestamp set when the key was revoked, or `null` if still active. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. Newest keys first.
+- The secret is stored only as a scrypt hash and is not recoverable. The wire format never includes `secret`, `key`, or `hashedSecret`.
+- Includes revoked keys; consumers filter on `revokedAt === null` for "currently usable" listings.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `POST /v1/admin/games/:gameId/api-keys`
+
+Issues a fresh API key for a game. The returned `key` field carries the dev-facing `prefix.secret` form and is the only time the secret will appear on the wire. The dashboard surfaces `key` in a copy-to-clipboard dialog and warns the operator that they will not see it again.
+
+### Request body
+
+No body required.
+
+### Response
+
+`201 Created` with body:
+
+```json
+{
+  "id": "key_clxxx...",
+  "gameId": "game_clxxx...",
+  "prefix": "jk_AbCdEfGhIjKlMn",
+  "createdAt": "2026-04-29T10:14:51.000Z",
+  "revokedAt": null,
+  "key": "jk_AbCdEfGhIjKlMn.RAW_SECRET_PORTION"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` / `gameId` / `prefix` / `createdAt` / `revokedAt` | various | Same shape as the list endpoint. |
+| `key` | string | The full `prefix.secret` form. Returned **once**. The secret portion is unrecoverable after this response. Surface this to the operator and treat it as sensitive. |
+
+### Behavior
+
+- Mirrors `seed.createApiKey` and the webhook-secret-on-create-only convention from Phase 5.5.
+- The secret is generated on the server (32 bytes of `randomBytes` rendered as base64url) and scrypt-hashed before storage.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`
+
+Marks an API key as revoked. The row is never hard-deleted so the historic prefix can resolve in audit and log lookups.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` that owns the key. Cross-game scope is enforced. |
+| `keyId` | string | The `ApiKey.id` to revoke. |
+
+### Request body
+
+No body required.
+
+### Response
+
+`200 OK` with the post-state `WireAdminApiKey` (no `key` field; the secret is gone forever once revoked).
+
+### Behavior
+
+- Idempotent on already-revoked keys: returns the unchanged row without bumping the `revokedAt` timestamp. The original revoke time is what operators care about.
+- A key id that exists but belongs to a different game returns `404`. Cross-game existence is not leaked through the gameId path scope.
+- The row stays in the database; only `revokedAt` is set. Subsequent `apiKeyMiddleware` calls reject any request bearing the revoked key (existing behavior; the middleware checks `revokedAt: null`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No key with the supplied id exists, or the key exists but belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

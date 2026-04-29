@@ -3016,3 +3016,60 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - A future need for richer formatting (calendar dates, durations) can pull in a library when it exists; today there is none.
 
 **Trade:** the unit-picker is hand-rolled (not pulled from a battle-tested library). Acceptable: tested implicitly by inspection during dev; the failure mode (wrong unit) is visual and not security-relevant.
+
+### Phase 11.3 splits a/b: admin server endpoints, then dashboard UI
+
+**Decision:** Phase 11.3 ("Games list + API key management") splits across iterations mirroring 11.1 a/b and 11.2 a/b. 11.3a (this iteration) ships six cross-game admin endpoints under `/v1/admin/games` (list, create, get) and `/v1/admin/games/:gameId/api-keys` (list, create, revoke). 11.3b will ship the dashboard's games list page (`apps/dashboard/app/(dashboard)/games/page.tsx`), the game detail page (`apps/dashboard/app/(dashboard)/games/[gameId]/page.tsx`), and the Server Actions / shadcn Dialog UI consuming them.
+
+**Rationale:**
+- Bundling six endpoints + tests + UI components + Server Actions + Dialog primitives into one commit fights the smallest-reviewable-unit goal.
+- The natural seam is invisible scaffolding (server endpoints) vs visible UI (dashboard pages). Server endpoints are independently testable; UI iteration can focus on Server Component composition + dialog wiring.
+- Mirrors the precedents that have worked across the loop: 5.1a/b/c, 5.3a/b, 7.5a/b/c, 11.1a/b, 11.2a/b.
+
+**Trade:** the new endpoints have no dashboard consumer until 11.3b lands. Acceptable: tests cover them end-to-end, the seed CLI keeps working unchanged, and an operator could call the endpoints via curl immediately.
+
+### Phase 11.3a: dashboard's "create game" + key issuance go through new HTTP endpoints rather than the seed CLI
+
+**Decision:** new `POST /v1/admin/games`, `POST /v1/admin/games/:gameId/api-keys`, and `POST .../api-keys/:keyId/revoke` endpoints expose the same operations as `seed.createGame` / `seed.createApiKey` / direct DB updates, but over the admin-token-gated HTTP surface. The seed CLI (Phase 0.4) stays as-is for local dev / first-key-on-fresh-DB.
+
+**Rationale:**
+- The dashboard is a deployed Next.js app; it does not have shell access to the Junjo server and cannot invoke `node -e` against the server's seed module.
+- Creating a Server Action that imports `@junjo/server`'s seed helpers would create a dependency edge across the open-core boundary (the dashboard is proprietary, the server is OSS). The HTTP surface is the right boundary for "operator wants to do X to the server".
+- The seed CLI remains the right tool for "I just `migrate deploy`'d on a fresh DB and need an initial admin key to bootstrap the dashboard". After that, every key is issued through the dashboard.
+- The endpoints reuse the same `generateApiKey()` helper from `apiKey.ts` and the same `prisma.apiKey.create` shape, so the seed CLI and the HTTP endpoints stay byte-identical in behavior.
+
+**Trade:** two surfaces (CLI + HTTP) for the same operation can drift. Acceptable: the underlying primitives are shared (one `generateApiKey()`, one `prisma.apiKey.create`), so behavioral drift would have to come from a future endpoint-only change that doesn't reach the seed module.
+
+### Phase 11.3a: API key revocation uses `POST .../api-keys/:keyId/revoke`, not `DELETE`
+
+**Decision:** revoking an API key is a state change (sets `revokedAt`) rather than a row deletion. The endpoint is `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`; the row stays in the database with `revokedAt` set. Subsequent `GET /api-keys` includes the row with the `revokedAt` field set.
+
+**Rationale:**
+- The historic prefix needs to stay resolvable for audit lookups: a request that lands on the server tagged with a now-revoked key needs to surface "key revoked" in logs, not "key never existed". Hard-deleting the row would erase that connection.
+- `DELETE` is RESTfully ambiguous here - the row stays, only the state changes. An action-style POST + `/revoke` suffix makes the intent explicit (matches `groups.restore` / `groups.kick` precedents).
+- Idempotent on already-revoked: returns the unchanged row with the original `revokedAt` timestamp preserved. Operators care about WHEN the key was first revoked, not when they last clicked the button.
+- Cross-game scope is enforced: a key id that exists but belongs to a different game returns 404 (not "permission denied"); existence isn't leaked across the gameId path scope.
+
+**Trade:** the row table grows monotonically (revoked keys never get cleaned up). Acceptable for V1: keys are issued at low volume (single-digit per game per year typically); a future "cleanup keys revoked >12 months ago" sweep can land additively if it ever becomes a real concern.
+
+### Phase 11.3a: `key` (full `prefix.secret`) returned only on the create response
+
+**Decision:** `POST /v1/admin/games/:gameId/api-keys` returns `WireAdminApiKeyCreated extends WireAdminApiKey { key: string }` where `key` carries the full dev-facing `prefix.secret` form. Subsequent `GET /api-keys` and `POST .../revoke` calls return `WireAdminApiKey` (no `key`, no `secret`). The dashboard surfaces `key` in a copy-to-clipboard dialog and warns the operator that they will not see it again.
+
+**Rationale:**
+- Mirrors the webhook-secret-on-create-only convention from Phase 5.5 (`WebhookEndpointWithSecret extends WebhookEndpoint { secret }`). One pattern, two adoption sites - the dashboard's secret-handling UX gets a uniform shape.
+- The secret is stored only as a scrypt hash; reading the row back from Postgres yields `hashedSecret`, not the plaintext. There is no path to recover `key` after the create response, even with admin access.
+- `key` (the full `prefix.secret` form) is the dev-facing string the operator will paste into env vars / Roblox secret stores / etc. Returning the parts separately would force the dashboard to concatenate; one field, one purpose.
+
+**Trade:** dashboard UX is on the hook to render `key` prominently and never persist it (it's leaked to the dashboard's process memory but not its storage). Acceptable: same trade webhook endpoints already make; the existing `seed.cli.ts` precedent (prints `key` once and disconnects) sets the operator expectation.
+
+### Phase 11.3a: games list stats batched via three queries plus in-memory tally, not 3*N counts
+
+**Decision:** `listAdminGamesHandler` runs three batched Prisma queries (one `groupBy` for groups, one `findMany` joined to `group.gameId` for active members, one `groupBy` for API keys) and tallies counts in memory. Avoids 3*N round-trips for N games.
+
+**Rationale:**
+- For 50 games at default limit 100, doing 3 sequential counts per game is 150 round-trips. Even parallel via `Promise.all` over `array.map`, that's 150 connections worth of network overhead per page load.
+- The batched approach uses 3 round-trips total regardless of N. The in-memory tally is O(N) but trivially fast.
+- The same pattern is already in `routes/admin.ts:listUserGamesHandler` (Phase 10.2): one batched `findMany` plus an in-memory tally. Re-using it on the games-list endpoint keeps the file's count-strategy consistent.
+
+**Trade:** the games-list endpoint sends three queries even for the trivial empty-DB case; an empty-row-detection branch could short-circuit. Acceptable: an explicit empty-array short-circuit lives in the handler before the batched queries fire. The cost on a populated DB is one query per metric, regardless of game count.

@@ -6,9 +6,15 @@ import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import {
+  createAdminApiKeyHandler,
+  createAdminGameHandler,
+  getAdminGameHandler,
   getAdminStatsHandler,
+  listAdminApiKeysHandler,
+  listAdminGamesHandler,
   listRecentAuditHandler,
   listUserGamesHandler,
+  revokeAdminApiKeyHandler,
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
@@ -88,6 +94,26 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   // pattern used by `/v1/users/:junjoUserId/games`).
   v1.get("/admin/stats", adminAuthMiddleware(opts.adminToken), getAdminStatsHandler(prisma));
   v1.get("/admin/audit", adminAuthMiddleware(opts.adminToken), listRecentAuditHandler(prisma));
+  // Admin-token-gated games + API key management (Phase 11.3a). Same
+  // before-the-apiKey-middleware placement as the other admin routes.
+  v1.get("/admin/games", adminAuthMiddleware(opts.adminToken), listAdminGamesHandler(prisma));
+  v1.post("/admin/games", adminAuthMiddleware(opts.adminToken), createAdminGameHandler(prisma));
+  v1.get("/admin/games/:gameId", adminAuthMiddleware(opts.adminToken), getAdminGameHandler(prisma));
+  v1.get(
+    "/admin/games/:gameId/api-keys",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminApiKeysHandler(prisma),
+  );
+  v1.post(
+    "/admin/games/:gameId/api-keys",
+    adminAuthMiddleware(opts.adminToken),
+    createAdminApiKeyHandler(prisma),
+  );
+  v1.post(
+    "/admin/games/:gameId/api-keys/:keyId/revoke",
+    adminAuthMiddleware(opts.adminToken),
+    revokeAdminApiKeyHandler(prisma),
+  );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));
