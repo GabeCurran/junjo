@@ -164,18 +164,28 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 - 11.6a-ii: cross-game admin role-permission grant / revoke endpoints
   plus the per-game permission catalog endpoint
   (`GET /v1/admin/games/:gameId/permissions`).
-- 11.6b (this iteration): group detail page grows tab navigation
-  (URL-driven via `?tab=`; Members is the default, Roles is the new
-  addition). The Members tab keeps its existing canonical URL so prior
-  bookmarks still resolve. The Roles tab renders a hand-rolled HTML
-  table sorted by priority desc with Name + Priority + Color swatch +
-  Default badge + Permissions chips per row, each row carrying Edit and
-  Delete affordances. Three new dialogs (`<CreateRoleDialog>`,
+- 11.6b: group detail page grows tab navigation (URL-driven via
+  `?tab=`; Members is the default, Roles is the new addition). The
+  Members tab keeps its existing canonical URL so prior bookmarks
+  still resolve. The Roles tab renders a hand-rolled HTML table
+  sorted by priority desc with Name + Priority + Color swatch +
+  Default badge + Permissions chips per row, each row carrying Edit
+  and Delete affordances. Three new dialogs (`<CreateRoleDialog>`,
   `<EditRoleDialog>`, `<DeleteRoleDialog>`) consume three new Server
   Actions (`createRoleAction`, `updateRoleAction`, `deleteRoleAction`)
-  in the existing route-scoped actions file. Permissions matrix tab
-  (Phase 11.6c) lands next; the per-cell grant / revoke wire helpers
-  ship in `lib/admin.ts` already so 11.6c can land additively.
+  in the existing route-scoped actions file.
+- 11.6c (this iteration, closes Phase 11.6): group detail page grows
+  a third tab (Permissions) under the same `?tab=` navigation. The
+  matrix renders roles as rows (priority desc) and registered
+  permission keys as columns (sorted ascending) with a checkbox per
+  cell; toggling a cell calls `grantRolePermissionAction` /
+  `revokeRolePermissionAction` and optimistically flips local state
+  for snappy UX. An inline "Register a new permission key" input adds
+  transient columns locally; the first cell-grant on a local-only
+  key persists it via the server's auto-register-on-first-grant rule
+  and the next revalidation pulls it into the catalog. Empty states
+  steer the operator to the Roles tab (no roles) or to the inline
+  register input (no keys).
 - 11.7 - 11.9: audit + relationships + sub-groups tabs, audit viewer,
   permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

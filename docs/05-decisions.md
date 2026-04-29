@@ -3790,3 +3790,65 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the dashboard ships unused exports for one iteration. Acceptable - the alternative (split the wire helpers across two iterations) would just split a single concern (role-permission HTTP plumbing) for no organizational benefit.
 
+### Phase 11.6c: matrix uses optimistic updates with a per-cell pending set, not a refetch-after-action wait
+
+**Decision:** Each cell toggle in `<PermissionsMatrix>` flips local `optimisticRoles` state immediately (before the network call) and tracks per-cell in-flight state via a `Set<string>` keyed by `${roleId}::${permission}`. On action success, the matrix syncs to the action's authoritative post-state (returned in the `ToggleRolePermissionResult.role` field); on failure, it reverts that role's state from the latest `roles` prop and surfaces the error inline.
+
+**Rationale:**
+- Permission edits are high-frequency: a single setup session can toggle 50+ cells. Waiting for `revalidatePath` to flush a fresh server render between every click would feel sluggish (each round-trip is the matrix's perceived latency, not just the network call's).
+- The optimistic flip is cheap (one `setState` with an array map) and the alternative (a fetch-on-success refresh) would cause a full Suspense flicker per toggle. The pattern is the same one React Query / SWR users expect.
+- Per-cell pending state (vs a single boolean) means the operator can rapid-fire toggles across different cells without each click blocking the rest of the UI. The `Set<string>` is stable across renders via `useState`'s setter and resists race conditions because each cell independently adds and removes its own key.
+- Server Action returning the post-state role lets the matrix sync to authoritative server state without a separate refetch round-trip. Concurrent admin mutations from another session would surface here too: the action sees the post-write state and reflects whatever the actual row is.
+- Failure reverts only the affected role's state (not the entire matrix), so other in-flight optimistic toggles on different roles stay intact and don't get clobbered by an error on a sibling.
+
+**Trade:** the matrix briefly shows the wrong cell state if an action's optimistic flip succeeds locally but the server rejects it (e.g. cross-game scope mismatch, malformed permission key). Acceptable - the inline error card surfaces the failure within a few hundred milliseconds, and the revert restores the correct state automatically. The alternative (no optimistic updates) would make a successful 50-toggle setup take ~10 seconds of cumulative perceived latency that nobody wants.
+
+### Phase 11.6c: optimistic state syncs from props only when nothing is in flight (lastSyncedRolesRef + pending.size guard)
+
+**Decision:** The matrix uses `useEffect(() => { ... }, [roles, pending])` plus a `lastSyncedRolesRef` to gate the prop-to-state sync: re-sync only fires when (a) the `roles` prop's identity actually changed since the last sync, AND (b) `pending.size === 0`. If either condition fails, the sync is skipped.
+
+**Rationale:**
+- Without the guard, a parallel toggle's `revalidatePath` could arrive while another toggle is still in flight, causing the freshly-fetched `roles` prop to overwrite the second cell's optimistic flip (the server doesn't know about it yet). The user would see cell B briefly un-flip until action B completes.
+- The `lastSyncedRolesRef` (rather than depending on a `pending` snapshot via closure) avoids the stale-deps problem cleanly: we always know whether `roles` is the same identity we last sync'd against, so we don't redundantly call `setOptimisticRoles(roles)` when nothing changed.
+- When `pending.size > 0`, we deliberately skip the sync. The pending toggle's own action will eventually complete and call `setOptimisticRoles` directly with the action's post-state role - which is more accurate than syncing from a stale prop in the meantime.
+- When `pending` transitions from `{X}` to `{}` after action X completes, the effect fires (pending changed), the lastSyncedRolesRef compare detects a same-roles-no-op, and we skip the sync. By the time `roles` actually updates (next revalidation flush), the effect fires again with `pending.size === 0` and we sync correctly.
+
+**Trade:** the gate adds two `useState`s of mental overhead (`lastSyncedRolesRef`, `pending`) and one branch in the effect. Acceptable - the alternative is the race condition described above, which is user-visible in any session that double-clicks fast. The complexity is local to the matrix; consumers of `<PermissionsMatrix>` see no change.
+
+### Phase 11.6c: "Register a new permission key" adds a transient client-only column, persisting on first cell-grant
+
+**Decision:** The inline "Register a new permission key" input adds the entered key to a `localKeys` state list rather than calling a separate "register" server endpoint. The matrix renders catalog keys + locally-added keys as columns; the first cell-grant on a local-only key persists it via the server's auto-register-on-first-grant rule (the grant endpoint upserts a `PermissionDef` row on first sight). Once persisted, the key disappears from `localKeys` (via the post-grant prune in `toggleCell`) and the next revalidation includes it in `catalog` natively.
+
+**Rationale:**
+- Iter-073 (Phase 11.6a-ii) explicitly deferred the "register without grant" endpoint because the grant endpoint already auto-registers and the right UX for "register without grant" was unclear at the time. The matrix now demonstrates the right UX: a transient column that persists when used.
+- Locally-added columns let the operator pre-register the columns they want before granting any cell, matching how someone would use a spreadsheet (add columns first, fill cells second). It also avoids the "I added the key but no cells changed, where is it?" UX problem of an immediate-persist register flow.
+- The post-grant prune (`setLocalKeys((ks) => ks.filter((k) => k !== permission))`) keeps the matrix's column list consistent: catalog keys come from the server prop; locally-added keys are a transient overlay that drains as keys persist.
+- Local keys live only in client state, so a page refresh clears them. This is intentional: the operator either grants the key (in which case it persists) or abandons it (in which case it's appropriate to lose). Phase 14.x could add browser-storage persistence if operators report losing in-progress work too often.
+- The dedupe via `Set<string>` in the `allKeys` useMemo protects against an operator entering a key that another tab / session registered between page loads (the catalog now contains it; the local entry is a duplicate that gets dropped).
+
+**Trade:** "register" doesn't immediately persist server-side. Acceptable - the persistence threshold is "first useful action" (a grant), which matches what the operator wanted in the first place. The alternative (an immediate-register endpoint) would either be a no-op stub or would create empty `PermissionDef` rows that nothing references, which is uglier than the auto-register-on-first-grant invariant we already have.
+
+### Phase 11.6c: cell is a native `<input type="checkbox">` wrapped in a `<label>`, not a `<button role="checkbox">`
+
+**Decision:** Each cell is a native HTML checkbox wrapped in a `<label>`, with a Loader spinner overlaid for the in-flight state. The first attempt used `<button type="button" role="checkbox">` to control the visual state precisely, but Biome's `useSemanticElements` rule correctly flagged the missed semantic.
+
+**Rationale:**
+- Native checkboxes get keyboard focus, Space-to-toggle, and aria-checked semantics for free. Replicating those on a custom button would require ~20 lines of keydown handler + tabindex juggling.
+- Wrapping the checkbox in a `<label>` lets the entire cell area act as the click target (HTML's built-in label-input association), which is friendlier on touch and matches how operators expect to click.
+- The visual state customization (the primary-colored background when granted, the bordered outline when not) is achieved via Tailwind's `appearance-none` on the input + a positioned SVG checkmark / spinner overlay on top. Same pixel-level control as a custom button, with native semantics underneath.
+- The pending state uses `disabled={pending}` plus an opacity dim plus an absolute-positioned `Loader2` spinner. The checkbox stays in the DOM (just disabled) so the focus ring keeps its position; this matters when an operator tab-navigates through the matrix.
+
+**Trade:** the visual override is a few extra lines vs an unstyled native checkbox or a fully-custom button. Acceptable - the accessibility win is unconditional, and the styling complexity is the same either way (custom buttons need their own focus rings and keyboard handlers). The pattern transfers to any future grid-of-toggles surface.
+
+### Phase 11.6c: plain-async Server Actions (not `useFormState`-shaped) for grant/revoke, mirroring `clearMemberPermissionOverrideAction`
+
+**Decision:** `grantRolePermissionAction` and `revokeRolePermissionAction` are plain async functions taking `(gameId, groupId, roleId, permission)` and returning `Promise<ToggleRolePermissionResult>`. They are not `(prevState, formData) => result`-shaped; the matrix calls them imperatively from per-cell `onClick` handlers.
+
+**Rationale:**
+- The matrix doesn't use `<form>` submissions; each cell click is an imperative state change. `useFormState` is the wrong primitive when the trigger is a click on a non-form element.
+- Plain-async actions are easier to compose with the matrix's existing `useState` + `Set` machinery (mirror state, pending set, error inline). They return the post-state role directly, which `useFormState` would route through a state update for no benefit.
+- This mirrors the iter-069 / 11.5c-ii precedent: `clearMemberPermissionOverrideAction` and `listMemberPermissionOverridesAction` were plain async for the same reason - the view-overrides dialog manages data flow through React state and per-row imperative calls, not form submissions.
+- The validation logic (caps + non-empty checks) lives in a small helper `validateRolePermissionArgs` that both actions share, keeping the validation boundary uniform between the two action call paths.
+
+**Trade:** the actions don't get the `useFormState` ergonomics (automatic state passing, optimistic-with-form-submission patterns). Acceptable - the matrix's React state mirror does the same job more flexibly, and the pattern is consistent with the existing Server Action conventions in this route.
+

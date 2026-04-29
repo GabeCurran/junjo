@@ -21,8 +21,10 @@ import {
   createAdminGroupInvitation,
   createAdminGroupRole,
   deleteAdminRole,
+  grantAdminRolePermission,
   kickAdminGroupMember,
   listAdminMemberPermissionOverrides,
+  revokeAdminRolePermission,
   setAdminMemberPermissionOverride,
   updateAdminGroupMember,
   updateAdminRole,
@@ -524,6 +526,74 @@ export async function deleteRoleAction(
     // `MemberRole` rows. The error message is preserved in
     // `describeError`, so the dialog can surface it inline ("This role
     // is assigned to N members. Reassign first.").
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+// Phase 11.6c Server Actions backing the Permissions matrix tab. Plain
+// async functions (not `useFormState`-shaped) because the matrix calls
+// them imperatively from per-cell `onClick` handlers and tracks per-cell
+// pending state in React, mirroring `clearMemberPermissionOverrideAction`
+// and `listMemberPermissionOverridesAction`. Both return the post-state
+// `AdminRole` so the matrix can sync its optimistic state to authoritative
+// server state without waiting for `revalidatePath` to propagate.
+
+export interface ToggleRolePermissionResult {
+  ok: boolean;
+  error?: string;
+  role?: AdminRole;
+}
+
+function validateRolePermissionArgs(
+  gameId: string,
+  groupId: string,
+  roleId: string,
+  permission: string,
+): { ok: true; permission: string } | { ok: false; error: string } {
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (!roleId) return { ok: false, error: "missing roleId" };
+  const trimmed = permission.trim();
+  if (trimmed.length === 0) return { ok: false, error: "permission is required" };
+  if (trimmed.length > ADMIN_PERMISSION_KEY_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `permission must be at most ${ADMIN_PERMISSION_KEY_MAX_LENGTH} characters`,
+    };
+  }
+  return { ok: true, permission: trimmed };
+}
+
+export async function grantRolePermissionAction(
+  gameId: string,
+  groupId: string,
+  roleId: string,
+  permission: string,
+): Promise<ToggleRolePermissionResult> {
+  const v = validateRolePermissionArgs(gameId, groupId, roleId, permission);
+  if (!v.ok) return v;
+  try {
+    const role = await grantAdminRolePermission(gameId, roleId, v.permission);
+    refreshGroup(gameId, groupId);
+    return { ok: true, role };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+export async function revokeRolePermissionAction(
+  gameId: string,
+  groupId: string,
+  roleId: string,
+  permission: string,
+): Promise<ToggleRolePermissionResult> {
+  const v = validateRolePermissionArgs(gameId, groupId, roleId, permission);
+  if (!v.ok) return v;
+  try {
+    const role = await revokeAdminRolePermission(gameId, roleId, v.permission);
+    refreshGroup(gameId, groupId);
+    return { ok: true, role };
+  } catch (err) {
     return { ok: false, error: describeError(err) };
   }
 }

@@ -3,18 +3,19 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Phase 11.6b: tab navigation for the group detail page. Two tabs ship
-// here (Members and Roles); 11.7 will add Audit, Relationships, and
-// Sub-groups. The active tab is selected via a URL `?tab=` parameter that
-// the page lenient-parses; switching is just an anchor `<Link>` so the
-// browser's Back button restores prior tab state without per-tab JS state.
+// Phase 11.6b + 11.6c: tab navigation for the group detail page. Three
+// tabs ship today (Members + Roles + Permissions); 11.7 will add Audit,
+// Relationships, and Sub-groups. The active tab is selected via a URL
+// `?tab=` parameter that the page lenient-parses; switching is just an
+// anchor `<Link>` so the browser's Back button restores prior tab state
+// without per-tab JS state.
 //
 // Server Component on purpose: tabs do not need interactivity beyond
 // navigation, and rendering them server-side keeps the bundle smaller and
 // matches the page's overall composition (Suspense boundaries + Server
 // Components + occasional Client islands).
 
-export const GROUP_DETAIL_TABS = ["members", "roles"] as const;
+export const GROUP_DETAIL_TABS = ["members", "roles", "permissions"] as const;
 export type GroupDetailTab = (typeof GROUP_DETAIL_TABS)[number];
 
 export const GROUP_DETAIL_DEFAULT_TAB: GroupDetailTab = "members";
@@ -37,6 +38,12 @@ const TAB_DEFS: readonly TabDef[] = [
     value: "roles",
     label: "Roles",
     description: "Roles defined for this group, ordered by priority.",
+  },
+  {
+    value: "permissions",
+    label: "Permissions",
+    description:
+      "Matrix of role permissions. Toggle a cell to grant or revoke a permission key for a role.",
   },
 ];
 

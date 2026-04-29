@@ -16,6 +16,7 @@ import {
   type MembersQueryState,
   MembersTable,
 } from "../../../../../../components/dashboard/members-table";
+import { PermissionsMatrix } from "../../../../../../components/dashboard/permissions-matrix";
 import { RolesTable } from "../../../../../../components/dashboard/roles-table";
 import { Topbar } from "../../../../../../components/dashboard/topbar";
 import {
@@ -33,7 +34,9 @@ import {
   type AdminGroup,
   type AdminGroupMemberList,
   type AdminMemberStatusFilter,
+  type AdminPermissionDef,
   type AdminRole,
+  fetchAdminGamePermissions,
   fetchAdminGroup,
   fetchAdminGroupMembers,
   fetchAdminGroupRoles,
@@ -250,6 +253,70 @@ async function RolesBody({ gameId, groupId }: { gameId: string; groupId: string 
   return <RolesTable roles={roles} gameId={gameId} groupId={groupId} />;
 }
 
+function PermissionsSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="h-4 w-40 rounded bg-muted" />
+        <CardDescription className="h-3 w-80 rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <div className="h-10 flex-1 rounded-md bg-muted" />
+            <div className="h-10 w-32 rounded-md bg-muted" />
+          </div>
+          <div className="rounded-md border border-border">
+            <div className="space-y-2 p-3">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="h-4 w-32 rounded bg-muted" />
+                  <div className="flex flex-1 gap-2">
+                    {[0, 1, 2, 3].map((j) => (
+                      <div key={j} className="h-6 w-6 rounded bg-muted" />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function PermissionsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
+  let roles: AdminRole[];
+  let catalog: AdminPermissionDef[];
+  try {
+    // Parallel fetches: the matrix needs both rows (roles) and columns
+    // (catalog keys). Either failing surfaces the same envelope; we only
+    // distinguish `AdminDisabledError` for the operator-friendly hint.
+    [roles, catalog] = await Promise.all([
+      fetchAdminGroupRoles(gameId, groupId),
+      fetchAdminGamePermissions(gameId),
+    ]);
+  } catch (err) {
+    if (err instanceof AdminDisabledError) {
+      return (
+        <ErrorCard
+          title="Cross-game access is disabled"
+          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load the permissions matrix."
+        />
+      );
+    }
+    return (
+      <ErrorCard
+        title="Could not load permissions"
+        body={err instanceof Error ? err.message : "unknown error fetching permissions"}
+      />
+    );
+  }
+
+  return <PermissionsMatrix roles={roles} catalog={catalog} gameId={gameId} groupId={groupId} />;
+}
+
 async function MembersBody({
   gameId,
   groupId,
@@ -324,6 +391,10 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
           {activeTab === "roles" ? (
             <Suspense fallback={<RolesSkeleton />}>
               <RolesBody gameId={params.gameId} groupId={params.groupId} />
+            </Suspense>
+          ) : activeTab === "permissions" ? (
+            <Suspense fallback={<PermissionsSkeleton />}>
+              <PermissionsBody gameId={params.gameId} groupId={params.groupId} />
             </Suspense>
           ) : (
             <Suspense key={membersKey} fallback={<MembersSkeleton />}>
