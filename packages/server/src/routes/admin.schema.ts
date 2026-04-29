@@ -139,6 +139,14 @@ export const adminUpdateRoleBody = z
     message: "at least one field is required",
   });
 
+// Phase 11.6a-ii: cross-game role-permission grant body. Mirrors the
+// per-game `grantPermissionBody` shape from `routes/roles.schema.ts`
+// byte-for-byte; reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (the same
+// 128-char cap shared with member overrides since iter-068).
+export const adminGrantPermissionBody = z.object({
+  permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
+});
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -154,3 +162,4 @@ export type AdminOverridePermissionBody = z.infer<typeof adminOverridePermission
 export type AdminCreateInvitationBody = z.infer<typeof adminCreateInvitationBody>;
 export type AdminCreateRoleBody = z.infer<typeof adminCreateRoleBody>;
 export type AdminUpdateRoleBody = z.infer<typeof adminUpdateRoleBody>;
+export type AdminGrantPermissionBody = z.infer<typeof adminGrantPermissionBody>;

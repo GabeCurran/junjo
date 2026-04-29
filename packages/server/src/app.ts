@@ -15,8 +15,10 @@ import {
   getAdminGameHandler,
   getAdminGroupHandler,
   getAdminStatsHandler,
+  grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
+  listAdminGamePermissionsHandler,
   listAdminGamesHandler,
   listAdminGroupMembersHandler,
   listAdminGroupRolesHandler,
@@ -25,6 +27,7 @@ import {
   listRecentAuditHandler,
   listUserGamesHandler,
   revokeAdminApiKeyHandler,
+  revokeAdminRolePermissionHandler,
   setAdminMemberPermissionOverrideHandler,
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
@@ -214,6 +217,32 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/roles/:roleId",
     adminAuthMiddleware(opts.adminToken),
     deleteAdminRoleHandler(prisma, hub),
+  );
+  // Admin-token-gated role-permission grant + revoke (Phase 11.6a-ii).
+  // Mirrors the per-game `POST/DELETE /v1/roles/:id/permissions` semantics
+  // exactly: idempotent on already-granted / already-revoked, auto-registers
+  // `PermissionDef` rows on first sight (grant), preserves them on revoke,
+  // dispatches `permission.granted` / `permission.revoked` events, and
+  // invalidates the per-group permission cache. Backs the dashboard's
+  // group detail Permissions matrix tab (Phase 11.6c).
+  v1.post(
+    "/admin/games/:gameId/roles/:roleId/permissions",
+    adminAuthMiddleware(opts.adminToken),
+    grantAdminRolePermissionHandler(prisma, hub),
+  );
+  v1.delete(
+    "/admin/games/:gameId/roles/:roleId/permissions/:permission",
+    adminAuthMiddleware(opts.adminToken),
+    revokeAdminRolePermissionHandler(prisma, hub),
+  );
+  // Admin-token-gated per-game permission catalog (Phase 11.6a-ii).
+  // Lists every `PermissionDef` row registered for the game; backs the
+  // matrix tab's column list. Bare `WireAdminPermissionDef[]` (no
+  // pagination); sorted by `key` asc.
+  v1.get(
+    "/admin/games/:gameId/permissions",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGamePermissionsHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

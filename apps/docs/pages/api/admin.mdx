@@ -935,6 +935,107 @@ Errors:
 | `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## POST /v1/admin/games/:gameId/roles/:roleId/permissions
+
+Grants a permission key to a role on the cross-game admin surface. Mirrors the per-game `POST /v1/roles/:id/permissions` semantics exactly.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Request body:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `permission` | string | Required. 1-128 characters. Free-form (any UTF-8); convention is namespaced like `guild.invite_member` or `vault.withdraw`. |
+
+Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` populated). The wire shape matches `WireAdminRole` from the list / create endpoints.
+
+Behavior:
+
+- Idempotent: granting a permission the role already has returns the unchanged role (no audit, no DB write, no `JunjoEvent`).
+- Auto-registers the permission key into the per-game `PermissionDef` catalog on first sight (one upsert in the same transaction). Subsequent grants of the same key reuse the existing row; revoking does NOT unregister.
+- On a real grant, writes a `permission.granted` audit entry with `payload: { roleId, permission }` and `targetId` set to the role id, then dispatches a `permission.granted` `JunjoEvent` so SSE subscribers and webhook endpoints see the same event a per-game-key grant would emit.
+- Invalidates the per-group permission cache (any cached `can(...)` answers for the role's group are flushed).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body validation failed (missing / empty / non-string `permission`, or > 128 characters). Malformed JSON also returns 400. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. No `PermissionDef` row is created in any 404 case. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/roles/:roleId/permissions/:permission
+
+Revokes a permission key from a role on the cross-game admin surface. Mirrors the per-game `DELETE /v1/roles/:id/permissions/:permission` semantics exactly.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `roleId` | string | The role id (`Role.id`). |
+| `permission` | string | The permission key to revoke. URL-decoded; keys with `/` or other reserved characters must be `encodeURIComponent`'d by the caller. |
+
+Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` reflecting the revoke). Even no-op calls return the unchanged role.
+
+Behavior:
+
+- Idempotent: revoking a permission the role does not have (whether the key was never granted or previously revoked) returns the unchanged role with no audit entry, no DB write, and no `JunjoEvent` dispatch. Revoking a key that is not registered at all in the game's `PermissionDef` catalog is also a no-op (no 404).
+- Preserves the `PermissionDef` registry row (revoke does not "forget" the key for the game). The catalog is monotonic per game; a future cleanup endpoint could prune unused defs additively.
+- On a real revoke, writes a `permission.revoked` audit entry with `payload: { roleId, permission }` and `targetId` set to the role id, then dispatches a `permission.revoked` `JunjoEvent`.
+- Invalidates the per-group permission cache.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. The `RolePermission` row (if any) is preserved. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/permissions
+
+Lists registered permission keys for a game (the `PermissionDef` catalog). Backs the dashboard's group detail Permissions matrix tab column list (Phase 11.6c).
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+
+Response: `200 OK` with a bare `WireAdminPermissionDef[]` (no pagination wrapper; permission catalogs are conventionally a small list - 10s, not 1000s).
+
+```ts
+interface WireAdminPermissionDef {
+  key: string;             // The permission key
+  description: string | null; // Optional human-readable description (null in V1)
+  createdAt: string;       // ISO 8601 timestamp of first registration
+}
+```
+
+Behavior:
+
+- Sorted by `key` ascending; matches the dashboard's stable-column-order expectation.
+- Scoped to the requested `gameId`; permission keys registered under other games are excluded.
+- Empty array if no keys have been registered yet (a brand-new game).
+- `PermissionDef` rows are auto-registered by:
+  - `POST /v1/admin/games/:gameId/roles/:roleId/permissions` (this iter)
+  - `POST /v1/roles/:id/permissions` (the per-game grant route)
+  - `POST /v1/groups/:id/members/:userId/permissions/:permission` (per-game member override)
+  - `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission` (admin override)
+- Revoking does NOT remove the catalog row; the list is monotonic per game.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The supplied `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

@@ -11,6 +11,9 @@ import type {
   GroupId,
   MemberInvitedEvent,
   MemberLeftEvent,
+  PermissionGrantedEvent,
+  PermissionKey,
+  PermissionRevokedEvent,
   RoleCreatedEvent,
   RoleDeletedEvent,
   RoleId,
@@ -40,6 +43,7 @@ import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   adminCreateInvitationBody,
   adminCreateRoleBody,
+  adminGrantPermissionBody,
   adminKickMemberBody,
   adminOverridePermissionBody,
   adminUpdateMemberBody,
@@ -1890,5 +1894,196 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
     });
 
     return c.body(null, 204);
+  };
+}
+
+// =====================================================================
+// Phase 11.6a-ii: cross-game role-permission grant / revoke + per-game
+// permission catalog
+// =====================================================================
+
+// Wire shape for a registered permission key. Returned by the catalog
+// endpoint that the dashboard's Permissions matrix tab consumes for its
+// "registered keys" column list (Phase 11.6c). Mirrors the `PermissionDef`
+// schema's serializable fields; `description` is included as a nullable
+// field even though no V1 endpoint populates it, so a future write path
+// can add values without breaking the wire shape.
+export interface WireAdminPermissionDef {
+  key: string;
+  description: string | null;
+  createdAt: string;
+}
+
+// `POST /v1/admin/games/:gameId/roles/:roleId/permissions` grants a
+// permission key to a role on the cross-game admin surface. Mirrors the
+// per-game `POST /v1/roles/:id/permissions` semantics exactly: idempotent
+// on already-granted (no audit, no DB write), auto-registers the
+// `PermissionDef` row on first sight per game, dispatches a
+// `permission.granted` `JunjoEvent` (behavior parity so SSE subscribers
+// and webhook endpoints see the same event a per-game-key grant would
+// emit), invalidates the per-group permission cache. 404 collapses
+// missing / cross-game / soft-deleted-parent-group via `loadAdminScopedRole`.
+export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const roleId = c.req.param("roleId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!roleId) throw Errors.badRequest("roleId is required");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = adminGrantPermissionBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { permission } = parsed.data;
+
+    const role = await loadAdminScopedRole(prisma, gameId, roleId);
+
+    const existing = await prisma.rolePermission.findUnique({
+      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    });
+    if (existing) {
+      const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
+      return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.permissionDef.upsert({
+        where: { gameId_key: { gameId, key: permission } },
+        create: { gameId, key: permission },
+        update: {},
+      });
+      await tx.rolePermission.create({
+        data: { roleId: role.id, permissionKey: permission },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "permission.granted",
+          targetId: role.id,
+          payload: {
+            roleId: role.id,
+            permission,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+    permissionCache.invalidateGroup(role.groupId);
+
+    await dispatchEvent<PermissionGrantedEvent>(prisma, hub, {
+      type: "permission.granted",
+      gameId: gameId as GameId,
+      groupId: role.groupId as GroupId,
+      roleId: role.id as RoleId,
+      permission: permission as PermissionKey,
+    });
+
+    const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
+    return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+  };
+}
+
+// `DELETE /v1/admin/games/:gameId/roles/:roleId/permissions/:permission`
+// revokes a permission key from a role. Mirrors the per-game
+// `DELETE /v1/roles/:id/permissions/:permission` semantics exactly:
+// idempotent on already-revoked / never-granted (no audit, no DB write),
+// preserves the `PermissionDef` registry row (revoke does not "forget"
+// the key for the game), dispatches a `permission.revoked` `JunjoEvent`,
+// invalidates the per-group permission cache.
+export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const roleId = c.req.param("roleId");
+    const permission = c.req.param("permission");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!roleId) throw Errors.badRequest("roleId is required");
+    if (!permission) throw Errors.badRequest("permission must not be empty");
+
+    const role = await loadAdminScopedRole(prisma, gameId, roleId);
+
+    const existing = await prisma.rolePermission.findUnique({
+      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    });
+    if (!existing) {
+      const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
+      return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.rolePermission.delete({
+        where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "permission.revoked",
+          targetId: role.id,
+          payload: {
+            roleId: role.id,
+            permission,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+    permissionCache.invalidateGroup(role.groupId);
+
+    await dispatchEvent<PermissionRevokedEvent>(prisma, hub, {
+      type: "permission.revoked",
+      gameId: gameId as GameId,
+      groupId: role.groupId as GroupId,
+      roleId: role.id as RoleId,
+      permission: permission as PermissionKey,
+    });
+
+    const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
+    return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+  };
+}
+
+// `GET /v1/admin/games/:gameId/permissions` lists registered permission
+// keys for a game. Backs the dashboard's Permissions matrix tab column
+// list (Phase 11.6c). Returns a bare `WireAdminPermissionDef[]` (no
+// pagination wrapper); permission catalogs are conventionally a small
+// list (10s, not 1000s; one row per `PermissionDef` ever used in the
+// game). Sorted by `key` ascending; matches the dashboard's stable-column-
+// order expectation. 404 if the gameId itself does not exist (matches
+// `getAdminGameHandler`).
+//
+// PermissionDef rows are auto-registered by:
+//   - `POST /v1/admin/games/:gameId/roles/:roleId/permissions` (this iter)
+//   - `POST /v1/roles/:id/permissions` (the per-game grant route)
+//   - `POST /v1/groups/:id/members/:userId/permissions/:permission` (per-game
+//     member override; iter 021)
+//   - `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
+//     (admin override; iter 068)
+//
+// Revoking does not remove the `PermissionDef` row; the catalog is
+// monotonic per game, so the matrix tab's column list never shrinks
+// across the lifetime of a game. A future cleanup endpoint could prune
+// unused defs additively.
+export function listAdminGamePermissionsHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (!game) throw Errors.notFound("game");
+
+    const defs = await prisma.permissionDef.findMany({
+      where: { gameId },
+      orderBy: { key: "asc" },
+    });
+    return c.json<WireAdminPermissionDef[]>(
+      defs.map((d) => ({
+        key: d.key,
+        description: d.description,
+        createdAt: d.createdAt.toISOString(),
+      })),
+    );
   };
 }

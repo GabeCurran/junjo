@@ -3674,3 +3674,59 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** four `describe` blocks with similar boilerplate (TRUNCATE list, `app.request` helper) repeats across files. Acceptable - the boilerplate is short, the alternative (one mega-file) is harder to navigate, and the cumulative test count (913 -> 953 with 40 new tests) is comfortably in the same territory.
 
+### Phase 11.6a-ii: admin grant/revoke handlers mirror per-game routes byte-for-byte
+
+**Decision:** The two new role-permission mutation handlers (`grantAdminRolePermissionHandler` / `revokeAdminRolePermissionHandler`) mirror the per-game `grantPermissionHandler` / `revokePermissionHandler` from `routes/roles.ts` exactly: same body shape (`{ permission }`), same idempotence rules (already-granted / already-revoked = no audit, no DB write, no `JunjoEvent`), same audit shape (`payload: { roleId, permission }`, `actorUserId: null`), same `permission.granted` / `permission.revoked` `JunjoEvent` dispatch, same `permissionCache.invalidateGroup` call after the transaction commits, same auto-register-into-`PermissionDef`-on-first-grant rule, same preserve-`PermissionDef`-on-revoke rule.
+
+**Rationale:**
+- Same behavior-parity stance as iter-068 / 070 / 071 / 072. SSE subscribers, webhook endpoints, audit log readers, and the permission cache all have to fire the same way regardless of which surface invoked the mutation. Two parallel `permission.granted.admin` / `permission.granted` event types would force every consumer to handle both.
+- ~80 lines of duplicated handler code across the two endpoints is acceptable for byte-for-byte parity. The alternative (exporting the per-game handlers and re-routing them) would couple the cloud-only `routes/admin.ts` to the per-game `routes/roles.ts` and break the open-core boundary.
+- Operators reading audit logs or webhook payloads cannot distinguish whether a grant was issued via a per-game key or the dashboard's admin token, which is a feature - the trust boundary is who can call the route, not what the route does.
+
+**Trade:** if the per-game `grantPermissionHandler` ever changes (e.g., a new field in the audit payload, or a new error code), the admin counterpart needs to follow. Acceptable - tests on both sides catch the drift, the admin route file imports nothing from the per-game route file, and the duplication is explicit at the source.
+
+### Phase 11.6a-ii: `GET /v1/admin/games/:gameId/permissions` returns a bare `WireAdminPermissionDef[]`
+
+**Decision:** The new permission catalog endpoint returns a bare `WireAdminPermissionDef[]` array (no pagination wrapper, no `{ items, total, hasMore }` envelope). `WireAdminPermissionDef` carries `{ key, description, createdAt }` - three serialized fields from the `PermissionDef` schema. Sorted by `key` ascending.
+
+**Rationale:**
+- Permission catalogs are conventionally a small list (10s of registered keys, not 1000s). The pagination wrapper would add ceremony for no value; matches the Phase 11.6a-i `listAdminGroupRolesHandler` precedent (also a bare array for the same reason - one row per role per group).
+- `description` is included as a nullable forward-compat field even though no V1 endpoint populates it. A future "PATCH a description onto a registered permission key" endpoint can add values without breaking the wire shape; the dashboard's matrix tab can render a tooltip hint when description is non-null.
+- Sort by `key` ascending matches the dashboard's stable-column-order expectation. The matrix tab renders the key list as columns; reordering between fetches would be visually disruptive.
+- 404 only if the gameId itself does not exist (matches `getAdminGameHandler`); a brand-new game with no registered keys returns an empty array, not a 404, because the path scope is the game (which exists), not the catalog (which is conceptually always present, just possibly empty).
+
+**Trade:** future games with thousands of registered keys would force the dashboard to scroll a long column list. Acceptable - in practice games don't grow that many permission keys (Diablo 2's PvP system has ~12 keys; a complex MMO has ~30-50). If a real game does, additive `?prefix=` filter or pagination can land later without breaking the bare-array contract.
+
+### Phase 11.6a-ii: catalog endpoint is read-only - "register without grant" is deferred
+
+**Decision:** Phase 11.6a-ii ships only a `GET` catalog endpoint. There is no `POST /v1/admin/games/:gameId/permissions` endpoint to pre-register a `PermissionDef` row without granting it to a role. The grant endpoint already auto-registers on first sight, so the dashboard's matrix tab can use the grant action itself to introduce a new key.
+
+**Rationale:**
+- The `PermissionDef` row exists primarily to power the catalog list; whether it's created via "grant key X to role A" or via a hypothetical "register key X" endpoint, the resulting row is identical and the matrix tab renders the same column.
+- The dashboard's matrix tab UX in Phase 11.6c can pursue one of two patterns: a register-then-grant flow (operator types a new key, the UI immediately calls grant to register via a default role), or an optimistic-column-add flow (the UI adds the column locally without persisting; persistence happens when the operator checks any cell).
+- Deferring the pre-register endpoint keeps the iteration tight. If 11.6c determines a "stage without granting" UX is needed, a `POST /v1/admin/games/:gameId/permissions` endpoint can land additively in 11.6c.
+
+**Trade:** 11.6c may need to ship a fourth endpoint (pre-register) if its UX demands it. Acceptable - delaying the design decision until we know the UX requirement avoids speculatively shipping an endpoint we may not need.
+
+### Phase 11.6a-ii: `PermissionDef.description` is exposed on the wire as `string | null` despite no V1 writer
+
+**Decision:** `WireAdminPermissionDef.description: string | null` is in the wire shape from day one. The schema's `description` column has been nullable since the init migration; no V1 write path sets a value, but the wire shape exposes it anyway.
+
+**Rationale:**
+- Adding `description` to the wire shape now (nullable) avoids a future wire-shape addition when a write endpoint lands. Wire-shape additions to a typed-array response require coordination across server, dashboard, SDK consumers; the cost of doing it now (one nullable field, always serialized) is smaller than coordinating later.
+- The dashboard's matrix tab can ignore the field today (render only `key`); when a future PATCH endpoint enables setting descriptions, the existing wire shape already carries the value. No version skew between server and dashboard.
+- Mirrors the precedent of always exposing schema fields on the wire even if no V1 write path exists.
+
+**Trade:** the dashboard's `AdminPermissionDef` type (Phase 11.6c) will need to mirror the nullable field even if the matrix UI ignores it. Acceptable - one extra line in the type definition and zero runtime cost.
+
+### Phase 11.6a-ii: tests live in standalone `admin.permissions.test.ts`
+
+**Decision:** the 39 new server tests for the three role-permission grant / revoke / catalog endpoints live in a new file `packages/server/src/routes/admin.permissions.test.ts`, not folded into `admin.test.ts` or `admin.roles.test.ts`.
+
+**Rationale:**
+- Mirrors the iter-068 `admin.rowActions.test.ts`, iter-070 `admin.invitations.test.ts`, and iter-072 `admin.roles.test.ts` precedents. File-per-feature keeps git blame legible and per-file vitest load time low.
+- The three describe blocks (one per endpoint) share a `seedRole` helper local to the file. Folding into `admin.roles.test.ts` would conflate two different concerns (role lifecycle CRUD vs role-permission relationships), which the dashboard tabs (Roles tab vs Permissions matrix tab) also keep separate.
+- The new file's structure (3 describe blocks, 39 tests, ~600 LoC) matches the iter-072 precedent dimensionally.
+
+**Trade:** five separate admin test files now exist (admin.test.ts + 4 feature-specific files). Acceptable - the alternative (one mega-file approaching 4000 LoC) is harder to navigate and slows vitest's startup per change. Cumulative server test count: 953 -> 992 (+39 from this iteration).
+
