@@ -917,6 +917,87 @@ export function clearAdminGroupRelationship(
   return adminDelete(`${path}${search}`, opts);
 }
 
+// Phase 11.8a wire shape for the game-wide audit feed (Phase 11.8b
+// dashboard page). Reuses `AdminAuditEntry` from iter-059 for the row
+// shape (identical fields: gameId / gameName / groupId / groupName /
+// groupSoftDeleted / actorUserId / targetId / payload / createdAt /
+// action / id) and wraps it in a paginated envelope: `nextCursor` is
+// the ISO `createdAt` of the last item when more pages exist (the
+// per-game endpoint is timestamp-paginated; the cross-game home feed
+// from iter-059 is not).
+export interface AdminGameAuditPage {
+  items: AdminAuditEntry[];
+  nextCursor: string | null;
+}
+
+// Mirrors the server-side caps in `routes/admin.schema.ts:listAdminGameAuditQuery`
+// so the dashboard's actor / target inputs can enforce the same limits
+// via maxLength attributes without bouncing off the server with a generic
+// 400. Both 255 chars to match the existing `Invitation` user-id shape.
+export const ADMIN_GAME_AUDIT_ACTOR_ID_MAX_LENGTH = 255;
+export const ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH = 255;
+
+// The server caps `limit` at 100; the dashboard never asks for more than
+// the largest page-size selector value. Defaults to 50 (matching the
+// server's `listAdminGameAuditQuery` default).
+export const ADMIN_GAME_AUDIT_PAGE_SIZE_OPTIONS: readonly number[] = [25, 50, 100];
+export const ADMIN_GAME_AUDIT_DEFAULT_PAGE_SIZE = 50;
+
+export interface FetchAdminGameAuditParams {
+  limit?: number;
+  // ISO 8601 timestamp; entries with `createdAt < before` are returned.
+  // Doubles as the pagination cursor (pass back the previous page's
+  // `nextCursor`) and the user-supplied date-range upper bound. The
+  // server filters with strict `<`, so the same value works for both
+  // intents without clobbering boundary entries.
+  before?: string;
+  // ISO 8601 timestamp; entries with `createdAt >= since` are returned.
+  // Inclusive lower bound (asymmetric with `before` on purpose: `since`
+  // is a date-range filter, `before` is the pagination cursor).
+  since?: string;
+  actions?: string[];
+  // Exact match on the stored `AuditEntry.actorUserId` (the internal
+  // `JunjoUser.id` for routes that resolved an actor; null for routes
+  // that wrote `actorUserId: null`). The dashboard surfaces the value
+  // from a prior row in the feed; future iterations could add an
+  // external-id resolver.
+  actorUserId?: string;
+  // Exact match on the stored `AuditEntry.targetId`. The stored value
+  // varies by route (sometimes external user id, sometimes member id,
+  // sometimes role id) so a single resolution rule would be wrong half
+  // the time. Operators copy the value from a prior row.
+  targetId?: string;
+}
+
+// `actions` repeats per filter value (`?actions=foo&actions=bar`). Empty
+// arrays and zero-length strings are dropped from the wire request so the
+// server's enum / non-empty validation does not 400 on a stale URL.
+// `actorUserId` and `targetId` are dropped when empty for the same reason.
+export function fetchAdminGameAudit(
+  gameId: string,
+  params: FetchAdminGameAuditParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGameAuditPage> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.before !== undefined && params.before.length > 0) qs.set("before", params.before);
+  if (params.since !== undefined && params.since.length > 0) qs.set("since", params.since);
+  if (params.actions !== undefined && params.actions.length > 0) {
+    for (const action of params.actions) {
+      if (action.length > 0) qs.append("actions", action);
+    }
+  }
+  if (params.actorUserId !== undefined && params.actorUserId.length > 0) {
+    qs.set("actorUserId", params.actorUserId);
+  }
+  if (params.targetId !== undefined && params.targetId.length > 0) {
+    qs.set("targetId", params.targetId);
+  }
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/audit`;
+  const search = qs.toString();
+  return adminFetch<AdminGameAuditPage>(search ? `${path}?${search}` : path, opts);
+}
+
 // Phase 11.7c-i wire helpers backing the dashboard's group detail Sub-
 // groups tab in 11.7c-ii. The two endpoints mirror the per-game `PUT
 // /v1/groups/:id/parent` and `GET /v1/groups/:id/children` semantics

@@ -4193,3 +4193,64 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Documented in the API reference table so operators know exactly what they're filtering on.
 
 **Trade:** the asymmetry could surprise operators who expect both bounds to be inclusive. Acceptable: documented; matches the JavaScript / Python / SQL convention for date ranges ("between A and B" typically excludes B in pagination contexts).
+
+### Phase 11.8b: game-wide audit log lives at `app/(dashboard)/games/[gameId]/audit/page.tsx` as a sibling route, not a tab
+
+**Decision:** the Phase 11.8b audit log viewer is a top-level route under `games/[gameId]/audit/`, not a tab on the group detail page. Discovery happens via a new "Audit log" link in the game detail page topbar. A sub-tab under group detail would not have made sense because the audit feed spans every group in the game (not just one group's audit history; that already exists as Phase 11.7a-ii's group-detail Audit tab).
+
+**Rationale:**
+- The audit feed is game-scoped (cross-group). Putting it under `games/[gameId]/groups/[groupId]/...?tab=...` would mislead operators - the data isn't scoped to the URL's groupId.
+- Phase 11.7a-ii already ships per-group audit as a tab on the group detail page; the per-game viewer is intentionally a different surface for a different question ("what happened across this entire game?").
+- Mirrors the iter-064 / 065 groups browser precedent (`games/[gameId]/groups/page.tsx` is a sibling route to `games/[gameId]/page.tsx`, not a tab). The audit page follows the same shape.
+- Discovery: the game detail page topbar grew an "Audit log" link next to "All games", so an operator browsing a specific game finds it in one click.
+
+**Trade:** the audit page does not benefit from the group-detail tab navigation primitive. Acceptable: the audit page is its own surface with its own filter set (action / actor / target / date range) that wouldn't fit cleanly inside a tab anyway.
+
+### Phase 11.8b: pagination cursor and user date filter are separate URL params (`cursor` and `end`)
+
+**Decision:** the wire `before` field is the pagination cursor, but the dashboard URL exposes two separate params: `cursor` (the pagination cursor, set when the operator clicks Next) and `end` (the user's date-range upper bound, set when the operator picks an end date). The wire request resolves to `before = cursor ?? endDate` via the exported `resolveBefore` helper. When the operator changes any filter, the cursor resets to undefined; "Jump to newest" clears the cursor while preserving the date filter.
+
+**Rationale:**
+- The cursor and the user's end-date filter compete for the same wire field. Folding them into one URL param would mean: when the user clicks Next, the end-date intent is lost; when the user picks an end date after paginating, the cursor is overwritten. Either way the URL conflates two semantically different operations.
+- Separating them keeps the URL state honest about user intent. Operators see two distinct mental concepts (date range vs pagination position) and the URL reflects that.
+- Pagination always walks backward in time from "newest matching the filters" toward "oldest", so the cursor is always strictly less-than the user's end date filter. `cursor ?? endDate` produces the right `before` value at every step without needing `min(cursor, endDate)`.
+- Filter resets clear the cursor automatically (the result set means something different under new filters; preserving the cursor would land the operator on a meaningless mid-list page).
+- "Jump to newest" only clears the cursor (not the date filters) so the operator can return to the top of their filtered window without losing context.
+
+**Trade:** the URL has two date-shaped params (`cursor` is ISO 8601 from the server, `end` is `datetime-local` user input) which look superficially redundant. Acceptable: documented inline in the component; `resolveBefore` keeps the resolution rule in one place; mirrors how Stripe's API event log paginates over an explicit `created[lt]` filter (also ISO timestamps separable from cursor concerns).
+
+### Phase 11.8b: CSV export is per-page only; multi-page export deferred
+
+**Decision:** the "Export CSV" button serializes the current page's items to CSV and triggers a Blob-URL download. There is no "Export all" option that walks every page on the client and concatenates results.
+
+**Rationale:**
+- Multi-page export would walk pages on the client via repeated `fetchAdminGameAudit` calls, each returning a fresh server result. Concurrent writes between calls (a new audit entry landing) would either appear in the export (when its `createdAt` falls between page boundaries) or not (when it doesn't), and the export would silently misrepresent the snapshot the operator thought they were exporting.
+- Per-page-only matches the on-screen semantics. The operator sees N entries on screen; the CSV has those N entries. No surprises.
+- Operators who need a full historical export today can paginate manually and concatenate CSVs. A future server-side `/v1/admin/games/:gameId/audit/export` endpoint that streams a consistent snapshot (e.g., a single read transaction) would solve this properly; deferring to that iteration keeps the V1 surface honest.
+- The button's disabled state on empty pages and a `title` attribute hinting at "current page only" tell the operator what they're getting.
+
+**Trade:** an operator who wants the full audit history has to click Next + Export N times. Acceptable for V1; the right server-side primitive (a streaming export endpoint) is future work, not a workaround.
+
+### Phase 11.8b: filter inputs use `<input type="datetime-local">` for the date range, not `<input type="date">`
+
+**Decision:** the From / To date filter inputs use the native `datetime-local` input type, which lets operators pick a date AND a time of day. The browser parses the value in the user's local timezone; the dashboard helper `datetimeLocalToIso` rounds through `new Date(value).toISOString()` to render it as the canonical UTC form for the wire request.
+
+**Rationale:**
+- Date-only would lose precision: filtering "from April 1" picks a moment in time, not a calendar day. Without a time component the filter would either default to UTC midnight (confusing for non-UTC operators) or local midnight (silently divergent from the server's ISO representation).
+- Audit entries are timestamped to the millisecond. Operators investigating a specific incident often know roughly when it happened (e.g., "around 3pm yesterday"); datetime-local lets them narrow the window.
+- The native primitive ships with browser-level validation, keyboard navigation, and a date picker UI - all for free without pulling in `@radix-ui/react-popover` or a custom calendar component.
+- Local-timezone parsing matches operator intuition (they pick what they see on their own clock); converting to UTC at the wire-helper boundary keeps the server-side time math unambiguous.
+
+**Trade:** `datetime-local` styling is browser-controlled and harder to make pixel-perfect than a custom Radix popover. Acceptable: the value of the native primitive's built-in keyboard navigation + accessibility outweighs the styling consistency; a future iteration can promote to a custom popover if operators report friction.
+
+### Phase 11.8b: dashboard reuses `AdminAuditEntry` row shape; introduces only a thin `AdminGameAuditPage` page envelope
+
+**Decision:** `lib/admin.ts` adds a new `AdminGameAuditPage` interface (`{ items: AdminAuditEntry[]; nextCursor: string | null }`) that reuses the existing iter-060 `AdminAuditEntry` row shape. The dashboard does NOT define a separate row type that drops the `gameName` / `groupName` / `groupSoftDeleted` fields the page already knows from URL context.
+
+**Rationale:**
+- The server's `WireAdminGameAuditPage` reuses `WireAdminAuditEntry` from iter-059 (per the iter-082 decision); the dashboard mirrors that with its own typed view via `AdminAuditEntry`. Same shape, different module ownership.
+- Reusing the row shape means the home-page recent-activity-feed and the per-game audit page share the same render-row primitive (the strike-through / soft-deleted-tag UX is identical).
+- An operator-visible difference would be the redundant `gameId` / `gameName` columns on screen; the dashboard's `<GameAuditFeed>` simply does not render `gameId` / `gameName` (URL context already carries them; the topbar shows the game name).
+- Mirrors the open-core boundary stance: admin endpoints intentionally not in `@junjo/sdk`; lifting types into `@junjo/shared` would force the OSS package to carry types with no value outside the proprietary dashboard.
+
+**Trade:** one extra interface (`AdminGameAuditPage`) on top of the existing `AdminAuditEntry`. Acceptable; the page envelope is one new line of type code while the row shape stays consistent across both feeds.

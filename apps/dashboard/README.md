@@ -239,23 +239,49 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   cycle detection bounded at depth 100, audit `group.parent.set` /
   `group.parent.cleared`, `group.updated` JunjoEvent dispatch on
   the changed direction).
-- 11.7c-ii (this iteration): group detail page grows a sixth tab
-  (Sub-groups) under the same `?tab=` navigation, closing Phase
-  11.7. Server Component fetches the current group + direct
-  children in parallel (`fetchAdminGroup` + `fetchAdminGroupChildren`)
-  and renders the `<SubGroupsTable>` Client Component, which stacks
-  two cards: parent-breadcrumb (showing the parent's id + Open
-  link, or an empty state) and a hand-rolled children table (Name,
-  Kind, Members, Created, Open + Remove actions). Three dialogs
-  back the four operations: `<SetParentDialog>` (form-driven,
-  `useFormState`, used for both Set parent and Edit parent),
-  `<AddChildDialog>` (form-driven, same Server Action with
-  `parentGroupId` fixed and `targetGroupId` user-supplied), and
-  `<ClearParentDialog>` (destructive-confirmation, `useTransition`,
-  used for both Clear parent and per-row Remove child). Both
-  Server Actions (`setParentAction` form-driven, `clearParentAction`
-  plain-async) call the same `setAdminGroupParent` wire helper;
-  the clear path is just `setAdminGroupParent(target, { parentGroupId: null })`.
-- 11.8 - 11.9: audit viewer, permission tester (one section per
-  iteration).
+- 11.7c-ii: group detail page grows a sixth tab (Sub-groups) under
+  the same `?tab=` navigation, closing Phase 11.7. Server Component
+  fetches the current group + direct children in parallel
+  (`fetchAdminGroup` + `fetchAdminGroupChildren`) and renders the
+  `<SubGroupsTable>` Client Component, which stacks two cards:
+  parent-breadcrumb (showing the parent's id + Open link, or an
+  empty state) and a hand-rolled children table (Name, Kind,
+  Members, Created, Open + Remove actions). Three dialogs back the
+  four operations: `<SetParentDialog>` (form-driven, `useFormState`,
+  used for both Set parent and Edit parent), `<AddChildDialog>`
+  (form-driven, same Server Action with `parentGroupId` fixed and
+  `targetGroupId` user-supplied), and `<ClearParentDialog>`
+  (destructive-confirmation, `useTransition`, used for both Clear
+  parent and per-row Remove child). Both Server Actions
+  (`setParentAction` form-driven, `clearParentAction` plain-async)
+  call the same `setAdminGroupParent` wire helper; the clear path
+  is just `setAdminGroupParent(target, { parentGroupId: null })`.
+- 11.8a: cross-game admin per-game audit endpoint
+  (`GET /v1/admin/games/:gameId/audit`) shipped on the server.
+  Reuses the iter-059 `WireAdminAuditEntry` shape (gameId + gameName
+  + groupId + groupName + groupSoftDeleted) wrapped in a paginated
+  envelope (`nextCursor` for timestamp-based pagination). Includes
+  soft-deleted-group entries (the audit log preserves history
+  regardless of group lifecycle); each row carries `groupSoftDeleted`
+  so the dashboard can mark them visually. Filters: `actions[]`,
+  `actorUserId`, `targetId`, `since` (inclusive), `before` (exclusive).
+- 11.8b (this iteration): game-wide audit log viewer at
+  `app/(dashboard)/games/[gameId]/audit/page.tsx`, closing Phase
+  11.8. Server Component lenient-parses URL state into a
+  `GameAuditQueryState` and runs `Promise.all([fetchAdminGame,
+  fetchAdminGameAudit])` in parallel; the game fetch hits the same
+  60s revalidate cache the game detail page populates, so it is
+  effectively free. Renders the new `<GameAuditFeed>` Client
+  Component with five filter inputs (action select, actor / target
+  text inputs with 350ms debounce, `<input type="datetime-local">`
+  for the From / To date range), page-size selector, Previous /
+  Next / Jump-to-newest pagination, and an "Export CSV" button.
+  CSV export is per-page (operator sees what they get on screen);
+  multi-page export deferred. The pagination cursor and the user's
+  `endDate` filter are separate URL params (`cursor` and `end`);
+  the wire request resolves to `before = cursor ?? endDate` so a
+  paginated walk overrides the user's filter only while paging is
+  active. Game detail page topbar grows an "Audit log" link next
+  to "All games" so operators can find the new page.
+- 11.9: permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).
