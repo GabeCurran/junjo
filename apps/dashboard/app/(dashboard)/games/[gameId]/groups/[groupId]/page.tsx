@@ -6,9 +6,17 @@ import { Suspense } from "react";
 
 import { GroupDetailHeader } from "../../../../../../components/dashboard/group-detail-header";
 import {
+  GROUP_DETAIL_DEFAULT_TAB,
+  GROUP_DETAIL_TABS,
+  type GroupDetailTab,
+  GroupDetailTabs,
+  getTabDescription,
+} from "../../../../../../components/dashboard/group-detail-tabs";
+import {
   type MembersQueryState,
   MembersTable,
 } from "../../../../../../components/dashboard/members-table";
+import { RolesTable } from "../../../../../../components/dashboard/roles-table";
 import { Topbar } from "../../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -25,8 +33,10 @@ import {
   type AdminGroup,
   type AdminGroupMemberList,
   type AdminMemberStatusFilter,
+  type AdminRole,
   fetchAdminGroup,
   fetchAdminGroupMembers,
+  fetchAdminGroupRoles,
 } from "../../../../../../lib/admin";
 
 interface GroupDetailPageProps {
@@ -86,6 +96,20 @@ function parseQuery(
       : ADMIN_MEMBERS_DEFAULT_PAGE_SIZE;
 
   return { q, status, offset, limit };
+}
+
+// The active tab is read from `?tab=`; unknown values fall back to the
+// default (members) so a stale URL after a future tab rename does not 404
+// or empty the page.
+function parseActiveTab(
+  searchParams: Record<string, string | string[] | undefined>,
+): GroupDetailTab {
+  const raw = readParam(searchParams, "tab");
+  if (raw === undefined) return GROUP_DETAIL_DEFAULT_TAB;
+  if ((GROUP_DETAIL_TABS as readonly string[]).includes(raw)) {
+    return raw as GroupDetailTab;
+  }
+  return GROUP_DETAIL_DEFAULT_TAB;
 }
 
 function MembersSkeleton() {
@@ -170,6 +194,62 @@ async function GroupBody({ gameId, groupId }: { gameId: string; groupId: string 
   return <GroupDetailHeader group={group} />;
 }
 
+function RolesSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="h-4 w-20 rounded bg-muted" />
+        <CardDescription className="h-3 w-80 rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between border-b border-border py-3 last:border-0"
+            >
+              <div className="h-4 w-1/4 rounded bg-muted" />
+              <div className="flex gap-3">
+                <div className="h-6 w-16 rounded bg-muted" />
+                <div className="h-6 w-12 rounded bg-muted" />
+                <div className="h-4 w-20 rounded bg-muted" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function RolesBody({ gameId, groupId }: { gameId: string; groupId: string }) {
+  let roles: AdminRole[];
+  try {
+    roles = await fetchAdminGroupRoles(gameId, groupId);
+  } catch (err) {
+    if (err instanceof AdminDisabledError) {
+      return (
+        <ErrorCard
+          title="Cross-game access is disabled"
+          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load roles."
+        />
+      );
+    }
+    // The roles fetch shares the 404-collapse contract with the group
+    // fetch; when the group itself is missing, the parent <GroupBody>
+    // already calls notFound(). Reaching here means a transient backend
+    // error or a soft-deleted group raced with the page render.
+    return (
+      <ErrorCard
+        title="Could not load roles"
+        body={err instanceof Error ? err.message : "unknown error fetching roles"}
+      />
+    );
+  }
+
+  return <RolesTable roles={roles} gameId={gameId} groupId={groupId} />;
+}
+
 async function MembersBody({
   gameId,
   groupId,
@@ -212,6 +292,7 @@ async function MembersBody({
 }
 
 export default function GroupDetailPage({ params, searchParams }: GroupDetailPageProps) {
+  const activeTab = parseActiveTab(searchParams);
   const query = parseQuery(searchParams);
   // The Suspense `key` for the members panel is the serialized query so the
   // skeleton flashes when the operator changes a filter, sort, or page.
@@ -223,7 +304,7 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
     <>
       <Topbar
         title="Group detail"
-        description="Members in this group, with their assigned roles and lifecycle status."
+        description={getTabDescription(activeTab)}
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}/groups`}
@@ -239,9 +320,16 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
           <Suspense fallback={<GroupHeaderSkeleton />}>
             <GroupBody gameId={params.gameId} groupId={params.groupId} />
           </Suspense>
-          <Suspense key={membersKey} fallback={<MembersSkeleton />}>
-            <MembersBody gameId={params.gameId} groupId={params.groupId} query={query} />
-          </Suspense>
+          <GroupDetailTabs gameId={params.gameId} groupId={params.groupId} active={activeTab} />
+          {activeTab === "roles" ? (
+            <Suspense fallback={<RolesSkeleton />}>
+              <RolesBody gameId={params.gameId} groupId={params.groupId} />
+            </Suspense>
+          ) : (
+            <Suspense key={membersKey} fallback={<MembersSkeleton />}>
+              <MembersBody gameId={params.gameId} groupId={params.groupId} query={query} />
+            </Suspense>
+          )}
         </div>
       </main>
     </>

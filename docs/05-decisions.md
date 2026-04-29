@@ -3730,3 +3730,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** five separate admin test files now exist (admin.test.ts + 4 feature-specific files). Acceptable - the alternative (one mega-file approaching 4000 LoC) is harder to navigate and slows vitest's startup per change. Cumulative server test count: 953 -> 992 (+39 from this iteration).
 
+### Phase 11.6b: tabs are URL-driven via `?tab=` with the default tab keeping a clean URL
+
+**Decision:** the group detail page's tab state lives in a URL query parameter (`?tab=members` or `?tab=roles`) that the page lenient-parses on every render. The default tab (`members`) keeps the canonical URL with no `?tab=` parameter, so prior bookmarks from Phase 11.5b still resolve to the same view. Switching tabs is a normal `<Link>` navigation, not a client-side state flip.
+
+**Rationale:**
+- URL-driven tabs make the active section addressable: an operator can paste a link like `/games/.../groups/.../?tab=roles` into Slack and the recipient lands on the Roles tab. A pure-client-state implementation would lose the address.
+- The `<Link>` navigation lets the browser's Back button restore the prior tab, which matches every existing pattern in the dashboard (filter changes on the groups browser also use URL state, so Back un-does them).
+- Lenient parsing (unknown `?tab=` values fall through to default) keeps URL bookmarks robust against future tab renames or removals - same stance as Phase 11.4b's `searchParams` parser.
+- Default tab keeps the bare URL because (1) prior bookmarks must keep working, (2) the URL is shorter for the dominant case, and (3) explicit `?tab=members` would feel redundant for the only-tab-pre-Phase-11.6b view.
+
+**Trade:** the page now does both branches' setup work in the Server Component (parsing the tab + parsing the members query) even when only one branch's body renders. Acceptable - the parsing is pure and cheap, and the alternative (lazy-parse-on-tab-switch) would push state into the Client Component layer where URL parsing doesn't belong. Sub-millisecond cost per render.
+
+### Phase 11.6b: Roles table is hand-rolled HTML, not TanStack Table
+
+**Decision:** `<RolesTable>` is a Client Component that renders a hand-rolled `<table>` with six static columns. No `useReactTable`, no `ColumnDef[]`, no `manualSorting` / `manualPagination`.
+
+**Rationale:**
+- The role list is server-sorted by `priority desc, id desc` and has no client-side filter, search, sort-toggle, or pagination requirements. The members table reaches for TanStack because of the 350ms-debounced search + URL-state-driven sort + offset pagination; the roles table has none of those concerns.
+- ~10 roles per group is the practical scale; the matrix tab in 11.6c will render up to ~50 permission keys as columns. Adding TanStack just for visual consistency would be ~30 lines of overhead with zero functional benefit.
+- The Permissions matrix tab (11.6c) will need a 2D grid (rows = roles, cols = permission keys) which is a different shape entirely from a column-defined table; reaching for TanStack for the Roles tab would not transfer over to the matrix.
+- The pattern is reversible: if a future iteration grows the Roles tab into a sortable / filterable surface, swapping `<table>` for a TanStack-backed component is a one-file change with no impact on the Server Action boundary.
+
+**Trade:** the Roles tab and Members tab use different table primitives (hand-rolled vs TanStack). Acceptable - the simpler primitive matches the simpler requirements, and the dashboard's overall pattern is "use the right tool for the job", not "use TanStack everywhere". Future maintainers see at a glance which surface has interactive columns.
+
+### Phase 11.6b: role color is a text input with a hex pattern, not `<input type="color">`
+
+**Decision:** Both `<CreateRoleDialog>` and `<EditRoleDialog>` render the optional color field as a plain `<input type="text">` with a `pattern="^#[0-9a-fA-F]{6}$"` attribute. Empty string maps to `null` (clear) server-side; non-empty must match the hex regex.
+
+**Rationale:**
+- HTML's native `<input type="color">` cannot represent "no color" - it always returns a hex string, even when the operator wants to clear it. This forces a separate "Use a color" checkbox or "Clear" button to make the optional / clearable semantics work, which is more complex than just leaving the text field blank.
+- The text input is more honest: it signals visually that color is optional (you can leave it empty) and supports clearing in one obvious way (delete the value).
+- Operators of game backends are technical and understand hex codes; a color picker is a luxury, not a necessity. The error message ("color must be a 7-character hex value like #ff5050") points at the right shape if they get it wrong.
+- The text input pattern matches the server-side regex, so the browser's built-in form validation rejects bad values before submission. The Server Action re-validates with `ADMIN_ROLE_COLOR_PATTERN` on the dashboard side and the server's Zod schema does it again - three layers of validation, all aligned.
+
+**Trade:** operators don't get a visual color picker. Acceptable - the role color is a small visual hint in the members table (a colored dot), not the whole UI signal; getting the exact shade right matters less than getting the rough hue. Power-users can paste from any external color picker.
+
+### Phase 11.6b: dashboard owns typed `AdminRole` / `AdminPermissionDef` wire shapes byte-for-byte
+
+**Decision:** `lib/admin.ts` defines `AdminRole` (eight fields including `permissions: string[]`) and `AdminPermissionDef` (`{ key, description, createdAt }`) as TypeScript interfaces that mirror the server's `WireAdminRole` and `WireAdminPermissionDef` exactly. The dashboard does not import from `@junjo/server` or `@junjo/shared` for these types; the duplication is intentional.
+
+**Rationale:**
+- Same open-core boundary stance as iter 060 / 062 / 067 / 069 / 071. The admin endpoints are deliberately not in the per-game `@junjo/sdk` (per VISION 10.2 / 11.x); the dashboard owns its own typed view of them.
+- Lifting these types into `@junjo/shared` would force the OSS `@junjo/shared` package to carry types whose only consumer is the proprietary dashboard. Cleaner to have the dashboard own the wire shapes it consumes.
+- The duplication is small (two interfaces; ~15 LoC) and the wire-shape drift detection happens at typecheck time on the next dashboard fetch (the Server Component cast `as AdminRole` would fail typecheck if the wire shape genuinely diverges).
+- Mirrors the exact pattern set by `AdminGroupMember`, `AdminInvitation`, `AdminMemberPermissionOverride` from prior iterations.
+
+**Trade:** if the server's `WireAdminRole` ever grows a field, the dashboard's `AdminRole` must follow. Acceptable - the pattern has held across 8 iterations of admin endpoints and zero drift incidents, and the explicit duplication is preferable to coupling the dashboard to a private types package.
+
+### Phase 11.6b: role-permission grant / revoke wire helpers ship in `lib/admin.ts` alongside role CRUD, but the matrix tab waits for 11.6c
+
+**Decision:** This iteration adds three more helpers to `lib/admin.ts` - `fetchAdminGamePermissions`, `grantAdminRolePermission`, `revokeAdminRolePermission` - even though Phase 11.6b only ships role CRUD UI (Permissions matrix tab is 11.6c). The wire helpers are there but not consumed yet.
+
+**Rationale:**
+- The wire helpers are pure HTTP shims over `adminMutate` / `adminFetch`. Shipping them costs ~30 LoC and zero behavior; the server endpoints already exist (Phase 11.6a-ii), so the helpers are just a typed view of an existing surface.
+- Front-loading them lets Phase 11.6c land additively as pure UI work: a new `<PermissionsMatrixTab>` component plus new Server Actions, with no `lib/admin.ts` changes. Smaller diff, easier review.
+- The `adminMutate` helper needed widening to support `"DELETE"` for the revoke endpoint (which uses HTTP DELETE but returns a 200 with the post-state role JSON, mirroring the per-game route). That widening is part of this iteration's mechanical work; punting it to 11.6c would mean revisiting the same code.
+- The `revokeAdminRolePermission` helper uses `adminMutate("DELETE", ...)` rather than the `adminDelete` helper because the server returns a 200 with a JSON body, not 204. The two helpers are kept distinct in `lib/admin.ts` to make the difference explicit (delete-the-role returns 204; revoke-the-grant returns the role).
+
+**Trade:** the dashboard ships unused exports for one iteration. Acceptable - the alternative (split the wire helpers across two iterations) would just split a single concern (role-permission HTTP plumbing) for no organizational benefit.
+

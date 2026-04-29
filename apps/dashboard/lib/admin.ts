@@ -123,7 +123,7 @@ interface MutationOptions {
 }
 
 async function adminMutate<TBody, TResult>(
-  method: "POST" | "PATCH",
+  method: "POST" | "PATCH" | "DELETE",
   path: string,
   body: TBody | null,
   opts: MutationOptions = {},
@@ -560,6 +560,185 @@ export function createAdminGroupInvitation(
     "POST",
     `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/invitations`,
     body,
+    opts,
+  );
+}
+
+// Phase 11.6a-i / 11.6a-ii wire shapes mirroring `WireAdminRole` and
+// `WireAdminPermissionDef` from `packages/server/src/routes/admin.ts`. The
+// dashboard's group detail Roles tab (Phase 11.6b) renders an `AdminRole[]`
+// and drives create / update / delete through these helpers; the
+// Permissions matrix tab (Phase 11.6c) will additionally consume the
+// per-game catalog endpoint plus the role-permission grant / revoke
+// helpers below.
+
+export interface AdminRole {
+  id: string;
+  groupId: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+  // Always present on the wire; an empty array means the role has no
+  // permission grants. Populated from a single batched query server-side
+  // so a list of N roles costs one extra round trip regardless of N.
+  permissions: string[];
+  createdAt: string;
+}
+
+export interface AdminPermissionDef {
+  key: string;
+  // Reserved for a future write path; today every server response sets
+  // this to `null` because no V1 endpoint populates it. Surfacing it on
+  // the wire avoids a coordinated wire-shape addition later.
+  description: string | null;
+  createdAt: string;
+}
+
+// Mirrors the server-side caps in `routes/admin.schema.ts:adminCreateRoleBody`
+// so the dashboard's Add / Edit role dialogs can enforce the same limits
+// via input maxLength attributes without a round trip to learn what the
+// server accepts. Color regex matches the same case-insensitive hex pattern.
+export const ADMIN_ROLE_NAME_MAX_LENGTH = 64;
+export const ADMIN_ROLE_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+export interface CreateAdminRoleInput {
+  name: string;
+  priority: number;
+  color?: string;
+  isDefault?: boolean;
+}
+
+export interface UpdateAdminRoleInput {
+  name?: string;
+  priority?: number;
+  // `null` clears the color (matches the server schema). Omit the field
+  // entirely to leave the stored value alone.
+  color?: string | null;
+  isDefault?: boolean;
+}
+
+export function fetchAdminGroupRoles(
+  gameId: string,
+  groupId: string,
+  opts?: FetchOptions,
+): Promise<AdminRole[]> {
+  return adminFetch<AdminRole[]>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/roles`,
+    opts,
+  );
+}
+
+// Undefined fields are dropped so a stale form posting `color=undefined`
+// does not collide with the server's optional-but-non-empty constraint.
+// The server's `adminCreateRoleBody` defaults `color: null` and
+// `isDefault: false` when omitted; we forward only what the caller sets.
+export function createAdminGroupRole(
+  gameId: string,
+  groupId: string,
+  input: CreateAdminRoleInput,
+  opts?: MutationOptions,
+): Promise<AdminRole> {
+  const body: Record<string, unknown> = {
+    name: input.name,
+    priority: input.priority,
+  };
+  if (input.color !== undefined) body.color = input.color;
+  if (input.isDefault !== undefined) body.isDefault = input.isDefault;
+  return adminMutate<Record<string, unknown>, AdminRole>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/roles`,
+    body,
+    opts,
+  );
+}
+
+// PATCH semantics: only fields whose value differs from the stored row
+// land in the audit payload server-side; the same wire body that sets a
+// value also clears it via `color: null`. Caller must supply at least one
+// field (the server returns 400 on an empty body).
+export function updateAdminRole(
+  gameId: string,
+  roleId: string,
+  input: UpdateAdminRoleInput,
+  opts?: MutationOptions,
+): Promise<AdminRole> {
+  const body: Record<string, unknown> = {};
+  if (input.name !== undefined) body.name = input.name;
+  if (input.priority !== undefined) body.priority = input.priority;
+  // `color` is the one field that round-trips `null` verbatim - the
+  // server treats `null` as "clear the color" and `undefined` as "leave
+  // alone". `Object.hasOwn` lets a caller supply `null` without us
+  // dropping it via the truthy check.
+  if (Object.hasOwn(input, "color")) body.color = input.color;
+  if (input.isDefault !== undefined) body.isDefault = input.isDefault;
+  return adminMutate<Record<string, unknown>, AdminRole>(
+    "PATCH",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}`,
+    body,
+    opts,
+  );
+}
+
+export function deleteAdminRole(
+  gameId: string,
+  roleId: string,
+  opts?: MutationOptions,
+): Promise<void> {
+  return adminDelete(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}`,
+    opts,
+  );
+}
+
+// Phase 11.6a-ii catalog endpoint + role-permission grant / revoke
+// helpers. Phase 11.6c (Permissions matrix tab) consumes the catalog
+// endpoint for column ordering and the grant / revoke helpers for per-cell
+// state changes; this iteration ships them alongside the role CRUD because
+// they share the same Server Action surface (the operator may want to
+// remove a permission from a role without leaving the Roles tab).
+
+export function fetchAdminGamePermissions(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminPermissionDef[]> {
+  return adminFetch<AdminPermissionDef[]>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/permissions`,
+    opts,
+  );
+}
+
+export function grantAdminRolePermission(
+  gameId: string,
+  roleId: string,
+  permission: string,
+  opts?: MutationOptions,
+): Promise<AdminRole> {
+  return adminMutate<{ permission: string }, AdminRole>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}/permissions`,
+    { permission },
+    opts,
+  );
+}
+
+// The server's revoke endpoint is `DELETE` (the per-game route shape;
+// the admin handler mirrors it byte-for-byte) yet returns a 200 with the
+// post-state role JSON, not 204. The `adminMutate` helper with method
+// "DELETE" and `body: null` reads the response body just like the other
+// mutations; the dedicated `adminDelete` helper above is only used for
+// endpoints that return 204 (the role-itself delete and the override
+// clear).
+export function revokeAdminRolePermission(
+  gameId: string,
+  roleId: string,
+  permission: string,
+  opts?: MutationOptions,
+): Promise<AdminRole> {
+  return adminMutate<null, AdminRole>(
+    "DELETE",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}`,
+    null,
     opts,
   );
 }

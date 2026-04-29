@@ -10,16 +10,22 @@ import {
   ADMIN_MEMBER_KICK_REASON_MAX_LENGTH,
   ADMIN_MEMBER_NOTES_MAX_LENGTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  ADMIN_ROLE_COLOR_PATTERN,
+  ADMIN_ROLE_NAME_MAX_LENGTH,
   AdminDisabledError,
   type AdminGroupMember,
   type AdminInvitation,
   type AdminMemberPermissionOverride,
+  type AdminRole,
   clearAdminMemberPermissionOverride,
   createAdminGroupInvitation,
+  createAdminGroupRole,
+  deleteAdminRole,
   kickAdminGroupMember,
   listAdminMemberPermissionOverrides,
   setAdminMemberPermissionOverride,
   updateAdminGroupMember,
+  updateAdminRole,
 } from "../../../../../../lib/admin";
 import { getInviteBaseUrl } from "../../../../../../lib/junjo";
 
@@ -335,5 +341,189 @@ export async function inviteMemberAction(
     return { ok: true, invitation, mode };
   } catch (err) {
     return { ok: false, error: describeError(err), mode };
+  }
+}
+
+// Phase 11.6b Server Actions backing the Roles tab dialogs (Create / Edit
+// / Delete). Wired to the iter-072 cross-game roles CRUD endpoints. The
+// Permissions matrix tab in 11.6c will get its own actions; the role-
+// permission grant / revoke endpoints are exposed via `lib/admin.ts`
+// already so 11.6c can land additively without touching this file.
+
+function readBoolField(formData: FormData, key: string): boolean | undefined {
+  const raw = formData.get(key);
+  if (raw === null) return undefined;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return undefined;
+}
+
+function readPriorityField(formData: FormData): { value?: number; error?: string } {
+  const raw = formData.get("priority");
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { error: "priority is required" };
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return { error: "priority must be an integer" };
+  }
+  return { value: parsed };
+}
+
+function readNameField(formData: FormData): { value?: string; error?: string } {
+  const raw = formData.get("name");
+  if (typeof raw !== "string") return { error: "name is required" };
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { error: "name is required" };
+  if (trimmed.length > ADMIN_ROLE_NAME_MAX_LENGTH) {
+    return { error: `name must be at most ${ADMIN_ROLE_NAME_MAX_LENGTH} characters` };
+  }
+  return { value: trimmed };
+}
+
+// Color is delivered as a string from a `<input type="color">` (always
+// `#rrggbb`) or as the literal "" when the operator chooses to clear it.
+// The empty string maps to `null` (clear); a non-empty value must match
+// the hex regex. Server enforces the same regex; reproducing it here lets
+// a typo like "blue" return a clear error before the round trip.
+function readColorField(formData: FormData): { value?: string | null; error?: string } {
+  const raw = formData.get("color");
+  if (raw === null) return { value: undefined };
+  if (typeof raw !== "string") return { error: "color must be a string" };
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { value: null };
+  if (!ADMIN_ROLE_COLOR_PATTERN.test(trimmed)) {
+    return { error: "color must be a 7-character hex value like #ff5050" };
+  }
+  return { value: trimmed };
+}
+
+export interface CreateRoleResult {
+  ok: boolean;
+  error?: string;
+  role?: AdminRole;
+}
+
+export async function createRoleAction(
+  _prev: CreateRoleResult,
+  formData: FormData,
+): Promise<CreateRoleResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+
+  const name = readNameField(formData);
+  if (name.error || name.value === undefined) return { ok: false, error: name.error };
+
+  const priority = readPriorityField(formData);
+  if (priority.error || priority.value === undefined) return { ok: false, error: priority.error };
+
+  const color = readColorField(formData);
+  if (color.error) return { ok: false, error: color.error };
+  // On create, `null` (operator left the color picker empty) is
+  // semantically equivalent to "no color"; we omit the field so the
+  // server's default `color: null` applies. Sending `null` would also
+  // work but the schema is `optional` (not `nullable`) on create.
+  const colorForCreate = typeof color.value === "string" ? color.value : undefined;
+
+  const isDefault = readBoolField(formData, "isDefault") ?? false;
+
+  try {
+    const role = await createAdminGroupRole(gameId, groupId, {
+      name: name.value,
+      priority: priority.value,
+      color: colorForCreate,
+      isDefault,
+    });
+    refreshGroup(gameId, groupId);
+    return { ok: true, role };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+export interface UpdateRoleResult {
+  ok: boolean;
+  error?: string;
+  role?: AdminRole;
+}
+
+export async function updateRoleAction(
+  _prev: UpdateRoleResult,
+  formData: FormData,
+): Promise<UpdateRoleResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  const roleId = readStringField(formData, "roleId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (!roleId) return { ok: false, error: "missing roleId" };
+
+  // Update is partial: every field is optional and only supplied fields
+  // hit the wire. Validate each field as it appears; any validation error
+  // short-circuits before the network call.
+  const name = readNameField(formData);
+  if (name.error) return { ok: false, error: name.error };
+
+  const priority = readPriorityField(formData);
+  if (priority.error || priority.value === undefined) return { ok: false, error: priority.error };
+
+  const color = readColorField(formData);
+  if (color.error) return { ok: false, error: color.error };
+
+  const isDefault = readBoolField(formData, "isDefault") ?? false;
+
+  try {
+    // Always send all four fields; the server compares against the stored
+    // row and writes audit entries only for changed fields. Sending fields
+    // that match the stored value is a no-op there. Simpler than
+    // computing the diff client-side and matches the per-game route's
+    // documented behavior.
+    const role = await updateAdminRole(gameId, roleId, {
+      name: name.value,
+      priority: priority.value,
+      // `color` round-trips `null` verbatim to clear; `undefined` would
+      // also leave alone but on this Save flow we always have either a
+      // string or `null` from the form.
+      color: color.value ?? null,
+      isDefault,
+    });
+    refreshGroup(gameId, groupId);
+    return { ok: true, role };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+export interface DeleteRoleResult {
+  ok: boolean;
+  error?: string;
+  // The deleted role's id, echoed so the dialog knows which row to remove
+  // from the table without waiting for `revalidatePath` to flush.
+  roleId?: string;
+}
+
+export async function deleteRoleAction(
+  _prev: DeleteRoleResult,
+  formData: FormData,
+): Promise<DeleteRoleResult> {
+  const gameId = readStringField(formData, "gameId");
+  const groupId = readStringField(formData, "groupId");
+  const roleId = readStringField(formData, "roleId");
+  if (!gameId) return { ok: false, error: "missing gameId" };
+  if (!groupId) return { ok: false, error: "missing groupId" };
+  if (!roleId) return { ok: false, error: "missing roleId" };
+
+  try {
+    await deleteAdminRole(gameId, roleId);
+    refreshGroup(gameId, groupId);
+    return { ok: true, roleId };
+  } catch (err) {
+    // The server returns 409 `role_has_members` when the role has
+    // `MemberRole` rows. The error message is preserved in
+    // `describeError`, so the dialog can surface it inline ("This role
+    // is assigned to N members. Reassign first.").
+    return { ok: false, error: describeError(err) };
   }
 }

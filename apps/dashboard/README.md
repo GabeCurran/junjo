@@ -157,6 +157,25 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `inviteMemberAction` Server Action, which validates the form fields
   client-side, calls `createAdminGroupInvitation` from `lib/admin.ts`, and
   `revalidatePath`s the parent page on success.
-- 11.6 - 11.9: roles + permissions + audit + relationships + sub-groups
-  tabs, audit viewer, permission tester (one section per iteration).
+- 11.6a-i: cross-game admin roles CRUD endpoints under
+  `/v1/admin/games/:gameId/groups/:groupId/roles` and
+  `/v1/admin/games/:gameId/roles/:roleId`. Mirrors per-game route
+  semantics (audit shapes, idempotence rules, JunjoEvent dispatch).
+- 11.6a-ii: cross-game admin role-permission grant / revoke endpoints
+  plus the per-game permission catalog endpoint
+  (`GET /v1/admin/games/:gameId/permissions`).
+- 11.6b (this iteration): group detail page grows tab navigation
+  (URL-driven via `?tab=`; Members is the default, Roles is the new
+  addition). The Members tab keeps its existing canonical URL so prior
+  bookmarks still resolve. The Roles tab renders a hand-rolled HTML
+  table sorted by priority desc with Name + Priority + Color swatch +
+  Default badge + Permissions chips per row, each row carrying Edit and
+  Delete affordances. Three new dialogs (`<CreateRoleDialog>`,
+  `<EditRoleDialog>`, `<DeleteRoleDialog>`) consume three new Server
+  Actions (`createRoleAction`, `updateRoleAction`, `deleteRoleAction`)
+  in the existing route-scoped actions file. Permissions matrix tab
+  (Phase 11.6c) lands next; the per-cell grant / revoke wire helpers
+  ship in `lib/admin.ts` already so 11.6c can land additively.
+- 11.7 - 11.9: audit + relationships + sub-groups tabs, audit viewer,
+  permission tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).
