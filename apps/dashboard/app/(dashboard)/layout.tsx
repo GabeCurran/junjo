@@ -12,7 +12,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <SidebarBrand />
         <SidebarNav />
       </aside>
-      <div className="flex min-h-screen flex-1 flex-col">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         <MobileNav />
         {children}
       </div>

@@ -126,31 +126,31 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
           <div className="flex items-center gap-2">
             <Link
               href={`/games/${encodeURIComponent(params.gameId)}/analytics`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
             >
               <BarChart3 className="h-3 w-3" aria-hidden />
-              Analytics
+              <span className="hidden sm:inline">Analytics</span>
             </Link>
             <Link
               href={`/games/${encodeURIComponent(params.gameId)}/permissions/check`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
             >
               <ShieldCheck className="h-3 w-3" aria-hidden />
-              Permission check
+              <span className="hidden sm:inline">Permission check</span>
             </Link>
             <Link
               href={`/games/${encodeURIComponent(params.gameId)}/audit`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
             >
               <ScrollText className="h-3 w-3" aria-hidden />
-              Audit log
+              <span className="hidden sm:inline">Audit log</span>
             </Link>
             <Link
               href="/games"
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
             >
               <ArrowLeft className="h-3 w-3" aria-hidden />
-              All games
+              <span className="hidden sm:inline">All games</span>
             </Link>
           </div>
         }
