@@ -264,6 +264,23 @@ local group = junjo.groups:create({                                  -- Phase 8.
 local allowed = junjo:can(userIds:resolve(player), group.id, "invite_member") -- Phase 8.2 + 8.3
 ```
 
+## Dashboard (cloud-only)
+
+The admin + analytics dashboard at `apps/dashboard/` is proprietary (its `LICENSE` is "All Rights Reserved"; see Phase 11 / 12 in the V1 roadmap). Self-hosters get the server + SDKs; the dashboard is exclusive to the cloud product.
+
+Phase 11.1a (the toolchain foundation) ships:
+
+- **Stack:** Next.js 15 App Router, TypeScript strict, React 18, Tailwind v3 (with shadcn-compatible CSS-variable theming), zod (env validation), `clsx` + `tailwind-merge` (for shadcn-style class composition coming in 11.1b).
+- **License header:** every TypeScript file under `apps/dashboard/` starts with `// @license All Rights Reserved (see apps/dashboard/LICENSE)`.
+- **Auth gate:** `apps/dashboard/middleware.ts` runs HTTP Basic Auth via Next.js middleware. Reads `DASHBOARD_ADMIN_USER` / `DASHBOARD_ADMIN_PASSWORD`; if either is unset, every request returns `401` with the explicit "credentials are not configured" message. The credential compare is constant-time (hand-rolled XOR-OR loop, since the Edge runtime where middleware executes lacks `node:crypto.timingSafeEqual`). Production deployments are expected to layer this behind a stronger auth proxy (Clerk, Auth0, Cloudflare Access, corporate SSO).
+- **SDK singleton:** `apps/dashboard/lib/junjo.ts` exports `getJunjo()` returning a lazily-constructed `Junjo` instance configured from `JUNJO_BASE_URL` + `JUNJO_ADMIN_API_KEY`. The lazy construction is deliberate: missing env vars throw on the first request that needs them rather than at module load (which would crash `next build`'s static-route discovery on a deploy where one of these variables is intentionally absent). The module is `import "server-only"`-guarded so a Client Component that accidentally imports it fails the build instead of leaking the API key into the browser bundle. `getAdminToken()` returns the optional `JUNJO_ADMIN_TOKEN` (Phase 10.2's cross-game admin secret), used by hand-rolled `fetch` calls for endpoints the per-game SDK does not expose.
+- **Env validation:** `apps/dashboard/lib/env.ts` is a Zod schema that parses `process.env` into `DashboardEnv`. Cached after first successful parse. The cache is reset via the test-only `resetDashboardEnvCache()` escape hatch.
+- **Tailwind theming:** `app/globals.css` carries the shadcn-style `--background` / `--foreground` / `--primary` / etc. CSS variables in both `:root` (light) and `.dark` blocks; `tailwind.config.ts` extends the theme to consume them via `hsl(var(...))`. The root layout sets `<html lang="en" className="dark">` so dark mode is the default; 11.1b will add a runtime toggle.
+
+What 11.1b adds: the shadcn/ui CLI install, a sidebar layout shell with breadcrumb header, the four nav routes (Games, Audit, Permissions, Analytics), and the light/dark toggle. What 11.2 - 11.9 add: the actual data-bound pages.
+
+The dashboard does NOT use Vitest in V1 (per VISION's Phase 11 conventions; Server Components are awkward to test in isolation, and the value is shipping a usable UI not test coverage). Phase 14.12 will add Playwright smoke tests.
+
 ## Auth adapter pattern
 
 The single most important design decision. Auth is BYO - Junjo never replaces it.
@@ -327,9 +344,19 @@ junjo/
 │       ├── src/
 │       └── package.json
 ├── apps/
-│   ├── dashboard/            (admin + analytics dashboard, Next.js)
+│   ├── dashboard/            (admin + analytics dashboard, Next.js; proprietary)
 │   │   ├── app/
-│   │   ├── components/
+│   │   │   ├── globals.css
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx
+│   │   ├── components/       (shadcn primitives land in 11.1b)
+│   │   ├── lib/
+│   │   │   ├── env.ts        (zod-validated dashboard env)
+│   │   │   └── junjo.ts      (server-only Junjo SDK singleton)
+│   │   ├── middleware.ts     (HTTP Basic Auth gate)
+│   │   ├── tailwind.config.ts
+│   │   ├── postcss.config.mjs
+│   │   ├── LICENSE           (All Rights Reserved)
 │   │   └── package.json
 │   └── docs/                 (docs site - Docusaurus or Nextra)
 ├── examples/

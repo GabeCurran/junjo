@@ -2796,3 +2796,59 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the marker is informational only - a future maintainer could ignore it and the build would still work. Acceptable: the rule is documented in VISION, and the marker is a clear semaphore for code-review.
 
+
+### Phase 11.1: Phase 11.1 splits into 11.1a (toolchain + auth + SDK singleton) and 11.1b (layout shell)
+
+**Decision:** Phase 11.1 ("Tech stack + auth + layout shell") splits across two iterations. 11.1a (this iteration) ships the Tailwind toolchain, the HTTP Basic Auth middleware, the lazy SDK singleton, and the env validator. 11.1b ships the shadcn/ui CLI install, the sidebar layout shell, the four nav routes, and the light/dark toggle. PROGRESS.md is updated with the split.
+
+**Rationale:**
+- Phase 11.1 lists five concrete deliverables (Tailwind install, Tailwind config, Basic Auth middleware, layout shell, SDK singleton). One commit per iteration is a hard rule; bundling all five into one commit defeats the "smallest reviewable unit" goal.
+- The natural seam: 11.1a is invisible scaffolding (no UI changes a human would notice; deps + auth + plumbing). 11.1b is where the visual surface lands. Splitting at the seam keeps each commit's blast radius small.
+- Mirrors the established pattern from 5.1a/b/c (event hub split) and 7.5a/b/c (mutation primitive + per-list helpers).
+
+**Trade:** the dashboard is half-functional after 11.1a (Basic Auth gate is up, Tailwind is wired, the SDK is callable from a Server Component, but there's no real UI). Acceptable: the placeholder home page renders, the dev can verify auth works against a local server, and 11.1b lands next iteration.
+
+### Phase 11.1a: HTTP Basic Auth via Next.js middleware reading `DASHBOARD_ADMIN_USER` / `DASHBOARD_ADMIN_PASSWORD`
+
+**Decision:** the dashboard is gated by HTTP Basic Auth, implemented in `apps/dashboard/middleware.ts`. The middleware reads `DASHBOARD_ADMIN_USER` and `DASHBOARD_ADMIN_PASSWORD` from `process.env` on every request. Either env var unset returns `401` with the explicit "credentials are not configured" message; bad credentials return `401`; valid credentials let the request through via `NextResponse.next()`. Credential comparison is constant-time via a hand-rolled XOR-OR loop over UTF-8-encoded byte arrays.
+
+**Rationale:**
+- VISION's Phase 11 architectural conventions are explicit: "HTTP Basic Auth via Next.js middleware reading `DASHBOARD_ADMIN_USER` / `DASHBOARD_ADMIN_PASSWORD` from env. Document in `apps/dashboard/README.md` that production deployments should put it behind Clerk / Auth0 / a corporate auth proxy."
+- Reading env at request time (not at module load) means the credentials can rotate without restarting the dashboard; Next.js Edge runtime supports `process.env` access inside middleware.
+- The hand-rolled constant-time compare mirrors the SDK's webhook signature verification (iter 031) and Phase 10.2's admin token comparison: Edge runtime has no `node:crypto.timingSafeEqual`, so all three sites use the same XOR-OR pattern.
+- The "credentials not configured" failure mode is louder than a silent open dashboard (the security footgun that motivated Phase 10.2's admin-token-unset-means-disabled rule). Operators who forget the env vars hit a clear, actionable 401 message.
+
+**Trade:** Basic Auth is plain-text-over-TLS, has no logout flow, and exposes the password in `Authorization` headers on every request. Acceptable for V1 because the dashboard is internal tooling; production deployments are documented as needing a stronger auth proxy in front. The README calls this out explicitly.
+
+### Phase 11.1a: dashboard SDK singleton is lazy and `import "server-only"`-guarded
+
+**Decision:** `apps/dashboard/lib/junjo.ts` exports `getJunjo()` which returns a module-cached `Junjo` instance, constructed on first call from `JUNJO_BASE_URL` + `JUNJO_ADMIN_API_KEY`. The module starts with `import "server-only"`. `getAdminToken()` returns the optional `JUNJO_ADMIN_TOKEN` for cross-game admin endpoints (Phase 10.2).
+
+**Rationale:**
+- Lazy construction avoids `next build`'s static-route discovery crashing on a deploy where one of the env vars is intentionally absent. The cost is one extra `if (cached) return cached` check per request, dwarfed by I/O.
+- `import "server-only"` is a Next.js convention: the package's only job is to throw if a Client Component tries to import it. Without the guard, an accidental `"use client"` import would leak `JUNJO_ADMIN_API_KEY` (and any other secrets pulled in transitively) into the browser bundle. The guard is a 3-line module; the cost is one new dep.
+- Two helper functions (`getAdminToken`, `getJunjoBaseUrl`) cover the cross-game admin endpoint path that VISION's Phase 11 spec calls out for hand-rolled `fetch` (since the per-game SDK does not expose the cross-game query).
+
+**Trade:** the singleton is shared across all requests in the Node process. Mutations to the SDK instance (none in V1) would race; reads are safe. Acceptable: `Junjo` carries only configuration (no per-request state), and HTTP requests are issued through the platform fetch.
+
+### Phase 11.1a: dashboard env validation via Zod, cached after first parse
+
+**Decision:** `apps/dashboard/lib/env.ts` defines a Zod schema covering `JUNJO_BASE_URL` (defaults to `http://localhost:8787`), `JUNJO_ADMIN_API_KEY` (required, non-empty), and `JUNJO_ADMIN_TOKEN` (optional, non-empty when set). `loadDashboardEnv()` parses `process.env` on first call, caches the result, and rethrows with a flat issue-list message on failure. A `resetDashboardEnvCache()` test escape hatch is exported but not part of the public surface.
+
+**Rationale:**
+- Mirrors the server's `packages/server/src/env.ts` Zod loader. Same convention; same failure-mode shape; same lazy-validation rule (parse on demand, not at module load).
+- Default value for `JUNJO_BASE_URL` matches the local dev case (the `@junjo/server` workspace runs on `8787`); the dev does nothing extra to wire the dashboard against a local server. Production deploys explicitly set the var to their cloud server's origin.
+- `JUNJO_ADMIN_TOKEN` mirrors the server's optional treatment (Phase 10.2): unset is fine, the cross-game features just disappear from the UI.
+
+**Trade:** caching means that after the first successful parse, `process.env` mutations are not re-read. Acceptable: in practice env vars do not mutate at runtime in Next.js deployments, and the test escape hatch covers the unit-test case.
+
+### Phase 11.1a: Tailwind v3 with shadcn-style CSS variables, dark mode default
+
+**Decision:** the dashboard uses Tailwind v3 (not v4) with the shadcn-canonical CSS-variable theme in `app/globals.css`. The `:root` block defines the light-mode HSL triplets; the `.dark` block overrides them. The root layout sets `<html lang="en" className="dark">` so dark mode is the default; light-mode toggle lands in 11.1b.
+
+**Rationale:**
+- shadcn/ui (which 11.1b will install) is built around Tailwind v3's CSS-variable theming convention. Tailwind v4's config differences would require deviating from shadcn's defaults, which means hand-porting every primitive copy-pasted from the shadcn registry.
+- VISION's Phase 11 conventions explicitly call out shadcn/ui as the UI library; defaulting to Tailwind v3 keeps the upgrade path open. Tailwind v4 graduates only after shadcn migrates.
+- Dark mode default matches VISION's "look-and-feel target: Vercel dashboard / Stripe dashboard / Linear admin" stance. Operators who want light mode toggle it explicitly.
+
+**Trade:** Tailwind v4 ships meaningful perf wins. Acceptable: dashboard build perf is not a V1 bottleneck, and switching to v4 later is a contained migration (config file shape changes, but the CSS-variable theming shape is preserved).
