@@ -1051,3 +1051,55 @@ export function fetchAdminGroupChildren(
     opts,
   );
 }
+
+// Phase 11.9a-i wire shape mirroring `PermissionCheckResult` from
+// `@junjo/shared`. The admin endpoint reuses the per-game check route's
+// resolution logic byte-for-byte (same source taxonomy, same viaRoleId
+// semantics, same shared singleton cache); the dashboard owns its own
+// typed view here so it does not import across the cloud-only boundary.
+export type AdminPermissionSource = "none" | "default" | "role" | "override";
+
+export interface AdminPermissionCheckResult {
+  allowed: boolean;
+  source: AdminPermissionSource;
+  // Present only when `source === "role"`; the highest-priority role
+  // that granted the permission. The dashboard surfaces it in monospace
+  // and the operator cross-references against the Roles tab to find
+  // the named role.
+  viaRoleId?: string;
+}
+
+// Mirrors the server-side caps in `routes/admin.schema.ts:adminCheckPermissionQuery`
+// so the dashboard's tester form can enforce the same limit via input
+// maxLength attributes. Reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (128)
+// declared above.
+
+export interface FetchAdminPermissionCheckParams {
+  userId: string;
+  groupId: string;
+  permission: string;
+}
+
+// All three params are required; the server validates them with
+// `min(1)`. The dashboard's tester rejects empty fields client-side so
+// the wire request never reaches the server with empty values, but the
+// server-side validation still catches stale URLs / hand-edited forms.
+// `revalidate: 0` is forced so the operator's "Run again" always hits
+// the server (the underlying singleton permission cache still bounds
+// load to one resolver call per (gameId, groupId, userId, permission)
+// per 60 seconds; subsequent re-fetches read from the cache without
+// invalidating it).
+export function fetchAdminPermissionCheck(
+  gameId: string,
+  params: FetchAdminPermissionCheckParams,
+  opts?: FetchOptions,
+): Promise<AdminPermissionCheckResult> {
+  const qs = new URLSearchParams();
+  qs.set("userId", params.userId);
+  qs.set("groupId", params.groupId);
+  qs.set("permission", params.permission);
+  return adminFetch<AdminPermissionCheckResult>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/permissions/check?${qs.toString()}`,
+    { ...opts, revalidate: opts?.revalidate ?? 0 },
+  );
+}

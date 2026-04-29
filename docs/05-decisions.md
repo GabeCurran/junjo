@@ -4309,3 +4309,60 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Reusing `ADMIN_PERMISSION_KEY_MAX_LENGTH` (already shared between admin row actions and admin role-permission grants) keeps the cap consistent across every admin endpoint that takes a permission key in the body or query.
 
 **Trade:** if the per-game `checkPermissionQuery` ever changes shape (e.g., adds an optional `traceId` for debugging), the admin schema needs to mirror the change in lockstep. Acceptable: the schemas are 5 lines each; cross-references at the top of each file flag the duplication; reviewable.
+
+### Phase 11.9a-ii: dashboard owns typed `AdminPermissionCheckResult` / `AdminPermissionSource` shapes byte-for-byte
+
+**Decision:** `apps/dashboard/lib/admin.ts` declares `AdminPermissionSource = "none" | "default" | "role" | "override"` and `AdminPermissionCheckResult { allowed: boolean; source: AdminPermissionSource; viaRoleId?: string }` mirroring `PermissionSource` and `PermissionCheckResult` from `@junjo/shared` byte-for-byte rather than re-exporting them.
+
+**Rationale:**
+- Same open-core boundary stance as every other admin wire shape in this file (`AdminGroup`, `AdminInvitation`, `AdminRole`, `AdminPermissionDef`, `AdminGroupRelationship`, `AdminGroupAuditEntry`, etc. - see iter 060 / 062 / 067 / 069 / 071 / 074 / 076 / 079 / 080 / 083 decisions). The dashboard does not depend on `@junjo/shared`; lifting types into a shared package the dashboard imports would force the OSS package to carry types with no value outside the proprietary dashboard.
+- Pattern has held across 14 iterations of admin endpoints with zero drift; the wire shape itself is small (4 fields including the optional `viaRoleId`).
+- The dashboard's `AdminPermissionSource` is a structural duplicate of `PermissionSource` from `@junjo/shared` but with the same four values in the same order; if the union ever grows server-side, this file plus the server's `routes/admin.ts` plus the dashboard plain-English explanation function all need to be updated in lockstep. Acceptable: that's already true today for any admin wire shape change, and the shapes are tested end-to-end via the cumulative server tests.
+
+**Trade:** the type alias is a structural duplicate; if `PermissionSource` evolves to add a fifth state, three files need to change in lockstep instead of one. Acceptable: at the V1 design point the union is closed and stable.
+
+### Phase 11.9a-ii: tester form keeps the operator's last submitted values via `defaultValue` echoes
+
+**Decision:** the `<PermissionCheckTester>` form's three `<Input>` elements set `defaultValue` from the Server Action's echoed-back `inputs` field (`state.ok ? state.inputs : state.inputs ?? null`). After a successful Run, the form re-renders with the values that produced the result panel below; the operator can tweak one field and re-run without re-typing the rest.
+
+**Rationale:**
+- The dominant operator workflow is iterative debugging: "user X can't claim_territory in this group - is it because they're not a member, or because the role doesn't have the permission?" Re-running after every tweak with the form pre-filled saves real keystrokes per debugging session.
+- `defaultValue` (vs `value`) preserves the input-as-uncontrolled stance the rest of the dashboard's form-driven dialogs use; the operator's mid-typing changes are NOT clobbered by a server-action result that arrives mid-keystroke.
+- The Server Action echoes `inputs` on both success and failure paths (failure returns `inputs` so the operator sees what they submitted that produced the error message). Without the failure echo, a network-error mid-debug would erase the form and force a full re-type.
+
+**Trade:** an operator who runs Check, walks away, comes back, and wants to start fresh has to manually clear three fields. Acceptable: page-reload (Cmd-R or back-and-forward) clears the `useFormState` state to its initial empty value, which removes the echoes via `state.inputs ?? null`. A "Reset form" button is reversible; not shipping it for V1 keeps the surface minimal.
+
+### Phase 11.9a-ii: result panel renders source + allowed + viaRoleId as three separate badges
+
+**Decision:** the result panel's card header carries three Badge primitives in a flex row: an Allowed/Denied pill (variant=`default` for allowed, `destructive` for denied), a `source: <value>` muted badge with a per-source lucide icon, and an outline `viaRoleId: <id>` monospace badge when source is `role`. The plain-English explanation lives in the card description below the badge row.
+
+**Rationale:**
+- Three orthogonal pieces of information (boolean outcome, source taxonomy, role traceability) deserve three distinct visual hooks; collapsing them into one mega-pill or one prose sentence loses the at-a-glance scannability that operators need when walking through a stack of permission failures.
+- The variant matrix (default for allowed, destructive for denied, muted for source, outline for viaRoleId) is consistent with badge use elsewhere in the dashboard (Active / Revoked on API keys, Status filter on members, Type on relationships).
+- The plain-English explanation is the single canonical sentence VISION 11.9 calls out ("Granted by role 'Officer'", "Revoked by member-level override", "Not granted by any role and no override"); badges are the visual hook, the sentence is the prose explanation. Both surfaces stay in lockstep.
+- viaRoleId surfaces as a monospace string badge rather than a hyperlink to the Roles tab because the dashboard does not have a deep-link to a specific role within the Roles tab today (the Roles tab list is unfiltered). A future "scroll-to-role" anchor would be an additive UX improvement.
+
+**Trade:** an operator who wants to see the role's name (not just id) has to navigate to the Roles tab manually. Acceptable: the role name is one click away; surfacing the name inline would require an extra fetch (or pre-fetching the entire role list on page load) that the V1 tester does not need.
+
+### Phase 11.9a-ii: page placement at game-scoped path; top-level `/permissions` becomes a router
+
+**Decision:** the tester lives at `app/(dashboard)/games/[gameId]/permissions/check/page.tsx` (game-scoped per VISION); the top-level `app/(dashboard)/permissions/page.tsx` placeholder updates to a callout pointing operators at the per-game tester via the Games list (since permissions are always game-scoped).
+
+**Rationale:**
+- VISION 11.9 specifies the path verbatim. The dashboard's left-rail nav already has a top-level "Permissions" entry that previously rendered the "Phase 11.9 lands later" placeholder; removing the entry would be a regression in nav completeness, but the page itself can no longer be a stub.
+- Permissions are intrinsically game-scoped (the resolver takes `(gameId, groupId, externalUserId, permission)`); a cross-game permission tester would be misleading because a `userId` registered in game A doesn't resolve to membership in game B regardless of whether the dashboard's tester accepted them as inputs.
+- The top-level `/permissions` page becomes a "router" in the UX sense: it explains the game-scoped model and points the operator at the Games list to drill in. The dashboard does not auto-redirect because the operator may have multiple games and would have to choose; redirecting unconditionally would feel teleportingly weird.
+- Discovery from the game detail topbar (a "Permission check" link with a `<ShieldCheck>` icon) covers operators who arrive via the games browser; the top-level `/permissions` page covers operators who arrive via the left-rail nav.
+
+**Trade:** an operator clicking the left-rail "Permissions" entry sees a router page rather than landing directly on a tester. Acceptable: the click cost of "Permissions -> Games -> [pick game] -> Permission check" is one click higher than a unified surface, but the unified surface would either pin to one game (arbitrary choice) or carry a game picker (more UI than the per-game form). Future iteration could add a "recently tested" list on the top-level page if operator feedback warrants.
+
+### Phase 11.9a-ii: Server Action lives in route-scoped `actions.ts`, mirrors every prior 11.x precedent
+
+**Decision:** `checkPermissionAction` lives in a new `app/(dashboard)/games/[gameId]/permissions/check/actions.ts` (`"use server"`) co-located with the page and the Client Component that consumes it.
+
+**Rationale:**
+- Mirrors every prior 11.x Server Action (iter-062's `createGameAction` lives in `app/(dashboard)/games/actions.ts`; iter-063's `createApiKeyAction` / `revokeApiKeyAction` live in `app/(dashboard)/games/[gameId]/actions.ts`; iter-069's MembersTable row actions live in `app/(dashboard)/games/[gameId]/groups/[groupId]/actions.ts`; iter-071's `inviteMemberAction` lives there too; iter-074's role CRUD actions live there too; iter-079's relationships actions live there; iter-081's parent actions live there). Route-scoped placement keeps the route group's mental model "all the code for this URL lives in this directory."
+- `lib/admin.ts` stays a pure HTTP client surface (no `revalidatePath`, no FormData parsing) per the iter-062 / 069 / 074 / 079 precedent. The helper module stays callable from any Server Component without coupling to Next.js routing primitives.
+- The check tester Server Action is the only one in this iteration; folding it into a sibling action file would mix it with mutating actions (the check is read-only with no `revalidatePath` call) which would mislead future readers.
+
+**Trade:** another file in the route directory tree. Acceptable: the directory already contains `page.tsx` so an `actions.ts` next to it is the standard Next.js App Router convention; no other 11.x iteration has consolidated multiple routes' actions into one file.

@@ -20,6 +20,17 @@ coverage/
 .nyc_output/
 .vitest-cache/
 
+# Playwright (Phase 14.12 dashboard E2E)
+playwright-report/
+test-results/
+playwright/.cache/
+.playwright/
+.playwright-mcp/
+
+# Performance benchmarks (Phase 14.11)
+packages/server/bench-results/
+**/*.bench-results.json
+
 # Env
 .env
 .env.local
@@ -45,12 +56,25 @@ pids/
 # Editor / OS
 .vscode/
 .idea/
+*.iml
+.fleet/
+.zed/
 *.swp
 *.swo
+*.bak
+*.orig
+*~
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Local Postgres data dirs (if someone runs without Docker)
+pgdata/
+postgres-data/
 
 # Vercel
 .vercel/
@@ -95,3 +119,9 @@ TODO.local.md
 
 # Personal overnight automation loop (orchestrator, vision, runs, summaries)
 .loop/
+
+# Generated UI screenshot catalog (regeneratable; large PNG binaries)
+tools/screenshots/output/
+
+# Generated Mermaid diagram previews (regeneratable; the source .mmd is committed)
+tools/diagrams/output/

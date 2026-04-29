@@ -283,5 +283,29 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   paginated walk overrides the user's filter only while paging is
   active. Game detail page topbar grows an "Audit log" link next
   to "All games" so operators can find the new page.
-- 11.9: permission tester (one section per iteration).
+- 11.9a-i: cross-game admin permission check endpoint
+  (`GET /v1/admin/games/:gameId/permissions/check`) shipped on the
+  server. Mirrors the per-game `GET /v1/permissions/check` byte-for-
+  byte (same query shape, same `PermissionCheckResult` wire format,
+  same resolution order, shared singleton `permissionCache`); reuses
+  `resolvePermission` from `routes/permissions.ts` directly via the
+  cloud-only boundary cross-import precedent.
+- 11.9a-ii (this iteration): permission check tester at
+  `app/(dashboard)/games/[gameId]/permissions/check/page.tsx`. Form
+  takes (userId, groupId, permission), runs the new
+  `checkPermissionAction` Server Action against
+  `fetchAdminPermissionCheck`, and renders a result panel with
+  Allowed/Denied + source + viaRoleId badges plus a one-line plain-
+  English explanation per the `PermissionSource` taxonomy ("Granted
+  by role <id>", "Revoked by member-level override", "Active member
+  with no role-derived grant and no override - permission denied by
+  default", "Not a member of the group, or member is not in active
+  status"). The form keeps the operator's last submitted values via
+  `defaultValue` echoes from the Server Action's `inputs` field, so
+  re-running with a tweaked permission key is one keystroke + Run.
+  Discovery via a new "Permission check" link in the game detail
+  page topbar (alongside "Audit log" + "All games"). The top-level
+  `/permissions` placeholder updated to point operators at the per-
+  game tester (since permissions are always game-scoped). Phase 11.9
+  closes here.
 - 12.1 - 12.5: Analytics surface (Tremor charts).
