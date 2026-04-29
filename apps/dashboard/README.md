@@ -174,7 +174,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `<EditRoleDialog>`, `<DeleteRoleDialog>`) consume three new Server
   Actions (`createRoleAction`, `updateRoleAction`, `deleteRoleAction`)
   in the existing route-scoped actions file.
-- 11.6c (this iteration, closes Phase 11.6): group detail page grows
+- 11.6c (closes Phase 11.6): group detail page grows
   a third tab (Permissions) under the same `?tab=` navigation. The
   matrix renders roles as rows (priority desc) and registered
   permission keys as columns (sorted ascending) with a checkbox per
@@ -186,6 +186,19 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   and the next revalidation pulls it into the catalog. Empty states
   steer the operator to the Roles tab (no roles) or to the inline
   register input (no keys).
-- 11.7 - 11.9: audit + relationships + sub-groups tabs, audit viewer,
-  permission tester (one section per iteration).
+- 11.7a-i (this iteration): cross-game admin audit endpoint
+  (`GET /v1/admin/games/:gameId/groups/:groupId/audit`) shipped on
+  the server. Mirrors the per-game `GET /v1/groups/:id/audit` route
+  byte-for-byte (same query schema, same timestamp-based pagination,
+  same `Page<WireAuditEntry>` response shape). Reuses
+  `serializeAuditEntry` and `WireAuditEntry` from `routes/audit.ts`
+  directly. Backs the dashboard's group detail Audit tab in
+  Phase 11.7a-ii (no UI shipped this iteration; the dashboard still
+  carries only the Members + Roles + Permissions tabs).
+- 11.7a-ii: dashboard Audit tab (action filter dropdown, paginated
+  list, relative timestamps).
+- 11.7b-i, 11.7b-ii, 11.7c-i, 11.7c-ii: Relationships tab + Sub-groups
+  tab (each split into server-endpoints + UI iterations).
+- 11.8 - 11.9: audit viewer, permission tester (one section per
+  iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

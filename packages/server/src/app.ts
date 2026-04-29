@@ -20,6 +20,7 @@ import {
   listAdminApiKeysHandler,
   listAdminGamePermissionsHandler,
   listAdminGamesHandler,
+  listAdminGroupAuditHandler,
   listAdminGroupMembersHandler,
   listAdminGroupRolesHandler,
   listAdminGroupsForGameHandler,
@@ -243,6 +244,17 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/permissions",
     adminAuthMiddleware(opts.adminToken),
     listAdminGamePermissionsHandler(prisma),
+  );
+  // Admin-token-gated per-group audit feed (Phase 11.7a-i). Mirrors the
+  // per-game `GET /v1/groups/:id/audit` (iter 028) byte-for-byte: same
+  // `listAuditQuery` schema, same timestamp-based pagination, same
+  // `Page<WireAuditEntry>` response shape. Backs the dashboard's group
+  // detail Audit tab (Phase 11.7a-ii). 404-collapses missing /
+  // cross-game / soft-deleted groups.
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/audit",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupAuditHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

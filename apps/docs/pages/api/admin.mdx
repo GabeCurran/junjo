@@ -1036,6 +1036,61 @@ Errors:
 | `not_found` | 404 | The supplied `gameId` does not exist. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/groups/:groupId/audit
+
+Returns a timestamp-paginated audit feed for one group. Backs the dashboard's group detail Audit tab (Phase 11.7a-ii). Mirrors the per-game `GET /v1/groups/:id/audit` route byte-for-byte: same query schema, same pagination, same response shape.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id whose audit entries to list. |
+
+Query parameters (all optional):
+
+| Name | Type | Default | Notes |
+|------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Max items per page. |
+| `before` | ISO 8601 string | unset | Returns only entries with `createdAt < before`. Use the previous page's `nextCursor` value here. |
+| `actions` | repeated string | unset | Restricts results to entries whose `action` is in the supplied set (OR semantics). Each value must be a known `AuditAction`; unknowns return 400. Repeats per filter value (`?actions=group.created&actions=role.created`). |
+
+Response: `200 OK` with a `Page<WireAuditEntry>` shape. Wire format:
+
+```ts
+interface WireAuditEntry {
+  id: string;
+  groupId: string;
+  actorUserId: string | null;
+  action: string;
+  targetId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string; // ISO 8601
+}
+
+interface WireAuditPage {
+  items: WireAuditEntry[];
+  nextCursor: string | null; // ISO 8601 of the last item's createdAt, or null when no more pages
+}
+```
+
+Behavior:
+
+- Ordered `(createdAt desc, id desc)`. The `id` tiebreaker keeps pagination deterministic across rows that share a millisecond.
+- Pagination is timestamp-based via the exclusive `before` filter. Caller pages by feeding the response's `nextCursor` value back as `before` on the next call.
+- `nextCursor` is the ISO 8601 `createdAt` of the last item on the page when more pages exist; `null` when the page is the final one.
+- Wire shape is `WireAuditEntry` (functionally identical to the per-game route). The cross-game recent-audit feed at `/v1/admin/audit` carries additional `gameName` / `groupName` / `groupSoftDeleted` fields the per-group view doesn't need (the dashboard already has gameId + groupId from the URL path).
+- 404 collapses missing / cross-game / soft-deleted groups via the same three-check pattern other admin per-group routes use.
+- Cross-game soft-deleted-group audit activity is reachable via the `/v1/admin/audit` recent feed (which carries the `groupSoftDeleted` flag); per-group audit is not reachable for soft-deleted groups.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `bad_request` | 400 | `limit` out of range, `before` not parseable as ISO 8601, or `actions` includes an unknown value. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

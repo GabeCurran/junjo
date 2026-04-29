@@ -3852,3 +3852,39 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the actions don't get the `useFormState` ergonomics (automatic state passing, optimistic-with-form-submission patterns). Acceptable - the matrix's React state mirror does the same job more flexibly, and the pattern is consistent with the existing Server Action conventions in this route.
 
+### Phase 11.7 splits a-i / a-ii / b-i / b-ii / c-i / c-ii
+
+**Decision:** Phase 11.7 ("Group detail audit + relationships + sub-groups tabs") splits across six iterations, with each tab broken into a server-endpoints iteration followed by a UI iteration. 11.7a-i (this iteration) ships the cross-game admin audit endpoint; 11.7a-ii ships the dashboard Audit tab. 11.7b-i ships the cross-game admin relationships CRUD endpoints (`PUT/DELETE/GET .../relationships/:b`, `GET .../relationships`); 11.7b-ii ships the Relationships tab. 11.7c-i ships the cross-game admin sub-groups endpoints (`PUT .../parent`, `GET .../children`); 11.7c-ii ships the Sub-groups tab.
+
+**Rationale:**
+- Mirrors every prior 11.x precedent: 11.5 split into a/b/c-i/c-ii/d-i/d-ii; 11.6 split into a-i/a-ii/b/c. The "server endpoints first, UI second" seam was used at 11.5a/b, 11.5c-i/ii, 11.5d-i/ii, 11.6a-i+a-ii / b / c. The trade-off is consistent: server-only iterations are tightly scoped to one wire-format change with self-contained tests; UI-only iterations are tightly scoped to dashboard composition with the Server Component / Client Component / Server Action triple.
+- Three tabs, each with its own server / UI seam, is the natural decomposition. Bundling all three tabs' server endpoints (one read, four CRUD, one PUT + one read = ~6 endpoints) into one iteration would produce a server-only diff of ~600 lines plus tests; bundling the corresponding UI on top would push it past the smallest-reviewable-unit threshold.
+- Each tab's server endpoints can land independently because they consume independent existing per-game routes (Phase 5.2 audit, Phase 4.1 relationships, Phase 4.2 sub-groups). No tab's server endpoints depend on another tab's. The dashboard tabs themselves all live behind the same `<GroupDetailTabs>` primitive (Phase 11.6b) and can be added incrementally as the `TAB_DEFS` array grows.
+
+**Trade:** the Audit tab (the simplest of the three; just one read endpoint) gets its own a/b split when arguably it could ship server + UI in one iteration. Acceptable: consistency with the established a/b precedent makes the split predictable; the UI iteration also needs Server Component scaffolding, an action filter dropdown, pagination affordances, and relative timestamps that are non-trivial in their own right. The server iteration's ~80-line handler + tests + docs is a reasonable single-iteration commit on its own.
+
+### Phase 11.7a-i: admin audit endpoint mirrors per-game `GET /v1/groups/:id/audit` byte-for-byte and reuses `WireAuditEntry`
+
+**Decision:** `listAdminGroupAuditHandler` (`GET /v1/admin/games/:gameId/groups/:groupId/audit`) reuses the per-game `listAuditQuery` schema, the per-game `serializeAuditEntry` helper, and the per-game `WireAuditEntry` type directly from `routes/audit.ts` (importing across the cloud-only boundary, like the iter-070 admin invitation handler imports `serializeInvitation` and `WireInvitation`). The wire shape, query parameters, response envelope, and pagination contract are byte-identical to the per-game route.
+
+**Rationale:**
+- The per-group audit shape doesn't change based on which authentication surface fetched it. The dashboard already has gameId + groupId from the URL path, so it doesn't need the `gameName` / `groupName` / `groupSoftDeleted` pivoted columns the cross-game `WireAdminAuditEntry` (iter 059) carries for the home page activity feed.
+- Reusing the helpers avoids a ~40-line structural duplicate (a `WireAdminGroupAuditEntry` interface + a `serializeAdminGroupAuditEntry` function + corresponding tests would all be identical to the existing per-game equivalents).
+- The cross-import is a pure function from the per-game module, not a behavioral coupling. The admin handler still owns its own existence checks (the 404 collapse), its own auth (the route-level `adminAuthMiddleware`), and its own event/audit semantics (none in this case - audit is read-only).
+- Byte-identical wire format makes future SDK consumers easier: a hypothetical admin SDK could share the same `Page<AuditEntry>` type and `deserializeAuditEntry` helper that the per-game SDK already has.
+
+**Trade:** the admin handler imports across the cloud-only boundary (one helper + one type from `routes/audit.ts`). Acceptable: same precedent as the admin invitation handler from iter 070; the import is narrow (pure functions only, no Prisma client wiring); the boundary stays clean for the wire shapes the admin layer adds on top (`WireAdminGroup`, `WireAdminRole`, etc. all stay duplicated structurally). If the per-game route's wire shape ever diverges (e.g. adds a new field), the admin route can either follow along or fork at that point.
+
+### Phase 11.7a-i: per-group admin audit endpoint excludes soft-deleted groups (matches per-game route)
+
+**Decision:** the admin handler 404-collapses missing / cross-game / soft-deleted groups via the same three-check pattern `getAdminGroupHandler` and `listAdminGroupMembersHandler` use. Per-group audit for a soft-deleted group returns 404; cross-game soft-deleted-group audit activity is reachable via the cross-game recent-audit feed at `/v1/admin/audit` (which carries the `groupSoftDeleted` flag, iter 059) but not via the per-group route.
+
+**Rationale:**
+- Matches the per-game route's behavior verbatim: `routes/audit.ts:listAuditForGroup` filters with `softDeletedAt: null` on the parent group's `findFirst` lookup. Diverging from the per-game contract would create a confusing two-rules-for-one-feature situation.
+- The dashboard's group detail page already calls `notFound()` on the parent `<GroupBody>` for soft-deleted groups (Phase 11.5b); the Audit tab is unreachable for soft-deleted groups via normal navigation. The endpoint's 404 just enforces the same invariant at the API layer.
+- Cross-game recent-audit (`/v1/admin/audit`, iter 059) is the right surface for "activity from a soft-deleted group" - it pivots the relevant group context (gameName / groupName / groupSoftDeleted) into each row and is presented in a chronological-cross-everything view that doesn't pretend the deleted group is still browsable.
+- The soft-delete window is bounded (7 days; Phase 1.5's hard-delete sweeper); preserving access to per-group audit on a soft-deleted group during that window would require a different UI surface ("audit for a deleted group") that VISION doesn't call for in V1.
+
+**Trade:** an operator who soft-deleted a group within the last 7 days cannot inspect that group's audit through the per-group endpoint; they must use the cross-game recent feed. Acceptable: documented; the recent feed already has the right shape for this view; restoring the group (Phase 1.5's `restore` endpoint) re-enables per-group audit access immediately.
+
+

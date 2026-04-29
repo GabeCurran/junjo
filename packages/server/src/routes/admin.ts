@@ -54,6 +54,9 @@ import {
   listAdminGroupsQuery,
   listRecentAuditQuery,
 } from "./admin.schema.js";
+import { serializeAuditEntry } from "./audit.js";
+import type { WireAuditEntry } from "./audit.js";
+import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import type { WireInvitation } from "./invitations.js";
 
@@ -2085,5 +2088,86 @@ export function listAdminGamePermissionsHandler(prisma: PrismaClient): Handler {
         createdAt: d.createdAt.toISOString(),
       })),
     );
+  };
+}
+
+// `GET /v1/admin/games/:gameId/groups/:groupId/audit` returns a
+// timestamp-paginated audit feed for one group, backing the dashboard's
+// group detail Audit tab (Phase 11.7a-ii). Mirrors the per-game
+// `listAuditForGroup` (iter 028) byte-for-byte: same `listAuditQuery`
+// schema (`limit` 1-100 default 50, `before` ISO 8601, `actions[]`
+// validated against `AUDIT_ACTIONS`), same `(createdAt desc, id desc)`
+// ordering, same `Page<WireAuditEntry>` response shape with
+// `nextCursor` set to the ISO `createdAt` of the last item when more
+// pages exist. Caller pages by passing `nextCursor` back as `before`.
+//
+// Wire shape reuses `WireAuditEntry` and the `serializeAuditEntry`
+// helper from `routes/audit.ts`. The per-group entry shape is
+// functionally identical regardless of which surface fetched it (the
+// dashboard already knows the gameId / groupId from the URL path), so
+// reusing the helper avoids a ~40-line structural duplicate. Mirrors
+// the iter-070 invitation precedent where the admin invitation handler
+// reuses `serializeInvitation` and `WireInvitation`. Does NOT reuse
+// `WireAdminAuditEntry` (the recent-audit cross-game shape from iter
+// 059) - that shape carries `gameName` / `groupName` / `groupSoftDeleted`
+// fields the dashboard's group detail page already has from URL
+// context.
+//
+// 404 collapses missing / cross-game / soft-deleted groups via the
+// same three-check pattern `getAdminGroupHandler` and
+// `listAdminGroupMembersHandler` use; the dashboard's
+// `notFound()`-on-substring-match routes operators to Next.js's 404
+// page if the URL is stale. Matches the per-game route's
+// soft-delete-excluded behavior (the per-group audit tab is not
+// reachable without a live group; cross-game recent-audit at
+// `/v1/admin/audit` is the surface for soft-deleted-group activity).
+export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const group = await prisma.group.findUnique({
+      where: { id: groupId },
+      select: { id: true, gameId: true, softDeletedAt: true },
+    });
+    if (!group) throw Errors.notFound("group");
+    if (group.gameId !== gameId) throw Errors.notFound("group");
+    if (group.softDeletedAt !== null) throw Errors.notFound("group");
+
+    const parsed = listAuditQuery.safeParse({
+      limit: c.req.query("limit"),
+      before: c.req.query("before"),
+      actions: c.req.queries("actions"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, before, actions } = parsed.data;
+
+    const where: Prisma.AuditEntryWhereInput = {
+      groupId: group.id,
+      ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+      ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
+    };
+
+    const entries = await prisma.auditEntry.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = entries.length > limit;
+    const sliced = hasMore ? entries.slice(0, limit) : entries;
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.createdAt.toISOString() : null;
+
+    return c.json<{ items: WireAuditEntry[]; nextCursor: string | null }>({
+      items: sliced.map(serializeAuditEntry),
+      nextCursor,
+    });
   };
 }
