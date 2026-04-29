@@ -236,6 +236,48 @@ export const adminCheckPermissionQuery = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
 });
 
+// Phase 12.2a: cross-game group churn analytics. Returns the binned tenure
+// histogram of departures (kicked + left members) for groups created
+// within `[from, to)`. Both bounds are optional ISO 8601 timestamps; the
+// dashboard always sends `from` (resolved from the date-range picker) and
+// sometimes sends `to` (custom ranges only). The handler treats omitted
+// fields as "no bound on that side".
+export const groupChurnQuery = z.object({
+  from: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "from must be an ISO 8601 date" })
+    .optional(),
+  to: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "to must be an ISO 8601 date" })
+    .optional(),
+});
+
+// Tenure bin boundaries used by `getGroupChurnHandler`. The five bins are
+// half-open `[minMs, maxMs)`; `minMs: null` means "-infinity" (always
+// matches the first bin) and `maxMs: null` means "+infinity" (always the
+// last). The labels are the wire-stable copy the chart renders verbatim.
+export interface GroupChurnBinDef {
+  label: string;
+  minMs: number | null;
+  maxMs: number | null;
+}
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const ONE_MONTH_MS = 30 * ONE_DAY_MS;
+
+export const ANALYTICS_GROUP_CHURN_BINS: readonly GroupChurnBinDef[] = [
+  { label: "< 1h", minMs: null, maxMs: ONE_HOUR_MS },
+  { label: "1h - 1d", minMs: ONE_HOUR_MS, maxMs: ONE_DAY_MS },
+  { label: "1d - 1w", minMs: ONE_DAY_MS, maxMs: ONE_WEEK_MS },
+  { label: "1w - 1mo", minMs: ONE_WEEK_MS, maxMs: ONE_MONTH_MS },
+  { label: "1mo+", minMs: ONE_MONTH_MS, maxMs: null },
+] as const;
+
 export type ListRecentAuditQuery = z.infer<typeof listRecentAuditQuery>;
 export type ListAdminGamesQuery = z.infer<typeof listAdminGamesQuery>;
 export type CreateGameBody = z.infer<typeof createGameBody>;
@@ -257,3 +299,4 @@ export type AdminClearRelationshipQuery = z.infer<typeof adminClearRelationshipQ
 export type AdminSetParentBody = z.infer<typeof adminSetParentBody>;
 export type ListAdminGameAuditQuery = z.infer<typeof listAdminGameAuditQuery>;
 export type AdminCheckPermissionQuery = z.infer<typeof adminCheckPermissionQuery>;
+export type GroupChurnQuery = z.infer<typeof groupChurnQuery>;

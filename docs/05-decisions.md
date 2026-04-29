@@ -4426,3 +4426,62 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - The button uses `target="_blank"` + `rel="noopener noreferrer"` because the docs site is a different origin from the dashboard's Basic Auth gate; opening in the same tab would log the operator out of the dashboard.
 
 **Trade:** the empty state has two visual variants (with-link and without-link) instead of a single canonical layout. Acceptable: the divergence is one line of inline conditional rendering; the visual shapes are similar enough (button vs paragraph) that the layout does not shift jarringly between them.
+
+### Phase 12.2 splits a/b: server endpoint, then dashboard chart
+
+**Decision:** Phase 12.2 ("Group churn chart") splits across iterations mirroring every prior Phase 11.x and Phase 5.x server-then-UI precedent. 12.2a (this iteration) ships the cross-game admin endpoint `GET /v1/admin/games/:gameId/analytics/group-churn` plus tests + docs. 12.2b ships the dashboard `<GroupChurnChart>` Tremor `<BarChart>` consuming the endpoint, the Tremor color tokens wired into Tailwind (deferred from 12.1 per the iter-086 decision), and the analytics page rewrite that swaps the empty state body for the chart.
+
+**Rationale:**
+- Bundling a new server endpoint + 22 tests + a new wire helper in `lib/admin.ts` + a new Tremor chart component + the Tailwind theme extension + the page rewrite into one iteration would produce a 5+ surface diff. The natural seam is invisible API surface (this) vs visible UI (next), exactly the seam used by every prior Phase 11.x split.
+- The forecast in iteration 086's log ("the 12.2 iteration will own the Tremor color tokens wiring [...] and the chart-renders-or-empty-state branch") was a forecast, not a binding plan; the right call is judged by the actual diff size when we reach the iteration. Phase 11.x consistently splits when the dashboard side has substantial new infrastructure (Tailwind theme additions for new primitives, new wire helpers, a new component class); 12.2 has all three.
+- The split keeps git history readable: a future reader scanning commit messages sees "ship cross-game group-churn analytics endpoint" and "ship dashboard group churn chart" as two independent commits, with the chart commit clearly the consumer of the prior commit's wire shape.
+
+**Trade:** none meaningful. The two halves can ship in either order; choosing server-first means the chart half can land additively without any server changes.
+
+### Phase 12.2a: window applies to `Group.createdAt`, not to the departures' timestamps
+
+**Decision:** the `from` / `to` filter on `GET /v1/admin/games/:gameId/analytics/group-churn` matches `Group.createdAt`. A group born inside the window contributes every kicked / left member it ever had, regardless of when those departures occurred. Conversely, a group born outside the window contributes nothing, even if its members departed during the window.
+
+**Rationale:**
+- VISION's exact phrasing: "for groups created in the date range, plot the distribution of `(member.left.createdAt - member.joined.createdAt)`". Reading "for groups created in the date range" literally pins the date filter on `Group.createdAt`, not on the member rows.
+- The chart answers the question "how does churn look for the cohort of groups born in this window?". A group born today with a departure tomorrow IS this cohort's churn. A group born last year that lost a member today is a different cohort's churn (the long-tail one).
+- The alternative (filtering on `GroupMember.leftAt`) would answer "what departures happened in this window, regardless of when their groups were born?" - a different question that mixes cohorts. Operators looking at "are new groups churning fast?" want the cohort answer, not the activity-volume answer.
+- The handler's defensive `pickChurnBin` clamps non-finite or negative tenures to bin 0 so a clock-skew row never silently disappears from the histogram.
+
+**Trade:** an operator who wants "how many members departed last week?" will not get that from this endpoint - they need the audit log viewer (Phase 11.8b) instead. Acceptable: the audit log viewer answers that question precisely; the analytics chart answers a different question and should not blur the two.
+
+### Phase 12.2a: half-open bins with explicit `[minMs, maxMs)` boundaries + null sentinels
+
+**Decision:** the five bins are `[< 1h, 1h - 1d, 1d - 1w, 1w - 1mo, 1mo+]`. Each bin is half-open `[minMs, maxMs)`; `minMs: null` means -infinity (the first bin's lower bound) and `maxMs: null` means +infinity (the last bin's upper bound). A tenure that lands exactly on a boundary goes into the higher bin (lower bound is inclusive, upper bound is exclusive).
+
+**Rationale:**
+- Half-open intervals are the standard convention for histograms (matches the iter-082 audit feed's `[since, before)` rule): no row is ever counted twice, no row falls into a gap.
+- Boundary tenures (exactly 1h, exactly 1 day, exactly 1 week, exactly 1 month) are deterministic - they always go up. Without a documented rule, `tenure === 60 * 60 * 1000` could plausibly land in either `< 1h` or `1h - 1d`; the test suite pins the answer.
+- VISION's "(1h, 1d, 1w, 1mo, 3mo+)" wording is ambiguous; the most charitable reading treats those labels as upper-bound markers with the last bin being open-ended. The label "1mo+" is a clearer name than "3mo+" because (a) the bin actually starts at 1 month, not 3 months, and (b) the "+" suffix already carries the open-ended semantic. The test suite asserts the wire labels verbatim so any future relabeling is one search-and-replace away.
+- The wire format's `minMs: number | null` / `maxMs: number | null` sentinels avoid magic numbers (no `Number.MAX_SAFE_INTEGER` or `-1` placeholder); the dashboard chart can render the labels verbatim and ignore the bounds entirely.
+
+**Trade:** the boundary rule (lower-bound inclusive) requires a test to pin it; an operator who reads only the labels might guess wrong. Acceptable: the rule is documented in the API reference and the wire shape is explicit about the bounds, so a careful reader can resolve any ambiguity.
+
+### Phase 12.2a: tenure binning runs in JavaScript, not in SQL
+
+**Decision:** the handler fetches every matching `GroupMember` row (`status` in `("left", "kicked")`, `leftAt` non-null, `groupId` in the matching set) with `select: { joinedAt, leftAt }` only, then computes `leftAt - joinedAt` and bins in JavaScript. No `EXTRACT (EPOCH FROM ...)` or `CASE WHEN ... THEN ...` SQL.
+
+**Rationale:**
+- The bin boundaries (1h, 1d, 1w, 1mo) are readable as JS constants but ugly as SQL `CASE` expressions; a future contributor changing the bins should not have to edit a `$queryRaw` block.
+- The matching set (members of groups created in the window) is bounded in practice: a typical Junjo deployment has hundreds to low thousands of groups in any reasonable window, with similar order-of-magnitude departure counts. Pulling N rows of `(joinedAt, leftAt)` over the wire is dominated by the round-trip latency, not the row count.
+- The Prisma query stays typed end-to-end; switching to `$queryRaw` would introduce a hand-written SQL string in an otherwise type-safe module and lose the schema-change safety.
+- The handler skips the `groupBy` + `count` SQL aggregation that would be the alternative because the bin boundaries are not regularly spaced; a `groupBy` would need a synthetic bin-index column computed via SQL `CASE`, which puts the same readability problem on a worse axis.
+
+**Trade:** for a deployment with a million members departing in the window, the handler would pull a million rows. Acceptable: V1 is far below that scale, and a future iteration can move to a `$queryRaw` `groupBy` if profiling shows the JS path dominates request latency.
+
+### Phase 12.2a: tests live in standalone `admin.groupChurn.test.ts` (file-per-feature)
+
+**Decision:** the 22 new tests for the group-churn endpoint live in a new file `packages/server/src/routes/admin.groupChurn.test.ts` rather than appended to the existing `admin.test.ts`.
+
+**Rationale:**
+- Mirrors the iter-068 / 070 / 072 / 073 / 076 / 078 / 080 / 082 / 084 file-per-feature precedents established for every admin endpoint that landed in its own iteration. The pattern has held across 14 iterations of admin endpoints with zero drift.
+- `admin.test.ts` is already 2500+ lines covering the original Phase 10.2 + Phase 11.2a + Phase 11.3a tests; adding 22 more would make it 2700+ and harder to navigate.
+- File-per-feature makes the test setup boilerplate (PrismaClient, createApp, beforeEach truncate, seed helpers) discoverable - a future contributor reading `admin.groupChurn.test.ts` sees the full scaffold in one file.
+- Cumulative server test count: 1149 -> 1171 (+22).
+
+**Trade:** the test directory grows by one more file. Acceptable: the iter-068+ precedent shows this scales fine; the alternative (one mega-file) is worse.

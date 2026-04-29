@@ -1393,6 +1393,82 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 { "allowed": true, "source": "role", "viaRoleId": "cm_role_officer" }
 ```
 
+## `GET /v1/admin/games/:gameId/analytics/group-churn`
+
+Phase 12.2a. Returns the binned tenure histogram of departures (kicked + left members) for groups created within `[from, to)`. Backs the dashboard's group churn chart (Phase 12.2b).
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | open | Inclusive lower bound on `Group.createdAt`. |
+| `to` | no | ISO 8601 | open | Exclusive upper bound on `Group.createdAt`. |
+
+Response:
+
+```ts
+interface WireAdminGroupChurn {
+  from: string | null;
+  to: string | null;
+  totalGroupsInWindow: number;
+  totalDeparturesInWindow: number;
+  bins: Array<{
+    label: string;
+    minMs: number | null;
+    maxMs: number | null;
+    count: number;
+  }>;
+}
+```
+
+The five bins are wire-stable: `< 1h`, `1h - 1d`, `1d - 1w`, `1w - 1mo`, `1mo+`. Each bin is half-open `[minMs, maxMs)`; `minMs: null` means -infinity (always the first bin), `maxMs: null` means +infinity (always the last). A tenure that lands exactly on a boundary goes into the higher bin (lower bound is inclusive, upper bound is exclusive).
+
+Behavior:
+
+- **The window applies to `Group.createdAt`**, NOT to the departure timestamps. A group born today with a year-old departure counts; a year-old group with a today departure does not. This answers VISION's question literally: "for groups created in the date range, plot the distribution of tenure for kicked + left members".
+- **Departure** = `GroupMember` with `status` in `("left", "kicked")` AND `leftAt` non-null. Tenure is `leftAt - joinedAt` in milliseconds, computed in JS rather than SQL so the bin boundaries stay readable. Active and invited members are excluded.
+- **Soft-deleted groups are excluded** from the population (matches the rest of the admin read surface). The audit log preserves history but the analytics view ignores it.
+- **Empty population** (no groups match the window) returns `0` in every bin and the response is otherwise still well-formed.
+- **404 only when the gameId itself does not exist.** A game with zero matching groups returns 200 with the empty-bin shape.
+- **Open-ended windows.** Either `from` or `to` (or both) may be omitted. Omitting both runs the histogram over every group the game has ever had. The response echoes whatever was supplied verbatim and `null` otherwise.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` or `to` (not an ISO 8601 date). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-churn?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00Z",
+  "to": "2026-05-01T00:00:00Z",
+  "totalGroupsInWindow": 42,
+  "totalDeparturesInWindow": 17,
+  "bins": [
+    { "label": "< 1h", "minMs": null, "maxMs": 3600000, "count": 4 },
+    { "label": "1h - 1d", "minMs": 3600000, "maxMs": 86400000, "count": 5 },
+    { "label": "1d - 1w", "minMs": 86400000, "maxMs": 604800000, "count": 3 },
+    { "label": "1w - 1mo", "minMs": 604800000, "maxMs": 2592000000, "count": 3 },
+    { "label": "1mo+", "minMs": 2592000000, "maxMs": null, "count": 2 }
+  ]
+}
+```
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

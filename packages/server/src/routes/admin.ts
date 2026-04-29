@@ -51,6 +51,7 @@ import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  ANALYTICS_GROUP_CHURN_BINS,
   adminCheckPermissionQuery,
   adminClearRelationshipQuery,
   adminCreateInvitationBody,
@@ -63,6 +64,7 @@ import {
   adminUpdateMemberBody,
   adminUpdateRoleBody,
   createGameBody,
+  groupChurnQuery,
   listAdminGameAuditQuery,
   listAdminGamesQuery,
   listAdminGroupMembersQuery,
@@ -2787,5 +2789,143 @@ export function checkAdminPermissionHandler(
     const result = await resolvePermission(prisma, gameId, group.id, userId, permission);
     cache.set(gameId, group.id, userId, permission, result);
     return c.json(result);
+  };
+}
+
+// Phase 12.2a: cross-game group-churn analytics. Returns the binned
+// tenure histogram of departures (kicked + left members) across every
+// group in the game that was created within `[from, to)`.
+//
+// Wire shape carries:
+//   - the resolved `from` / `to` (echoed verbatim or null when omitted),
+//   - the count of groups that fell inside the window (the population),
+//   - the count of departures from that population (the sample),
+//   - one row per bin with the bin's wire-stable label, the half-open
+//     [minMs, maxMs) bounds (or null on either end), and the count.
+//
+// Behavior:
+//   - "Departure" = `GroupMember` with `status` in `("left", "kicked")`
+//     and `leftAt` non-null. Tenure is `leftAt - joinedAt` in
+//     milliseconds, computed in JS rather than SQL so the bin
+//     boundaries stay readable.
+//   - The window applies to `Group.createdAt`, NOT to the departures'
+//     timestamps. A group created today with a year-old departure
+//     counts; a year-old group with a today departure does not. This
+//     is what VISION's "for groups created in the date range" means:
+//     answer the question "how does churn look for the cohort of
+//     groups born in this window?".
+//   - Soft-deleted groups are excluded (matches the rest of the admin
+//     read surface). The audit log preserves history but the analytics
+//     view ignores it.
+//   - Empty population (no matching groups) returns 0 in every bin.
+//   - 404 only when the gameId itself does not exist.
+export interface WireAdminGroupChurnBin {
+  label: string;
+  minMs: number | null;
+  maxMs: number | null;
+  count: number;
+}
+
+export interface WireAdminGroupChurn {
+  from: string | null;
+  to: string | null;
+  totalGroupsInWindow: number;
+  totalDeparturesInWindow: number;
+  bins: WireAdminGroupChurnBin[];
+}
+
+function pickChurnBin(tenureMs: number): number {
+  // Returns the index of the matching bin in `ANALYTICS_GROUP_CHURN_BINS`.
+  // Iterates in array order; the first half-open match wins. The last
+  // bin's `maxMs: null` always matches, so a tenure that falls past
+  // every finite upper bound lands there. A non-finite or negative
+  // tenure (clock skew between joinedAt and leftAt) is clamped to bin
+  // 0 so the histogram never silently drops a row.
+  if (!Number.isFinite(tenureMs) || tenureMs < 0) return 0;
+  for (let i = 0; i < ANALYTICS_GROUP_CHURN_BINS.length; i += 1) {
+    const bin = ANALYTICS_GROUP_CHURN_BINS[i];
+    if (!bin) continue;
+    const { minMs, maxMs } = bin;
+    if (minMs !== null && tenureMs < minMs) continue;
+    if (maxMs !== null && tenureMs >= maxMs) continue;
+    return i;
+  }
+  // Should be unreachable - the last bin's `maxMs: null` matches
+  // anything - but fall back to the last bin defensively.
+  return ANALYTICS_GROUP_CHURN_BINS.length - 1;
+}
+
+export function getGroupChurnHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const parsed = groupChurnQuery.safeParse({
+      from: c.req.query("from"),
+      to: c.req.query("to"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { from, to } = parsed.data;
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const createdAtFilter: Prisma.DateTimeFilter = {};
+    if (from) createdAtFilter.gte = new Date(from);
+    if (to) createdAtFilter.lt = new Date(to);
+
+    const groups = await prisma.group.findMany({
+      where: {
+        gameId,
+        softDeletedAt: null,
+        ...(from || to ? { createdAt: createdAtFilter } : {}),
+      },
+      select: { id: true },
+    });
+
+    const counts = ANALYTICS_GROUP_CHURN_BINS.map(() => 0);
+    let totalDepartures = 0;
+
+    if (groups.length > 0) {
+      const departures = await prisma.groupMember.findMany({
+        where: {
+          groupId: { in: groups.map((g) => g.id) },
+          status: { in: ["left", "kicked"] },
+          leftAt: { not: null },
+        },
+        select: { joinedAt: true, leftAt: true },
+      });
+
+      for (const d of departures) {
+        if (d.leftAt === null) continue;
+        const tenureMs = d.leftAt.getTime() - d.joinedAt.getTime();
+        const idx = pickChurnBin(tenureMs);
+        const cur = counts[idx];
+        if (cur === undefined) continue;
+        counts[idx] = cur + 1;
+        totalDepartures += 1;
+      }
+    }
+
+    return c.json<WireAdminGroupChurn>({
+      from: from ?? null,
+      to: to ?? null,
+      totalGroupsInWindow: groups.length,
+      totalDeparturesInWindow: totalDepartures,
+      bins: ANALYTICS_GROUP_CHURN_BINS.map((bin, i) => ({
+        label: bin.label,
+        minMs: bin.minMs,
+        maxMs: bin.maxMs,
+        count: counts[i] ?? 0,
+      })),
+    });
   };
 }

@@ -18,6 +18,7 @@ import {
   getAdminGroupHandler,
   getAdminGroupRelationshipHandler,
   getAdminStatsHandler,
+  getGroupChurnHandler,
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
@@ -334,6 +335,15 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/permissions/check",
     adminAuthMiddleware(opts.adminToken),
     checkAdminPermissionHandler(prisma),
+  );
+  // Admin-token-gated cross-game group-churn analytics (Phase 12.2a). Backs
+  // the dashboard's group churn chart (Phase 12.2b). Returns the binned
+  // tenure histogram of departures (kicked + left members) across every
+  // group created in the supplied date window.
+  v1.get(
+    "/admin/games/:gameId/analytics/group-churn",
+    adminAuthMiddleware(opts.adminToken),
+    getGroupChurnHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
