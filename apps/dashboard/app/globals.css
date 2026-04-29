@@ -22,7 +22,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 17%;
     --primary: 0 88% 65%;
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 0 0% 100%; /* white on coral in light mode (high punch on white page) */
     --secondary: 0 0% 96%;
     --secondary-foreground: 0 0% 17%;
     --muted: 0 0% 96%;
@@ -45,7 +45,7 @@
     --popover: 0 0% 14%;
     --popover-foreground: 0 0% 93%;
     --primary: 0 90% 69%; /* #f76a6a coral */
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 0 0% 17%; /* #2b2b2b - warm gray ink on coral, not pure white */
     --secondary: 0 0% 22%; /* hover / button-secondary surface */
     --secondary-foreground: 0 0% 93%;
     --muted: 0 0% 22%;
