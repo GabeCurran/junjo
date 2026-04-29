@@ -19,6 +19,7 @@ import {
   getAdminGroupRelationshipHandler,
   getAdminStatsHandler,
   getGroupChurnHandler,
+  getGroupGrowthHandler,
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
@@ -344,6 +345,15 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/analytics/group-churn",
     adminAuthMiddleware(opts.adminToken),
     getGroupChurnHandler(prisma),
+  );
+  // Admin-token-gated cross-game group-growth analytics (Phase 12.3a). Backs
+  // the dashboard's group growth chart (Phase 12.3b). Returns time-bucketed
+  // cumulative active member counts across the supplied window for the
+  // top-N groups (default 5) plus an "All others" aggregated series.
+  v1.get(
+    "/admin/games/:gameId/analytics/group-growth",
+    adminAuthMiddleware(opts.adminToken),
+    getGroupGrowthHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

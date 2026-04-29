@@ -300,3 +300,48 @@ export type AdminSetParentBody = z.infer<typeof adminSetParentBody>;
 export type ListAdminGameAuditQuery = z.infer<typeof listAdminGameAuditQuery>;
 export type AdminCheckPermissionQuery = z.infer<typeof adminCheckPermissionQuery>;
 export type GroupChurnQuery = z.infer<typeof groupChurnQuery>;
+
+// Phase 12.3a: cross-game group-growth analytics. Returns time-bucketed
+// cumulative active member counts across the supplied window, with the
+// top-N groups by current active member count rendered as separate
+// series and the remaining groups aggregated into a single "All others"
+// series. The dashboard's `<GroupGrowthChart>` (Phase 12.3b) consumes
+// the series-of-series shape verbatim and feeds it into Tremor's
+// `<LineChart>`.
+//
+// `topN` is bounded at [1, 10] so the chart stays legible. The default
+// of 5 matches VISION's stated "top-5" for the chart.
+export const ADMIN_GROUP_GROWTH_TOP_N_DEFAULT = 5;
+export const ADMIN_GROUP_GROWTH_TOP_N_MIN = 1;
+export const ADMIN_GROUP_GROWTH_TOP_N_MAX = 10;
+
+// Default window when neither `from` nor `to` is supplied: the last 30
+// days. Matches the dashboard's default range.
+export const ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Hard upper bound on the number of bucket boundaries the handler emits.
+// `pickGrowthBucketSizeMs` picks bucket sizes that target ~25 boundaries
+// for the dashboard's preset windows; the cap guards against pathological
+// custom windows (e.g. a 10-year `from` against an `hourly` bucket).
+export const ADMIN_GROUP_GROWTH_MAX_BUCKETS = 100;
+
+export const groupGrowthQuery = z.object({
+  from: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "from must be an ISO 8601 date" })
+    .optional(),
+  to: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "to must be an ISO 8601 date" })
+    .optional(),
+  topN: z.coerce
+    .number()
+    .int()
+    .min(ADMIN_GROUP_GROWTH_TOP_N_MIN)
+    .max(ADMIN_GROUP_GROWTH_TOP_N_MAX)
+    .default(ADMIN_GROUP_GROWTH_TOP_N_DEFAULT),
+});
+
+export type GroupGrowthQuery = z.infer<typeof groupGrowthQuery>;

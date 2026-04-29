@@ -49,6 +49,8 @@ import { findJunjoUserId } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
+  ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS,
+  ADMIN_GROUP_GROWTH_MAX_BUCKETS,
   ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   ANALYTICS_GROUP_CHURN_BINS,
@@ -65,6 +67,7 @@ import {
   adminUpdateRoleBody,
   createGameBody,
   groupChurnQuery,
+  groupGrowthQuery,
   listAdminGameAuditQuery,
   listAdminGamesQuery,
   listAdminGroupMembersQuery,
@@ -2926,6 +2929,245 @@ export function getGroupChurnHandler(prisma: PrismaClient): Handler {
         maxMs: bin.maxMs,
         count: counts[i] ?? 0,
       })),
+    });
+  };
+}
+
+// Phase 12.3a: cross-game group-growth analytics. Returns time-bucketed
+// cumulative active member counts across the supplied window for the
+// top-N groups (by current active member count) plus an "All others"
+// aggregated series. The dashboard's `<GroupGrowthChart>` (Phase 12.3b)
+// consumes the series-of-series shape verbatim and feeds it into Tremor's
+// `<LineChart>`.
+//
+// Wire shape carries:
+//   - the resolved `from` / `to` (the actual window the handler used,
+//     post-defaults; both are always populated since the defaults supply
+//     bounds when omitted),
+//   - `bucketSizeMs`: the bucket width the handler chose based on window
+//     length (hourly for <=1d, 6h for <=7d, daily for <=30d, etc.),
+//   - `buckets`: ISO 8601 timestamps for every bucket boundary, ordered
+//     chronologically (the chart renders these as the X axis),
+//   - `series`: one entry per top-N group plus one "All others" entry
+//     when the population exceeds top-N. Each carries an opaque `key`
+//     for chart legend stability, the human `name`, optionally the
+//     `groupId` (null for the aggregate), and a `data` array of counts
+//     aligned 1:1 with `buckets`.
+//
+// Behavior:
+//   - "Active at T" means a member row where `joinedAt <= T` AND
+//     (`leftAt IS NULL` OR `leftAt > T`). Status is intentionally NOT
+//     consulted: a member that was active at T but later kicked at T+1
+//     still counts at T. The lifecycle taxonomy is captured by the
+//     `joinedAt` / `leftAt` timestamps; reading status would
+//     double-filter and produce wrong historical counts.
+//   - Groups are ranked by their active count at the window's `to`
+//     boundary (the rightmost bucket). A tie on count breaks by
+//     groupId ascending so the ranking is deterministic.
+//   - Soft-deleted groups are excluded from both the ranking and the
+//     aggregate (matches the rest of the admin read surface).
+//   - When the population fits inside top-N (groups.length <= topN),
+//     the response carries `groups.length` series and no "All others"
+//     row.
+//   - 404 only when the gameId itself does not exist; a brand-new
+//     game with zero groups returns 200 with `series: []`.
+//   - The handler caps bucket count at `ADMIN_GROUP_GROWTH_MAX_BUCKETS`
+//     to bound work; a window pathological enough to require more
+//     buckets than the cap returns 400 with that hint.
+export interface WireAdminGroupGrowthSeries {
+  key: string;
+  name: string;
+  groupId: string | null;
+  data: number[];
+}
+
+export interface WireAdminGroupGrowth {
+  from: string;
+  to: string;
+  bucketSizeMs: number;
+  buckets: string[];
+  series: WireAdminGroupGrowthSeries[];
+}
+
+const GROWTH_ONE_HOUR_MS = 60 * 60 * 1000;
+const GROWTH_ONE_DAY_MS = 24 * GROWTH_ONE_HOUR_MS;
+const GROWTH_ONE_WEEK_MS = 7 * GROWTH_ONE_DAY_MS;
+const GROWTH_ONE_MONTH_MS = 30 * GROWTH_ONE_DAY_MS;
+
+// Picks a bucket size that targets ~25 boundaries for the dashboard's
+// preset windows. Custom windows fall through to the closest matching
+// bucket; pathological windows (multi-year) get weekly buckets. The
+// caller still has to enforce the `ADMIN_GROUP_GROWTH_MAX_BUCKETS` cap
+// downstream because a custom window can pick a small bucket size and
+// blow past the cap (e.g. 365 days at daily bucketing = 365 buckets).
+function pickGrowthBucketSizeMs(windowMs: number): number {
+  if (windowMs <= GROWTH_ONE_DAY_MS) return GROWTH_ONE_HOUR_MS;
+  if (windowMs <= GROWTH_ONE_WEEK_MS) return 6 * GROWTH_ONE_HOUR_MS;
+  if (windowMs <= GROWTH_ONE_MONTH_MS) return GROWTH_ONE_DAY_MS;
+  if (windowMs <= 90 * GROWTH_ONE_DAY_MS) return 3 * GROWTH_ONE_DAY_MS;
+  return GROWTH_ONE_WEEK_MS;
+}
+
+interface GrowthMemberRow {
+  groupId: string;
+  joinedAt: Date;
+  leftAt: Date | null;
+}
+
+function countActiveAtForGroup(rows: GrowthMemberRow[], tMs: number): number {
+  let count = 0;
+  for (const row of rows) {
+    if (row.joinedAt.getTime() > tMs) continue;
+    if (row.leftAt !== null && row.leftAt.getTime() <= tMs) continue;
+    count += 1;
+  }
+  return count;
+}
+
+export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const parsed = groupGrowthQuery.safeParse({
+      from: c.req.query("from"),
+      to: c.req.query("to"),
+      topN: c.req.query("topN"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { from, to, topN } = parsed.data;
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const now = Date.now();
+    const toMs = to ? Date.parse(to) : now;
+    const fromMs = from ? Date.parse(from) : toMs - ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS;
+    if (fromMs >= toMs) {
+      throw Errors.badRequest("from must be earlier than to");
+    }
+    const windowMs = toMs - fromMs;
+    const bucketSizeMs = pickGrowthBucketSizeMs(windowMs);
+    const bucketCount = Math.floor(windowMs / bucketSizeMs) + 1;
+    if (bucketCount > ADMIN_GROUP_GROWTH_MAX_BUCKETS) {
+      throw Errors.badRequest(
+        `window is too wide for the chosen bucket size; would emit ${bucketCount} buckets (max ${ADMIN_GROUP_GROWTH_MAX_BUCKETS}). Narrow the window or wait for finer-grained controls.`,
+      );
+    }
+
+    const bucketTimestamps: number[] = [];
+    for (let i = 0; i < bucketCount; i += 1) {
+      bucketTimestamps.push(fromMs + i * bucketSizeMs);
+    }
+
+    const groups = await prisma.group.findMany({
+      where: { gameId, softDeletedAt: null },
+      select: { id: true, name: true },
+      orderBy: { id: "asc" },
+    });
+
+    if (groups.length === 0) {
+      return c.json<WireAdminGroupGrowth>({
+        from: new Date(fromMs).toISOString(),
+        to: new Date(toMs).toISOString(),
+        bucketSizeMs,
+        buckets: bucketTimestamps.map((t) => new Date(t).toISOString()),
+        series: [],
+      });
+    }
+
+    // Pull every member row whose active interval (joinedAt..leftAt)
+    // overlaps the window. A row that joined after `to` cannot be
+    // active at any bucket; a row that left at-or-before `from` cannot
+    // be active at any bucket either. Status is NOT filtered: an
+    // `active` row counts as long as joinedAt <= T, and a `left` /
+    // `kicked` / `invited` row counts as long as joinedAt <= T AND
+    // (leftAt IS NULL OR leftAt > T).
+    const members = await prisma.groupMember.findMany({
+      where: {
+        groupId: { in: groups.map((g) => g.id) },
+        joinedAt: { lte: new Date(toMs) },
+        OR: [{ leftAt: null }, { leftAt: { gt: new Date(fromMs) } }],
+      },
+      select: { groupId: true, joinedAt: true, leftAt: true },
+    });
+
+    const rowsByGroup = new Map<string, GrowthMemberRow[]>();
+    for (const g of groups) {
+      rowsByGroup.set(g.id, []);
+    }
+    for (const m of members) {
+      const bucket = rowsByGroup.get(m.groupId);
+      if (!bucket) continue;
+      bucket.push({ groupId: m.groupId, joinedAt: m.joinedAt, leftAt: m.leftAt });
+    }
+
+    // For each group, compute the count at every bucket boundary plus
+    // the count at `to` (used for top-N ranking).
+    const perGroupCounts = new Map<string, number[]>();
+    const endCounts = new Map<string, number>();
+    for (const g of groups) {
+      const rows = rowsByGroup.get(g.id) ?? [];
+      const counts: number[] = [];
+      for (const t of bucketTimestamps) {
+        counts.push(countActiveAtForGroup(rows, t));
+      }
+      perGroupCounts.set(g.id, counts);
+      endCounts.set(g.id, countActiveAtForGroup(rows, toMs));
+    }
+
+    // Rank by end-count desc, ties broken by groupId asc.
+    const ranked = [...groups].sort((a, b) => {
+      const ca = endCounts.get(a.id) ?? 0;
+      const cb = endCounts.get(b.id) ?? 0;
+      if (ca !== cb) return cb - ca;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+
+    const top = ranked.slice(0, topN);
+    const rest = ranked.slice(topN);
+
+    const series: WireAdminGroupGrowthSeries[] = top.map((g) => ({
+      key: `group:${g.id}`,
+      name: g.name,
+      groupId: g.id,
+      data: perGroupCounts.get(g.id) ?? bucketTimestamps.map(() => 0),
+    }));
+
+    if (rest.length > 0) {
+      const aggregate = bucketTimestamps.map(() => 0);
+      for (const g of rest) {
+        const counts = perGroupCounts.get(g.id) ?? [];
+        for (let i = 0; i < aggregate.length; i += 1) {
+          const cur = aggregate[i] ?? 0;
+          const add = counts[i] ?? 0;
+          aggregate[i] = cur + add;
+        }
+      }
+      series.push({
+        key: "all-others",
+        name: "All others",
+        groupId: null,
+        data: aggregate,
+      });
+    }
+
+    return c.json<WireAdminGroupGrowth>({
+      from: new Date(fromMs).toISOString(),
+      to: new Date(toMs).toISOString(),
+      bucketSizeMs,
+      buckets: bucketTimestamps.map((t) => new Date(t).toISOString()),
+      series,
     });
   };
 }

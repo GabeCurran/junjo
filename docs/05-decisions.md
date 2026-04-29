@@ -4552,3 +4552,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the dashboard is locale-pinned to `en-US`. Acceptable: this matches every other formatter in the dashboard; a future i18n pass can lift the locale to a single helper.
 
+### Phase 12.3a: split mirroring every prior 12.x and 11.x server-then-UI precedent
+
+**Decision:** Phase 12.3 splits into 12.3a (this iteration: server endpoint + tests + docs) and 12.3b (next iteration: dashboard chart consuming the endpoint).
+
+**Rationale:**
+- Mirrors every prior 12.x precedent (12.1 = shell only; 12.2a = server endpoint, 12.2b = chart). Bundling endpoint + Tremor `<LineChart>` integration + analytics page rewrite into one iteration would produce a 5+ surface diff that's hard to review in one sitting.
+- Iteration 90 attempted 12.3 unsplit and failed at the biome formatting gate at the very end of a wide diff. The split keeps each iteration's diff narrow enough that biome / typecheck / vitest run quickly and any failure has an obvious cause.
+- The natural seam is invisible API surface (this iteration) vs visible UI (next). The endpoint is independently testable; the chart is independently demoable.
+
+**Trade:** two iterations instead of one for the same user-visible feature. Acceptable: the loop is designed for incremental shipping; a 12.3a-only commit is a complete deliverable (the endpoint is callable from curl / Postman the moment it lands).
+
+### Phase 12.3a: bucket size auto-picked from window length, no caller override in V1
+
+**Decision:** the handler computes `bucketSizeMs = pickGrowthBucketSizeMs(windowMs)` from a fixed ladder (`<=1d` -> hourly, `<=7d` -> 6 hours, `<=30d` -> daily, `<=90d` -> 3 days, longer -> weekly). The caller cannot override.
+
+**Rationale:**
+- The dashboard's date-range picker (Phase 12.1) ships four presets (24h / 7d / 30d / 90d) plus custom; the bucket ladder targets ~25 boundaries for each preset (the chart density Tremor renders cleanly without overlapping x-axis labels). Letting the caller pick the bucket size would require the chart's x-axis logic to handle every possible (window, bucket) combination, which is overkill for V1.
+- A future iteration that needs caller-driven bucketing (e.g., "always weekly regardless of window") can add a `?bucket=` param additively without breaking existing callers.
+- The `ADMIN_GROUP_GROWTH_MAX_BUCKETS = 100` cap protects against pathological windows (5-year custom range at weekly bucketing = 260 buckets); the route returns 400 with a "narrow the window" hint rather than silently emitting a giant response.
+
+**Trade:** a custom-window operator who wants finer granularity than the ladder allows must wait for the additive `?bucket=` param. Acceptable: V1 dashboard surfaces only the four presets and a custom picker; the ladder fits all five cases.
+
+### Phase 12.3a: "active at T" is computed from `joinedAt` / `leftAt` directly, NOT from member status
+
+**Decision:** the handler defines "member m is active at time T" as `m.joinedAt <= T AND (m.leftAt IS NULL OR m.leftAt > T)`. The `status` column is intentionally NOT consulted.
+
+**Rationale:**
+- The lifecycle taxonomy (`active` / `left` / `kicked` / `invited`) is a snapshot of the row's CURRENT state. The timestamps (`joinedAt`, `leftAt`) capture the row's HISTORY. For a chart that shows membership over time, the history is the truth and the snapshot would lie - a member that was active at T=Jan 1 but later kicked at T=Mar 1 is correctly counted as active for every T < Mar 1, even though their current `status` is "kicked".
+- Reading status would double-filter and produce wrong counts: a row with `status: "kicked"` and `leftAt: <future>` (impossible by construction, but defensively considered) would be excluded by a status filter even though their `leftAt` says they were active throughout the window.
+- The `joinedAt` / `leftAt` rule is simpler to explain to operators ("are they joined and not yet left at this point in time?") and matches every other timeline-style chart convention (e.g., Stripe's MRR chart treats subscription state similarly).
+
+**Trade:** an `invited` row with `joinedAt: <past>` and `leftAt: null` would count as active at T even though the member never accepted the invitation. Acceptable: per the schema, `joinedAt` is only stamped when the invitation is accepted (the invitation row carries its own `createdAt` for the invite-but-not-yet-joined window). Invited members use the `Invitation` table, not `GroupMember`. The defensive case is a no-op in practice.
+
+### Phase 12.3a: top-N ranking uses count-at-`to`, not average count or peak count
+
+**Decision:** the handler ranks groups by their active-member count at the window's rightmost bucket boundary (`to`). The N highest-count groups render as separate `<LineChart>` lines; the rest aggregate into "All others".
+
+**Rationale:**
+- "Top groups right now" is the dominant operator question - they want to see the lines for the groups that matter today, not the groups that mattered three months ago.
+- Average-over-window would over-rank historically-large but recently-shrinking groups; peak-over-window would over-rank one-time spike groups that are now dead. End-of-window ranking matches the chart's "where are we now?" focus.
+- Ties break by `groupId` ascending so the ranking is deterministic across requests (otherwise two refreshes with identical counts could swap which group is rendered as a line vs lumped into the aggregate, which is jarring UX).
+
+**Trade:** a group that was huge in the past but has shrunk to zero now lands in "All others", potentially hiding interesting historical lines. Acceptable: a future `?sort=peak` or `?sort=average` param can land additively if the operator demand for historical-perspective ranking shows up.
+
+### Phase 12.3a: "All others" series is a single aggregate row, not a per-group hidden series
+
+**Decision:** when groups.length > topN, the handler aggregates all non-top-N groups into a single `WireAdminGroupGrowthSeries` with `key: "all-others"`, `name: "All others"`, `groupId: null`, and a `data` array summing per-bucket counts across the aggregated groups.
+
+**Rationale:**
+- Tremor's `<LineChart>` does not support a "show-on-hover" hidden-line pattern out of the box; rendering 50 groups as 50 separate lines makes the chart unreadable.
+- The aggregate's `data` array is the sum of every excluded group's per-bucket count; the chart's tooltip shows the operator the aggregate value at each bucket, which is the right granularity for "everything else".
+- `groupId: null` is the discriminator the chart can use to style the aggregate line differently (e.g., dashed, thicker, named "All others" in the legend).
+- When groups.length <= topN, the response carries `groups.length` series and no aggregate row, so a small game with 3 groups doesn't surface a confusing "All others" line that's always zero.
+
+**Trade:** the operator cannot drill into individual aggregate-bucketed groups from the chart. Acceptable: the dashboard's group browser (Phase 11.4) is the right surface for per-group inspection; the chart's job is to show top-N trends + everything-else context.
+
+
+
