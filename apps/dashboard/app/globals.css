@@ -123,17 +123,23 @@
   }
 
   /* Theme-toggle animation. Every element fades its color-related
-   * properties (background, text, border, icon fill/stroke) over 200ms
+   * properties (background, text, border, icon fill/stroke) over 400ms
    * when the .dark class is added/removed by next-themes. Scoped to
    * color properties only so existing transform/opacity transitions
-   * (drawer slides, hover lifts, etc.) keep their own durations.
-   * The next-themes provider has disableTransitionOnChange OFF in
-   * app/layout.tsx so this fires on the toggle. */
+   * (drawer slides, hover lifts, etc.) keep their own durations. Uses
+   * !important on the property list so Tailwind utility transitions
+   * (e.g. `transition-colors`) cannot strip these properties from
+   * cascading; durations defined by Tailwind on hover etc. still win
+   * because those rules also re-set transition-duration on the same
+   * properties. The next-themes provider must have
+   * disableTransitionOnChange OFF for this to fire (see
+   * app/layout.tsx). */
   *,
   *::before,
   *::after {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 200ms;
+    transition-property: background-color, border-color, color, fill, stroke,
+      text-decoration-color !important;
+    transition-duration: 400ms;
     transition-timing-function: ease;
   }
 
