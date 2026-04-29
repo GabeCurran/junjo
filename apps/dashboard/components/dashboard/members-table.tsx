@@ -18,6 +18,10 @@ import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { EditMemberNotesDialog } from "./edit-member-notes-dialog";
+import { KickMemberDialog } from "./kick-member-dialog";
+import { SetPermissionOverrideDialog } from "./set-permission-override-dialog";
+import { ViewPermissionOverridesDialog } from "./view-permission-overrides-dialog";
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -39,6 +43,11 @@ export interface MembersQueryState {
 interface MembersTableProps {
   data: AdminGroupMemberList;
   query: MembersQueryState;
+  // Both ids are needed to construct row-action links into the admin
+  // endpoints. Passed from the page (Server Component) since the Client
+  // Component cannot read params.
+  gameId: string;
+  groupId: string;
 }
 
 interface StatusOption {
@@ -124,7 +133,7 @@ function BrowserShell({ total, children }: BrowserShellProps) {
   );
 }
 
-export function MembersTable({ data, query }: MembersTableProps) {
+export function MembersTable({ data, query, gameId, groupId }: MembersTableProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -216,7 +225,7 @@ export function MembersTable({ data, query }: MembersTableProps) {
           const note = row.original.notesPublic;
           if (!note) return <span className="text-xs text-muted-foreground">-</span>;
           // Truncate visually via CSS; the full note is one click away in
-          // 11.5c's row-action dialog.
+          // the Notes row-action dialog.
           return (
             <span
               className="inline-block max-w-[16rem] truncate text-xs text-muted-foreground"
@@ -236,8 +245,51 @@ export function MembersTable({ data, query }: MembersTableProps) {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: () => <span className="sr-only">Actions</span>,
+        // Each action is its own dialog. Rendered inline rather than behind
+        // a dropdown menu to keep this iteration's surface area focused;
+        // four buttons fit on a desktop row and the dashboard already
+        // assumes desk-bound operators (per the Phase 11.1b mobile-defer
+        // decision in docs/05-decisions.md).
+        cell: ({ row }) => {
+          const m = row.original;
+          return (
+            <div className="flex flex-wrap items-center justify-end gap-1">
+              <EditMemberNotesDialog
+                gameId={gameId}
+                groupId={groupId}
+                userId={m.externalUserId}
+                externalUserId={m.externalUserId}
+                notesPublic={m.notesPublic}
+                notesPrivate={m.notesPrivate}
+              />
+              <SetPermissionOverrideDialog
+                gameId={gameId}
+                groupId={groupId}
+                userId={m.externalUserId}
+                externalUserId={m.externalUserId}
+              />
+              <ViewPermissionOverridesDialog
+                gameId={gameId}
+                groupId={groupId}
+                userId={m.externalUserId}
+                externalUserId={m.externalUserId}
+              />
+              <KickMemberDialog
+                gameId={gameId}
+                groupId={groupId}
+                userId={m.externalUserId}
+                externalUserId={m.externalUserId}
+                status={m.status}
+              />
+            </div>
+          );
+        },
+      },
     ],
-    [],
+    [gameId, groupId],
   );
 
   const table = useReactTable<AdminGroupMember>({

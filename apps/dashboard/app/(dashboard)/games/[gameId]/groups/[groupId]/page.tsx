@@ -208,7 +208,7 @@ async function MembersBody({
     );
   }
 
-  return <MembersTable data={page} query={query} />;
+  return <MembersTable data={page} query={query} gameId={gameId} groupId={groupId} />;
 }
 
 export default function GroupDetailPage({ params, searchParams }: GroupDetailPageProps) {

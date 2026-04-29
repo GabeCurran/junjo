@@ -123,7 +123,7 @@ interface MutationOptions {
 }
 
 async function adminMutate<TBody, TResult>(
-  method: "POST",
+  method: "POST" | "PATCH",
   path: string,
   body: TBody | null,
   opts: MutationOptions = {},
@@ -153,6 +153,29 @@ async function adminMutate<TBody, TResult>(
     throw new Error(`admin request failed: ${detail}`);
   }
   return (await res.json()) as TResult;
+}
+
+// DELETE has its own helper because it returns 204 (no body) on success and
+// the type-narrowing is cleaner with a separate function than a union return
+// type. Also the consumer never wants to call `.json()` on a 204.
+async function adminDelete(path: string, opts: MutationOptions = {}): Promise<void> {
+  const token = getAdminToken();
+  if (!token) throw new AdminDisabledError();
+  const baseUrl = getJunjoBaseUrl();
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+    signal: opts.signal,
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => null)) as {
+      code?: string;
+      message?: string;
+    } | null;
+    const detail = errBody?.message ?? `${res.status} ${res.statusText}`;
+    throw new Error(`admin request failed: ${detail}`);
+  }
 }
 
 export function fetchAdminGames(opts?: FetchOptions): Promise<AdminGameList> {
@@ -362,4 +385,114 @@ export function fetchAdminGroupMembers(
   const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members`;
   const search = qs.toString();
   return adminFetch<AdminGroupMemberList>(search ? `${path}?${search}` : path, opts);
+}
+
+// Phase 11.5c-i wire shape mirroring `WireAdminMemberPermissionOverride`
+// from `packages/server/src/routes/admin.ts`. Same six fields exposed on
+// the per-game `routes/members.ts` shape; duplicated here so the dashboard
+// does not import across the cloud-only boundary. `setBy` is null today
+// because the server's admin handlers always set `actorUserId: null` (no
+// auth-adapter actor wired); reserved for a future iteration that threads
+// an admin actor identifier through `adminAuthMiddleware`.
+export interface AdminMemberPermissionOverride {
+  groupId: string;
+  userId: string;
+  permission: string;
+  grant: boolean;
+  setAt: string;
+  setBy: string | null;
+}
+
+// Mirrors the server-side caps in `routes/admin.schema.ts` so the dashboard
+// can enforce the same limits client-side via input maxLength attributes
+// without a round-trip to learn what the server accepts.
+export const ADMIN_MEMBER_NOTES_MAX_LENGTH = 5000;
+export const ADMIN_MEMBER_KICK_REASON_MAX_LENGTH = 500;
+export const ADMIN_PERMISSION_KEY_MAX_LENGTH = 128;
+
+export interface KickAdminGroupMemberInput {
+  reason?: string | null;
+}
+
+export interface UpdateAdminGroupMemberInput {
+  metadata?: Record<string, unknown>;
+  notesPublic?: string | null;
+  notesPrivate?: string | null;
+}
+
+export interface SetAdminMemberPermissionOverrideInput {
+  grant: boolean;
+}
+
+export function kickAdminGroupMember(
+  gameId: string,
+  groupId: string,
+  userId: string,
+  input: KickAdminGroupMemberInput = {},
+  opts?: MutationOptions,
+): Promise<AdminGroupMember> {
+  return adminMutate<KickAdminGroupMemberInput, AdminGroupMember>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/kick`,
+    input,
+    opts,
+  );
+}
+
+export function updateAdminGroupMember(
+  gameId: string,
+  groupId: string,
+  userId: string,
+  input: UpdateAdminGroupMemberInput,
+  opts?: MutationOptions,
+): Promise<AdminGroupMember> {
+  return adminMutate<UpdateAdminGroupMemberInput, AdminGroupMember>(
+    "PATCH",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+    input,
+    opts,
+  );
+}
+
+export function setAdminMemberPermissionOverride(
+  gameId: string,
+  groupId: string,
+  userId: string,
+  permission: string,
+  input: SetAdminMemberPermissionOverrideInput,
+  opts?: MutationOptions,
+): Promise<AdminMemberPermissionOverride> {
+  return adminMutate<SetAdminMemberPermissionOverrideInput, AdminMemberPermissionOverride>(
+    "POST",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+    input,
+    opts,
+  );
+}
+
+export function clearAdminMemberPermissionOverride(
+  gameId: string,
+  groupId: string,
+  userId: string,
+  permission: string,
+  opts?: MutationOptions,
+): Promise<void> {
+  return adminDelete(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+    opts,
+  );
+}
+
+// Operators expect fresh state when opening the "view overrides" dialog, so
+// this helper forces `revalidate: 0`. Caller can still override.
+export function listAdminMemberPermissionOverrides(
+  gameId: string,
+  groupId: string,
+  userId: string,
+  opts?: FetchOptions,
+): Promise<AdminMemberPermissionOverride[]> {
+  return adminFetch<AdminMemberPermissionOverride[]>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions`,
+    { ...opts, revalidate: opts?.revalidate ?? 0 },
+  );
 }

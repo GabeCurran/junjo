@@ -110,7 +110,7 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   single-group fetch reuses `WireAdminGroup`; the members list at
   `GET /v1/admin/games/:gameId/groups/:groupId/members` with q +
   status filters, offset pagination, role chips populated).
-- 11.5b (this iteration): group detail page at
+- 11.5b: group detail page at
   `(dashboard)/games/[gameId]/groups/[groupId]/page.tsx`. Server
   Component renders `<GroupDetailHeader>` (group name + kind badge +
   visibility badge with lock / eye / eye-off icon + creation/updated
@@ -119,11 +119,28 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   sorting / filtering / pagination, role chips with colored dots, status
   Badge per row, public-note truncation with `title` tooltip, 350ms
   debounced search, status select with the four statuses + an `all`
-  wildcard, page-size selector, Previous / Next pagination). The members
-  tab is read-only in 11.5b; 11.5c adds row actions (kick / override /
-  edit notes / view all overrides) and 11.5d adds the "Invite member"
-  tabbed dialog.
-- 11.5c, 11.5d, 11.6 - 11.9: members-tab row actions, invite dialog,
-  the roles + permissions + audit + relationships + sub-groups tabs,
-  audit viewer, permission tester (one section per iteration).
+  wildcard, page-size selector, Previous / Next pagination).
+- 11.5c-i: cross-game admin row-action endpoints (kick member, PATCH
+  for notes / metadata, set permission override, clear permission
+  override, list permission overrides) under
+  `/v1/admin/games/:gameId/groups/:groupId/members/:userId/...`.
+- 11.5c-ii (this iteration, closes Phase 11.5c): MembersTable row
+  actions wired to those endpoints. Each row carries four affordances
+  (Notes, Override, Overrides, Kick), each opening its own modal:
+  `<EditMemberNotesDialog>` (two textareas for public + private notes,
+  empty input normalized to `null`), `<SetPermissionOverrideDialog>`
+  (permission key input + grant / revoke radio cards),
+  `<ViewPermissionOverridesDialog>` (fetches the override list on open
+  via a Server Action, renders rows with permission key + grant /
+  revoke badge + clear button per row, re-fetches after each clear),
+  `<KickMemberDialog>` (destructive confirmation with optional reason
+  textarea; idempotent on already-kicked / left). Server Actions live
+  in `app/(dashboard)/games/[gameId]/groups/[groupId]/actions.ts`. The
+  three form-driven dialogs use `useFormState` + `useFormStatus`; the
+  view-overrides dialog calls plain-shape Server Actions from a
+  `useEffect` on open and from per-row clear buttons. Hand-vendored
+  shadcn `Textarea` primitive ships alongside.
+- 11.5d, 11.6 - 11.9: invite-member tabbed dialog, roles + permissions
+  + audit + relationships + sub-groups tabs, audit viewer, permission
+  tester (one section per iteration).
 - 12.1 - 12.5: Analytics surface (Tremor charts).

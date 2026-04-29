@@ -3460,4 +3460,48 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** dashboard operators editing notes will not see other connected clients' UIs update live. Acceptable - V1 explicitly punts this (per VISION 5.1b's exhaustive list). A future iteration could add `member.metadata.updated` / `member.notes.updated` to the event union additively; today it's not in scope.
 
+### Phase 11.5c-ii: row actions render as four inline buttons, not behind a "..." dropdown menu
+
+**Decision:** `<MembersTable>` grew an Actions column rendering four inline buttons per row (Notes, Override, Overrides, Kick), each opening its own dialog. The dashboard does NOT use shadcn's `DropdownMenu` primitive (which would consolidate the four affordances behind a single `MoreHorizontal` icon button) for this iteration.
+
+**Rationale:**
+- shadcn's `DropdownMenu` requires `@radix-ui/react-dropdown-menu` plus the canonical primitive vendored into `components/ui/`. That is a one-time investment with reasonable amortization (other tables will reuse it). But this iteration already ships four new dialog components, a `Textarea` primitive, a Server Actions file, and seven new `lib/admin.ts` helpers. Adding a fifth UI primitive plus a fifth Radix peer dep widens the diff for no functional gain.
+- Four inline buttons fit comfortably on a desktop members row; the dashboard already targets desk-bound operators (per the Phase 11.1b mobile-defer decision in this file). When other contexts (Phase 11.6 roles tab, Phase 11.8 audit table) need more than ~4 row actions or want a tighter visual layout, that iteration can vendor `DropdownMenu` and refactor at a single seam (the column definition).
+- A future promotion to `DropdownMenu` does NOT require touching the dialog components or the Server Actions; only the JSX in `<MembersTable>`'s actions column changes. The `lib/admin.ts` helpers, the Server Actions file, the dialog components, and their event flows all stay identical.
+
+**Trade:** the row's Actions column is wider than it would be behind a single icon button; mobile parity is also worse with four inline buttons than with a dropdown that collapses on small screens. Acceptable for V1 since mobile is explicitly out of scope. The decision is reversible at a single rendering call site.
+
+### Phase 11.5c-ii: route-scoped Server Actions live alongside the page they support
+
+**Decision:** the five row-action Server Actions (`kickMemberAction`, `updateMemberNotesAction`, `setPermissionOverrideAction`, `listMemberPermissionOverridesAction`, `clearMemberPermissionOverrideAction`) live in `app/(dashboard)/games/[gameId]/groups/[groupId]/actions.ts` rather than in `lib/admin.ts` or a top-level `actions/` directory.
+
+**Rationale:**
+- Mirrors the Phase 11.3b-i / 11.3b-ii precedent (the games-list `createGameAction` lives in `app/(dashboard)/games/actions.ts`; the game-detail `createApiKeyAction` and `revokeApiKeyAction` live in `app/(dashboard)/games/[gameId]/actions.ts`). Each `actions.ts` is colocated with the routes that consume it; the route group's mental model stays "all the code for this URL lives in this directory."
+- `lib/admin.ts` stays a pure HTTP client over the cross-game admin endpoints, importable from any route. Server Actions are a Next.js-specific primitive that calls into `lib/admin.ts`; mixing them would couple the HTTP client to Next.js cache invalidation (`revalidatePath`).
+- Route-scoped placement means future actions specific to other routes (e.g. role-tab mutations in Phase 11.6) land in their own `actions.ts` files without growing one giant module.
+
+**Trade:** five action functions in one route-scoped file rather than co-located with the dialogs that use them. Acceptable - the dialogs are Client Components and cannot import from a `"use server"` file directly anyway; they import the function reference from the Server Actions module just like any other.
+
+### Phase 11.5c-ii: edit-notes dialog handles `notesPublic` and `notesPrivate` only; metadata is out of scope
+
+**Decision:** `<EditMemberNotesDialog>` exposes two `<Textarea>` fields - one for `notesPublic` and one for `notesPrivate`. The server endpoint (`PATCH .../members/:userId`) also accepts a `metadata` field, but the dashboard's row action does not surface it.
+
+**Rationale:**
+- `metadata` is free-form `Record<string, unknown>` JSON. Editing it in a textarea would require parsing JSON in the Server Action, surfacing parse errors inline, and policing key collisions. None of that is hard but each is a UX detail that doesn't pay off for V1; metadata is rarely operator-edited and is more commonly set programmatically by the dev's own backend or auth-adapter integration.
+- The dialog title and description frame the dialog as "Edit member notes" specifically, so the absence of a metadata field is not a confusing omission - it's the dialog's deliberate scope. Operators who need to edit metadata can curl the admin endpoint directly (the endpoint accepts it, fully audited).
+- If a future iteration adds a JSON-editor primitive to `components/ui/`, surfacing metadata is a small additive change to this dialog (one more field) that does not invalidate any decision made here.
+
+**Trade:** operators have no UI surface for metadata edits in V1. Acceptable - the gap is documented and the endpoint still accepts the field for any caller that needs it.
+
+### Phase 11.5c-ii: view-overrides dialog manages state via React + plain Server Action calls (not `useFormState`)
+
+**Decision:** `<ViewPermissionOverridesDialog>` differs from the other three dialogs in this iteration: it does NOT use `useFormState`. Instead it manages its data via `useState` and calls plain-shape Server Actions (`listMemberPermissionOverridesAction`, `clearMemberPermissionOverrideAction`) from a `useEffect` (on open) and from per-row click handlers (on clear).
+
+**Rationale:**
+- `useFormState` is the right shape when a single form submission produces a single result. The view-overrides dialog has two distinct flows: (1) fetch the list when the dialog opens, (2) clear an arbitrary override row by clicking its inline button. Forcing both flows through `useFormState` would require either two separate forms (one for the list-fetch trigger, one per row) or a single form whose submission disambiguates between fetch and per-row-clear via hidden fields. Both are awkward.
+- Server Actions in Next 15 can be called directly as async functions outside a `<form>` `action` prop. The dialog calls `listMemberPermissionOverridesAction(...)` from `useEffect` and `clearMemberPermissionOverrideAction(...)` from button click handlers, both of which return typed `{ ok, error, ... }` results synchronously to the caller.
+- Per-row clear errors render inline below the override list rather than dismissing the dialog. This matches the operator's mental model: "I tried to clear this one override; it failed; I want to retry or dismiss without losing the rest of the dialog state."
+- After a successful clear, the dialog re-fetches the list (so the cleared row disappears) and triggers a parent `router.refresh()` (so the audit feed picks up the new entry on next render). The two effects are intentionally separate: the list refresh is a Client-side React state update; the audit / table refresh is a Server Component re-fetch. Both happen automatically without leaving the dialog.
+
+**Trade:** more state-management code than the form-driven dialogs. Acceptable - the dialog has more state to manage (loading / loaded / error skeletons, per-row clearing flags, per-row error placement) and `useFormState` does not buy that complexity. The pattern is reusable for any future dialog with a similar fetch-then-row-action shape (e.g. a future "view audit entries for this member" dialog).
 
