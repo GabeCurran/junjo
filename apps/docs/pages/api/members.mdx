@@ -1,0 +1,73 @@
+# Members
+
+Endpoints for working with members outside the context of a single group: by member id, or for a single user across the games they are in.
+
+The group-scoped routes (`GET /v1/groups/:id/members` and `GET /v1/groups/:id/members/:userId`) live on the [Groups](/api/groups) page; this page covers the routes mounted directly under `/v1/members` and `/v1/users/:userId/members`.
+
+## Wire format
+
+`Member` is the same shape returned by the group-scoped member routes and by `POST /v1/invitations/:code/accept`. Timestamps are ISO 8601 strings.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `groupId` | string | The group this membership is in. |
+| `userId` | string | The dev's external user id (the same value the SDK passed in or the row was seeded with), not the internal `JunjoUser` id. |
+| `status` | string | `"active"`, `"invited"`, `"left"`, or `"kicked"`. |
+| `roles` | string[] | Role ids the member is assigned to. Always `[]` until Phase 3.2 wires role assignment. |
+| `metadata` | object | Free-form per-game state; defaults to `{}`. |
+| `notesPublic` | string \| null | Officer-readable note visible to other members. |
+| `notesPrivate` | string \| null | Officer-only note. |
+| `joinedAt` | string | ISO 8601 timestamp. |
+
+## `GET /v1/members/:id`
+
+Fetches a single member by their `GroupMember.id`. Scoped to the calling game (a member whose group belongs to a different game returns 404 to avoid leaking existence).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The member id (cuid). URL-decoded by the router. |
+
+### Response
+
+`200 OK` with a `Member` body.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No member with that id, or the member's group belongs to a different game, or the member's group is soft-deleted. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/users/:userId/members`
+
+Lists every group a user is a member of within the calling game. Returns a bare array (no pagination wrapper) capped at `1000` rows. A user with more than that many memberships in a single game is unsupported in V1; if it ever surfaces, this endpoint will gain pagination as an additive change.
+
+A user with no `ExternalIdentity` row for the calling game returns `[]` rather than `404`. The route deliberately does not distinguish "user we have never seen" from "user known but not in any groups": both answers are the same for the consumer (zero memberships) and collapsing the cases avoids leaking whether a given external user id has ever been recorded.
+
+Soft-deleted groups are excluded from the result.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | string | The dev's external user id. URL-decoded by the router. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `gameId` | string | the calling game | Optional. If supplied, must equal the calling game's id; mismatches return `400 bad_request`. (Forward-compat with future cloud-only admin endpoints.) |
+
+### Response
+
+`200 OK` with a `Member[]` body. Items are ordered by `joinedAt` descending. All members in the response carry the same `userId` (the dev's external user id).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `gameId` query param does not equal the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

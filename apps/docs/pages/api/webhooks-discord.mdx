@@ -1,0 +1,95 @@
+# Discord webhook format
+
+Junjo can deliver events directly to a Discord [Incoming Webhook URL](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks) by setting `format: "discord"` on the [webhook endpoint](./webhooks.mdx). The worker translates each `JunjoEvent` into a Discord embed payload before POSTing.
+
+This is the fastest way to drop Junjo activity into a Discord channel without a self-hosted relay: create a Discord webhook, paste its URL into `endpoints.create`, and you're done.
+
+## Setup
+
+1. In Discord, open the channel settings, go to **Integrations**, click **Create Webhook**, then **Copy Webhook URL**. Discord webhook URLs look like `https://discord.com/api/webhooks/<channel-id>/<token>`.
+2. Create the Junjo endpoint with `format: "discord"`:
+
+```ts
+const endpoint = await junjo.webhooks.endpoints.create({
+  url: "https://discord.com/api/webhooks/123/abc...",
+  format: "discord",
+  events: ["member.joined", "member.left", "group.deleted"],
+});
+```
+
+The `secret` field is still returned (a Junjo signing secret is generated unless one is supplied), but it is **not used** for the Discord delivery path. Discord webhook URLs are themselves the auth token, so there is no signed-headers verification step. Junjo keeps the secret stored so the same endpoint can be flipped back to `format: "junjo"` later without rotating.
+
+## Wire format
+
+The worker POSTs a [Discord webhook execute](https://discord.com/developers/docs/resources/webhook#execute-webhook) payload:
+
+```json
+{
+  "embeds": [
+    {
+      "title": "Member joined",
+      "description": "user_a joined grp_1",
+      "color": 4910208,
+      "timestamp": "2026-04-28T12:00:00.000Z",
+      "fields": [
+        { "name": "User", "value": "user_a", "inline": true },
+        { "name": "Group", "value": "grp_1", "inline": true },
+        { "name": "Status", "value": "active", "inline": true },
+        { "name": "Roles", "value": "0", "inline": true }
+      ],
+      "footer": { "text": "Junjo - evt_..." }
+    }
+  ]
+}
+```
+
+Headers sent on the Discord delivery:
+
+| Header | Notes |
+|--------|-------|
+| `content-type` | Always `application/json`. |
+
+That's it. No `x-junjo-*` headers, no HMAC signature - Discord ignores unknown headers, and the URL token is the auth.
+
+## Title, color, and field map per event type
+
+The formatter assigns one embed per event with a fixed title and color category:
+
+| Event type | Title | Color |
+|------------|-------|-------|
+| `member.joined` | Member joined | green |
+| `member.left` | Member left | red |
+| `member.invited` | Member invited | blue |
+| `role.created` | Role created | green |
+| `role.changed` | Role membership changed | blue |
+| `role.deleted` | Role deleted | red |
+| `permission.granted` | Permission granted | green |
+| `permission.revoked` | Permission revoked | red |
+| `group.updated` | Group updated | blue |
+| `group.deleted` | Group deleted | red |
+| `group.relationship.changed` | Group relationship changed | blue |
+
+Every embed carries `timestamp = event.occurredAt` and `footer.text = "Junjo - <event.id>"` so you can search Discord for a specific event by id when investigating.
+
+The formatter is forward-compatible: an unknown event type renders as a generic grey embed (`Junjo event: <type>`) with the type and event id as fields. New event types added to the union after a rolling deploy still arrive in Discord, just without bespoke styling, until the formatter ships an updated mapping.
+
+## Retry semantics
+
+Discord deliveries follow the [same retry policy](./webhooks.mdx#retry-policy) as `format: "junjo"`:
+
+- 2xx -> `delivered`.
+- `5xx`, `408`, `429`, network errors -> retry with exponential backoff up to 6 attempts.
+- Other 4xx (`401` "Unknown Webhook", `404` "Unknown Webhook", `400` malformed payload) -> immediate `failed`.
+
+Discord's typical 2xx response is `204 No Content`; the worker treats that as `delivered`.
+
+## Field truncation
+
+Discord caps field values at 1024 chars. The formatter truncates anything longer with a single `…` suffix. This only kicks in for `role.changed` events with very large `added` / `removed` arrays; the typical event flows through verbatim.
+
+## Limitations
+
+- **One embed per event.** Discord allows up to 10 embeds in a single payload, but Junjo always sends exactly one. Batching multiple events into one Discord message is out of scope for V1.
+- **No threading.** The payload does not set `thread_id` or `thread_name`. Each delivery posts to the webhook's default channel.
+- **No content / username override.** The `username` and `avatar_url` Discord fields are not surfaced through the Junjo API. The Discord webhook's own configured name and avatar are used. If you need per-event branding, run a small relay between Junjo and Discord and customize the payload there.
+- **No mention rules.** Discord swallows `@everyone` / `@role` mentions inside embeds by default, which is the conservative behavior here. Permission-sensitive events that should ping a role need an outbound relay.

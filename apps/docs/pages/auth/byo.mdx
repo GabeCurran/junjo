@@ -1,0 +1,184 @@
+# Build your own adapter
+
+The three built-in adapters ([`jwtAdapter`](/auth/jwt), [`clerkAdapter`](/auth/clerk), [`supabaseAdapter`](/auth/supabase)) cover the auth providers Junjo ships first-class wrappers for. Any other provider, including session-token stores you already maintain, can plug in by implementing the one-method `AuthAdapter` interface directly.
+
+## The contract, again
+
+```ts
+import type { AuthAdapter } from "@junjo/sdk";
+
+export interface AuthAdapter {
+  verifyToken(token: string): Promise<{ userId: UserId } | null>;
+}
+```
+
+Three rules:
+
+1. Return `{ userId }` on a verified token. The string is whatever your provider returns; Junjo persists it as the external user id.
+2. Return `null` for every legitimate failure (missing or malformed token, expired session, signature mismatch, upstream network error, unknown user). The calling code treats `null` as "session not authorized" and never has to wrap your adapter in a try/catch.
+3. Throw `JunjoError({ code: "invalid_config" })` only on setup-time misconfiguration (missing secret, missing required option). Configuration errors should fail loud at startup; runtime verification failures should not.
+
+The `UserId` brand is a TypeScript-only marker. At the boundary cast a raw string with `as UserId`.
+
+## Recipe 1: opaque session token stored in your own database
+
+The most common BYO case: you issue session tokens (via Lucia, NextAuth's database adapter, Iron Session, or a hand-rolled session table), store them server-side, and look them up on every request.
+
+```ts
+import type { AuthAdapter, UserId } from "@junjo/sdk";
+import { prisma } from "./db";
+
+export function sessionStoreAdapter(): AuthAdapter {
+  return {
+    async verifyToken(token) {
+      if (typeof token !== "string" || token.length === 0) return null;
+      const session = await prisma.session.findUnique({
+        where: { token },
+        select: { userId: true, expiresAt: true },
+      });
+      if (!session) return null;
+      if (session.expiresAt.getTime() < Date.now()) return null;
+      return { userId: session.userId as UserId };
+    },
+  };
+}
+```
+
+Wire it into the SDK like any other adapter:
+
+```ts
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  authAdapter: sessionStoreAdapter(),
+});
+```
+
+Every `verifyToken` call hits your database. If that becomes a hot path, layer a short-lived in-memory cache (keyed by token, evicted on logout) inside the adapter; the `AuthAdapter` interface does not enforce a cache shape, so you have full latitude.
+
+## Recipe 2: Auth0 (or any "verify against an issuer" provider)
+
+Auth0 is JWT-based, so [`jwtAdapter`](/auth/jwt) is usually the right fit if you have your tenant's signing key. If you would rather call Auth0's `/userinfo` endpoint or use the `node-jwks-rsa` JWKS client to pick a key by `kid`:
+
+```ts
+import type { AuthAdapter, UserId } from "@junjo/sdk";
+import jwksClient from "jwks-rsa";
+import { jwtVerify, createRemoteJWKSet } from "jose";
+
+const JWKS = createRemoteJWKSet(
+  new URL(`https://${process.env.AUTH0_DOMAIN}/.well-known/jwks.json`),
+);
+
+export function auth0Adapter(opts: { audience: string; issuer: string }): AuthAdapter {
+  return {
+    async verifyToken(token) {
+      if (typeof token !== "string" || token.length === 0) return null;
+      try {
+        const { payload } = await jwtVerify(token, JWKS, {
+          audience: opts.audience,
+          issuer: opts.issuer,
+          algorithms: ["RS256"],
+        });
+        const sub = payload.sub;
+        if (typeof sub !== "string" || sub.length === 0) return null;
+        return { userId: sub as UserId };
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+```
+
+This pattern (use `createRemoteJWKSet` + `jwtVerify` from `jose`) generalizes to any provider that publishes JWKS: Cognito, Keycloak, Okta, your own JWKS-publishing issuer. The reason to BYO instead of using `jwtAdapter`: `jwtAdapter` takes a single PEM key (no JWKS / no `kid` selection / no rotation), so issuers that rotate keys via JWKS need this wrapper.
+
+`jose` is already a runtime dep of `@junjo/sdk`, so importing from it costs nothing additional.
+
+## Recipe 3: Roblox `LocalPlayer.UserId` (Phase 8.3 in the roadmap)
+
+Roblox does not give the dev's backend a session token; the user id comes from the player object on the server. The "verification" is that the request originates from the same Roblox server that owns the player. The adapter is a passthrough wrapper that brands the numeric id as a string:
+
+```ts
+import type { AuthAdapter, UserId } from "@junjo/sdk";
+
+export function robloxUserIdAdapter(): AuthAdapter {
+  return {
+    async verifyToken(token) {
+      // Roblox passes the numeric UserId as a string. There is nothing
+      // cryptographic to verify; the contract is "the server-side script
+      // already trusted the Players.LocalPlayer.UserId before invoking
+      // this adapter." Reject empty / non-numeric inputs as a sanity guard.
+      if (typeof token !== "string" || token.length === 0) return null;
+      if (!/^[0-9]+$/.test(token)) return null;
+      return { userId: token as UserId };
+    },
+  };
+}
+```
+
+The Phase 8.3 `RobloxUserIdAdapter` (in `junjo-roblox`, the Luau SDK) ships an equivalent adapter for use inside Roblox Studio. The recipe above is the TypeScript counterpart for the non-Roblox half of the integration (a Node backend that the Roblox script forwards requests to).
+
+## Recipe 4: passthrough adapter for tests
+
+When testing your own integration you often want to skip token verification entirely:
+
+```ts
+import type { AuthAdapter, UserId } from "@junjo/sdk";
+
+export function staticUserAdapter(userId: string): AuthAdapter {
+  return {
+    async verifyToken() {
+      return { userId: userId as UserId };
+    },
+  };
+}
+```
+
+Use only in tests. A production deployment with this adapter accepts any string as a valid session for the configured user, which is exactly what you do not want at runtime.
+
+## Recipe 5: layered adapter (try one provider, then another)
+
+Multi-tenant apps sometimes need to accept tokens from more than one issuer. Compose adapters by trying each in turn:
+
+```ts
+import type { AuthAdapter } from "@junjo/sdk";
+
+export function firstMatch(adapters: AuthAdapter[]): AuthAdapter {
+  return {
+    async verifyToken(token) {
+      for (const a of adapters) {
+        const result = await a.verifyToken(token);
+        if (result) return result;
+      }
+      return null;
+    },
+  };
+}
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  authAdapter: firstMatch([clerkAdapter({ /* ... */ }), jwtAdapter({ /* ... */ })]),
+});
+```
+
+Each child adapter still owns its failure-mode contract; `firstMatch` just sequences them. Order matters: put the cheapest verifier (in-process JWT) before the network-bound one (Clerk's JWKS endpoint) when both can succeed.
+
+## Caching guidance
+
+Junjo does not cache adapter results. The right cache shape (TTL, key, invalidation on logout) depends on your session-lifetime tolerance and security model:
+
+- **Stateless JWT adapters** rarely need a cache; signature verification is already fast.
+- **Network-bound adapters** (Supabase's `getUser`, a Clerk verifier that hits JWKS) benefit from a short-lived (10-60 second) in-memory cache keyed by token hash. Evict on logout if your provider tells you when that happens.
+- **Database-backed session adapters** can use the same cache pattern, plus an explicit invalidation hook on session deletion.
+
+Either layer the cache inside your adapter (so the contract stays one method that returns a verified id) or build a higher-level wrapper that also exposes invalidation methods to your application.
+
+## Failure-mode checklist
+
+Before shipping a BYO adapter, confirm:
+
+- Empty / non-string `token` returns `null` without invoking your verifier (defensive guard).
+- Network errors against an upstream verifier collapse to `null`, not to a thrown exception.
+- The configured user-id field is checked for `string` type and non-empty length before being returned.
+- Setup-time misconfiguration (missing secret, missing client) throws `JunjoError({ code: "invalid_config" })` from the factory, not from `verifyToken`.
+
+The four built-in adapters (and the recipes on this page) all follow this checklist; lifting it into your own adapter keeps the failure-mode story consistent with the rest of the SDK.

@@ -1,0 +1,117 @@
+# Events
+
+Junjo emits a `JunjoEvent` whenever the state of a group changes (a member joins, a role is assigned, the group is renamed). The `GET /v1/events/:groupId` endpoint exposes those events as a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream.
+
+A single connection covers exactly one group. Subscribe to N groups with N connections; events for other groups are never multiplexed onto the same stream.
+
+The transport is in-process today: events are routed through an in-memory `EventHub` shared by every request handler in the running server process. A horizontally-scaled deployment will need a transport-level bus (Redis pub/sub, NATS, Postgres `LISTEN`/`NOTIFY`) plugged in behind the same `EventHub` interface; that is intentional V1 simplicity, not a permanent constraint.
+
+## `GET /v1/events/:groupId`
+
+Opens an SSE stream that emits one frame per `JunjoEvent` published for the named group. The connection lives until the client disconnects. The server emits a `:heartbeat` comment every 30 seconds so intermediaries do not idle-close the connection.
+
+### Path parameters
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `groupId` | yes | The group to subscribe to. Must belong to the calling game and not be soft-deleted. |
+
+### Headers
+
+| Header | Notes |
+|--------|-------|
+| `Authorization` | `Bearer <apiKey>`. Required, same as every other authed route. |
+| `Accept` | Optional. `text/event-stream` is conventional but the server does not check; the response content-type is fixed to `text/event-stream` regardless. |
+
+### Response
+
+`200 OK` with the standard SSE response headers:
+
+```
+content-type: text/event-stream
+cache-control: no-cache
+connection: keep-alive
+transfer-encoding: chunked
+```
+
+Frames look like this:
+
+```
+event: member.joined
+data: {"id":"evt_abc","type":"member.joined","gameId":"game_xyz","groupId":"grp_qrs","occurredAt":"2026-04-28T12:00:00.000Z","userId":"user_alice","member":{...}}
+id: evt_abc
+
+```
+
+Comment-only heartbeat frames (sent every 30 seconds the connection is idle):
+
+```
+:heartbeat
+
+```
+
+The `data:` payload is one JSON object per event. The shape is the `JunjoEvent` union from `@junjo/shared`. `Date` fields (`occurredAt`, nested `joinedAt`, etc.) serialize as ISO 8601 strings on the wire.
+
+The `event:` line is the `JunjoEvent.type` discriminator (`member.joined`, `member.left`, `group.updated`, ...). The `id:` line is the event's stable id; SSE clients expose this via `lastEventId` for resume-after-disconnect logic, though the V1 server does not currently replay missed events on reconnect (see [Limitations](#limitations) below).
+
+### Which mutations publish
+
+The server emits an event after every mutation that changes a group's externally-visible state. The full mapping:
+
+| Route | Event type | Notes |
+|-------|------------|-------|
+| `PATCH /v1/groups/:id` | `group.updated` | No-op PATCHes (every supplied field already matches) emit nothing. |
+| `DELETE /v1/groups/:id` | `group.deleted` | Both soft and hard delete emit the same event. Idempotent calls on already-deleted groups emit nothing. |
+| `POST /v1/groups/:id/restore` | `group.updated` | Re-emits the post-restore group. Restoring a live group emits nothing. |
+| `PUT /v1/groups/:id/parent` | `group.updated` | Carries the post-state group with the new `parentGroupId`. Idempotent calls (parent unchanged) emit nothing. |
+| `POST /v1/groups/:id/invitations` | `member.invited` | One event per created invitation. |
+| `POST /v1/groups/:id/bulk-invite` | `member.invited` | One event per created invitation in input order; rows that were skipped (duplicate / already-member / already-pending) emit nothing. |
+| `POST /v1/invitations/:code/accept` | `member.joined` | The `member` payload carries the newly-active row. |
+| `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
+| `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
+| `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
+| `DELETE /v1/roles/:id` | `role.deleted` | |
+| `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Idempotent calls (already assigned) emit nothing. |
+| `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Idempotent calls emit nothing. |
+| `POST /v1/roles/:id/permissions` | `permission.granted` | Idempotent calls (already granted) emit nothing. |
+| `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` | Idempotent calls emit nothing. |
+| `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
+| `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. |
+
+The following mutations do **not** publish events in V1:
+
+- `POST /v1/groups` (group creation) - no `group.created` event in the V1 union.
+- `PATCH /v1/groups/:id/members/:userId` (`setMetadata` / `setNotes`) - no `member.metadata.updated` / `member.notes.updated` events in the V1 union.
+- `PATCH /v1/roles/:id` (role property edits) - no `role.updated` event in the V1 union (`role.changed` is per-member assignment, not role-property edits).
+- `POST /v1/groups/:id/members/:userId/permissions/:permission` and the matching `DELETE` (member-level overrides) - no override event in the V1 union.
+- `POST /v1/invitations/:code/decline`, `DELETE /v1/invitations/:code` - no event for invitation decline / revoke.
+
+A future minor-version bump may add events for these cases without breaking the existing union.
+
+### Errors
+
+| code | status | when |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist in the calling game (missing, cross-game, and soft-deleted all collapse here). The error fires synchronously before any stream is opened, so the response carries the standard JSON error envelope, not an SSE frame. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### Lifecycle
+
+1. Client opens `GET /v1/events/:groupId` with the Authorization header.
+2. Server validates the API key, looks up the group, and 404-collapses if it is missing / cross-game / soft-deleted.
+3. Server returns `200` with `text/event-stream` headers and registers a listener with the in-process event hub.
+4. Server writes one SSE frame per published event for that group, in publication order.
+5. Server writes a `:heartbeat` comment every 30 seconds.
+6. Client closes the connection (cancels the body reader, closes the underlying socket, etc.). Server observes the abort, deregisters the listener, and clears the heartbeat timer.
+
+A 404 fails synchronously with a JSON error body before the upgrade to SSE; clients that expect a stream should branch on `response.headers.get("content-type")` and treat anything other than `text/event-stream` as an error.
+
+### Limitations
+
+The V1 hub is single-process and does not persist events. Specifically:
+
+- **No replay across reconnects.** A client that disconnects misses every event published while it was away. SSE's `lastEventId` semantics are not yet honored.
+- **No fan-out across processes.** Two server processes do not share the same hub. A horizontally-scaled deployment needs a transport-level bus added behind the `EventHub` interface.
+- **No durability.** Events live only as long as the process that published them. Mutations that succeed at the database level publish best-effort to the hub; a process crash between commit and publish loses the event for any subscriber.
+
+Audit log (`audit.list`, Phase 5.2) and webhook delivery (Phase 5.3) provide the durable counterparts to this transient stream. Use SSE for live UX and dashboards; use webhooks or `audit.list` for reliable propagation to other systems.

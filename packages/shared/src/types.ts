@@ -16,6 +16,7 @@ export type MemberId = Brand<string, "MemberId">;
 export type UserId = Brand<string, "UserId">;
 export type InvitationId = Brand<string, "InvitationId">;
 export type AuditEntryId = Brand<string, "AuditEntryId">;
+export type WebhookEndpointId = Brand<string, "WebhookEndpointId">;
 
 // =====================================================================
 // Group
@@ -38,6 +39,9 @@ export interface Group {
   visibility: GroupVisibility;
   metadata: GroupMetadata;
   defaultRoleId: RoleId | null;
+  // The parent in a sub-group / alliance hierarchy. null for top-level
+  // groups. Set via `groups.setParent`; cycle-checked server-side.
+  parentGroupId: GroupId | null;
   memberCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -146,7 +150,10 @@ export interface MemberPermissionOverride {
   // true = grant regardless of roles. false = revoke regardless of roles.
   grant: boolean;
   setAt: Date;
-  setBy: UserId;
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdBy
+  // and AuditEntry.actorUserId).
+  setBy: UserId | null;
 }
 
 // =====================================================================
@@ -166,7 +173,10 @@ export interface GroupRelationship {
   groupBId: GroupId;
   type: GroupRelationshipType;
   since: Date;
-  setBy: UserId;
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdBy and
+  // MemberPermissionOverride.setBy).
+  setBy: UserId | null;
 }
 
 // =====================================================================
@@ -181,7 +191,9 @@ export interface Invitation {
   // null = open invite (anyone with the code/link). Set = direct push
   // to a specific user.
   targetUserId: UserId | null;
-  createdBy: UserId;
+  // null when issued by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels AuditEntry.actorUserId).
+  createdBy: UserId | null;
   createdAt: Date;
   expiresAt: Date | null;
   usedAt: Date | null;
@@ -202,8 +214,11 @@ export type AuditAction =
   | "group.created"
   | "group.updated"
   | "group.deleted"
+  | "group.restored"
   | "group.relationship.set"
   | "group.relationship.cleared"
+  | "group.parent.set"
+  | "group.parent.cleared"
   | "member.invited"
   | "member.joined"
   | "member.left"
@@ -347,8 +362,56 @@ export interface AuthAdapter {
 // =====================================================================
 
 export interface WebhookSignatureHeaders {
-  "junjo-signature": string;
-  "junjo-timestamp": string;
+  "x-junjo-signature": string;
+  "x-junjo-timestamp": string;
+  "x-junjo-event": string;
+  "x-junjo-event-id": string;
+  "x-junjo-delivery-id": string;
+}
+
+// Wire format the worker applies at delivery time. "junjo" (the default)
+// posts the raw JunjoEvent JSON with HMAC headers; "discord" and "slack"
+// post target-shaped payloads and skip the HMAC (those targets
+// authenticate via URL token, not headers).
+export type WebhookEndpointFormat = "junjo" | "discord" | "slack";
+
+export interface WebhookEndpoint {
+  id: WebhookEndpointId;
+  gameId: GameId;
+  url: string;
+  // Subset of event types this endpoint subscribes to. Empty array
+  // means "match every event type" (the friendly default).
+  events: JunjoEventType[];
+  format: WebhookEndpointFormat;
+  createdAt: Date;
+  // When set, the endpoint is muted: matching events do not enqueue
+  // deliveries. Toggle with `endpoints.update(id, { disabled })`.
+  disabledAt: Date | null;
+}
+
+// Returned exactly once, as the response body of `endpoints.create`.
+// The dev MUST persist this secret immediately: it is never surfaced
+// again by `endpoints.list` or `endpoints.update`.
+export interface WebhookEndpointWithSecret extends WebhookEndpoint {
+  secret: string;
+}
+
+export interface CreateWebhookEndpointInput {
+  url: string;
+  events?: JunjoEventType[];
+  // Optional. When omitted the server generates a 32-byte base64url
+  // secret and returns it on the create response.
+  secret?: string;
+  // Optional. Defaults to "junjo".
+  format?: WebhookEndpointFormat;
+}
+
+export interface UpdateWebhookEndpointInput {
+  url?: string;
+  events?: JunjoEventType[];
+  // true sets `disabledAt = now()`; false clears it.
+  disabled?: boolean;
+  format?: WebhookEndpointFormat;
 }
 
 export interface WebhookDelivery {

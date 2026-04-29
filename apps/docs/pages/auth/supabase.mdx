@@ -1,0 +1,107 @@
+# supabaseAdapter
+
+`supabaseAdapter` is the built-in `AuthAdapter` for verifying Supabase Auth session tokens. Use it when your app uses [Supabase Auth](https://supabase.com/auth) and you want Junjo to resolve a user id from each request.
+
+The adapter wraps a Supabase client you construct yourself. The `@supabase/supabase-js` package is a peer dependency of `@junjo/sdk`, not a direct dependency: callers without Supabase pay no install cost.
+
+## Install
+
+`@supabase/supabase-js` is a peer dependency. Install it in your own application:
+
+```sh
+npm install @supabase/supabase-js
+```
+
+## Basic usage
+
+```ts
+import { Junjo } from "@junjo/sdk";
+import { supabaseAdapter } from "@junjo/sdk/adapters";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  authAdapter: supabaseAdapter({ client: supabase }),
+});
+```
+
+The adapter calls `client.auth.getUser(token)` on each verification, reads the user record's `id` field, and returns it as the user id. Use a server-side client built with your service role key (or anon key, depending on your security model); the same client can be reused for any other Supabase calls in your backend.
+
+## Options
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `client` | yes | A Supabase client (or any object with a matching `auth.getUser(token)` method). Junjo never imports `@supabase/supabase-js` itself; the structural type means test fakes and wrapped clients work without modification. |
+| `userIdField` | no | The top-level field on the User record to read the user id from. Defaults to `"id"`, which is Supabase's user UUID. Override only if you store an internal id under a different top-level field. |
+
+## Failure modes
+
+`verifyToken` returns `null` for any verification failure. None of these cases throw, so the calling code can treat `null` as "session not authorized":
+
+- token is missing or empty
+- `client.auth.getUser` throws (network error, transient outage, unexpected exception)
+- the response carries an `error` envelope (e.g. `JWT expired`)
+- the response has `data.user: null` (token verified but no user matched)
+- the configured user-id field is missing, not a string, or empty
+
+The adapter throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable: a missing `client`, a missing `client.auth`, or a `client.auth.getUser` that is not a function. Configuration errors should fail loud at startup, not at runtime.
+
+## Custom fields
+
+If your app stores its internal user id on a different top-level field of the User record:
+
+```ts
+supabaseAdapter({
+  client: supabase,
+  userIdField: "app_user_id",
+});
+```
+
+The adapter reads exactly that field. Supabase's `id` field is ignored if `userIdField` is overridden.
+
+## Nested fields under `app_metadata` / `user_metadata`
+
+V1 only supports top-level fields. If your internal user id lives under `app_metadata.app_user_id` (a Supabase-conventional pattern), wrap the client to flatten the field at integration time:
+
+```ts
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+const wrapped = {
+  auth: {
+    async getUser(token: string) {
+      const result = await supabase.auth.getUser(token);
+      const user = result.data?.user;
+      if (user) {
+        return {
+          ...result,
+          data: {
+            user: { ...user, app_user_id: user.app_metadata?.app_user_id },
+          },
+        };
+      }
+      return result;
+    },
+  },
+};
+
+supabaseAdapter({ client: wrapped, userIdField: "app_user_id" });
+```
+
+The structural typing on `SupabaseClientLike` accepts any object with a matching `auth.getUser(token)` method, so the wrapper above plugs in without a separate factory.
+
+## Caching
+
+The adapter calls `client.auth.getUser(token)` on every verification, which is a network round trip to Supabase's auth API (typically 10-50ms in steady-state production). There is no built-in cache: the right cache shape (TTL, key, invalidation on logout) depends entirely on your session-lifetime tolerance and security model. If you need caching, wrap the client (or the adapter) with your preferred policy.
+
+## Why pass the client directly
+
+Unlike `clerkAdapter`, which takes a function-shaped `verifyToken` to insulate against `@clerk/backend` API churn, `supabaseAdapter` takes the client directly because Supabase's `auth.getUser(token)` API has been stable across `@supabase/supabase-js` v2 releases. The natural Supabase usage is "construct a server-side client at startup, share it across every backend feature that talks to Supabase," and the adapter slots into that pattern with no glue code.
+
+If `@supabase/supabase-js` ever reshapes the response envelope, the structural type will flag the breakage at the integration boundary. Switching the adapter to a function-shaped option later is an additive change behind a deprecation cycle.

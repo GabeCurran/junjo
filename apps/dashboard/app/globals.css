@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+  }
+}
+
+/* Tremor v3 chart text + axis line color tokens. Tremor primitives expect
+ * Tailwind utilities like `text-tremor-content` and `border-tremor-border`
+ * resolved against these CSS variables; without them charts render axis
+ * labels and tooltip text in invisible-on-dark colors. The values mirror
+ * the dashboard's existing `--muted-foreground`, `--foreground`, and
+ * `--border` tones so charts inherit the dashboard's theme. The
+ * `dark-tremor-*` variant set is bound in `.dark` so theme switching
+ * keeps the chart text legible. Color names are tremor-namespaced to
+ * avoid colliding with shadcn primitives. */
+@layer base {
+  :root {
+    --tremor-brand-faint: 213 100% 96%;
+    --tremor-brand-muted: 213 97% 87%;
+    --tremor-brand-subtle: 212 96% 78%;
+    --tremor-brand: 217 91% 60%;
+    --tremor-brand-emphasis: 224 76% 48%;
+    --tremor-brand-inverted: 0 0% 100%;
+    --tremor-background-muted: 210 20% 98%;
+    --tremor-background-subtle: 220 14% 96%;
+    --tremor-background: 0 0% 100%;
+    --tremor-background-emphasis: 215 28% 17%;
+    --tremor-border: 214 32% 91%;
+    --tremor-ring: 215 28% 17%;
+    --tremor-content-subtle: 220 9% 64%;
+    --tremor-content: 215 14% 47%;
+    --tremor-content-emphasis: 215 19% 35%;
+    --tremor-content-strong: 222 47% 11%;
+    --tremor-content-inverted: 0 0% 100%;
+  }
+
+  .dark {
+    --tremor-brand-faint: 224 71% 4%;
+    --tremor-brand-muted: 224 76% 48%;
+    --tremor-brand-subtle: 217 91% 60%;
+    --tremor-brand: 213 94% 68%;
+    --tremor-brand-emphasis: 213 97% 87%;
+    --tremor-brand-inverted: 224 71% 4%;
+    --tremor-background-muted: 222 84% 4.9%;
+    --tremor-background-subtle: 217 32% 17%;
+    --tremor-background: 222 84% 4.9%;
+    --tremor-background-emphasis: 215 20% 65%;
+    --tremor-border: 217 32% 17%;
+    --tremor-ring: 215 20% 65%;
+    --tremor-content-subtle: 217 19% 35%;
+    --tremor-content: 215 20% 65%;
+    --tremor-content-emphasis: 218 11% 65%;
+    --tremor-content-strong: 210 40% 98%;
+    --tremor-content-inverted: 222 84% 4.9%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

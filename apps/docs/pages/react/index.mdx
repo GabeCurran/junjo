@@ -1,0 +1,27 @@
+# React
+
+`@junjo/react` is the React-specific layer built on top of `@junjo/sdk`. It wires a single `Junjo` client through React Context and exposes hooks that consume it.
+
+## Install
+
+```bash
+npm install @junjo/sdk @junjo/react
+```
+
+`react` is a peer dependency (^18 or ^19); the package brings no React copy of its own.
+
+## What ships today
+
+| Hook / component | Status |
+|------------------|--------|
+| [`JunjoProvider`](/react/provider) | shipped (Phase 7.1). Provides a `Junjo` client to the subtree via context. |
+| [`useJunjo`](/react/provider) | shipped (Phase 7.1). Returns the provided client from any descendant component. |
+| [`useGroup`](/react/use-group) | shipped (Phase 7.2). Snapshot + live event stream for one group's metadata and active members. |
+| [`useCan`](/react/use-can) | shipped (Phase 7.3). Boolean permission check with a per-provider shared cache. |
+| [`useMembers`](/react/use-members) | shipped (Phase 7.4). Paginated roster with status filter and live event updates. |
+| [`useInvitations`](/react/use-invitations) | shipped (Phase 7.4). Paginated invitation list with status filter and live event updates. |
+| [`useAuditLog`](/react/use-audit-log) | shipped (Phase 7.4). Paginated audit log with action filter; refetch-driven (no SSE subscription in V1). |
+| [`useMutation`](/react/use-mutation) | shipped (Phase 7.5a). Generic mutation primitive with `onMutate -> context -> onError` rollback hooks for optimistic updates. |
+| `applyOptimistic` on `useMembers` / `useInvitations` / `useGroup` | shipped (Phase 7.5b for `useMembers`, Phase 7.5c for `useInvitations` + `useGroup`). Each hook's result returns a snapshot + rollback helper that pairs with [`useMutation`](/react/use-mutation). |
+
+The remaining hooks build on the same provider, so wiring `JunjoProvider` once at your app's root is the only setup step you need today.

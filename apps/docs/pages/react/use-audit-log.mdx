@@ -1,0 +1,148 @@
+# useAuditLog
+
+Returns the paginated audit log for a group. Read-only and refetch-driven; the hook does NOT open an SSE subscription, so live updates require an explicit `refetch()` call.
+
+```tsx
+import { useAuditLog } from "@junjo/react";
+
+function AuditPanel({ groupId }: { groupId: GroupId }) {
+  const { entries, loading, error, hasMore, fetchMore, loadingMore, refetch } =
+    useAuditLog(groupId, { actions: ["member.invited", "member.joined", "member.left"] });
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      <li>
+        <button type="button" onClick={refetch}>Refresh</button>
+      </li>
+      {entries.map((e) => (
+        <li key={e.id}>
+          {e.createdAt.toISOString()} {e.action} {e.targetId ?? "-"}
+        </li>
+      ))}
+      {hasMore ? (
+        <li>
+          <button type="button" onClick={fetchMore} disabled={loadingMore}>
+            {loadingMore ? "Loading more..." : "Load more"}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useAuditLog(groupId: GroupId, opts?: UseAuditLogOptions): UseAuditLogResult;
+
+interface UseAuditLogOptions {
+  actions?: AuditAction[];
+  limit?: number;
+}
+
+interface UseAuditLogResult {
+  entries: AuditEntry[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  fetchMore: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `entries` | The current list, newest first. New pages append at the end. Deduplicated by `id`. |
+| `loading` | `true` from mount until the first `audit.list` response (success or error). |
+| `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `error` | The most recent error: a fetch error or a `fetchMore` error. Stays set until the next `refetch` clears it. |
+| `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
+| `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+
+## Filters
+
+The `actions` option restricts the page to entries whose `action` field is in the supplied list. The hook forwards the array verbatim to `junjo.audit.list(groupId, { actions })`. An empty array (`actions: []`) is treated as "no filter" (the SDK and the server both agree on this) and is omitted from the wire call.
+
+The `limit` option caps the page size; the server validates `1 <= limit <= 100` and defaults to 50.
+
+Changing either option triggers a `refetch` (the cursor resets and a fresh first page lands with the new filter).
+
+The hook applies a sort-stable cache key on `actions`, so:
+
+- `["member.invited", "member.joined"]` and a freshly-allocated `["member.invited", "member.joined"]` (different reference, same membership) do NOT trigger a refetch.
+- `["member.invited", "member.joined"]` and `["member.joined", "member.invited"]` (different order, same membership) do NOT trigger a refetch (order is irrelevant to the server).
+- `["member.invited"]` and `["member.invited", "member.joined"]` (different membership) DO trigger a refetch.
+
+This means the consumer can pass an inline array each render without paying for unnecessary fetches.
+
+## Pagination
+
+Pagination is timestamp-based, not opaque-cursor-based. The server returns `Page<AuditEntry>` where `nextCursor` is the ISO 8601 `createdAt` of the last item when more pages exist. The hook stores that string and converts to `Date` via `new Date(cursor)` when calling `audit.list({ before })` for the next page.
+
+```ts
+// The hook's internal flow:
+// 1. mount: list(groupId, { actions?, limit? })
+// 2. fetchMore: list(groupId, { actions?, limit?, before: new Date(nextCursor) })
+```
+
+`fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `id` when appending, so an entry returned in two overlapping pages (rare, but possible if entries share `createdAt` to millisecond precision) is not duplicated in the visible list.
+
+## No live updates in V1
+
+Unlike `useGroup` / `useMembers` / `useInvitations`, this hook does NOT subscribe to the SSE event stream. Audit entries do not have a corresponding `JunjoEvent` payload that carries the audit-entry id, so the hook cannot synthesize new entries from `member.joined` / `role.changed` / etc. without diverging from what the server actually recorded. The right long-term fix is a dedicated `audit.created` event that carries the full server-shape entry; that lands post-V1.
+
+For V1, the contract is "fetch on mount, paginate via `fetchMore`, refresh via `refetch`." Practical patterns for keeping the audit log fresh:
+
+```tsx
+// Polling (simple, predictable):
+useEffect(() => {
+  const id = setInterval(() => { void refetch(); }, 30_000);
+  return () => clearInterval(id);
+}, [refetch]);
+
+// Manual on-demand (lightest):
+<button onClick={refetch}>Refresh</button>
+
+// Mutation-driven (best when the consumer also drives mutations):
+async function handleKick() {
+  await junjo.members.kick(groupId, userId);
+  await refetch();
+}
+```
+
+A future Phase 7.5 optimistic-updates layer may invalidate the audit log on relevant mutations from the same provider, removing the need for explicit `refetch` calls in the mutation-driven pattern. Polling and manual refresh stay correct in either world.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Two sources:
+
+- **Initial fetch error**: a `JunjoError` (or other) from the first `audit.list` call. The hook stays at `loading: false` with `entries: []`.
+- **`fetchMore` error**: appended to `error` while `entries` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
+
+If `useAuditLog` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Composing with `useGroup` and other hooks
+
+`useAuditLog` is the only Phase 7 list hook that does not open its own SSE subscription, so it adds zero stream cost when rendered alongside `useGroup` or `useMembers`. The trade is the no-live-updates limitation above; consumers needing both a member roster AND a live audit log should poll `useAuditLog`'s `refetch` while letting `useMembers` carry the live-updates load.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.audit.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.audit, {
+  list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+});
+```

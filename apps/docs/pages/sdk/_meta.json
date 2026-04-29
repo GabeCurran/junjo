@@ -1,0 +1,10 @@
+{
+  "index": "Overview",
+  "groups": "groups",
+  "invitations": "invitations",
+  "members": "members",
+  "roles": "roles",
+  "permissions": "permissions",
+  "audit": "audit",
+  "webhooks": "webhooks"
+}

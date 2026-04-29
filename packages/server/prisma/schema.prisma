@@ -222,7 +222,10 @@ model GroupRelationship {
   groupB      Group    @relation("RelGroupB", fields: [groupBId], references: [id], onDelete: Cascade)
   type        String // "ally" | "enemy" | "neutral" | dev-defined
   since       DateTime @default(now())
-  setByUserId String
+  // null when set by the server itself with no acting user (no
+  // auth-adapter actor wired yet in V1; parallels Invitation.createdByUserId
+  // and MemberPermissionOverride.setByUserId).
+  setByUserId String?
 
   @@id([groupAId, groupBId])
   @@index([groupBId])
@@ -240,7 +243,9 @@ model Invitation {
   roleId          String?
   // null = open code/link invite. Set = direct push to a specific user.
   targetUserId    String?
-  createdByUserId String
+  // null when issued by the server itself (no auth-adapter actor wired yet
+  // in V1; parallels AuditEntry.actorUserId).
+  createdByUserId String?
   createdAt       DateTime  @default(now())
   expiresAt       DateTime?
   usedAt          DateTime?
@@ -279,15 +284,23 @@ model AuditEntry {
 // =====================================================================
 
 model WebhookEndpoint {
-  id           String    @id @default(cuid())
-  gameId       String
-  game         Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  url          String
-  hashedSecret String
+  id         String    @id @default(cuid())
+  gameId     String
+  game       Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  url        String
+  // HMAC signing secret. Stored in recoverable form (HMAC requires the
+  // secret on the signing side, unlike the API-key path which stores a
+  // one-way hash). Surfaced to the dev only at create time.
+  secret     String
   // Subset of event types this endpoint cares about. Empty = all.
-  events       String[]
-  createdAt    DateTime  @default(now())
-  disabledAt   DateTime?
+  events     String[]
+  // Wire format applied at delivery time. "junjo" (default) sends the raw
+  // JunjoEvent JSON with HMAC headers; "discord" sends a Discord embed
+  // payload and skips the HMAC (Discord webhooks authenticate via URL).
+  // Slack and other targets land here in later phases.
+  format     String    @default("junjo")
+  createdAt  DateTime  @default(now())
+  disabledAt DateTime?
 
   deliveries WebhookDelivery[]
 

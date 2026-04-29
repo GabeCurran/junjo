@@ -1,0 +1,283 @@
+# Self-hosting Junjo
+
+The same `junjo-server` binary that powers the cloud runs on your own infrastructure. You bring a Postgres database and a place to run a Node process; Junjo handles the rest.
+
+This page is the reference for that path: what to run, what to configure, how to migrate the schema across upgrades, and where the operational responsibilities sit. The [Getting started](/getting-started) page already covers the one-liner `docker run`; this page is the deeper guide.
+
+## What you get on self-host
+
+Self-host gives you the full open-source server: every route under [`/v1`](/api), the SSE event stream, the webhook delivery worker, the soft-delete sweeper, and the seed CLI for issuing API keys. It is feature-equivalent to cloud for everything documented under [SDK](/sdk), [API](/api), and [Auth](/auth).
+
+The pieces self-host does **not** include:
+
+- The hosted admin dashboard (groups / roles / audit explorer).
+- The hosted analytics dashboard.
+- Cross-game shared identity.
+
+These live in `apps/dashboard/` in the repo and ship only as part of the cloud product. They are independent of the OSS server: nothing you do on the API depends on them. If you want a UI to inspect state, query the API directly or build your own.
+
+## Required pieces
+
+You need three things:
+
+1. **Postgres 14 or newer.** Any provider works (Supabase, Neon, Railway, RDS, a container you run yourself). Junjo uses `jsonb` columns and `text[]` arrays, both stable since well before Postgres 14.
+2. **A Node 20 runtime.** The Docker image bundles this; if you run from source, install Node 20.
+3. **A way to inject `DATABASE_URL`** as an env var at process start.
+
+Optional but recommended:
+
+- A reverse proxy (Caddy, Nginx, fly.io's edge, Cloudflare) that terminates TLS and forwards to the server's listen port. The server speaks plain HTTP; TLS is the proxy's job. **Important**: configure the proxy with a generous read timeout (at least 35 seconds, ideally 5 minutes) on the SSE path `/v1/events/:groupId`. The default 30-second SSE heartbeat keeps the stream alive, but a too-aggressive proxy timeout will close it before the next heartbeat.
+
+## Docker
+
+The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container in V1; both background tasks are in-process `setInterval` schedulers (the rationale for that choice is in [`docs/03-architecture.md`](https://github.com/gabe-curran/junjo/blob/main/docs/03-architecture.md) under Background sweeps).
+
+```sh
+docker run \
+  -e DATABASE_URL=postgres://user:pass@host:5432/junjo \
+  -p 8787:8787 \
+  ghcr.io/junjo/server:latest
+```
+
+The container exits non-zero if `DATABASE_URL` is missing or unreachable on startup. Logs go to stdout in the standard Node format; route your container runtime's log collector at it (Docker's default driver, fluent-bit, datadog-agent, etc.).
+
+> The `ghcr.io/junjo/server:latest` image is the V1 release target. The Dockerfile in the repo at `packages/server/Dockerfile` is currently a placeholder; the production multi-stage build lands when V1 ships. Until then, run from source (see "Local from source" below).
+
+## Docker Compose
+
+For a single-host deployment with Postgres on the same machine:
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: junjo
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: junjo
+    volumes:
+      - junjo-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U junjo -d junjo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  junjo-server:
+    image: ghcr.io/junjo/server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://junjo:change-me@postgres:5432/junjo
+      JUNJO_BASE_URL: https://junjo.example.com
+      PORT: 8787
+    ports:
+      - "8787:8787"
+
+volumes:
+  junjo-pg:
+```
+
+Bring it up:
+
+```sh
+docker compose up -d
+docker compose exec junjo-server npm run db:migrate
+docker compose exec junjo-server npm run db:seed -- --name "My Game"
+```
+
+The `db:seed` step prints a `prefix.secret` API key to stdout exactly once. Save it; the secret half is hashed at rest and cannot be recovered. If you lose it, run `db:seed` again to issue a new one and revoke the old one through the API.
+
+For production, change `POSTGRES_PASSWORD`, point `JUNJO_BASE_URL` at your public hostname, and put a TLS-terminating proxy in front.
+
+## Local from source
+
+If you are evaluating Junjo, contributing, or want to pin to a specific commit:
+
+```sh
+git clone https://github.com/gabe-curran/junjo
+cd junjo
+npm install
+export DATABASE_URL=postgres://...
+npm run db:migrate --workspace @junjo/server
+npm run db:seed --workspace @junjo/server -- --name "My Game"
+npm run dev --workspace @junjo/server
+```
+
+The `dev` script uses `tsx watch`, so source edits restart the process. For production-from-source, build first and run the compiled output:
+
+```sh
+npm run build --workspace @junjo/server
+node packages/server/dist/index.js
+```
+
+## Environment variables
+
+| Name | Required | Default | Notes |
+|------|----------|---------|-------|
+| `DATABASE_URL` | yes | | Postgres connection string. Format: `postgres://user:pass@host:port/db?schema=public`. |
+| `PORT` | no | `8787` | HTTP listen port. Must be a positive integer. |
+| `NODE_ENV` | no | `development` | One of `development`, `test`, `production`. Outside production, the Prisma client is cached on `globalThis` so `tsx watch` does not leak connections on hot reload. |
+| `JUNJO_BASE_URL` | no | | Public base URL of this server. Used when the SDK's `inviteByLink` builds the share URL; if you do not set it, the SDK falls back to its own `inviteBaseUrl` config. Optional during local dev. |
+
+Validation lives in [`packages/server/src/env.ts`](https://github.com/gabe-curran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
+
+There is no `JUNJO_API_KEY` env var on the server. API keys are per-game database rows that the server validates against the `ApiKey` table; the server itself has no master key. Issue keys with `npm run db:seed` (see below).
+
+## Database lifecycle
+
+### First migration
+
+The shipped Docker image does **not** auto-migrate on boot. Migration is an explicit step so you can stage it separately from the application restart (the standard Prisma deployment recipe). Run once after the database is reachable:
+
+```sh
+docker compose exec junjo-server npm run db:migrate
+```
+
+This applies every committed migration under `prisma/migrations/` against `DATABASE_URL`. It is idempotent: re-running on an up-to-date schema is a no-op.
+
+### Upgrading
+
+Every Junjo release ships a versioned set of migrations. The upgrade flow:
+
+1. Pull the new image: `docker compose pull junjo-server`.
+2. Apply migrations against the running database: `docker compose run --rm junjo-server npm run db:migrate`.
+3. Restart the server: `docker compose up -d junjo-server`.
+
+Junjo migrations are written to be backward-compatible with the previous server version, so step 2 can run while the old server is still serving traffic. There is a window between step 2 and step 3 where the old server is talking to the new schema; this is intentional and supported.
+
+If you skip a release (e.g., upgrade from v0.5 to v0.7 directly), `db:migrate` applies the missed migrations in order. There is no "skip migrations" path.
+
+### Schema reset
+
+Destroys all data and re-applies every migration from scratch. Use only on a database you do not care about (typically a local dev environment or a CI scratch instance):
+
+```sh
+npm run db:reset --workspace @junjo/server
+```
+
+The script refuses to do anything dangerous on a database it cannot reach, but it has no other safety check. Do not point this at production.
+
+### Backups
+
+Junjo does not ship a backup tool. Use whatever your Postgres provider gives you: managed providers (Supabase, Neon, RDS, Railway) all have one-click backups; for self-managed Postgres, `pg_dump` on a cron is enough. The schema is single-tenant per game (every row carries a `gameId` foreign key), so a logical dump restores cleanly.
+
+The two operationally interesting tables are `WebhookDelivery` (the queue the worker drains; rows are short-lived after a delivery succeeds) and `AuditEntry` (the durable audit log; grows monotonically). Neither needs special handling.
+
+## Issuing and rotating API keys
+
+API keys are `prefix.secret` strings stored as `(prefix, hashedSecret)` pairs in the `ApiKey` table. The hash is scrypt; the secret half is never stored in recoverable form, so a leaked database does not leak usable keys.
+
+### First key
+
+```sh
+docker compose exec junjo-server npm run db:seed -- --name "My Game"
+```
+
+The command does two things in one transaction: creates a `Game` row with the supplied name, and issues an `ApiKey` row tied to that game. Output:
+
+```
+Game: gam_abc123 ("My Game")
+API key: jnk_abc123.s3cr3t...
+```
+
+The full key value appears exactly once. Save it in your secret manager; you cannot recover the secret half later.
+
+### Additional keys
+
+To issue a second key against an existing game (e.g., for key rotation), call the seed helper directly:
+
+```sh
+docker compose exec junjo-server node -e \
+  "import('./dist/seed.js').then(m => m.createApiKey('gam_abc123').then(({raw}) => console.log(raw)))"
+```
+
+Or build a small admin script that imports `createGame` and `createApiKey` from `@junjo/server`'s `src/seed.ts`. Both helpers accept an optional `PrismaClient` so they work in any context that imports the package.
+
+A future release will ship a richer admin CLI; the seed helpers are the V1 surface.
+
+### Revoking a key
+
+There is no SDK method to revoke a key (the SDK runs on devs' game servers; key management belongs to operators). Update the `revokedAt` column directly:
+
+```sql
+UPDATE "ApiKey" SET "revokedAt" = now() WHERE "prefix" = 'jnk_abc123';
+```
+
+The API-key middleware checks `revokedAt` on every request and returns `401 invalid_api_key` if it is set, regardless of whether the supplied secret hash matches.
+
+## Health checks
+
+The server exposes a single health endpoint for load balancer probes:
+
+```
+GET /healthz
+```
+
+Returns `200 OK` with body `ok` when the process is running. The check is intentionally cheap: no database round-trip, no auth. It tells you "the Node process is up and listening," not "Postgres is reachable." For a deeper liveness probe, hit `GET /v1/whoami` with a valid API key; it returns `200 { gameId }` only if the API-key middleware can read from the `ApiKey` table.
+
+The unversioned root `GET /` returns the server name and version, useful for confirming which build is running.
+
+## Background workers
+
+Two `setInterval` schedulers run inside the server process:
+
+- **Soft-delete sweeper** (one tick per hour): deletes `Group` rows whose `softDeletedAt` is older than 7 days. The interval handle is `unref`'d so it never keeps the process alive on its own. Documented in [`docs/03-architecture.md`](https://github.com/gabe-curran/junjo/blob/main/docs/03-architecture.md) under Background sweeps.
+- **Webhook delivery worker** (one tick per 5 seconds, batch=50): polls `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api/webhooks.mdx`](/api/webhooks).
+
+Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
+
+### Horizontal scaling
+
+The V1 server is single-process. Both background workers run on every instance, which is correct (the soft-delete sweeper's `deleteMany` is idempotent; the webhook worker's row updates are atomic) but wastes work. If you run more than one instance:
+
+- Each instance runs its own soft-delete sweep every hour. The `deleteMany` against `softDeletedAt < cutoff` is idempotent, so duplicates are silently no-ops; the only cost is the extra query.
+- Each instance polls the webhook queue. The `WebhookDelivery.update` that transitions a row from `pending` to `sent` is atomic, so the same row will not be POSTed twice; the worst case is two instances racing on the same batch and one losing the update with no row changed.
+- The SSE hub is **per-process**. A subscriber connected to instance A does not see events published on instance B. For multi-instance SSE you need either a sticky-session load balancer (so a given subscriber stays on the same instance) or a transport-level pub/sub bus (Redis, NATS, Postgres `LISTEN`/`NOTIFY`); the `EventHub` interface is the seam where that lands. V2 will ship a Redis transport.
+
+The path to scaling out cleanly: run one instance, add the second when you actually need it, and at that point either flip on sticky sessions or wire in the cross-process bus. Do not pre-build for it.
+
+## Reverse proxy
+
+Junjo speaks plain HTTP and listens on a single port. Drop it behind any reverse proxy that terminates TLS. Three things to configure:
+
+1. **TLS termination.** Standard. Forward decrypted traffic to `http://junjo-server:8787`.
+2. **SSE timeouts.** The `/v1/events/:groupId` route holds the connection open and emits a `:heartbeat` comment every 30 seconds. Configure the proxy with a `proxy_read_timeout` (Nginx) or equivalent of at least 35 seconds. Many CDN and edge platforms have shorter defaults that will close the stream prematurely.
+3. **Streaming.** Disable response buffering for the SSE path so the proxy forwards each event as it arrives instead of holding it until the connection closes. In Nginx that is `proxy_buffering off`; in Caddy it is on by default for `text/event-stream`; on Cloudflare it requires Workers or a paid plan with chunked-transfer support.
+
+A minimal Caddy block that handles all three:
+
+```caddy
+junjo.example.com {
+  reverse_proxy junjo-server:8787
+}
+```
+
+Caddy auto-detects SSE and disables buffering, so no additional config is needed for the events route.
+
+## Observability
+
+The server logs request lines and unhandled errors to stdout. Structured logging, metrics endpoints, and tracing hooks are not in V1; the runnable surface area is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses request lines, or an APM that wraps the Node process at boot.
+
+The two operationally interesting failure modes:
+
+- **Webhook deliveries piling up in `pending`.** Query `SELECT count(*) FROM "WebhookDelivery" WHERE status = 'pending'`. Healthy backlog under steady load is single digits; a sustained high count means receivers are slow or down. Failed deliveries past the retry cap become `failed` and stop accumulating.
+- **Soft-deleted groups not being swept.** Query `SELECT count(*) FROM "Group" WHERE "softDeletedAt" < now() - interval '7 days'`. Should be zero between sweeper ticks; a non-zero value means the sweeper is broken or the process restarted right before a sweep.
+
+Both queries are read-only and cheap.
+
+## Upgrades and breaking changes
+
+Junjo follows semver across the OSS surface (`@junjo/sdk`, `@junjo/react`, `junjo-server`). Patch and minor releases are safe to apply with the migrate-then-restart flow above. Major releases may require a one-time data migration; the release notes call out the upgrade path and any required downtime.
+
+The `/v1` API namespace is the version line. A future `/v2` would ship alongside `/v1` for a deprecation window; the V1 commitment is that no `/v1` route ever changes its wire format in a backward-incompatible way once shipped.
+
+## Where to next
+
+- **[API reference](/api)** - every route, every error code, every wire shape.
+- **[SDK reference](/sdk)** - how dev code calls the API once the server is up.
+- **[Auth adapters](/auth)** - hooking Junjo into Clerk, Supabase, or your own JWT issuer.

@@ -1,0 +1,87 @@
+# useCan
+
+Boolean wrapper around the SDK's `junjo.can(userId, groupId, permission)`. Returns `true` if the permission resolves allowed, `false` if denied, and `undefined` while the request is in flight (or if the request errored).
+
+```tsx
+import { useCan } from "@junjo/react";
+
+function InviteButton({ userId, groupId }: { userId: UserId; groupId: GroupId }) {
+  const canInvite = useCan(userId, groupId, "invite_member");
+  if (canInvite !== true) return null;
+  return <button type="button">Invite member</button>;
+}
+```
+
+## Signature
+
+```ts
+function useCan(
+  userId: UserId,
+  groupId: GroupId,
+  permission: PermissionKey,
+): boolean | undefined;
+```
+
+| Return | Meaning |
+|--------|---------|
+| `undefined` | The request is loading, or the underlying call rejected. Treat as "not yet allowed" - render the protected UI as if denied. |
+| `true` | The user has the permission in this group. |
+| `false` | The user does not have the permission. |
+
+## Caching
+
+The hook reads from a shared cache scoped to the nearest `JunjoProvider`. Multiple components calling `useCan` with the same `(userId, groupId, permission)` tuple deduplicate to a single network request, and once the result lands, every consumer of that tuple sees it instantly.
+
+- **Successful results are cached** for the lifetime of the provider (or until the cache is invalidated). The first mount fires `junjo.can(...)`; subsequent mounts of the same key read the cached value synchronously.
+- **Errors are not cached.** A rejected `junjo.can(...)` leaves the slot empty, so the next mount of `useCan` retries. The current mount stays at `undefined` until something causes it to remount or until the cache is invalidated.
+- **Cache scope is per provider instance.** Two `<JunjoProvider client={A}>` and `<JunjoProvider client={B}>` trees do not share entries. Re-mounting the provider (or passing a different `client`) creates a fresh cache.
+
+The cache has no TTL and no event-driven invalidation in V1. The server's `permissions/check` endpoint runs its own 60-second per-process cache that invalidates on role / permission mutations, but that invalidation does not propagate to the React cache. If a permission can flip mid-session, you currently need to remount the consuming component or wait for the next provider mount. A reactive invalidation layer is on the Phase 7.5 roadmap and will be transparent when it lands.
+
+## Errors
+
+The hook never throws to the caller. A `junjo.can(...)` rejection (network error, invalid API key, server 500) leaves `useCan` returning `undefined` and lets the inflight slot release so a future mount retries.
+
+If the hook is called outside a `<JunjoProvider>`, it throws synchronously with a descriptive message naming the missing provider.
+
+## Argument changes
+
+Changing any of `userId`, `groupId`, or `permission` between renders re-keys the cache lookup. The hook fires a fresh `junjo.can(...)` for the new key (unless the cache already has it), and the return value flips to `undefined` until that resolves.
+
+## Composing with `useGroup`
+
+The two hooks are independent: `useCan` does not require an active group subscription. Use them together when a UI needs both the group state and a permission gate:
+
+```tsx
+function GuildAdmin({ userId, groupId }: { userId: UserId; groupId: GroupId }) {
+  const { group, members, loading } = useGroup(groupId);
+  const canKick = useCan(userId, groupId, "kick_member");
+
+  if (loading || !group) return null;
+  return (
+    <ul>
+      {members.map((m) => (
+        <li key={m.id}>
+          {m.userId} {canKick === true ? <KickButton memberId={m.id} /> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.can` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client, { can: vi.fn().mockResolvedValue(true) });
+```
