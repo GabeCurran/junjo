@@ -3887,4 +3887,51 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** an operator who soft-deleted a group within the last 7 days cannot inspect that group's audit through the per-group endpoint; they must use the cross-game recent feed. Acceptable: documented; the recent feed already has the right shape for this view; restoring the group (Phase 1.5's `restore` endpoint) re-enables per-group audit access immediately.
 
+### Phase 11.7a-ii: dashboard Audit tab uses URL-namespaced query params (`auditActions`, `auditBefore`, `auditLimit`)
+
+**Decision:** the Audit tab reads three URL parameters: `auditActions` (multi-value list of action keys), `auditBefore` (the ISO 8601 cursor), and `auditLimit` (page size). Members tab continues to use `q` / `status` / `offset` / `limit`. Both tabs share the same route, so without namespacing a stale `?status=active` on the Members tab would break the Audit tab's parser (and vice versa).
+
+**Rationale:**
+- Tabs share a route in Next.js's `(dashboard)` group, so `searchParams` is one flat bag. A naive shared `limit` would mean changing the audit page size also changes the members page size on the next tab swap - confusing for operators who explicitly set one without intending to affect the other.
+- Per-tab namespacing keeps each tab's URL state independent. Switching tabs via `<GroupDetailTabs>` (which builds a fresh URL with only the `tab=` parameter) clears all namespaced state cleanly; the operator's previous filters do not leak across tabs.
+- The naming convention is consistent: every audit-tab param is prefixed with `audit`. Future tabs (relationships, sub-groups in 11.7b / 11.7c) will follow the same pattern (`relationshipsType=`, `childrenSort=`, etc.) and any inter-tab name collision is impossible.
+- The members tab keeps its un-namespaced shape because (a) it is the default tab whose URLs are most-bookmarked, and (b) introducing `membersQ=`, `membersStatus=`, etc. now would break every existing Phase 11.5b / 11.5c bookmark. Members keeps its cleaner URL; the new tab takes the ergonomic hit.
+
+**Trade:** future tabs need to remember to namespace, and the members tab is the special case. Acceptable: the dashboard documents the convention in `apps/dashboard/README.md` and `docs/03-architecture.md`; the small inconsistency (members un-namespaced, others namespaced) is contained to one explainable rule.
+
+### Phase 11.7a-ii: cursor-based pagination uses `router.back()` for "Previous"; cannot run the inverse query
+
+**Decision:** the Audit tab's "Previous" button calls `router.back()`. There is no server-side inverse query for `createdAt < before`; the operator's prior URL state (containing the prior cursor or no cursor at all) is the only way to reconstruct an earlier page.
+
+**Rationale:**
+- The audit endpoint's pagination contract returns `nextCursor` (the ISO `createdAt` of the last item on the current page) and the next page is a request with `before = nextCursor`. There is no symmetric `after` cursor - to walk backwards you would need to know the `createdAt` of the first item on a *prior* page, which the server does not surface.
+- Holding a client-side cursor stack would work but adds ~40 lines of state (a `useRef<string[]>` plus push / pop logic, plus reset-on-filter-change). The browser's history already maintains this stack for free via the URL state pushed by `router.replace` on each "Next" click.
+- "Jump to newest" (a separate explicit affordance) clears the cursor state immediately when the operator wants to bail out of deep pagination. This is the cursor-based equivalent of "back to page 1" in offset pagination.
+- This matches GitHub's audit log UI (which also uses cursor-based pagination + browser back) and Stripe's API-key event log. The pattern is well-established for cursor-based feeds.
+
+**Trade:** "Previous" relies on browser history rather than an explicit URL the dashboard can reconstruct. If the operator hard-refreshes the page or shares the URL, "Previous" stops working until they navigate forward at least once. Acceptable: hard-refreshing audit logs is rare; sharing audit-log URLs is rarer still; the "Jump to newest" affordance covers the worst case (operator stuck on a deep page).
+
+### Phase 11.7a-ii: action filter is single-select; multi-value via URL hand-edit only
+
+**Decision:** the action filter dropdown is a single-value `<select>` with 24 options (an "All actions" wildcard plus the 23 entries of `ADMIN_AUDIT_ACTIONS`). The wire format supports multi-value via repeated `?auditActions=foo&auditActions=bar` URL params, but the dashboard does not surface a multi-select UI in V1.
+
+**Rationale:**
+- Mirrors the members tab's status filter (also a single-value `<select>` with an "all" wildcard), keeping the toolbar mental model consistent across tabs.
+- Building a multi-select chip / checkbox-list primitive is non-trivial (positioning, keyboard navigation, "select all" / "clear all" affordances) and the operators' dominant use case is "filter to one action" (e.g. "show me every member.kicked entry"). Multi-action filtering is a power-user case that operators can achieve via URL hand-edit (`?auditActions=role.created&auditActions=role.deleted`).
+- The lenient parser already validates each entry against `ADMIN_AUDIT_ACTIONS`, so URL-injected multi-action filters are automatically rejected on stale tab swaps without crashing the page.
+- A future iteration can promote this to a multi-select chip UI without changing the URL contract or the wire format - the URL representation is already a multi-value list, and the server endpoint accepts multi-value `actions[]`.
+
+**Trade:** operators who want to filter to two-or-three actions at once cannot do it via the toolbar; they must hand-edit the URL or use `curl`. Acceptable: hand-editing is documented; the V1 dashboard target audience (Gabe, plus future deployment operators) is comfortable with URL hacks; the multi-value wire format guarantees a future UI can land additively.
+
+### Phase 11.7a-ii: AuditFeed is read-only; no Server Action shipped this iteration
+
+**Decision:** the Audit tab is purely a read surface. No mutations land on this tab; no Server Action is added to the route's `actions.ts`. The toolbar's filter / page-size dropdowns and the pagination buttons all push URL state; the Server Component re-fetches on URL change and re-renders the feed.
+
+**Rationale:**
+- Audit entries are immutable by design - the audit log is a write-once history of every state change in the system. Editing or deleting an audit entry would corrupt the trail.
+- "Re-emit an event" or "trigger a rebuild from this audit entry" are valid feature requests but well outside V1's scope. They would need new server endpoints, new event types, and a different UX (probably a modal action button per row, not a toolbar action).
+- Keeping the tab read-only avoids polluting the Server Actions file with no-op stubs and keeps the audit feed's diff focused on the rendering logic. Future iterations that add audit-tab mutations can introduce the actions then.
+
+**Trade:** none for V1. The tab is a faithful presentation of the audit log; that is the entire feature.
+
 

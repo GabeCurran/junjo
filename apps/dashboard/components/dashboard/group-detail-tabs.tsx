@@ -3,19 +3,19 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Phase 11.6b + 11.6c: tab navigation for the group detail page. Three
-// tabs ship today (Members + Roles + Permissions); 11.7 will add Audit,
-// Relationships, and Sub-groups. The active tab is selected via a URL
-// `?tab=` parameter that the page lenient-parses; switching is just an
-// anchor `<Link>` so the browser's Back button restores prior tab state
-// without per-tab JS state.
+// Phase 11.6b + 11.6c + 11.7a-ii: tab navigation for the group detail
+// page. Four tabs ship today (Members + Roles + Permissions + Audit);
+// 11.7b / 11.7c will add Relationships and Sub-groups. The active tab is
+// selected via a URL `?tab=` parameter that the page lenient-parses;
+// switching is just an anchor `<Link>` so the browser's Back button
+// restores prior tab state without per-tab JS state.
 //
 // Server Component on purpose: tabs do not need interactivity beyond
 // navigation, and rendering them server-side keeps the bundle smaller and
 // matches the page's overall composition (Suspense boundaries + Server
 // Components + occasional Client islands).
 
-export const GROUP_DETAIL_TABS = ["members", "roles", "permissions"] as const;
+export const GROUP_DETAIL_TABS = ["members", "roles", "permissions", "audit"] as const;
 export type GroupDetailTab = (typeof GROUP_DETAIL_TABS)[number];
 
 export const GROUP_DETAIL_DEFAULT_TAB: GroupDetailTab = "members";
@@ -27,7 +27,8 @@ interface TabDef {
 }
 
 // `description` populates the topbar when this tab is active. Adding new
-// tabs in 11.7 means appending to this array plus extending the union.
+// tabs in 11.7b / 11.7c means appending to this array plus extending the
+// union.
 const TAB_DEFS: readonly TabDef[] = [
   {
     value: "members",
@@ -44,6 +45,12 @@ const TAB_DEFS: readonly TabDef[] = [
     label: "Permissions",
     description:
       "Matrix of role permissions. Toggle a cell to grant or revoke a permission key for a role.",
+  },
+  {
+    value: "audit",
+    label: "Audit",
+    description:
+      "Every state change in this group, newest first. Filter by action and page through history.",
   },
 ];
 

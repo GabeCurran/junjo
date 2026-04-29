@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { AuditFeed, type AuditQueryState } from "../../../../../../components/dashboard/audit-feed";
 import { GroupDetailHeader } from "../../../../../../components/dashboard/group-detail-header";
 import {
   GROUP_DETAIL_DEFAULT_TAB,
@@ -27,17 +28,22 @@ import {
   CardTitle,
 } from "../../../../../../components/ui/card";
 import {
+  ADMIN_AUDIT_ACTIONS,
+  ADMIN_AUDIT_DEFAULT_PAGE_SIZE,
+  ADMIN_AUDIT_PAGE_SIZE_OPTIONS,
   ADMIN_MEMBERS_DEFAULT_PAGE_SIZE,
   ADMIN_MEMBERS_PAGE_SIZE_OPTIONS,
   ADMIN_MEMBER_STATUS_FILTERS,
   AdminDisabledError,
   type AdminGroup,
+  type AdminGroupAuditPage,
   type AdminGroupMemberList,
   type AdminMemberStatusFilter,
   type AdminPermissionDef,
   type AdminRole,
   fetchAdminGamePermissions,
   fetchAdminGroup,
+  fetchAdminGroupAudit,
   fetchAdminGroupMembers,
   fetchAdminGroupRoles,
 } from "../../../../../../lib/admin";
@@ -113,6 +119,40 @@ function parseActiveTab(
     return raw as GroupDetailTab;
   }
   return GROUP_DETAIL_DEFAULT_TAB;
+}
+
+// Audit tab query parser. Uses namespaced URL params (`auditActions`,
+// `auditBefore`, `auditLimit`) so they do not collide with the members
+// tab's `q` / `status` / `offset` / `limit`. Lenient like the members
+// parser: invalid values fall through to defaults rather than returning
+// 400.
+function parseAuditQuery(
+  searchParams: Record<string, string | string[] | undefined>,
+): AuditQueryState {
+  const rawActions = searchParams.auditActions;
+  const candidates = Array.isArray(rawActions)
+    ? rawActions
+    : rawActions !== undefined
+      ? [rawActions]
+      : [];
+  const validActions = new Set(ADMIN_AUDIT_ACTIONS);
+  const actions = candidates.filter((a) => typeof a === "string" && validActions.has(a));
+
+  const rawBefore = readParam(searchParams, "auditBefore");
+  const before =
+    rawBefore !== undefined && rawBefore.length > 0 && !Number.isNaN(Date.parse(rawBefore))
+      ? rawBefore
+      : undefined;
+
+  const limitRaw = Number(readParam(searchParams, "auditLimit"));
+  const limit =
+    Number.isFinite(limitRaw) &&
+    ADMIN_AUDIT_PAGE_SIZE_OPTIONS.includes(Math.trunc(limitRaw)) &&
+    limitRaw <= SEARCH_LIMIT_MAX
+      ? Math.trunc(limitRaw)
+      : ADMIN_AUDIT_DEFAULT_PAGE_SIZE;
+
+  return { actions, before, limit };
 }
 
 function MembersSkeleton() {
@@ -286,6 +326,79 @@ function PermissionsSkeleton() {
   );
 }
 
+function AuditSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="h-4 w-24 rounded bg-muted" />
+        <CardDescription className="h-3 w-72 rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2">
+              <div className="h-10 w-48 rounded-md bg-muted" />
+              <div className="h-10 w-24 rounded-md bg-muted" />
+            </div>
+          </div>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="flex items-start gap-3 border-b border-border py-3 last:border-0"
+            >
+              <div className="mt-1 h-6 w-6 shrink-0 rounded-full bg-muted" />
+              <div className="flex flex-1 flex-col gap-1">
+                <div className="h-4 w-1/3 rounded bg-muted" />
+                <div className="h-3 w-1/2 rounded bg-muted" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function AuditBody({
+  gameId,
+  groupId,
+  query,
+}: {
+  gameId: string;
+  groupId: string;
+  query: AuditQueryState;
+}) {
+  let page: AdminGroupAuditPage;
+  try {
+    page = await fetchAdminGroupAudit(gameId, groupId, {
+      limit: query.limit,
+      before: query.before,
+      actions: query.actions.length > 0 ? query.actions : undefined,
+    });
+  } catch (err) {
+    if (err instanceof AdminDisabledError) {
+      return (
+        <ErrorCard
+          title="Cross-game access is disabled"
+          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load the audit log."
+        />
+      );
+    }
+    // The audit fetch shares the 404-collapse contract with the group
+    // fetch; when the group itself is missing, the parent <GroupBody>
+    // already calls notFound(). Reaching here means a transient backend
+    // error or a race against a soft-delete sweep.
+    return (
+      <ErrorCard
+        title="Could not load audit log"
+        body={err instanceof Error ? err.message : "unknown error fetching audit entries"}
+      />
+    );
+  }
+
+  return <AuditFeed page={page} query={query} />;
+}
+
 async function PermissionsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
   let roles: AdminRole[];
   let catalog: AdminPermissionDef[];
@@ -361,11 +474,13 @@ async function MembersBody({
 export default function GroupDetailPage({ params, searchParams }: GroupDetailPageProps) {
   const activeTab = parseActiveTab(searchParams);
   const query = parseQuery(searchParams);
+  const auditQuery = parseAuditQuery(searchParams);
   // The Suspense `key` for the members panel is the serialized query so the
   // skeleton flashes when the operator changes a filter, sort, or page.
   // Without the key, React would reuse the previous Suspense boundary while
   // the server re-runs, leaving the old data on screen during the fetch.
   const membersKey = JSON.stringify(query);
+  const auditKey = JSON.stringify(auditQuery);
 
   return (
     <>
@@ -395,6 +510,10 @@ export default function GroupDetailPage({ params, searchParams }: GroupDetailPag
           ) : activeTab === "permissions" ? (
             <Suspense fallback={<PermissionsSkeleton />}>
               <PermissionsBody gameId={params.gameId} groupId={params.groupId} />
+            </Suspense>
+          ) : activeTab === "audit" ? (
+            <Suspense key={auditKey} fallback={<AuditSkeleton />}>
+              <AuditBody gameId={params.gameId} groupId={params.groupId} query={auditQuery} />
             </Suspense>
           ) : (
             <Suspense key={membersKey} fallback={<MembersSkeleton />}>

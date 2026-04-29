@@ -186,17 +186,29 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   and the next revalidation pulls it into the catalog. Empty states
   steer the operator to the Roles tab (no roles) or to the inline
   register input (no keys).
-- 11.7a-i (this iteration): cross-game admin audit endpoint
+- 11.7a-i: cross-game admin audit endpoint
   (`GET /v1/admin/games/:gameId/groups/:groupId/audit`) shipped on
   the server. Mirrors the per-game `GET /v1/groups/:id/audit` route
   byte-for-byte (same query schema, same timestamp-based pagination,
   same `Page<WireAuditEntry>` response shape). Reuses
   `serializeAuditEntry` and `WireAuditEntry` from `routes/audit.ts`
-  directly. Backs the dashboard's group detail Audit tab in
-  Phase 11.7a-ii (no UI shipped this iteration; the dashboard still
-  carries only the Members + Roles + Permissions tabs).
-- 11.7a-ii: dashboard Audit tab (action filter dropdown, paginated
-  list, relative timestamps).
+  directly.
+- 11.7a-ii (this iteration): group detail page grows a fourth tab
+  (Audit) under the same `?tab=` navigation. The Server Component
+  reads namespaced `auditActions` / `auditBefore` / `auditLimit`
+  query params (lenient parse; invalid values fall through to
+  defaults), fetches via `fetchAdminGroupAudit`, and renders the
+  `<AuditFeed>` Client Component. The feed shows action key in
+  monospace, optional actor and target ids, relative timestamps via
+  `Intl.RelativeTimeFormat` (with absolute time on hover), and a
+  `<details>` payload preview. Toolbar carries a single-action
+  filter dropdown over `ADMIN_AUDIT_ACTIONS` (23 entries plus an
+  "All actions" wildcard) and a 25 / 50 / 100 page-size selector.
+  Pagination is cursor-based: "Next" pushes the response's
+  `nextCursor` as `auditBefore`; "Previous" calls `router.back()`
+  because cursor-based pagination cannot run the inverse query of
+  `createdAt < before`. A "Jump to newest" affordance clears the
+  cursor when the operator is past the first page.
 - 11.7b-i, 11.7b-ii, 11.7c-i, 11.7c-ii: Relationships tab + Sub-groups
   tab (each split into server-endpoints + UI iterations).
 - 11.8 - 11.9: audit viewer, permission tester (one section per

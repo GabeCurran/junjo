@@ -742,3 +742,96 @@ export function revokeAdminRolePermission(
     opts,
   );
 }
+
+// Phase 11.7a-i wire shape mirroring `WireAuditEntry` from
+// `packages/server/src/routes/audit.ts` (which the admin handler reuses
+// verbatim per the iter-070 invitation precedent). Distinct from
+// `AdminAuditEntry` above (the cross-game recent-audit feed shape that
+// pivots `gameName` / `groupName` / `groupSoftDeleted` for the home page);
+// the per-group endpoint does not need those columns because the
+// dashboard already has gameId + groupId from URL context.
+
+export interface AdminGroupAuditEntry {
+  id: string;
+  groupId: string;
+  actorUserId: string | null;
+  action: string;
+  targetId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AdminGroupAuditPage {
+  items: AdminGroupAuditEntry[];
+  // ISO `createdAt` of the last item in the page when more rows exist;
+  // caller pages by passing this value back as `before` on the next call.
+  // Null on the final page.
+  nextCursor: string | null;
+}
+
+// Mirrors the `AuditAction` union in `@junjo/shared` and the server's
+// `AUDIT_ACTIONS` const list in `routes/audit.schema.ts`. Surfaced here so
+// the action filter dropdown can render every value without a round-trip.
+// New audit actions land in three places (the server schema, the shared
+// type, and this list) - all three must stay in lockstep.
+export const ADMIN_AUDIT_ACTIONS: readonly string[] = [
+  "group.created",
+  "group.updated",
+  "group.deleted",
+  "group.restored",
+  "group.relationship.set",
+  "group.relationship.cleared",
+  "group.parent.set",
+  "group.parent.cleared",
+  "member.invited",
+  "member.joined",
+  "member.left",
+  "member.kicked",
+  "member.metadata.updated",
+  "member.notes.updated",
+  "role.created",
+  "role.updated",
+  "role.deleted",
+  "role.assigned",
+  "role.unassigned",
+  "permission.granted",
+  "permission.revoked",
+  "permission.override.set",
+  "permission.override.cleared",
+];
+
+// The server caps `limit` at 100; the dashboard never asks for more than
+// the largest page-size selector value. Defaults to 50 (matching the
+// server's `listAuditQuery` default).
+export const ADMIN_AUDIT_PAGE_SIZE_OPTIONS: readonly number[] = [25, 50, 100];
+export const ADMIN_AUDIT_DEFAULT_PAGE_SIZE = 50;
+
+export interface FetchAdminGroupAuditParams {
+  limit?: number;
+  // ISO 8601 timestamp; entries with `createdAt < before` are returned.
+  // Pass back the previous page's `nextCursor` to walk the feed.
+  before?: string;
+  actions?: string[];
+}
+
+// `actions` repeats per filter value (`?actions=foo&actions=bar`). Empty
+// arrays and zero-length strings are dropped from the wire request so the
+// server's enum / non-empty validation does not 400 on a stale URL.
+export function fetchAdminGroupAudit(
+  gameId: string,
+  groupId: string,
+  params: FetchAdminGroupAuditParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupAuditPage> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.before !== undefined && params.before.length > 0) qs.set("before", params.before);
+  if (params.actions !== undefined && params.actions.length > 0) {
+    for (const action of params.actions) {
+      if (action.length > 0) qs.append("actions", action);
+    }
+  }
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/audit`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupAuditPage>(search ? `${path}?${search}` : path, opts);
+}
