@@ -12,6 +12,7 @@ import {
   getAdminStatsHandler,
   listAdminApiKeysHandler,
   listAdminGamesHandler,
+  listAdminGroupsForGameHandler,
   listRecentAuditHandler,
   listUserGamesHandler,
   revokeAdminApiKeyHandler,
@@ -113,6 +114,14 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/api-keys/:keyId/revoke",
     adminAuthMiddleware(opts.adminToken),
     revokeAdminApiKeyHandler(prisma),
+  );
+  // Admin-token-gated cross-game group browser (Phase 11.4a). Backs the
+  // dashboard's per-game groups page (TanStack Table with search, filter,
+  // sort, paginate). Same before-the-apiKey-middleware placement.
+  v1.get(
+    "/admin/games/:gameId/groups",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminGroupsForGameHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

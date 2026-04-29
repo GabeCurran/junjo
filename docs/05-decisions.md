@@ -3176,3 +3176,49 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Using `lucide-react` icons instead of badges (e.g., a green check for active, a grey X for revoked) was considered but rejected: the status word ("Active" / "Revoked") carries both semantic meaning and screen-reader accessibility. Icons-only would force an `aria-label` per row.
 
 **Trade:** one more primitive to maintain. Acceptable: shadcn primitives are vendored byte-identical and rarely change upstream; the marginal cost is ~30 lines of code. Future iterations can extend or replace it without the API breaking (the Badge primitive's interface is stable across the shadcn registry).
+
+### Phase 11.4a: Phase 11.4 splits a/b mirroring 11.2 / 11.3 precedents
+
+**Decision:** Phase 11.4 ("Group browser per game") splits across two iterations. **11.4a (this iteration)** ships the new admin endpoint `GET /v1/admin/games/:gameId/groups` with full search / filter / sort / pagination support, plus its tests and docs, with no UI changes. **11.4b (next iteration)** ships the dashboard route `app/(dashboard)/games/[gameId]/groups/page.tsx` that consumes the endpoint via TanStack Table, plus the row-click navigation to a per-group detail page.
+
+**Rationale:**
+- Bundling the endpoint, the TanStack Table install, the search box, the filter chips, the sort headers, and the row-click navigation into one iteration produces a wide-touching diff (server route + tests + docs + new dep + new shadcn primitives + new components + URL-state plumbing). The natural seam is invisible scaffolding (this) vs visible UI (next).
+- Mirrors the established a/b split pattern from Phase 5.1, 5.3, 7.5, 11.1, 11.2, 11.3.
+- The endpoint is independently useful: a future operator script or a separate admin tool can already consume it before 11.4b lands.
+
+**Trade:** the iter 064 commit ships server functionality with no immediate dashboard surface; an operator running just this iteration sees no visible change. Acceptable: each commit is the "smallest reviewable unit" the loop is designed to produce; the docs page lands today so the endpoint is discoverable.
+
+### Phase 11.4a: cross-game groups list uses offset-based pagination, not cursor
+
+**Decision:** `GET /v1/admin/games/:gameId/groups` paginates with `?offset=<int>&limit=<int>` and returns `{ items, total, hasMore }`, NOT the cursor-based `{ items, nextCursor }` shape used by the per-game `GET /v1/groups`.
+
+**Rationale:**
+- The dashboard's TanStack Table renders an explicit page count and "go to page N" controls; that needs `total` up front. Cursor-based pagination cannot produce a stable page count without a separate `count` query anyway.
+- `sort=memberCount` does not have a stable cursor: the count can change between page fetches as members join/leave, so a cursor encoding `(memberCount, id)` would skip or duplicate rows under concurrent writes. Offset pagination already accepts this quirk and the dashboard's filter chips make the relevant filtered set small enough that the quirk is rare in practice.
+- Offset pagination on a single game's groups is bounded by the per-game group count, which the schema does not currently bound but which in practice is small (dozens to hundreds; thousands at the extreme). Offset's O(N) skip cost is acceptable at that scale; if a deployment ever hits a game with tens of thousands of groups, the right tool is the existing per-game cursor-paginated `GET /v1/groups` (which the dashboard cannot use because it operates with admin token, not per-game API key).
+
+**Trade:** offset pagination is misleading under concurrent inserts (a row inserted between page fetches shifts the offset). Acceptable for an admin dashboard listing a game's groups; the operator's mental model is a snapshot view and they expect to refresh when the underlying set changes. The user-facing per-game group list (which game UIs render to their players) keeps cursor pagination at `GET /v1/groups`.
+
+### Phase 11.4a: sort=memberCount is computed in memory and capped at 500 rows
+
+**Decision:** `sort=memberCount` does an in-memory sort over the matching set (after batched `groupBy` for member counts), capped at `ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS = 500`. If the filter would match more than 500 groups, the route returns `400 bad_request` with a message asking the caller to narrow with `q`, `kind`, or `visibility`. `sort=createdAt` and `sort=name` order at the database level (no cap).
+
+**Rationale:**
+- The schema has no denormalized `Group.memberCount` column; member counts come from a join through `GroupMember`. Sorting by a computed aggregate at the database level requires either a window function (`ROW_NUMBER() OVER (ORDER BY count(*) DESC)`) over a `LEFT JOIN` + `GROUP BY` subquery, or a denormalized counter that the lifecycle routes maintain.
+- Adding a denormalized counter is a migration + write-path change at every member create / status flip / soft-delete. Out of scope for a dashboard endpoint that serves admins, not per-game read-path callers.
+- A window-function `$queryRaw` would work but introduces hand-written SQL into a route module that otherwise stays Prisma-typed. The cap-and-in-memory-sort approach lets the same handler share its body with the createdAt/name sort branches.
+- The 500-row cap is generous enough that practical games do not hit it (most games have dozens of guilds, not hundreds). When they do, the dashboard's filter chips are exactly the right tool (`?q=raid` typically returns < 50 rows).
+- The cap protects the server: an unbounded in-memory sort over a hundred-thousand-row matching set would be a memory and CPU footgun for one admin request. The route surfaces the cap explicitly via 400 so the operator knows to filter.
+
+**Trade:** an operator who genuinely wants to sort by memberCount across all groups in a large game cannot do so in V1; they must filter first. Acceptable: the use case (find the busiest 10 guilds across 5000 candidates) is rare, and the workaround (filter to a subset) is one keystroke. A future iteration can introduce a denormalized counter or the window-function path if the cap becomes a real bottleneck.
+
+### Phase 11.4a: search uses Postgres `contains` with `mode: "insensitive"`, not full-text search
+
+**Decision:** the `q` query parameter on `GET /v1/admin/games/:gameId/groups` is forwarded as `name: { contains: q, mode: "insensitive" }` to Prisma. No tsvector / tsquery, no GIN index on a `to_tsvector`-derived column, no trigram index.
+
+**Rationale:**
+- Postgres's `LIKE '%q%'` (case-insensitive `contains`) does a sequential scan, but a per-game group set fits comfortably in memory: < 1000 rows in practice, and the route already caps the matching set at 500 for the worst sort path.
+- Adding a `pg_trgm` GIN index would be a migration + a new Postgres extension dependency in the server's bring-up checklist. Not worth it for a dashboard search across a small per-game set.
+- Full-text search (tsvector) would change the search semantics: word-boundary matching, stemming, and stop words. The dashboard's group browser is for an operator looking at exact game names; substring matching is what they expect, not lexeme matching.
+
+**Trade:** the search is O(matching-set-size) per request. For a hypothetical game with 50,000 groups in V1 the latency would be a few hundred ms even before in-memory sort. Acceptable: such a deployment would already be hitting the memberCount cap; the right tool is to filter first by `kind` / `visibility` (which use indexed equality) before falling back to free-text search.

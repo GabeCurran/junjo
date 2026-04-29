@@ -6,11 +6,17 @@
 // intentionally NOT shipped in V1 per VISION; the dashboard calls these
 // endpoints directly via fetch.
 
-import type { ApiKey, AuditEntry, Game, Group, PrismaClient } from "@prisma/client";
+import type { ApiKey, AuditEntry, Game, Group, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { generateApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
-import { createGameBody, listAdminGamesQuery, listRecentAuditQuery } from "./admin.schema.js";
+import {
+  ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
+  createGameBody,
+  listAdminGamesQuery,
+  listAdminGroupsQuery,
+  listRecentAuditQuery,
+} from "./admin.schema.js";
 
 export interface WireUserGameRow {
   gameId: string;
@@ -491,6 +497,186 @@ export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
     });
 
     return c.json<WireAdminApiKeyCreated>({ ...toWireApiKey(apiKey), key: raw.full }, 201);
+  };
+}
+
+// =====================================================================
+// Phase 11.4a: cross-game group browser
+// =====================================================================
+
+export interface WireAdminGroup {
+  id: string;
+  gameId: string;
+  kind: string;
+  name: string;
+  visibility: string;
+  metadata: Record<string, unknown>;
+  defaultRoleId: string | null;
+  parentGroupId: string | null;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WireAdminGroupList {
+  items: WireAdminGroup[];
+  total: number;
+  hasMore: boolean;
+}
+
+function toWireAdminGroup(row: Group, memberCount: number): WireAdminGroup {
+  return {
+    id: row.id,
+    gameId: row.gameId,
+    kind: row.kind,
+    name: row.name,
+    visibility: row.visibility,
+    metadata: (row.metadata ?? {}) as Record<string, unknown>,
+    defaultRoleId: row.defaultRoleId,
+    parentGroupId: row.parentGroupId,
+    memberCount,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+async function batchActiveMemberCounts(
+  prisma: PrismaClient,
+  groupIds: string[],
+): Promise<Map<string, number>> {
+  if (groupIds.length === 0) return new Map();
+  const rows = await prisma.groupMember.groupBy({
+    by: ["groupId"],
+    where: { groupId: { in: groupIds }, status: "active" },
+    _count: { _all: true },
+  });
+  return new Map(rows.map((r) => [r.groupId, r._count._all]));
+}
+
+// `GET /v1/admin/games/:gameId/groups` lists every (non-soft-deleted) group
+// in a game with the dashboard's TanStack Table in mind: pagination via
+// `offset` / `limit`, free-text name search via `q` (case-insensitive
+// `contains`), exact filter on `kind` and `visibility`, and three sort
+// fields (`createdAt`, `name`, `memberCount`) in either order.
+//
+// Response shape:
+//
+//   {
+//     items: WireAdminGroup[],
+//     total: number,
+//     hasMore: boolean,
+//   }
+//
+// Behavior:
+//
+//   - Soft-deleted groups are excluded; this is the operator's "what is
+//     live now" view, not a lifecycle history. A future `?includeDeleted`
+//     flag is additive.
+//   - `q`, `kind`, `visibility` are AND-combined when supplied together.
+//     Empty `q` ("") is rejected at the schema layer (the schema requires
+//     `min(1)`); pass the parameter unset to drop the filter.
+//   - `sort=createdAt` and `sort=name` order at the database level with
+//     `(field <order>, id asc)` for stable tiebreaking. Pagination is
+//     `skip` / `take`.
+//   - `sort=memberCount` is computed (no denormalized counter on the
+//     Group row), so the handler fetches every matching row, batches the
+//     member count, sorts in memory by `(count <order>, id asc)`, then
+//     slices to `[offset, offset+limit)`. To bound the work, the matching
+//     set is hard-capped at `ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS`; if the
+//     filtered count exceeds the cap, the route returns 400 with a hint
+//     to narrow the filter. In practice the dashboard's filter chips make
+//     this trivial.
+//   - 404 when the game does not exist (existence-leak rules don't apply
+//     here; this is admin-token-gated).
+//   - `total` reflects the matching set BEFORE pagination so TanStack
+//     Table can render an accurate page count. `hasMore` is the derived
+//     `offset + items.length < total`.
+export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const parsed = listAdminGroupsQuery.safeParse({
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset"),
+      q: c.req.query("q"),
+      kind: c.req.query("kind"),
+      visibility: c.req.query("visibility"),
+      sort: c.req.query("sort"),
+      order: c.req.query("order"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, offset, q, kind, visibility, sort, order } = parsed.data;
+
+    const where: Prisma.GroupWhereInput = {
+      gameId,
+      softDeletedAt: null,
+      ...(q !== undefined ? { name: { contains: q, mode: "insensitive" } } : {}),
+      ...(kind !== undefined ? { kind } : {}),
+      ...(visibility !== undefined ? { visibility } : {}),
+    };
+
+    if (sort === "memberCount") {
+      const total = await prisma.group.count({ where });
+      if (total > ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS) {
+        throw Errors.badRequest(
+          `cannot sort by memberCount across more than ${ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS} groups; narrow with q, kind, or visibility`,
+        );
+      }
+      const groups = await prisma.group.findMany({
+        where,
+        orderBy: [{ id: "asc" }],
+      });
+      const counts = await batchActiveMemberCounts(
+        prisma,
+        groups.map((g) => g.id),
+      );
+      const enriched = groups.map((g) => ({ row: g, count: counts.get(g.id) ?? 0 }));
+      enriched.sort((a, b) => {
+        if (a.count !== b.count) {
+          return order === "asc" ? a.count - b.count : b.count - a.count;
+        }
+        // Stable tiebreaker by id asc so the same offset returns the same
+        // row across calls (subject to inserts / deletes between calls,
+        // which offset-based pagination already accepts as a quirk).
+        return a.row.id.localeCompare(b.row.id);
+      });
+      const sliced = enriched.slice(offset, offset + limit);
+      return c.json<WireAdminGroupList>({
+        items: sliced.map(({ row, count }) => toWireAdminGroup(row, count)),
+        total,
+        hasMore: offset + sliced.length < total,
+      });
+    }
+
+    const orderBy: Prisma.GroupOrderByWithRelationInput[] =
+      sort === "name" ? [{ name: order }, { id: "asc" }] : [{ createdAt: order }, { id: "asc" }];
+
+    const [groups, total] = await Promise.all([
+      prisma.group.findMany({ where, orderBy, skip: offset, take: limit }),
+      prisma.group.count({ where }),
+    ]);
+    const counts = await batchActiveMemberCounts(
+      prisma,
+      groups.map((g) => g.id),
+    );
+
+    return c.json<WireAdminGroupList>({
+      items: groups.map((g) => toWireAdminGroup(g, counts.get(g.id) ?? 0)),
+      total,
+      hasMore: offset + groups.length < total,
+    });
   };
 }
 

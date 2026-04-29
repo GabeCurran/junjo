@@ -410,6 +410,71 @@ No body required.
 | `not_found` | 404 | No key with the supplied id exists, or the key exists but belongs to a different game. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/groups
+
+Lists every (non-soft-deleted) group in a game. Backs the dashboard's per-game group browser (TanStack Table) with search, filter, sort, and offset-based pagination.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` to list groups for. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Page size. |
+| `offset` | int >= 0 | 0 | Number of matching rows to skip before the page. |
+| `q` | string 1-120 | - | Case-insensitive name search (Postgres `contains`). Empty string is rejected; pass the parameter unset to drop the filter. |
+| `kind` | string 1-64 | - | Exact match on `Group.kind`. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | - | Exact match. |
+| `sort` | `"createdAt" \| "name" \| "memberCount"` | `createdAt` | Sort field. |
+| `order` | `"asc" \| "desc"` | `desc` | Sort direction. |
+
+### Response
+
+`200 OK` with a `WireAdminGroupList`:
+
+```ts
+interface WireAdminGroup {
+  id: string;
+  gameId: string;
+  kind: string;
+  name: string;
+  visibility: "public" | "invite-only" | "secret";
+  metadata: Record<string, unknown>;
+  defaultRoleId: string | null;
+  parentGroupId: string | null;
+  memberCount: number;        // Active members only (status: "active")
+  createdAt: string;          // ISO 8601
+  updatedAt: string;          // ISO 8601
+}
+
+interface WireAdminGroupList {
+  items: WireAdminGroup[];
+  total: number;              // Matching rows BEFORE pagination
+  hasMore: boolean;           // offset + items.length < total
+}
+```
+
+### Behavior
+
+- Soft-deleted groups are excluded. This is the operator's "what is live now" view; a future `?includeDeleted` flag is additive.
+- `q`, `kind`, and `visibility` are AND-combined when supplied together.
+- `sort=createdAt` and `sort=name` order at the database level with `(field <order>, id asc)` for stable tiebreaking. Pagination uses `skip` / `take`.
+- `sort=memberCount` is computed in memory because the schema does not carry a denormalized counter on `Group`. The handler fetches every matching row, batches active member counts via a single `groupBy`, sorts in memory by `(count <order>, id asc)`, then slices to `[offset, offset+limit)`. To bound the work, the matching set is hard-capped at **500 groups** when `sort=memberCount`. If the filter would match more, the route returns `400 bad_request` with a message asking the caller to narrow with `q`, `kind`, or `visibility`.
+- `total` reflects the filtered count BEFORE pagination, so a TanStack Table consumer can render an accurate page count without a second round trip.
+- The route uses offset-based pagination (not the cursor-based `nextCursor` shape of `GET /v1/groups`). `sort=memberCount` does not have a stable cursor (the count can change between calls), and offset / limit / total is a more natural fit for the dashboard's data table anyway.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` path parameter does not match any game. |
+| `bad_request` | 400 | Query validation failed, or `sort=memberCount` matched more than 500 rows after filtering. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
