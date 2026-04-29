@@ -2457,3 +2457,16 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 **Trade:** when an SDK signature changes, the page must be hand-edited to match. The documentation discipline rule in VISION.md ("Every iteration that adds, changes, or removes user-facing behavior MUST update the corresponding docs in the same commit.") catches this on the iteration that makes the change; the iteration log's `## Docs` section is the self-audit. We accept that risk in exchange for the prose quality; if a future audit shows pages drifting from `packages/sdk/src/`, the response is a one-time sweep, not a generator pivot.
 
 **Future additions:** if and when the SDK surface grows past what hand-writing can keep up with (e.g., dozens of new methods per release on a steady cadence), a generator-augmented approach is the natural escape hatch: generate a typed-signatures appendix per page from the public type surface and merge with the hand-written prose at build time. V1 does not need this.
+
+
+### Phase 13.3: self-host page lives at the docs root, not under a sub-section
+
+**Decision:** the operational guide for running the open-source server lives at `apps/docs/pages/self-host.mdx` (top-level slug `/self-host`), not nested under `apps/docs/pages/api/` or any other section. It is wired into the top-level nav between `tutorial` and `sdk`.
+
+**Rationale:**
+- Self-hosters and API consumers are different audiences. An API consumer wants to know "what does this route do" (the right home is `apps/docs/pages/api/`); a self-hoster wants to know "what do I run, what env vars, how do I migrate, how do I issue a key" (a different mental model). Burying the operations guide under `api/` would force operators to scroll past per-route reference to find their ops checklist, and would imply that the page is route documentation when it is process documentation.
+- The natural reading order is intro -> install -> tutorial -> operations -> reference. `_meta.json` ordering reflects that flow: `index` (what is it) -> `getting-started` (install) -> `tutorial` (use it) -> `self-host` (run it) -> `sdk` / `react` / `api` / `auth` (reference). A reader who has finished the tutorial and wants to go to production reaches `self-host` next.
+- Stripe, Auth0, Supabase, and Clerk all keep their hosting / deployment guides as top-level slugs distinct from per-resource API reference. Same convention.
+- The page replaces what `packages/server/README.md` used to be the only home for. `README.md` stays as the in-repo developer reference; `self-host.mdx` is the docs-site polished version that links into other docs pages and that downstream readers can find from search engines without cloning the repo.
+
+**Trade:** the file has no parent directory of its own (no `self-host/index.mdx` + sub-pages). If the operational surface grows enough to need a multi-page treatment (separate "Docker", "Kubernetes", "Backups", "Observability" pages), the file converts to a directory and the existing slug stays valid as `self-host/index.mdx`. V1 fits comfortably on one page; the trade is solving today's problem without pre-building for a hypothetical future split.

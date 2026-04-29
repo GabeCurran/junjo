@@ -28,6 +28,8 @@ Then issue an API key against your running container. The key is shown exactly o
 docker exec <container> npm run db:seed -- --name "My Game"
 ```
 
+For a real deployment (Docker Compose recipe, the full env-var table, the migration lifecycle across upgrades, reverse-proxy notes for the SSE path), see the [Self-hosting](/self-host) page.
+
 ### Local dev
 
 Clone the repo, bring up a Postgres database (any will do), and run:
