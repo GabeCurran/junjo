@@ -2899,3 +2899,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 - Active-route detection uses `usePathname` + a small `pathname.startsWith(...)` check. The home (`/`) special-cases exact match so it doesn't highlight on every route.
 
 **Trade:** the dashboard is unusable on mobile (the sidebar is hidden, no replacement nav shows up). Acceptable: dashboard consumers are operators sitting at a desk; mobile parity isn't a V1 goal and the trade-off is documented in the roadmap.
+
+
+## 2026-04-29
+
+### Phase 11.2 splits a/b: server admin endpoints, then dashboard home page
+
+**Decision:** Phase 11.2 ("Dashboard home") splits across iterations mirroring the Phase 11.1 a/b split (and the 5.1 a/b/c, 5.3 a/b, 7.5 a/b/c precedents). 11.2a (this iteration) ships two cross-game admin endpoints (`GET /v1/admin/stats`, `GET /v1/admin/audit`) the dashboard's home page will consume. 11.2b ships the home page UI (`apps/dashboard/app/(dashboard)/page.tsx`) - overview cards backed by `/v1/admin/stats`, recent activity feed backed by `/v1/admin/audit`.
+
+**Rationale:**
+- The dashboard's per-game `JUNJO_ADMIN_API_KEY` SDK singleton (set up in iter 057) cannot do cross-game queries; "all games" stats and "all games" audit need new endpoints that match the Phase 10.2 admin-token pattern (`JUNJO_ADMIN_TOKEN` + `// @cloud-only` headers + `adminAuthMiddleware`).
+- Bundling the server endpoints with the dashboard UI in one iteration would produce a wide-touching diff (server routes + tests + UI components + Server Action wiring + page styling). The natural seam is: invisible API surface (this) vs visible UI (next).
+- Server endpoints are independently testable. The dashboard iteration that consumes them can focus purely on Server Component composition + cards + feed rendering.
+- Mirrors the precedent that has worked across the loop: 5.1a/b/c (event hub vs publish vs SDK subscribe), 5.3a/b (enqueue vs worker), 7.5a/b/c (mutation primitive vs per-list helpers), 11.1a/b (toolchain + auth vs visible shell).
+
+**Trade:** the new endpoints have no consumer until 11.2b lands. Acceptable: tests cover them end-to-end, and a future operator could call them via curl or a custom dashboard immediately.
+
+### Phase 11.2a: admin stats and recent audit feed under a new `/v1/admin/...` namespace
+
+**Decision:** the new endpoints live at `/v1/admin/stats` and `/v1/admin/audit`, NOT under existing per-resource scopes. The pre-existing Phase 10.2 endpoint at `/v1/users/:junjoUserId/games` stays at its original path (no churn).
+
+**Rationale:**
+- `/v1/admin/...` is conceptually distinct from any per-resource scope (this is admin-token-gated cross-game access, not per-game per-user data). A clean namespace makes future admin endpoints discoverable.
+- Refactoring `/v1/users/:junjoUserId/games` to live under `/v1/admin/users/...` for consistency would be a wire-shape break with no functional gain. The two paths can coexist; future admin endpoints land under `/v1/admin/...`.
+- The `app.ts` registration order already establishes the pattern: register admin routes BEFORE the per-game `apiKeyMiddleware` matcher, with a per-route `adminAuthMiddleware`. The new routes follow that pattern exactly.
+
+**Trade:** the URL space is mildly inconsistent (Phase 10.2 endpoint under `/v1/users/...`, Phase 11.2a endpoints under `/v1/admin/...`). Acceptable: documented; future cross-tenant endpoints land under `/v1/admin/...` so the inconsistency is bounded to one legacy path.
+
+### Phase 11.2a: stats counting rules differ for active-set vs activity-volume metrics
+
+**Decision:** `totalGroups` and `totalActiveMembers` exclude soft-deleted groups (active-set semantics). `totalAuditEntriesLast24h` and the recent audit feed include soft-deleted-group entries (activity-volume semantics, audit log preserves history regardless of lifecycle state). Each item in the audit feed carries a `groupSoftDeleted: boolean` flag so the dashboard can mark such rows visually.
+
+**Rationale:**
+- `totalGroups` answering "how many groups exist?" should mean "how many groups are alive right now". Including the 7-day pending-deletion window would conflate reality with grace periods.
+- `totalActiveMembers` follows the existing precedent: `Group.memberCount` and the permission resolver both treat active-in-non-deleted as the "real member" rule. Diverging here would invent a third counting model.
+- `totalAuditEntriesLast24h` answering "how much activity happened in the last day?" should mean "every recorded action", because the audit log is the system of record. A `group.deleted` event that happened 2h ago is part of that activity even if the group itself is now soft-deleted.
+- The recent audit feed inherits the same rule. Including soft-deleted-group entries lets the dashboard render the full history; the `groupSoftDeleted` flag lets it visually distinguish rows.
+
+**Trade:** two counting models in one endpoint (active-set for groups/members, activity-volume for audit) makes the endpoint slightly less internally consistent. Acceptable: each model matches the question the corresponding card answers; documented in the wire-format table.
+
+### Phase 11.2a: `GET /v1/admin/audit` skips pagination; Phase 11.8 owns paginated cross-game audit
+
+**Decision:** the recent audit endpoint accepts `?limit=20` (1-100, default 20) and returns `{ items: [...] }` with no cursor or pagination wrapper. A future game-wide audit page (Phase 11.8) will own a paginated cross-game audit endpoint with `?before=<ISO>` cursor support.
+
+**Rationale:**
+- The home page only renders 20 (maybe up to 100) items. Pagination is dead weight at that scale.
+- Splitting "recent activity teaser" from "full paginated audit explorer" lets each be optimized for its purpose: the home endpoint is one query with an `include`; the paginated endpoint can sort, filter by action, filter by game, etc.
+- The endpoint name (`/v1/admin/audit`, no `/recent` suffix) leaves room: Phase 11.8 can add `?before=` and a `nextCursor` field additively, or split into `/v1/admin/audit` (paginated) and `/v1/admin/audit/recent` (current shape) if the shapes truly diverge.
+
+**Trade:** if Phase 11.8 ends up wanting a different wire shape for its paginated variant, this endpoint may need a rename or a second endpoint alongside it. Acceptable: low cost to split later, and the home page is the only consumer of this endpoint in V1.
+
+### Phase 11.2a: audit endpoint pivots `gameName` and `groupName` into each item via `include`
+
+**Decision:** every item carries `gameId` + `gameName` + `groupId` + `groupName` + `groupSoftDeleted`. Implemented via a single `prisma.auditEntry.findMany({ include: { group: { select: { name, gameId, softDeletedAt, game: { select: { name } } } } } })` to avoid an N+1 lookup per row.
+
+**Rationale:**
+- The dashboard's activity-feed card needs to render `<Game> / <Group>` headings on every row; making the consumer fetch names per row would be N+1.
+- Prisma's `include` does the join in a single query plan; the wire-shape pivot keeps the consumer-side rendering trivial.
+- `groupSoftDeleted` is computed server-side from `softDeletedAt !== null` and surfaced as a boolean to keep the wire format JSON-friendly (the dashboard does not need the timestamp, just the flag).
+
+**Trade:** if the dashboard later wants the timestamp itself (e.g., to render "deleted 3h ago"), the wire format will need an additive `groupSoftDeletedAt` field. Acceptable: additive; the boolean covers V1 and the timestamp can be introduced when needed.

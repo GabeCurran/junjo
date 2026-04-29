@@ -86,9 +86,119 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
   https://api.junjo.io/v1/users/user_clxxx0000000000000000000/games
 ```
 
+## `GET /v1/admin/stats`
+
+Returns aggregate counts across every game on the deployment. Used by the dashboard's home page (Phase 11.2) to render the four overview cards.
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "totalGames": 12,
+  "totalGroups": 87,
+  "totalActiveMembers": 1254,
+  "totalAuditEntriesLast24h": 312
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `totalGames` | number | Every row in the `Game` table. There is no soft-delete column on `Game`. |
+| `totalGroups` | number | Groups where `softDeletedAt: null`. Soft-deleted-but-undeleted-soon groups are excluded; the dashboard's "active groups" mental model wins over including the 7-day pending-deletion window. |
+| `totalActiveMembers` | number | `GroupMember` rows in `status: "active"` whose group is not soft-deleted. Matches the `Group.memberCount` precedent and the permission resolver's "non-active = effectively not a member" rule. |
+| `totalAuditEntriesLast24h` | number | `AuditEntry` rows whose `createdAt` falls in `[now() - 24h, now()]`, regardless of group soft-delete state. The dashboard's "events in last 24h" card reflects activity volume, not surviving-group volume. |
+
+### Behavior
+
+- Implemented as four parallel `prisma.count` queries via `Promise.all`. Cheap to recompute; the dashboard caches the response for 60s via Next.js `revalidate`.
+- No query parameters. The 24h window is fixed; a future iteration may make it configurable.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  https://api.junjo.io/v1/admin/stats
+```
+
+## `GET /v1/admin/audit`
+
+Returns the most recent audit entries across every game on the deployment, with the parent group's name and the parent game's name pivoted into each item so the dashboard's activity-feed card can render `<game> / <group>` headings without an N+1 lookup.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | `20` | Maximum number of entries returned. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "audit_clxxx...",
+      "action": "member.joined",
+      "gameId": "game_clxxx...",
+      "gameName": "Alpha",
+      "groupId": "group_clxxx...",
+      "groupName": "Vanguard",
+      "groupSoftDeleted": false,
+      "actorUserId": "user_clxxx...",
+      "targetId": "user_xyz",
+      "payload": { "memberId": "...", "invitationId": "..." },
+      "createdAt": "2026-04-28T22:14:51.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `AuditEntry.id`. |
+| `items[].action` | string | One of the [audit actions](./audit). |
+| `items[].gameId` | string | The parent game's id. |
+| `items[].gameName` | string | The parent game's name, pivoted in for the dashboard. |
+| `items[].groupId` | string | The parent group's id. |
+| `items[].groupName` | string | The parent group's name, pivoted in for the dashboard. |
+| `items[].groupSoftDeleted` | boolean | `true` when the parent group's `softDeletedAt` is set. The audit log preserves history regardless; the flag lets the dashboard mark the row visually. |
+| `items[].actorUserId` | string \| null | `JunjoUser.id` of the actor, or `null` for system actions. |
+| `items[].targetId` | string \| null | The dev-supplied external user id of the target, or `null` if the action does not target a user. |
+| `items[].payload` | object | Action-specific JSON payload. Shape varies per action. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps ordering stable when two rows share the same millisecond timestamp.
+- Soft-deleted-group entries are included; the audit log preserves history regardless of the group's lifecycle state.
+- No pagination. The home page renders 20-100 items at most. A future game-wide audit page (Phase 11.8) will own paginated cross-game audit; this endpoint stays terse on purpose.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` is not an integer in `[1, 100]`. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/audit?limit=20"
+```
+
 ## SDK
 
-Not part of the per-game `@junjo/sdk` surface. The dashboard calls this endpoint directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
+Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
 
 A dashboard-internal client typically looks like:
 

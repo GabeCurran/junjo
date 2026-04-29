@@ -5,7 +5,11 @@ import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
-import { listUserGamesHandler } from "./routes/admin.js";
+import {
+  getAdminStatsHandler,
+  listRecentAuditHandler,
+  listUserGamesHandler,
+} from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
 import {
@@ -78,6 +82,12 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     adminAuthMiddleware(opts.adminToken),
     listUserGamesHandler(prisma),
   );
+  // Admin-token-gated cross-game stats + activity feed (Phase 11.2a).
+  // Both routes registered BEFORE the per-game `apiKeyMiddleware` so the
+  // admin middleware is the only auth check that runs (per the same
+  // pattern used by `/v1/users/:junjoUserId/games`).
+  v1.get("/admin/stats", adminAuthMiddleware(opts.adminToken), getAdminStatsHandler(prisma));
+  v1.get("/admin/audit", adminAuthMiddleware(opts.adminToken), listRecentAuditHandler(prisma));
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));
