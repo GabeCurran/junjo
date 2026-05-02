@@ -390,5 +390,35 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   three-way condition that gates the page-level
   `<AnalyticsEmptyState>` (so a brand-new game truly with no data still
   sees the tutorial deep-link).
-- 12.4 - 12.5: remaining Tremor charts (member activity heatmap, role /
-  permission distribution).
+- 12.4a: cross-game admin member-activity analytics endpoint
+  `GET /v1/admin/games/:gameId/analytics/member-activity?from=&to=`
+  returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week
+  (0=Sunday) and hour-of-day (0-23). Aggregation runs at the Postgres
+  layer via `$queryRaw` with `EXTRACT(DOW)` + `EXTRACT(HOUR)`; the
+  response is bounded at 168 cells regardless of source data volume.
+  Soft-deleted-group entries are included so prior activity stays
+  visible after a group is removed.
+- 12.4b (this iteration, closes Phase 12.4): dashboard member activity
+  heatmap consuming the 12.4a endpoint. New `<MemberActivityHeatmap>`
+  Client Component (`components/analytics/member-activity-heatmap.tsx`)
+  renders a hand-rolled HTML `<table>` of 7 rows (days, Sun-first) x 24
+  columns (hours, UTC) with each cell's background opacity scaling on
+  the count / max ratio (sqrt-mapped to a [0.08, 1.0] range so
+  low-count cells stay distinguishable from empty cells). Hard-coded
+  blue-500 HSL keeps the heatmap visually paired with the other Tremor
+  charts on the analytics surface. Three-tile summary header (window /
+  total events / peak hour). Hover and screen-reader labels surface the
+  exact day + hour + count via `title` and `aria-label`. A "less - more"
+  legend with the cell-intensity ramp anchors the maximum value.
+  Tremor doesn't ship a heatmap primitive (per VISION's "use Tremor
+  only when a chart is needed" stance) so the component is built with
+  Tailwind utility classes and inline `style.backgroundColor`. New
+  `lib/admin.ts` helpers (`fetchAdminGameMemberActivity`,
+  `AdminMemberActivity`, `FetchAdminMemberActivityParams`) mirror the
+  server's `WireAdminMemberActivity` shape byte-for-byte. The analytics
+  page extends `<AnalyticsBody>` to fetch member-activity alongside
+  game + churn + growth in a single `Promise.all`, render
+  `<MemberActivityHeatmap>` directly below `<GroupGrowthChart>`, and
+  fold `memberActivity.totalEvents === 0` into the four-way condition
+  that gates the page-level `<AnalyticsEmptyState>`.
+- 12.5: remaining Tremor charts (role / permission distribution).

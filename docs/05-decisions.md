@@ -4727,3 +4727,61 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** 14 admin test files is more files to maintain than a single mega-file. Acceptable: each is bounded in scope, the verify gate runs them all in parallel, and the cumulative server count moves from 1200 -> 1224 (+24).
 
+### Phase 12.4b: heatmap is a hand-rolled Tailwind grid, not a Tremor primitive
+
+**Decision:** the dashboard's member activity heatmap is built as a real HTML `<table>` with Tailwind utility classes plus inline `style.backgroundColor` for opacity scaling - no Tremor heatmap primitive. Lives in `apps/dashboard/components/analytics/member-activity-heatmap.tsx` (~210 LoC).
+
+**Rationale:**
+- Tremor v3 doesn't ship a heatmap component. The library is built around recharts for cartesian plots (Bar / Line / Donut / Area / Scatter); a 2D categorical grid isn't in the primitive list.
+- VISION's stack-conventions section explicitly says "use Tremor only when a chart is needed; do not import Tremor for non-chart UI". Reaching for a third-party heatmap library (e.g., visx, nivo, recharts custom) would cross that line and add ~30-100 KB to the bundle for one component.
+- A Tailwind `<table>` with `style.backgroundColor` per `<td>` is ~210 LoC of focused, dependency-free code. The intensity helper, day-and-hour formatters, and aria-labels are unique to this surface anyway, so a third-party primitive would still need a Junjo-specific wrapper layer of similar size.
+- Real HTML `<table>` semantics (rather than `<div role="table">` + ARIA roles) give screen readers free table-navigation mode and keep Biome's `useSemanticElements` rule happy.
+
+**Trade:** if a future iteration wants animated transitions or pinch-zoom on the heatmap, the hand-rolled component has no built-in support; either feature would add complexity. Acceptable: V1 dashboard targets desk-bound operators on stable viewports, and a future follow-up can swap to a richer primitive at a single rendering call site without touching the wire helper or Server Component.
+
+### Phase 12.4b: cell intensity uses sqrt scaling on count / max ratio
+
+**Decision:** the heatmap maps each cell's count to a background-color opacity via `intensity(count, max) = 0.08 + 0.92 * sqrt(count / max)` when `count > 0`, else 0. The legend swatches mirror the same ramp at five steps (0, 0.25, 0.5, 0.75, 1).
+
+**Rationale:**
+- Linear scaling makes a single-event cell visually identical to a zero cell when the peak is in the thousands. A 1-event cell at `1/2000` is `0.0005` opacity - imperceptible. Operators look at heatmaps to find the long-tail patterns ("we have any activity at all on Sundays?"), not to admire the peak.
+- Square root amplifies the bottom of the range (a 1/2000 ratio sqrts to ~0.022, which the floor lifts to 0.10). The peak still gets full intensity (sqrt(1) = 1, so opacity = 1.0). Mid-range counts compress slightly, but the tradeoff favors visibility of low values - the more important signal in an activity heatmap.
+- The 0.08 floor over the muted-background (`bg-muted/30` for empty cells) gives non-zero cells a clearly visible sliver of color even at the lowest end. The 0.92 span (1.0 - 0.08) keeps the peak at full intensity rather than capping below.
+- Legend swatches use the same ramp so the operator can read off "this cell looks like the third swatch -> roughly 25-50% of peak".
+
+**Trade:** sqrt scaling is non-obvious (operators can't multiply opacity by max to get the count). Acceptable: each cell's `title` and `aria-label` carry the exact count, so the visual ramp is just a rough visual signal; precise values are one hover or tab-key away.
+
+### Phase 12.4b: hard-coded blue-500 (HSL `217 91% 60%`) instead of `--tremor-brand` CSS variable
+
+**Decision:** the heatmap cell background is `hsl(217 91% 60% / <opacity>)` literally hard-coded in the component, not pulled from the dashboard's `--tremor-brand` CSS variable.
+
+**Rationale:**
+- The Phase 12.3b growth chart explicitly pins its first line color to `"blue"` (Tremor's blue palette resolves to `blue-500` = `hsl(217 91% 60%)`); the heatmap should visually pair with the rest of the analytics surface, not theme-react independently.
+- A future tweak to `--tremor-brand` (say, switching the dashboard accent to violet for a cobranded build) would silently re-tint the heatmap away from the chart palette. Hard-coding the blue value pins the heatmap to the chart family it belongs to.
+- The value is already resolvable in tooling: `blue-500` is a well-known Tailwind/Tremor token. A future maintainer who wants to change the heatmap color edits one constant in `member-activity-heatmap.tsx`, not a chain of CSS variables.
+
+**Trade:** the heatmap doesn't auto-adapt if the dashboard theme grows a "high contrast" mode that retints chart colors. Acceptable: high-contrast theming is a Phase 14+ concern (no current consumer demand), and when it lands the chart palette will be a single coordinated change across both the Tremor `colors=[...]` props and the heatmap's HSL constant.
+
+### Phase 12.4b: page-level empty-state gate widens to a four-way condition
+
+**Decision:** the page-level `<AnalyticsEmptyState>` (the Phase 12.1 chart-shell with the tutorial deep-link) now requires `JUNJO_DOCS_BASE_URL` set AND `churn.totalDeparturesInWindow === 0` AND `churn.totalGroupsInWindow === 0` AND `growth.series.length === 0` AND `memberActivity.totalEvents === 0`. Any one non-zero signal means the operator is past first-time-user onboarding.
+
+**Rationale:**
+- Each chart owns its own per-state empty copy (the heatmap renders "no audit activity in this window. Pick a wider date range" inline; churn does the same with two variants for "no groups" vs "no departures"; growth does the same for "no buckets" vs "no series"). The page-level empty state with the tutorial deep-link is reserved for the truly-first-time-user onboarding path.
+- Folding `memberActivity.totalEvents === 0` in is necessary because a game can have audit entries (members joining via invitations, role assignments, etc.) BEFORE any group sees a departure or grows beyond a single member. Without the heatmap signal in the gate, that game would still see the tutorial deep-link even though they're already shipping events; with the heatmap signal, the per-chart empty states do the right thing alone.
+- All four signals are zero only on a brand-new game (or any game with completely silent activity in the window). That's exactly when the tutorial deep-link is the most useful next step.
+
+**Trade:** as more charts land (12.5: role / permission distribution), the gate condition keeps growing. Acceptable: each chart's "is this game past onboarding?" signal is necessarily AND-combined; the operator only sees the deep-link when the dashboard has zero useful data anywhere.
+
+### Phase 12.4b: heatmap day axis is Sun-first, fixed UTC
+
+**Decision:** the heatmap's day axis renders Sun / Mon / Tue / Wed / Thu / Fri / Sat top-to-bottom, in UTC. No client-side day-axis rotation, no operator-supplied timezone parameter, no Mon-first toggle.
+
+**Rationale:**
+- Server returns `cells[dow][hour]` where `dow=0` is Sunday (matches Postgres `EXTRACT(DOW)` and JS `Date.getUTCDay()`). Rendering verbatim mirrors the wire shape; any rotation would force a client-side index permutation that's easy to get wrong.
+- UTC bucketing is the server's per-iter-002 decision (timezone-supplied bucketing is more expensive at the SQL layer and adds a parameter validation surface). The dashboard heatmap matches the server's bucketing 1:1 - no per-row timezone shift, no per-cell time-arithmetic.
+- A future Mon-first toggle is one client-side change (rotate the `DAY_LABELS` array and re-index the row lookup); a future `?tz=` parameter requires both server and client changes. Both can land additively without renegotiating the wire format.
+- Sun-first is the standard convention in audit / activity dashboards (matches GitHub's contribution graph, Stripe's events graph, Clerk's session history).
+
+**Trade:** operators in non-UTC timezones see "Tuesday 14:00 UTC" rather than their local time. Acceptable: the `aria-label` and `title` attributes explicitly carry the "UTC" suffix so the operator can do the arithmetic mentally; a future `?tz=` parameter remains additive.
+

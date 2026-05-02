@@ -16,6 +16,7 @@ import {
 } from "../../../../../components/analytics/date-range-picker";
 import { GroupChurnChart } from "../../../../../components/analytics/group-churn-chart";
 import { GroupGrowthChart } from "../../../../../components/analytics/group-growth-chart";
+import { MemberActivityHeatmap } from "../../../../../components/analytics/member-activity-heatmap";
 import { Topbar } from "../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -29,9 +30,11 @@ import {
   type AdminGame,
   type AdminGroupChurn,
   type AdminGroupGrowth,
+  type AdminMemberActivity,
   fetchAdminGame,
   fetchAdminGameGroupChurn,
   fetchAdminGameGroupGrowth,
+  fetchAdminGameMemberActivity,
 } from "../../../../../lib/admin";
 import { getDocsBaseUrl } from "../../../../../lib/junjo";
 
@@ -139,11 +142,13 @@ async function AnalyticsBody({
   let game: AdminGame;
   let churn: AdminGroupChurn;
   let growth: AdminGroupGrowth;
+  let memberActivity: AdminMemberActivity;
   try {
-    [game, churn, growth] = await Promise.all([
+    [game, churn, growth, memberActivity] = await Promise.all([
       fetchAdminGame(gameId),
       fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
       fetchAdminGameGroupGrowth(gameId, { from: fromIso, to: toIso }),
+      fetchAdminGameMemberActivity(gameId, { from: fromIso, to: toIso }),
     ]);
   } catch (err) {
     if (err instanceof AdminDisabledError) {
@@ -170,15 +175,19 @@ async function AnalyticsBody({
   // only fires when the operator has configured `JUNJO_DOCS_BASE_URL`
   // AND the dashboard truly has no data anywhere in the cohort - the
   // first-time-user onboarding path where the tutorial deep-link is the
-  // most useful next step. Both churn and growth are checked because
-  // either signal counts as "this game already has activity"; growth's
-  // `series.length` covers groups that have never seen a departure.
+  // most useful next step. Churn / growth / member-activity are all
+  // checked because any one counts as "this game already has activity":
+  // a brand-new game has no groups (churn population zero), no growth
+  // series, AND no audit entries in the window; the moment any one of
+  // those flips non-zero the operator is past onboarding and the
+  // tutorial deep-link becomes noise.
   const docsBaseUrl = getDocsBaseUrl();
   const showOnboardingHint =
     docsBaseUrl !== null &&
     churn.totalDeparturesInWindow === 0 &&
     churn.totalGroupsInWindow === 0 &&
-    growth.series.length === 0;
+    growth.series.length === 0 &&
+    memberActivity.totalEvents === 0;
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
@@ -187,6 +196,7 @@ async function AnalyticsBody({
       </p>
       <GroupChurnChart data={churn} />
       <GroupGrowthChart data={growth} />
+      <MemberActivityHeatmap data={memberActivity} />
       {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
     </div>
   );

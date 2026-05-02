@@ -1187,6 +1187,53 @@ export function fetchAdminGameGroupGrowth(
   return adminFetch<AdminGroupGrowth>(search ? `${path}?${search}` : path, opts);
 }
 
+// Phase 12.4a wire shape mirroring `WireAdminMemberActivity` from
+// `packages/server/src/routes/admin.ts`. The dashboard's
+// `<MemberActivityHeatmap>` (Phase 12.4b) renders `cells` as a 7x24
+// Tailwind grid with opacity scaling. UTC bucketing is documented on the
+// server (the dashboard does not re-bucket client-side); the operator's
+// dashboard renders day-of-week and hour-of-day labels in UTC alongside
+// the values verbatim from the wire.
+export interface AdminMemberActivity {
+  // Echoes the supplied `from` / `to` query parameters verbatim, or
+  // `null` when the operator omitted them. Useful for the chart's card
+  // description so the operator can confirm the resolved window.
+  from: string | null;
+  to: string | null;
+  // Sum of every count in `cells`. Surfaced for the heatmap's empty-state
+  // branch (`totalEvents === 0` renders the "no activity yet" callout
+  // instead of a heatmap of zeros).
+  totalEvents: number;
+  // 7x24 grid of audit-entry counts. `cells[dow][hour]` where `dow=0` is
+  // Sunday (matches Postgres `EXTRACT(DOW)` and JS `Date.getUTCDay()`)
+  // and `hour` ranges 0-23. Always exactly 7 rows of 24 columns even
+  // when the window contains no activity (then every cell is 0).
+  cells: number[][];
+}
+
+export interface FetchAdminMemberActivityParams {
+  // ISO 8601 timestamps. Both bounds are optional; the dashboard always
+  // sends `from` (resolved from the date-range picker) and sometimes
+  // sends `to` (custom ranges only). Empty strings are dropped from the
+  // wire request so the server's `min(1)` Zod constraint does not 400
+  // on a stale URL.
+  from?: string;
+  to?: string;
+}
+
+export function fetchAdminGameMemberActivity(
+  gameId: string,
+  params: FetchAdminMemberActivityParams = {},
+  opts?: FetchOptions,
+): Promise<AdminMemberActivity> {
+  const qs = new URLSearchParams();
+  if (params.from !== undefined && params.from.length > 0) qs.set("from", params.from);
+  if (params.to !== undefined && params.to.length > 0) qs.set("to", params.to);
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/member-activity`;
+  const search = qs.toString();
+  return adminFetch<AdminMemberActivity>(search ? `${path}?${search}` : path, opts);
+}
+
 // Phase 11.9a-i wire shape mirroring `PermissionCheckResult` from
 // `@junjo/shared`. The admin endpoint reuses the per-game check route's
 // resolution logic byte-for-byte (same source taxonomy, same viaRoleId
