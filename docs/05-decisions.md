@@ -4785,3 +4785,60 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** operators in non-UTC timezones see "Tuesday 14:00 UTC" rather than their local time. Acceptable: the `aria-label` and `title` attributes explicitly carry the "UTC" suffix so the operator can do the arithmetic mentally; a future `?tz=` parameter remains additive.
 
+### Phase 12.5 splits a/b mirroring every prior 12.x server-then-UI precedent
+
+**Decision:** Phase 12.5 ("Role distribution + most-used permission keys") splits into 12.5a (this iteration: server admin endpoints + tests + docs for both charts) and 12.5b (next iteration: dashboard role distribution donut + permission usage horizontal bar chart consuming the endpoints). Both charts ship in 12.5b together (not split into 12.5b-i / 12.5b-ii) since they share toolchain (already-installed Tremor + already-wired color tokens from 12.2b) and live side-by-side on the same analytics page section per VISION's "Two charts side by side" framing.
+
+**Rationale:**
+- Mirrors 12.2a/b, 12.3a/b, 12.4a/b precedents. Bundling both endpoints + their charts + the page extension into one iteration would produce a 5+ surface diff (server handlers + tests + dashboard wire helpers + two new chart components + page rewrite + decisions + docs).
+- Both endpoints land together in 12.5a because they both answer "snapshot" questions about the same (Role + Permission) configuration tables and share fixture seeders (both need group + role + member). Splitting 12.5a into 12.5a-i / 12.5a-ii would still bundle ~14 tests per file with no shared code reduction.
+- The two charts share the same dashboard page section but have independent wire-helper signatures, so 12.5b can ship them as two parallel additions to `lib/admin.ts` plus two parallel components without rewriting any infrastructure.
+
+**Trade:** 12.5a's ~29 new tests and ~200 LoC in `routes/admin.ts` make for a bigger-than-average server iteration. Acceptable: the natural seam stays "invisible API surface vs visible UI"; subsequent iterations stay focused.
+
+### Phase 12.5a: snapshot endpoints with no `from` / `to` query parameters
+
+**Decision:** both `/v1/admin/games/:gameId/analytics/role-distribution` and `/v1/admin/games/:gameId/analytics/permission-usage` are pure snapshot endpoints in V1; neither accepts `from` or `to` query parameters. The dashboard's page-level date-range picker (Phase 12.1) is irrelevant to these two charts.
+
+**Rationale:**
+- VISION's spec for both charts is unambiguously about current state: "Role distribution: ... role assignments across all groups, top-10 roles by name. Most-used permission keys: ... top-15 permission keys by `RolePermission` row count + `MemberPermissionOverride` row count combined." No window mentioned in either case.
+- The underlying tables (`MemberRole`, `RolePermission`, `MemberPermissionOverride`) are configuration state, not event log. They have `assignedAt` / `grantedAt` / `setAt` columns, but filtering by them would change the chart's semantic from "what is currently deployed?" to "what was created during this window?" - a different question the operator probably is not asking when looking at a "role distribution" donut.
+- The other 12.x charts (churn, growth, member activity) are inherently time-windowed because they aggregate events. The 12.5 charts are inherently snapshots because they aggregate state. The wire shape difference is honest about the difference.
+- A future iteration can add `?asOf=<ISO>` (point-in-time snapshot via `assignedAt <= asOf` etc.) additively without renegotiating the wire format, but the V1 chart fits the V1 dashboard's "show me what is deployed right now" use case.
+
+**Trade:** the Phase 12.1 date-range picker is page-level and applies to all charts on the page. For 12.5b, the picker will either need to render disabled / hidden alongside the 12.5 charts, or simply have the charts ignore it and surface "this chart shows current state" inline in their description. That is a 12.5b layout decision deferred to the iteration that owns the dashboard work.
+
+### Phase 12.5a: role distribution aggregates by `Role.name`, not `Role.id`
+
+**Decision:** `getRoleDistributionHandler` aggregates active-member assignments by `Role.name`. Two groups that both have a role named "Officer" contribute to the same donut slice; the operator sees one "Officer" slice with a combined count, not two slices.
+
+**Rationale:**
+- VISION's spec: "top-10 roles **by name**". The phrasing is explicit.
+- Operators conceptualize roles by name ("how many Officers do I have across the game?"), not by id.
+- Per-game role names are not unique (only `[groupId, name]` is unique per the `@@unique` constraint on `Role`). Aggregating by `Role.id` would produce one slice per (group, role) pair, which becomes unreadable in a donut chart for any game with more than one group.
+- Two groups with similar role taxonomies ("Officer" / "Member" / "Recruit") become a single coherent dataset under name-aggregation, which is the right answer to "what is my game's role distribution?".
+
+**Trade:** an operator who genuinely wants per-group role breakdowns has no V1 path through this endpoint. Acceptable: the dashboard's group detail page (Phase 11.5b) already shows per-group role membership in the members table; the analytics chart's job is the cross-group rollup. A future iteration could add `?groupId=` to scope to one group additively, but the cross-group rollup is the dominant V1 use case.
+
+### Phase 12.5a: role distribution counts only active-member assignments; permission usage counts all overrides
+
+**Decision:** the role distribution endpoint filters `MemberRole` rows to only those whose underlying `GroupMember.status === "active"`. The permission usage endpoint counts ALL `MemberPermissionOverride` rows regardless of the underlying member's status. The difference is intentional and reflects what each chart is asking.
+
+**Rationale:**
+- Role distribution answers "who currently holds what role?". Kicked / left / invited members keep their `MemberRole` rows in the database (kick / leave do not delete the join row), but they are not currently in the role for any operational purpose. Counting them would inflate the donut with departed members and disagree with `Group.memberCount` and the home page's `totalActiveMembers`.
+- Permission usage answers "what permission configuration has the operator authored?". A `MemberPermissionOverride` is operator config that exists independently of member lifecycle. An override on a kicked member is still a deployment-state fact (the operator decided the member should have / not have the permission); if the kicked member rejoins, the override re-applies. Filtering them out would silently undercount the "where have operators reached for overrides?" signal.
+- Both decisions match the framing on neighboring surfaces: home page `totalActiveMembers` filters to active; the per-game permission-catalog endpoint at Phase 11.6a-ii returns every registered key regardless of usage.
+
+**Trade:** the asymmetry between the two charts means an operator reading the dashboard has to know which chart filters by status and which does not. Acceptable: the API docs spell this out explicitly, and a future "role assignment activity over time" chart (which would by definition include lifecycle transitions) would clarify the contrast.
+
+### Phase 12.5a: tests live in two standalone files mirroring file-per-feature precedents
+
+**Decision:** the new tests live in `admin.roleDistribution.test.ts` (14 tests) and `admin.permissionUsage.test.ts` (15 tests), not folded into `admin.test.ts` or each other.
+
+**Rationale:**
+- Mirrors iter-068 / 070 / 072 / 073 / 076 / 078 / 080 / 082 / 084 / 088 / 091 file-per-feature precedents. `admin.test.ts` is already 2500+ lines.
+- The two endpoints' fixture seeding overlaps (group + role + member helpers shared verbatim) but their assertions and the table-truncation lists differ enough that one combined file would interleave concerns awkwardly. The role-distribution tests do not need `RolePermission` / `MemberPermissionOverride` rows; the permission-usage tests do not need `MemberRole` rows.
+- Cumulative server count: 1224 -> 1253 (+29 across the two files).
+
+**Trade:** ~30 lines of fixture-seeding duplication between the two files. Acceptable: extracting a shared `seedFixture()` helper would couple the files and force later edits to one to consider the other; per-file inline helpers stay independently editable.
+

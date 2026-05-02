@@ -21,6 +21,8 @@ import {
   getGroupChurnHandler,
   getGroupGrowthHandler,
   getMemberActivityHandler,
+  getPermissionUsageHandler,
+  getRoleDistributionHandler,
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
@@ -365,6 +367,24 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/analytics/member-activity",
     adminAuthMiddleware(opts.adminToken),
     getMemberActivityHandler(prisma),
+  );
+  // Admin-token-gated cross-game role distribution snapshot (Phase 12.5a).
+  // Backs the dashboard's role distribution donut chart (Phase 12.5b).
+  // Returns a top-10 list of role names ranked by active-member assignment
+  // count, aggregated across every non-soft-deleted group in the game.
+  v1.get(
+    "/admin/games/:gameId/analytics/role-distribution",
+    adminAuthMiddleware(opts.adminToken),
+    getRoleDistributionHandler(prisma),
+  );
+  // Admin-token-gated cross-game permission usage snapshot (Phase 12.5a).
+  // Backs the dashboard's permission usage horizontal bar chart (Phase
+  // 12.5b). Returns a top-15 list of permission keys ranked by combined
+  // RolePermission + MemberPermissionOverride row count.
+  v1.get(
+    "/admin/games/:gameId/analytics/permission-usage",
+    adminAuthMiddleware(opts.adminToken),
+    getPermissionUsageHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

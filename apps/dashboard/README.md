@@ -421,4 +421,10 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   `<MemberActivityHeatmap>` directly below `<GroupGrowthChart>`, and
   fold `memberActivity.totalEvents === 0` into the four-way condition
   that gates the page-level `<AnalyticsEmptyState>`.
-- 12.5: remaining Tremor charts (role / permission distribution).
+- 12.5a: cross-game admin role-distribution + permission-usage analytics
+  endpoints (server-side; no dashboard surface yet). Snapshot endpoints
+  with no `from` / `to` query parameters; the dashboard's page-level
+  date-range picker is irrelevant to the 12.5b charts.
+- 12.5b: dashboard role distribution donut + permission usage horizontal
+  bar chart consuming the 12.5a endpoints. Side-by-side layout per
+  VISION's "Two charts side by side" framing. Closes Phase 12.

@@ -1612,6 +1612,141 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 }
 ```
 
+## `GET /v1/admin/games/:gameId/analytics/role-distribution`
+
+Phase 12.5a. Returns a top-10 list of role names ranked by the count of active-member assignments, aggregated across every non-soft-deleted group in the game. Backs the dashboard's role distribution donut chart (Phase 12.5b).
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+No query parameters in V1: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker (Phase 12.1) is irrelevant to this endpoint.
+
+Response:
+
+```ts
+interface WireAdminRoleSlice {
+  name: string;
+  count: number;
+}
+
+interface WireAdminRoleDistribution {
+  totalAssignments: number;     // sum of every counted MemberRole row (top-10 + other)
+  uniqueRoleNames: number;      // distinct role.name values with at least one active assignment
+  topRoles: WireAdminRoleSlice[]; // up to 10 entries, sorted by count desc, name asc
+  otherCount: number;           // assignments belonging to role names outside the top-10
+}
+```
+
+Behavior:
+
+- **Aggregation key is `Role.name`, not `Role.id`.** Two groups that both have a role named "Officer" contribute to the same slice. The donut chart shows one slice per named role category, not one slice per (group, role) pair.
+- **Active members only.** A `MemberRole` row counts only when the underlying `GroupMember.status === "active"`. Kicked / left / invited members keep their join rows but contribute zero to the chart, matching the active-set semantics used by `Group.memberCount` and the home page's `totalActiveMembers`.
+- **Soft-deleted groups are excluded.**
+- **Members with multiple roles count once per role.** A member assigned to both "Officer" and "Veteran" contributes one assignment to each slice.
+- **Role names with zero active assignments are invisible.** A role that exists but has no active members does not appear in `topRoles` or count toward `uniqueRoleNames` (the donut chart would render a zero-area slice anyway).
+- **Empty population** returns 200 with `{ totalAssignments: 0, uniqueRoleNames: 0, topRoles: [], otherCount: 0 }`.
+- **404 only when the gameId itself does not exist.**
+- **Tiebreaks alphabetically.** Two role names with the same count sort by `name asc`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/role-distribution"
+```
+
+```json
+{
+  "totalAssignments": 487,
+  "uniqueRoleNames": 12,
+  "topRoles": [
+    { "name": "Member", "count": 312 },
+    { "name": "Officer", "count": 84 },
+    { "name": "Recruit", "count": 41 },
+    "..."
+  ],
+  "otherCount": 23
+}
+```
+
+## `GET /v1/admin/games/:gameId/analytics/permission-usage`
+
+Phase 12.5a. Returns a top-15 list of permission keys ranked by the combined count of role grants (`RolePermission` rows) plus member-level overrides (`MemberPermissionOverride` rows). Backs the dashboard's permission usage horizontal bar chart (Phase 12.5b).
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+No query parameters in V1: the chart is a snapshot, not a time-windowed analytic.
+
+Response:
+
+```ts
+interface WireAdminPermissionUsageItem {
+  permission: string;
+  roleGrants: number;       // RolePermission row count for this key
+  memberOverrides: number;  // MemberPermissionOverride row count for this key
+  total: number;            // roleGrants + memberOverrides
+}
+
+interface WireAdminPermissionUsage {
+  totalCount: number;       // sum of `total` across every observed key (top-15 + other)
+  uniqueKeys: number;       // distinct permission keys with at least one row counted
+  items: WireAdminPermissionUsageItem[]; // up to 15 entries sorted by total desc, permission asc
+  otherCount: number;       // combined count for keys outside the top-15
+}
+```
+
+Behavior:
+
+- **Both row types count.** Each `RolePermission` row contributes 1 to `roleGrants`; each `MemberPermissionOverride` row contributes 1 to `memberOverrides`. The chart's bars represent `total` (the combined sum).
+- **All `MemberPermissionOverride` rows count regardless of member status.** Operator-authored config exists independently of member lifecycle; an override on a kicked member is still a deployment-state fact about the game.
+- **Soft-deleted groups are excluded** (both their roles' grants and their members' overrides drop out).
+- **Permission keys with `total === 0` are invisible.** A registered `PermissionDef` row with no grants and no overrides does not appear in `items` or `uniqueKeys`. The catalog endpoint at `/v1/admin/games/:gameId/permissions` (Phase 11.6a-ii) is the right place to enumerate every registered key.
+- **Empty population** returns 200 with `{ totalCount: 0, uniqueKeys: 0, items: [], otherCount: 0 }`.
+- **404 only when the gameId itself does not exist.**
+- **Tiebreaks alphabetically.** Two keys with the same combined `total` sort by `permission asc`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/permission-usage"
+```
+
+```json
+{
+  "totalCount": 142,
+  "uniqueKeys": 23,
+  "items": [
+    { "permission": "guild.invite_member", "roleGrants": 18, "memberOverrides": 4, "total": 22 },
+    { "permission": "guild.kick_member", "roleGrants": 12, "memberOverrides": 7, "total": 19 },
+    { "permission": "vault.withdraw", "roleGrants": 8, "memberOverrides": 2, "total": 10 },
+    "..."
+  ],
+  "otherCount": 17
+}
+```
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

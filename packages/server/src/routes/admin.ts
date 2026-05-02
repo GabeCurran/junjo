@@ -53,6 +53,8 @@ import {
   ADMIN_GROUP_GROWTH_MAX_BUCKETS,
   ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
+  ADMIN_PERMISSION_USAGE_TOP_N,
+  ADMIN_ROLE_DISTRIBUTION_TOP_N,
   ANALYTICS_GROUP_CHURN_BINS,
   ANALYTICS_MEMBER_ACTIVITY_DAYS,
   ANALYTICS_MEMBER_ACTIVITY_HOURS,
@@ -3290,6 +3292,222 @@ export function getMemberActivityHandler(prisma: PrismaClient): Handler {
       to: to ?? null,
       totalEvents,
       cells,
+    });
+  };
+}
+
+// Phase 12.5a: cross-game role distribution analytics. Returns a top-10
+// list of role names ranked by the count of active-member assignments,
+// aggregated across every non-soft-deleted group in the game. Two groups
+// that both have a role named "Officer" contribute to the same slice.
+//
+// Wire shape carries:
+//   - `totalAssignments`: sum of every counted MemberRole row (top-10
+//     plus other),
+//   - `uniqueRoleNames`: total distinct role.name values with at least
+//     one active assignment,
+//   - `topRoles`: up to 10 entries sorted by `count desc, name asc`,
+//   - `otherCount`: assignments belonging to role names outside the
+//     top-10 so the chart can render an "Other" slice without a second
+//     fetch.
+//
+// Behavior:
+//   - Only `active` member assignments contribute. Kicked / left /
+//     invited members keep their MemberRole rows but their assignments
+//     drop out (matches the active-set semantics used by
+//     `Group.memberCount` and the home page's `totalActiveMembers`).
+//   - Soft-deleted groups are excluded.
+//   - Role names with zero active assignments do NOT appear in
+//     `topRoles` or `uniqueRoleNames` (a role that exists but has no
+//     active members is invisible to the chart; the donut would render
+//     a zero-area slice anyway).
+//   - Empty population returns
+//     `{ totalAssignments: 0, uniqueRoleNames: 0, topRoles: [], otherCount: 0 }`.
+//   - 404 only when the gameId itself does not exist.
+//   - No date window in V1: the chart answers "what is deployed right
+//     now?", not "what was assigned in this window?". The dashboard's
+//     page-level date-range picker (Phase 12.1) is irrelevant here;
+//     12.5b will surface that trade inline in the chart description.
+export interface WireAdminRoleSlice {
+  name: string;
+  count: number;
+}
+
+export interface WireAdminRoleDistribution {
+  totalAssignments: number;
+  uniqueRoleNames: number;
+  topRoles: WireAdminRoleSlice[];
+  otherCount: number;
+}
+
+export function getRoleDistributionHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const roles = await prisma.role.findMany({
+      where: { group: { gameId, softDeletedAt: null } },
+      select: { id: true, name: true },
+    });
+
+    if (roles.length === 0) {
+      return c.json<WireAdminRoleDistribution>({
+        totalAssignments: 0,
+        uniqueRoleNames: 0,
+        topRoles: [],
+        otherCount: 0,
+      });
+    }
+
+    const counts = await prisma.memberRole.groupBy({
+      by: ["roleId"],
+      where: {
+        roleId: { in: roles.map((r) => r.id) },
+        groupMember: { status: "active" },
+      },
+      _count: { _all: true },
+    });
+
+    const countByRoleId = new Map<string, number>();
+    for (const row of counts) {
+      countByRoleId.set(row.roleId, row._count._all);
+    }
+
+    // Aggregate by role.name across every role in the game (a role name
+    // shared by two groups contributes to the same slice).
+    const countByName = new Map<string, number>();
+    for (const role of roles) {
+      const c = countByRoleId.get(role.id) ?? 0;
+      if (c === 0) continue;
+      countByName.set(role.name, (countByName.get(role.name) ?? 0) + c);
+    }
+
+    const sorted = Array.from(countByName.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+    const top = sorted.slice(0, ADMIN_ROLE_DISTRIBUTION_TOP_N);
+    const rest = sorted.slice(ADMIN_ROLE_DISTRIBUTION_TOP_N);
+
+    const totalAssignments = sorted.reduce((acc, s) => acc + s.count, 0);
+    const otherCount = rest.reduce((acc, s) => acc + s.count, 0);
+
+    return c.json<WireAdminRoleDistribution>({
+      totalAssignments,
+      uniqueRoleNames: sorted.length,
+      topRoles: top,
+      otherCount,
+    });
+  };
+}
+
+// Phase 12.5a: cross-game permission usage analytics. Returns a top-15
+// list of permission keys ranked by the combined count of role grants
+// (`RolePermission` rows) plus member-level overrides
+// (`MemberPermissionOverride` rows). The dashboard's permission usage
+// chart (Phase 12.5b) renders the result as a horizontal Tremor
+// `<BarChart>`.
+//
+// Wire shape carries:
+//   - `totalCount`: sum of `roleGrants + memberOverrides` across every
+//     observed key (top-15 plus other),
+//   - `uniqueKeys`: total distinct permission keys with at least one
+//     row counted,
+//   - `items`: up to 15 entries sorted by `total desc, permission asc`,
+//   - `otherCount`: combined count for keys outside the top-15 so the
+//     chart can footnote the trailing aggregate.
+//
+// Behavior:
+//   - Only counts rows scoped to roles / members in non-soft-deleted
+//     groups in this game.
+//   - All `MemberPermissionOverride` rows count regardless of the
+//     underlying member's status. Operator-authored config exists
+//     independently of member lifecycle; an override on a kicked
+//     member is still a deployment-state fact about the game.
+//   - Permission keys with `total === 0` do NOT appear in `items` or
+//     `uniqueKeys`. A registered `PermissionDef` row with no grants
+//     and no overrides is invisible to the chart.
+//   - Empty population returns
+//     `{ totalCount: 0, uniqueKeys: 0, items: [], otherCount: 0 }`.
+//   - 404 only when the gameId itself does not exist.
+//   - No date window in V1 (same rationale as role distribution).
+export interface WireAdminPermissionUsageItem {
+  permission: string;
+  roleGrants: number;
+  memberOverrides: number;
+  total: number;
+}
+
+export interface WireAdminPermissionUsage {
+  totalCount: number;
+  uniqueKeys: number;
+  items: WireAdminPermissionUsageItem[];
+  otherCount: number;
+}
+
+export function getPermissionUsageHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    const [roleGrants, overrides] = await Promise.all([
+      prisma.rolePermission.groupBy({
+        by: ["permissionKey"],
+        where: { role: { group: { gameId, softDeletedAt: null } } },
+        _count: { _all: true },
+      }),
+      prisma.memberPermissionOverride.groupBy({
+        by: ["permissionKey"],
+        where: { groupMember: { group: { gameId, softDeletedAt: null } } },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const byKey = new Map<string, { roleGrants: number; memberOverrides: number }>();
+    for (const row of roleGrants) {
+      const cur = byKey.get(row.permissionKey) ?? { roleGrants: 0, memberOverrides: 0 };
+      cur.roleGrants += row._count._all;
+      byKey.set(row.permissionKey, cur);
+    }
+    for (const row of overrides) {
+      const cur = byKey.get(row.permissionKey) ?? { roleGrants: 0, memberOverrides: 0 };
+      cur.memberOverrides += row._count._all;
+      byKey.set(row.permissionKey, cur);
+    }
+
+    const sorted = Array.from(byKey.entries())
+      .map(([permission, c]) => ({
+        permission,
+        roleGrants: c.roleGrants,
+        memberOverrides: c.memberOverrides,
+        total: c.roleGrants + c.memberOverrides,
+      }))
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total || a.permission.localeCompare(b.permission));
+
+    const top = sorted.slice(0, ADMIN_PERMISSION_USAGE_TOP_N);
+    const rest = sorted.slice(ADMIN_PERMISSION_USAGE_TOP_N);
+
+    const totalCount = sorted.reduce((acc, r) => acc + r.total, 0);
+    const otherCount = rest.reduce((acc, r) => acc + r.total, 0);
+
+    return c.json<WireAdminPermissionUsage>({
+      totalCount,
+      uniqueKeys: sorted.length,
+      items: top,
+      otherCount,
     });
   };
 }

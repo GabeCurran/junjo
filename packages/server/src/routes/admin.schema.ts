@@ -378,3 +378,19 @@ export type MemberActivityQuery = z.infer<typeof memberActivityQuery>;
 // to match operator preference (Mon-first vs Sun-first).
 export const ANALYTICS_MEMBER_ACTIVITY_DAYS = 7;
 export const ANALYTICS_MEMBER_ACTIVITY_HOURS = 24;
+
+// Phase 12.5a: cross-game snapshot analytics for role distribution and
+// permission usage. Both endpoints answer "what is deployed right now?"
+// rather than "what happened in this window?", so they intentionally do
+// not accept `from` / `to` query parameters in V1. The dashboard's
+// page-level date-range picker (Phase 12.1) is irrelevant to these two
+// charts; the chart components in 12.5b will surface that trade inline.
+//
+// Top-N caps match VISION's spec verbatim:
+//   - Role distribution donut chart: top 10 role names.
+//   - Permission usage horizontal bar chart: top 15 permission keys.
+// The handlers always return entries with positive counts only; an
+// `otherCount` field aggregates everything past the top-N so the chart
+// can render an "Other" slice without a second fetch.
+export const ADMIN_ROLE_DISTRIBUTION_TOP_N = 10;
+export const ADMIN_PERMISSION_USAGE_TOP_N = 15;
