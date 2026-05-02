@@ -345,3 +345,36 @@ export const groupGrowthQuery = z.object({
 });
 
 export type GroupGrowthQuery = z.infer<typeof groupGrowthQuery>;
+
+// Phase 12.4a: cross-game member-activity heatmap. Returns a 7x24 grid of
+// audit-entry counts pivoted by UTC day-of-week and hour-of-day across
+// every group in the game (cross-group fan-in). Same `[from, to)` filter
+// shape as `groupChurnQuery`; both bounds are optional ISO 8601 timestamps.
+//
+// Audit entries from soft-deleted groups are INCLUDED (matches the iter-082
+// stance for the per-game audit feed: the audit log preserves history
+// regardless of group lifecycle, and the heatmap answers an
+// activity-volume question, not a cohort question). 404 only when the
+// gameId itself does not exist; a game with no audit entries returns the
+// fully-zero grid.
+export const memberActivityQuery = z.object({
+  from: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "from must be an ISO 8601 date" })
+    .optional(),
+  to: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "to must be an ISO 8601 date" })
+    .optional(),
+});
+
+export type MemberActivityQuery = z.infer<typeof memberActivityQuery>;
+
+// Heatmap grid dimensions. UTC-bucketed: `getUTCDay()` returns 0=Sunday
+// through 6=Saturday (matches Postgres `EXTRACT(DOW)`); `getUTCHours()`
+// returns 0-23. The dashboard heatmap can rotate the day axis client-side
+// to match operator preference (Mon-first vs Sun-first).
+export const ANALYTICS_MEMBER_ACTIVITY_DAYS = 7;
+export const ANALYTICS_MEMBER_ACTIVITY_HOURS = 24;

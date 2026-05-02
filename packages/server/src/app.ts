@@ -20,6 +20,7 @@ import {
   getAdminStatsHandler,
   getGroupChurnHandler,
   getGroupGrowthHandler,
+  getMemberActivityHandler,
   grantAdminRolePermissionHandler,
   kickAdminGroupMemberHandler,
   listAdminApiKeysHandler,
@@ -354,6 +355,16 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/analytics/group-growth",
     adminAuthMiddleware(opts.adminToken),
     getGroupGrowthHandler(prisma),
+  );
+  // Admin-token-gated cross-game member-activity heatmap (Phase 12.4a). Backs
+  // the dashboard's member activity heatmap (Phase 12.4b). Returns a 7x24
+  // grid of audit-entry counts pivoted by UTC day-of-week and hour-of-day
+  // across every group in the game (cross-group fan-in; soft-deleted-group
+  // entries included since the audit log preserves history).
+  v1.get(
+    "/admin/games/:gameId/analytics/member-activity",
+    adminAuthMiddleware(opts.adminToken),
+    getMemberActivityHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));

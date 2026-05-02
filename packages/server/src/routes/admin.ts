@@ -21,6 +21,7 @@ import type {
   RoleId,
   UserId,
 } from "@junjo/shared";
+import { Prisma } from "@prisma/client";
 import type {
   ApiKey,
   AuditEntry,
@@ -30,7 +31,6 @@ import type {
   GroupRelationship,
   Invitation,
   MemberPermissionOverride,
-  Prisma,
   PrismaClient,
   Role,
 } from "@prisma/client";
@@ -54,6 +54,8 @@ import {
   ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   ANALYTICS_GROUP_CHURN_BINS,
+  ANALYTICS_MEMBER_ACTIVITY_DAYS,
+  ANALYTICS_MEMBER_ACTIVITY_HOURS,
   adminCheckPermissionQuery,
   adminClearRelationshipQuery,
   adminCreateInvitationBody,
@@ -73,6 +75,7 @@ import {
   listAdminGroupMembersQuery,
   listAdminGroupsQuery,
   listRecentAuditQuery,
+  memberActivityQuery,
 } from "./admin.schema.js";
 import { serializeAuditEntry } from "./audit.js";
 import type { WireAuditEntry } from "./audit.js";
@@ -3168,6 +3171,125 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
       bucketSizeMs,
       buckets: bucketTimestamps.map((t) => new Date(t).toISOString()),
       series,
+    });
+  };
+}
+
+// Phase 12.4a: cross-game member-activity heatmap. Returns a 7x24 grid of
+// audit-entry counts pivoted by UTC day-of-week and hour-of-day. The
+// dashboard's heatmap (Phase 12.4b) renders the grid as a Tailwind grid
+// with opacity scaling; Tremor doesn't ship a heatmap primitive.
+//
+// Wire shape carries:
+//   - the supplied `from` / `to` (echoed verbatim or null when omitted),
+//   - `totalEvents`: the sum of every cell, surfaced for empty-state
+//     branching on the dashboard side (a game with zero audit entries
+//     in the window renders the "no activity yet" callout instead of
+//     a heatmap of zeros),
+//   - `cells`: a `[7][24]` 2D array; `cells[day][hour]` is the count
+//     for UTC `day` in `0..6` (0=Sunday) and UTC `hour` in `0..23`.
+//
+// Behavior:
+//   - Audit entries from soft-deleted groups are INCLUDED (matches the
+//     Phase 11.8a / iter-082 stance for the per-game audit feed: the
+//     audit log preserves history regardless of group lifecycle, and
+//     this heatmap answers an activity-volume question).
+//   - The window is half-open `[from, to)` when both bounds are
+//     supplied; either bound can be omitted. Mirrors `groupChurnQuery`'s
+//     filter shape.
+//   - Empty population (no matching audit entries) returns the
+//     fully-zero grid with `totalEvents: 0`.
+//   - 404 only when the gameId itself does not exist.
+//   - Aggregation runs in Postgres via `$queryRaw` with `EXTRACT(DOW)`
+//     and `EXTRACT(HOUR)` rather than pulling every audit row over
+//     the wire. Audit entries can be high-volume; SQL-side aggregation
+//     keeps the response bounded at 168 rows max regardless of source
+//     data size.
+export interface WireAdminMemberActivity {
+  from: string | null;
+  to: string | null;
+  totalEvents: number;
+  cells: number[][];
+}
+
+export function getMemberActivityHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+
+    const parsed = memberActivityQuery.safeParse({
+      from: c.req.query("from"),
+      to: c.req.query("to"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { from, to } = parsed.data;
+
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true },
+    });
+    if (!game) throw Errors.notFound("game");
+
+    // Build a 7x24 grid of zeros. The dashboard renders even all-zero
+    // grids (with the empty-state callout gated on `totalEvents === 0`)
+    // so the cell count must always be deterministic.
+    const cells: number[][] = [];
+    for (let d = 0; d < ANALYTICS_MEMBER_ACTIVITY_DAYS; d += 1) {
+      cells.push(new Array<number>(ANALYTICS_MEMBER_ACTIVITY_HOURS).fill(0));
+    }
+
+    // Conditional `[from, to)` filter. `Prisma.empty` collapses to a
+    // no-op fragment when a bound is omitted, so a supplied-only bound
+    // works without a separate query path.
+    const fromCondition = from ? Prisma.sql`AND ae."createdAt" >= ${new Date(from)}` : Prisma.empty;
+    const toCondition = to ? Prisma.sql`AND ae."createdAt" < ${new Date(to)}` : Prisma.empty;
+
+    // EXTRACT(DOW FROM ts) returns 0=Sunday through 6=Saturday (matches
+    // JS's `Date.getUTCDay()`). EXTRACT(HOUR FROM ts) returns 0-23.
+    // Both are cast to int4 so Prisma's pg driver maps them to JS
+    // numbers (int8/bigint would otherwise come through as bigint).
+    // The COUNT(*) result is also cast to int because per-bucket counts
+    // are bounded by audit volume in 168 cells; bigint precision is
+    // unnecessary and JS-number arithmetic is cleaner downstream.
+    const rows = await prisma.$queryRaw<Array<{ dow: number; hour: number; count: number }>>`
+      SELECT
+        EXTRACT(DOW FROM ae."createdAt")::int AS dow,
+        EXTRACT(HOUR FROM ae."createdAt")::int AS hour,
+        COUNT(*)::int AS count
+      FROM "AuditEntry" ae
+      INNER JOIN "Group" g ON g."id" = ae."groupId"
+      WHERE g."gameId" = ${gameId}
+      ${fromCondition}
+      ${toCondition}
+      GROUP BY 1, 2
+    `;
+
+    let totalEvents = 0;
+    for (const row of rows) {
+      // Defensive: a malformed EXTRACT result should never happen, but
+      // a count out of range would silently corrupt the grid.
+      const dow = Number(row.dow);
+      const hour = Number(row.hour);
+      const count = Number(row.count);
+      if (!Number.isInteger(dow) || dow < 0 || dow >= ANALYTICS_MEMBER_ACTIVITY_DAYS) continue;
+      if (!Number.isInteger(hour) || hour < 0 || hour >= ANALYTICS_MEMBER_ACTIVITY_HOURS) continue;
+      if (!Number.isFinite(count) || count < 0) continue;
+      const dayRow = cells[dow];
+      if (!dayRow) continue;
+      dayRow[hour] = count;
+      totalEvents += count;
+    }
+
+    return c.json<WireAdminMemberActivity>({
+      from: from ?? null,
+      to: to ?? null,
+      totalEvents,
+      cells,
     });
   };
 }

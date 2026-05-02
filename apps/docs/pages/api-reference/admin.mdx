@@ -1546,6 +1546,72 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 }
 ```
 
+## `GET /v1/admin/games/:gameId/analytics/member-activity`
+
+Phase 12.4a. Returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week and hour-of-day across every group in the game (cross-group fan-in). Backs the dashboard's member activity heatmap (Phase 12.4b).
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | none | Inclusive lower bound on `AuditEntry.createdAt`. Omitted means no lower bound. |
+| `to` | no | ISO 8601 | none | Exclusive upper bound on `AuditEntry.createdAt`. Omitted means no upper bound. |
+
+Response:
+
+```ts
+interface WireAdminMemberActivity {
+  from: string | null;     // echoed verbatim from the query (or null when omitted)
+  to: string | null;       // ditto
+  totalEvents: number;     // sum of every cell; 0 when the game has no matching entries
+  cells: number[][];       // [day][hour] = count, day in 0..6 (0=Sunday), hour in 0..23
+}
+```
+
+Behavior:
+
+- **Cross-group fan-in.** Every audit entry on every group in the game contributes one to the matching cell, regardless of the entry's `action`. The dashboard renders the grid as a heatmap so any signal of "when do players show up?" surfaces.
+- **Soft-deleted groups are INCLUDED.** The audit log preserves history regardless of group lifecycle (matches the per-game audit feed at Phase 11.8a / iter-082). A group deleted last week still contributes its prior activity to the heatmap.
+- **UTC bucketing.** Day-of-week is `EXTRACT(DOW FROM createdAt)` server-side, which matches JS's `Date.getUTCDay()`: 0=Sunday, 1=Monday, ..., 6=Saturday. Hour is `EXTRACT(HOUR FROM createdAt)`: 0-23. The dashboard rotates the day axis client-side if it wants Mon-first visualization.
+- **Half-open `[from, to)` filter.** Both bounds are optional and independent (you can supply only `from` or only `to`). A row at exactly `from` is included; a row at exactly `to` is excluded. Mirrors the per-game audit feed's `since` / `before` convention.
+- **Empty population** (a game with zero matching audit entries) returns 200 with the fully-zero grid and `totalEvents: 0`.
+- **404 only when the gameId itself does not exist.** A game with no audit entries is a valid 200 response.
+- **SQL-side aggregation.** The handler runs `EXTRACT(DOW)` and `EXTRACT(HOUR)` in Postgres via `$queryRaw` rather than pulling every audit row over the wire. The response is bounded at 168 rows max regardless of source data size, so a busy game's 90-day window does not blow up the wire.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` / `to` (not ISO 8601). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/member-activity?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00Z",
+  "to": "2026-05-01T00:00:00Z",
+  "totalEvents": 1284,
+  "cells": [
+    [3, 0, 0, 0, 0, 1, 4, 12, 27, 41, 58, 62, 70, 65, 58, 49, 38, 31, 22, 15, 9, 6, 3, 1],
+    [2, 0, 0, 0, 0, 0, 5, 14, 30, 44, 61, 68, 73, 64, 56, 47, 36, 29, 21, 14, 8, 5, 2, 1],
+    "..."
+  ]
+}
+```
+
 ## SDK
 
 Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

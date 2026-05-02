@@ -4667,5 +4667,63 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** if the growth endpoint becomes flakier than churn, both fail together. Acceptable: every admin endpoint shares the same Postgres + Hono backend, so per-endpoint reliability differences are noise.
 
+### Phase 12.4 splits a/b mirroring every prior 12.x and 11.x server-then-UI precedent
 
+**Decision:** Phase 12.4 (member activity heatmap) splits into 12.4a (this iteration: cross-game admin endpoint at `GET /v1/admin/games/:gameId/analytics/member-activity` returning the 7x24 grid wire shape, plus tests + docs) and 12.4b (next iteration: dashboard heatmap component consuming the endpoint, built as a Tailwind grid with opacity scaling since Tremor doesn't ship a heatmap primitive).
+
+**Rationale:**
+- Every prior 12.x and 11.x phase that needed both server and UI surfaces split this way (12.2a/b, 12.3a/b, 11.2a/b, 11.3a/b, 11.4a/b, 11.5a/b/c-i/c-ii/d-i/d-ii, 11.6a-i/a-ii/b/c, 11.7a-i/a-ii/b-i/b-ii/c-i/c-ii, 11.8a/b, 11.9a-i/a-ii). The pattern has held for 16+ iterations with zero drift; rejecting it for one phase would be inconsistent.
+- Bundling endpoint + tests + docs + a custom heatmap component (the Tailwind-grid + opacity-scaling shape with header / legend / hover affordances) into one iteration would produce a 5+ surface diff. The natural seam is invisible API surface vs visible UI.
+- VISION's stack-conventions section explicitly says "use Tremor only when a chart is needed; do not import Tremor for non-chart UI" - the heatmap is a non-trivial Tailwind grid component that deserves its own iteration so the design choices (cell sizing, day-axis ordering, opacity scale, hover detail, empty state) get their own scrutiny.
+
+**Trade:** the dashboard waits one iteration before the heatmap is wired; the chart-rendering piecewise rollout keeps shipping with zero rework. Acceptable: prior 12.x splits have shown the next iteration always lands cleanly because the wire shape is locked in 12.4a.
+
+### Phase 12.4a: SQL-side aggregation via `$queryRaw` with `EXTRACT(DOW)` + `EXTRACT(HOUR)` instead of pulling rows and counting in JS
+
+**Decision:** the handler aggregates audit-entry counts at the database layer via `prisma.$queryRaw` with `EXTRACT(DOW FROM "createdAt")::int` and `EXTRACT(HOUR FROM "createdAt")::int`. The response is bounded at 168 rows max (7 days x 24 hours) regardless of source data volume. The `Prisma` namespace import in `routes/admin.ts` widens from a type-only import to a value import so the runtime `Prisma.sql` and `Prisma.empty` template tags are reachable; existing typed Prisma usages (`Prisma.GroupWhereInput`, etc.) keep their types unchanged.
+
+**Rationale:**
+- Audit entries can be high-volume. A busy game's 90-day window could easily contain 100K+ rows; pulling all of them server-side just to count them in JS is wasteful (network bandwidth, GC pressure, response latency). Postgres aggregates with `GROUP BY EXTRACT(DOW), EXTRACT(HOUR)` natively in milliseconds for properly-indexed tables.
+- Phase 12.3a's "tenure binning runs in JavaScript, not in SQL" decision does NOT apply here. That decision rested on bin boundaries being readable as JS constants but ugly as SQL `CASE` expressions. EXTRACT is a clean Postgres primitive; there's no SQL ugliness trade.
+- Prisma's typed `groupBy` API doesn't support computed columns (only existing schema fields), so `$queryRaw` is the canonical Prisma path for this kind of aggregation. The template tag form keeps it parameterized and SQL-injection-safe.
+- The `EXTRACT(DOW)` semantics (0=Sunday through 6=Saturday) match JS's `Date.getUTCDay()` exactly, so tests can mix server and client time computations without translation. UTC bucketing keeps the wire format unambiguous; the dashboard rotates the day axis client-side if it wants Mon-first visualization.
+- The conditional `[from, to)` filter uses `Prisma.sql` template-tag fragments with `Prisma.empty` collapsing omitted bounds to no-op fragments. Single query path covers both bounds, only one bound, or no bounds.
+
+**Trade:** `$queryRaw` is the first non-typed-Prisma query in the production codebase, which slightly reduces type-safety guarantees for the aggregation result (the `<{ dow: number; hour: number; count: number }>` generic is documentary, not enforced). Acceptable: the route's defensive `Number.isInteger` / range checks on the JS side guard against malformed driver responses; analytics is the right boundary to start using `$queryRaw`.
+
+### Phase 12.4a: audit entries from soft-deleted groups ARE counted
+
+**Decision:** the handler does NOT filter `Group.softDeletedAt: null`. Every audit entry on every group in the game (including soft-deleted ones) contributes to the heatmap.
+
+**Rationale:**
+- Mirrors the iter-082 / Phase 11.8a stance for the per-game audit feed. The audit log is the system of record; activity that happened in a group is a real fact about player behavior regardless of whether the group was later deleted.
+- The heatmap answers an activity-volume question ("when do players show up?"), not a cohort question ("when did *currently-active* groups have activity?"). The cohort question is what 12.2a (group churn) and 12.3a (group growth) answer; those endpoints filter soft-deleted groups intentionally.
+- A short-lived group that filled up at peak hours and then was deleted contributed real activity signal to the operator's "when do my players play?" insight. Filtering it would silently misrepresent reality.
+- Operationally consistent with iter-082: soft-deleted-group entries also appear in the per-game audit feed, so an operator browsing the audit log sees the same row population the heatmap counted.
+
+**Trade:** an operator who deleted a spam-import group might see the spam events in the heatmap. Acceptable: the audit feed shows the same rows; the operator can see what was deleted; if cosmetic noise becomes a real concern, a future `?excludeSoftDeleted=true` flag can land additively.
+
+### Phase 12.4a: UTC bucketing rather than dashboard-supplied timezone
+
+**Decision:** day-of-week and hour-of-day are computed in UTC. The wire format does not carry a timezone; the dashboard rotates the day axis client-side if needed but cannot reframe the hour axis without re-aggregating.
+
+**Rationale:**
+- Audit entries are stored as Postgres `TIMESTAMPTZ` (UTC under the hood). Aggregating in UTC is the simplest correct choice; any other choice requires the server to know the operator's preferred timezone and re-aggregate per request.
+- A `?tz=` query parameter would force `EXTRACT(DOW FROM ("createdAt" AT TIME ZONE $tz))` which is a more expensive query (less index-friendly) and adds a parameter validation surface.
+- For V1, the operator's question ("when do my players show up in UTC?") is unambiguous; for a global audience the absolute-UTC view is actually more useful than a local-timezone view because the operator can map UTC hours to per-region peaks themselves.
+- The day axis is symmetric (rotating Sun-first to Mon-first is one-line client-side); the hour axis is intrinsically aligned to absolute time.
+
+**Trade:** an operator running a single-region game wants to see "Tuesday 7 PM PT" without doing arithmetic. Acceptable: a future `?tz=America/Los_Angeles` parameter can land additively; the dashboard's heatmap can carry a tz-converter helper in 12.4b without the wire format changing.
+
+### Phase 12.4a: tests live in standalone `admin.memberActivity.test.ts` (file-per-feature)
+
+**Decision:** new tests for the heatmap endpoint live in a dedicated `packages/server/src/routes/admin.memberActivity.test.ts` file rather than being folded into `admin.test.ts` or `admin.groupChurn.test.ts`.
+
+**Rationale:**
+- Mirrors iter-068 / 070 / 072 / 073 / 076 / 078 / 080 / 082 / 084 / 088 / 091 file-per-feature precedents. The admin endpoint test surface is now spread across 13 files (515 cumulative tests across the admin route family); adding a 14th keeps the convention consistent.
+- `admin.test.ts` is already 2500+ lines covering the original Phase 10.2 + 11.2a / 11.3a endpoints; folding new tests there would degrade git-blame legibility for maintainers tracing back specific changes.
+- `admin.groupChurn.test.ts` is scoped to one endpoint's contract; the heatmap is a different question (activity volume vs cohort tenure) with different fixtures and schema, so colocating would muddy both test files.
+- File-per-feature also means a future developer touching just the heatmap endpoint (e.g., adding a `?tz=` parameter) only loads / re-runs that one file's tests.
+
+**Trade:** 14 admin test files is more files to maintain than a single mega-file. Acceptable: each is bounded in scope, the verify gate runs them all in parallel, and the cumulative server count moves from 1200 -> 1224 (+24).
 
