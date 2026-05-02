@@ -39,6 +39,8 @@ The `postinstall` script runs `prisma generate` automatically after every `npm i
 | `NODE_ENV` | no | One of `development`, `test`, `production`. Defaults to `development`. Controls the Prisma client globalThis cache (only enabled outside production). |
 | `JUNJO_BASE_URL` | no | Public base URL of this server. Used when building links (e.g., invitation share URLs). Optional during local dev. |
 | `JUNJO_ADMIN_TOKEN` | no | Server-wide bearer token that gates the cross-game admin endpoints (`GET /v1/users/:junjoUserId/games`, see [`apps/docs/pages/api/admin.mdx`](../../apps/docs/pages/api/admin.mdx)). When unset the admin endpoints return `401 invalid_admin_token` for every request, which is the right default for self-hosters with one game per server. Cloud / dashboard deployments set this to a long random string. The token is compared in constant time. |
+| `RATE_LIMIT_PER_MINUTE` | no | Sustained refill rate of the per-API-key token-bucket rate limit on `/v1/*` routes (Phase 14.1). Defaults to `600`. Set to `0` to disable rate limiting entirely (useful for self-hosters running behind their own gateway). Must be a non-negative integer. |
+| `RATE_LIMIT_BURST` | no | Maximum bucket capacity for the per-API-key rate limit. Defaults to `100`: a saturated bucket lets up to 100 requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Must be a non-negative integer. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active; setting either to zero disables the middleware. |
 
 `loadEnv()` in `src/env.ts` validates every variable above through a Zod schema; missing or malformed values throw a single readable error at startup.
 

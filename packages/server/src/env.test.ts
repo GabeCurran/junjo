@@ -53,4 +53,56 @@ describe("loadEnv", () => {
       /JUNJO_ADMIN_TOKEN/,
     );
   });
+
+  it("defaults RATE_LIMIT_PER_MINUTE to 600 and RATE_LIMIT_BURST to 100", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(600);
+    expect(env.RATE_LIMIT_BURST).toBe(100);
+  });
+
+  it("treats empty RATE_LIMIT_* as the default", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "",
+      RATE_LIMIT_BURST: "",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(600);
+    expect(env.RATE_LIMIT_BURST).toBe(100);
+  });
+
+  it("coerces RATE_LIMIT_* strings to integers", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "1200",
+      RATE_LIMIT_BURST: "200",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(1200);
+    expect(env.RATE_LIMIT_BURST).toBe(200);
+  });
+
+  it("accepts zero as the disable signal for RATE_LIMIT_*", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "0",
+      RATE_LIMIT_BURST: "0",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(0);
+    expect(env.RATE_LIMIT_BURST).toBe(0);
+  });
+
+  it("rejects a negative RATE_LIMIT_PER_MINUTE", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_PER_MINUTE: "-1" })).toThrow(
+      /RATE_LIMIT_PER_MINUTE/,
+    );
+  });
+
+  it("rejects a non-integer RATE_LIMIT_BURST", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_BURST: "1.5" })).toThrow(
+      /RATE_LIMIT_BURST/,
+    );
+  });
+
+  it("rejects a non-numeric RATE_LIMIT_PER_MINUTE", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_PER_MINUTE: "abc" })).toThrow();
+  });
 });

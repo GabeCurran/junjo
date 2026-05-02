@@ -4905,3 +4905,65 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the page-level empty state is now harder to trigger than it was in Phase 12.1 (where it rendered unconditionally on game load). Acceptable: the six-way condition correctly identifies the truly-first-time case; the other empty paths are handled at the chart level where the copy is more specific.
 
+### Phase 14.1: per-API-key rate limit middleware uses an in-memory token bucket keyed on the API key prefix
+
+**Decision:** new `middleware/rateLimit.ts` ships a token-bucket rate limiter. Buckets are keyed on the API key prefix parsed from `Authorization: Bearer prefix.secret`; the parse is the cheap string op already in `apiKey.ts:parseApiKey`, NOT the scrypt verify. Defaults: 600 requests per minute sustained refill, 100 requests burst capacity. Configurable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars; setting either to 0 disables the middleware entirely.
+
+**Rationale:**
+- Per-API-key buckets give each game its own quota. A single noisy game cannot starve another game's traffic.
+- Keying on the prefix (parsed before crypto verify) means the rate limiter rejects floods of requests with the same key BEFORE paying the scrypt cost. Scrypt verification is intentionally expensive (~50ms per call); a brute-force attacker hammering one prefix would otherwise saturate CPU regardless of whether the secret is right.
+- Token bucket (vs leaky bucket / fixed window / sliding window) is the right primitive for "sustained rate plus burst tolerance": a real game server has bursty traffic patterns (e.g., a raid kicks off and 50 members join in quick succession) and should not be punished for spending its bucket faster than the sustained rate allows.
+- In-memory `Map<prefix, BucketState>` is simplest. Multi-instance deployments need an external store (Redis, Memcache) for cross-process coordination; deferred behind the same `RateLimiter` interface so the swap is local. Documented explicitly so operators running multi-instance know the V1 limitation.
+- The 600 / 100 defaults are loose enough that a normal game's traffic stays well under the limit, but tight enough that a bug in dev code (e.g., a polling loop that forgot to back off) trips the limiter visibly instead of silently melting the database.
+- Setting either env var to 0 disables the middleware. Operators running behind their own gateway (Cloudflare, AWS WAF, nginx with `limit_req`) don't need duplicate enforcement.
+
+**Trade:** unbounded bucket map size lets an attacker with many distinct prefixes (or junk Authorization headers) grow memory usage. Acceptable for V1: each entry is ~30 bytes; even a million distinct keys is ~30MB of process RSS. A future iteration could add LRU eviction or move to an external store; the `RateLimiter` interface stays stable across that change.
+
+### Phase 14.1: rate limit middleware mounted just before `apiKeyMiddleware`, not on every `/v1/*` route
+
+**Decision:** `rateLimitMiddleware` is mounted on `v1` via `v1.use("*", rateLimitMiddleware(limiter))` immediately before `v1.use("*", apiKeyMiddleware(store))`. Hono's onion composition means the middleware applies to every per-game route registered AFTER that point but NOT to the public invitation route or the admin endpoints registered above. Those return a Response without calling `next()`, so the rate-limit middleware never runs for them.
+
+**Rationale:**
+- VISION's spec says "in front of `apiKeyMiddleware`" - the natural reading is "rate limit before the API-key crypto verify", which protects the per-game routes from a single API key being abused without paying the scrypt cost. The middleware sits between the request and the apiKey middleware in the route's middleware chain.
+- The public invitation route (`GET /v1/invitations/:code`) is read-only and harmless; rate limiting it would just add latency to a route designed to be hit by anonymous clients clicking invite links. If it ever needs protection, that protection belongs at the gateway or CDN layer.
+- Admin endpoints (`/v1/admin/*`, `/v1/users/:junjoUserId/games`) are protected by the admin token's secrecy, not by rate limiting. The token is a single server-wide secret rotated infrequently; brute-forcing it would require an unrealistic number of requests, and any brute force would show up in logs immediately. Adding rate limiting on top of admin auth would just complicate the dashboard's bursty admin traffic (which legitimately does ~20 GETs in a single page load).
+- Keeping the rate limit scoped to per-game routes also means the bucket key always has a parseable API key prefix in practice (the apiKey middleware would reject malformed keys downstream); the `"anon"` fallback bucket exists for edge cases (a request with no Authorization header at all) but is rarely hit.
+
+**Trade:** an attacker can DoS the admin endpoints by hammering them, since they're not rate limited. Acceptable: the admin token gates them, and the admin endpoints are themselves bounded (no streaming, no heavy DB work outside the dashboard's known query shapes). If admin DoS becomes a real concern, mount a second `rateLimitMiddleware` instance with stricter limits on `/v1/admin/*`; the middleware is reusable.
+
+### Phase 14.1: `RATE_LIMIT_PER_MINUTE = 0` and `RATE_LIMIT_BURST = 0` both disable rate limiting
+
+**Decision:** `buildRateLimiter({ perMinute, burst })` returns `null` (signalling disabled) when EITHER `perMinute <= 0` OR `burst <= 0`. The middleware short-circuits to a no-op when its limiter is null. Either env var being zero is the disable signal; both being zero is the same as either being zero. Negative values are rejected at env validation time.
+
+**Rationale:**
+- Operators who want to disable rate limiting should be able to set ONE env var and have it work, not have to remember to set two. `RATE_LIMIT_PER_MINUTE=0` reads as "no requests per minute" which clearly means disabled.
+- Conversely, a positive `perMinute` with a zero `burst` would mean "no bucket capacity, ever" which is the same as disabled (no request would ever pass). Treating it the same as the explicit disable case avoids surprising operators who set burst-only limits and then can't figure out why every request 429s.
+- Defaults (600 / 100) are picked deliberately: 600/min = 10/sec sustained handles the dominant case (a game server polling for updates a few times per second per active session) without throttling; 100 burst handles bursty patterns (raid kickoffs, mass invites) up to ~10x the sustained rate before backpressure.
+- Env validation (`z.number().int().nonnegative()`) catches negative values at startup with a readable error message, rather than silently treating `-5` as "disabled" and confusing operators who think they configured a low limit.
+
+**Trade:** an operator who really wants "0 per minute, 100 burst" (e.g., to test the burst-only edge case) cannot get it. Acceptable: that configuration has no practical use; if you want a one-shot rate limit you use a fixed-window middleware not a token bucket.
+
+### Phase 14.1: 429 response carries `Retry-After` header rounded up to whole seconds
+
+**Decision:** when the bucket is empty, the middleware sets `Retry-After` to `max(1, ceil(msToNextToken / 1000))`. Sub-second waits round up to 1; multi-second waits ceil to the next integer. The header is set via `c.header()` before throwing `Errors.rateLimitExceeded(...)`, so the error middleware's JSON response inherits it.
+
+**Rationale:**
+- `Retry-After` is documented in [RFC 7231](https://www.rfc-editor.org/rfc/rfc7231#section-7.1.3) as either an HTTP date or an integer number of seconds. Integer seconds is the simpler shape for a sub-minute limit; clients (curl, fetch, every HTTP library) parse it without quirks.
+- Rounding up vs down: rounding up is the safe choice. A client that retries at exactly the suggested time should always succeed; rounding down would mean some retries arrive a few ms early and 429 again, creating a thundering herd as multiple clients all retry on the same boundary.
+- The minimum of 1 second is also defensive: a client that respects `Retry-After: 0` might immediately retry, defeating the purpose. 1 second is the smallest useful backoff for any reasonable client.
+- `c.header()` setting the response header before the throw works because Hono's `errorHandler` constructs the response via `c.json()`, which inherits headers already set on the context. Verified by tests.
+
+**Trade:** clients that retry at exactly the `Retry-After` boundary will always get the next token (good); clients that retry slightly early are unaffected because the next token is now available (also good). A pathological client that retries at the exact boundary plus 0ms could in theory miss its slot if the server's clock jitters, but this is theoretical.
+
+### Phase 14.1: rate limit middleware tests use an injected `now()` clock seam, not real time
+
+**Decision:** `RateLimiter`'s constructor takes an optional `now: () => number` parameter (defaults to `() => Date.now()`). All 28 unit tests pass a closure over a mutable `now` variable that they advance manually. Zero tests use `vi.useFakeTimers()` or `Promise`-based delays.
+
+**Rationale:**
+- Real-time tests would either be slow (waiting actual seconds for tokens to refill) or flaky (timing assumptions break under CI load). The clock seam makes every test deterministic and runs the full suite in <100ms.
+- Tests can verify the math precisely: e.g., "drain the bucket at t=0, advance to t=1000ms, assert one token has been refilled" - the assertion is exact, not approximate.
+- The factory `buildRateLimiter` does NOT expose the clock seam (callers in production never need it); the seam is a constructor-only escape hatch for tests, mirroring the same pattern used by `webhookWorker.ts` (which takes an injectable `now` and `fetch`).
+- 28 unit tests cover: every consume path (allowed / rejected / refill / burst cap / negative skew clamp / per-key isolation / Retry-After math for sub-second + multi-second waits), every factory branch (null / undefined / zero / positive / partial config), every bucket-key resolution path (no header / non-Bearer / malformed / parseable / whitespace-trimmed). The middleware integration tests (8 cases) build a Hono app with the real middleware against a fake limiter and verify the wire response shape (200 / 429 / Retry-After header / JSON envelope / per-key isolation / burst absorption / no-op-when-disabled).
+
+**Trade:** the production code has a constructor parameter that 99% of callers will never use. Acceptable: the parameter is optional with a sensible default; the test cost is real and the production cost is zero (one extra closure capture per limiter instance).
+

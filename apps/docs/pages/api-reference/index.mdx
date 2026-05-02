@@ -53,9 +53,18 @@ Reserved codes the server returns today:
 | `bad_request` | 400 | Body or query failed Zod validation. |
 | `permission_denied` | 403 | Caller lacks permission to perform the action. |
 | `not_found` | 404 | Resource does not exist (or is soft-deleted). |
+| `rate_limit_exceeded` | 429 | Per-API-key token-bucket exceeded. Response carries a `Retry-After` header (seconds, integer >= 1) indicating the minimum wait before the next request will be admitted. Tunable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars (defaults: 600 sustained, 100 burst). |
 | `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
 
 Per-resource pages may introduce additional codes; those are listed alongside the routes that raise them.
+
+## Rate limiting
+
+`/v1/*` routes that go through the API-key middleware (the per-game routes - groups, members, roles, permissions, audit, webhooks, SSE) are rate limited per API key via an in-memory token bucket. Defaults: 600 requests per minute sustained refill, 100 requests burst. Set `RATE_LIMIT_PER_MINUTE` or `RATE_LIMIT_BURST` to `0` to disable rate limiting (useful when the server runs behind a gateway that handles it externally). Buckets are keyed on the API key prefix (the part before the dot in `prefix.secret`); requests without a parseable bearer share a single "anon" bucket. Rate limiting is in front of the API-key crypto verify, so a flood of requests with the same key is rejected before the scrypt cost is paid.
+
+The bucket map is per-process and unbounded in size by design; multi-instance deployments need an external store (Redis, etc.) for cross-process coordination, deferred for now. The 429 response carries a `Retry-After` header in seconds.
+
+The public invitation route (`GET /v1/invitations/:code`) and the admin endpoints (`/v1/admin/*`, `/v1/users/:junjoUserId/games`) are NOT rate limited at this layer - they are mounted before the rate-limit middleware. The admin token's secrecy and the invitation route's harmless read-only nature are the protection there; if you need rate limiting on those routes, put the server behind a gateway.
 
 ## Server bootstrap
 

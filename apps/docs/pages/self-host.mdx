@@ -123,6 +123,9 @@ node packages/server/dist/index.js
 | `PORT` | no | `8787` | HTTP listen port. Must be a positive integer. |
 | `NODE_ENV` | no | `development` | One of `development`, `test`, `production`. Outside production, the Prisma client is cached on `globalThis` so `tsx watch` does not leak connections on hot reload. |
 | `JUNJO_BASE_URL` | no | | Public base URL of this server. Used when the SDK's `inviteByLink` builds the share URL; if you do not set it, the SDK falls back to its own `inviteBaseUrl` config. Optional during local dev. |
+| `JUNJO_ADMIN_TOKEN` | no | | Server-wide bearer token gating the cross-game admin endpoints (`/v1/admin/*`, `/v1/users/:junjoUserId/games`). When unset every admin request returns `401 invalid_admin_token`. Self-hosters with one game per server can leave this unset; cloud / dashboard deployments set it to a long random string. Compared in constant time. |
+| `RATE_LIMIT_PER_MINUTE` | no | `600` | Sustained refill rate of the per-API-key token-bucket rate limit on `/v1/*` routes. Set to `0` to disable rate limiting (e.g., when running behind a gateway that handles it). Must be a non-negative integer. |
+| `RATE_LIMIT_BURST` | no | `100` | Maximum bucket capacity for the per-API-key rate limit. A saturated bucket lets up to `burst` requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active. |
 
 Validation lives in [`packages/server/src/env.ts`](https://github.com/GabeCurran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
 

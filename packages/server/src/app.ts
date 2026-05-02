@@ -5,6 +5,7 @@ import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
+import { type RateLimiter, buildRateLimiter, rateLimitMiddleware } from "./middleware/rateLimit.js";
 import {
   checkAdminPermissionHandler,
   clearAdminGroupRelationshipHandler,
@@ -80,6 +81,13 @@ export interface CreateAppOptions {
   // self-host setup that never configured one effectively disables those
   // endpoints.
   adminToken?: string;
+  // Per-API-key rate limit (Phase 14.1). Threaded in from
+  // `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` by the server entry point;
+  // tests pass literal values or `null` to disable. When either field is
+  // zero or the whole option is null, rate limiting is disabled and
+  // requests pass through with no bucket bookkeeping. Tests can also pass
+  // a pre-built `RateLimiter` instance for fixed-clock control.
+  rateLimit?: { perMinute?: number; burst?: number } | RateLimiter | null;
 }
 
 // Builds a fresh Hono app per call so tests can boot one server per file
@@ -95,6 +103,10 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
         select: { gameId: true, hashedSecret: true, revokedAt: true },
       }),
   };
+  const limiter: RateLimiter | null =
+    opts.rateLimit instanceof Object && "consume" in opts.rateLimit
+      ? (opts.rateLimit as RateLimiter)
+      : buildRateLimiter(opts.rateLimit ?? undefined);
 
   const app = new Hono();
   app.onError(errorHandler);
@@ -386,6 +398,15 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     adminAuthMiddleware(opts.adminToken),
     getPermissionUsageHandler(prisma),
   );
+  // Per-API-key rate limit (Phase 14.1). Mounted just BEFORE
+  // `apiKeyMiddleware` so it applies to every per-game route registered
+  // afterward but NOT to the public / admin routes registered above (they
+  // already returned a Response before this middleware runs in Hono's
+  // onion). The bucket key is the API key prefix (cheap parse from the
+  // Authorization header; no scrypt verify required), so rate limiting
+  // happens before any DB work and protects the per-game routes from a
+  // single noisy key. Disabled when `limiter` is null.
+  v1.use("*", rateLimitMiddleware(limiter));
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));

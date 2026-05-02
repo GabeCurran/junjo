@@ -14,6 +14,31 @@ const EnvSchema = z.object({
   // so self-hosters with one game per server can ignore it. Cloud + dashboard
   // deployments set it to a long random string.
   JUNJO_ADMIN_TOKEN: z.string().min(1, "JUNJO_ADMIN_TOKEN must not be empty when set").optional(),
+  // Per-API-key rate limit on `/v1/*` routes that go through the apiKey
+  // middleware. Token-bucket: `RATE_LIMIT_PER_MINUTE` is the sustained
+  // refill rate, `RATE_LIMIT_BURST` is the bucket capacity. Both default
+  // to 600 / 100 (Phase 14.1 spec). Setting either to 0 disables rate
+  // limiting entirely; "" or unset falls back to the default.
+  RATE_LIMIT_PER_MINUTE: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 600 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("RATE_LIMIT_PER_MINUTE must be a non-negative integer")
+        .nonnegative("RATE_LIMIT_PER_MINUTE must be a non-negative integer"),
+    ),
+  RATE_LIMIT_BURST: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 100 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("RATE_LIMIT_BURST must be a non-negative integer")
+        .nonnegative("RATE_LIMIT_BURST must be a non-negative integer"),
+    ),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
