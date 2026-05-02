@@ -97,16 +97,7 @@ TODO.local.md
 /temp/
 
 # Claude Code
-.claude/settings.local.json
-.claude/.credentials.json
-.claude/projects/
-.claude/statsig/
-.claude/todos/
-.claude/shell-snapshots/
-.claude/ide/
-.claude/plugins/
-.claude/agents/
-.claude/plans/
+.claude/
 
 # Other AI assistants
 .cursor/
