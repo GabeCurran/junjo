@@ -4842,3 +4842,66 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** ~30 lines of fixture-seeding duplication between the two files. Acceptable: extracting a shared `seedFixture()` helper would couple the files and force later edits to one to consider the other; per-file inline helpers stay independently editable.
 
+## 2026-05-02
+
+### Phase 12.5b: dashboard role distribution + permission usage charts ship side-by-side, closing Phase 12
+
+**Decision:** Phase 12.5b ships both `<RoleDistributionChart>` (Tremor `<DonutChart>`) and `<PermissionUsageChart>` (Tremor `<BarChart layout="vertical" stack>`) in one iteration, rendered side-by-side at the bottom of the analytics page in a `lg:grid-cols-2` responsive grid. Closes Phase 12.5 and Phase 12.
+
+**Rationale:**
+- VISION's Phase 12.5 spec is explicit: "Two charts side by side". The framing wants both charts shipped together.
+- Both charts consume snapshot endpoints that landed in the same iteration (12.5a). Splitting them across two iterations would mean shipping one chart with the other still as a forward-reference; the analytics page's empty-state gate would also need a transitional condition that gets reverted on the second iteration.
+- Both charts share the same dashboard infrastructure (Tremor + the existing color palette + the `<Card>` primitive + the same skeleton fallback shape). The two components are independent in implementation but visually paired in the rendered output.
+- The diff stays focused (~250 LoC across two component files plus ~75 LoC in `lib/admin.ts` plus ~20 LoC in the page) - well within the typical dashboard-iteration size that prior 12.x b-iterations have shipped.
+
+**Trade:** the side-by-side `lg:grid-cols-2` layout puts the two charts on equal visual weight, but the donut chart is naturally smaller (its content is a single circle plus legend) than the horizontal bar chart (which can grow to 15 bars tall). On wide viewports the column heights diverge and the bar chart pulls down past the donut. Acceptable for V1: future operators can scroll past either chart; rebalancing the layout to compensate would be over-engineering for a known cosmetic asymmetry.
+
+### Phase 12.5b: snapshot endpoints ignore the page-level date-range picker, surface the trade inline
+
+**Decision:** the two new fetches (`fetchAdminGameRoleDistribution`, `fetchAdminGamePermissionUsage`) do NOT take `from` / `to` parameters in the analytics page's `Promise.all`. They fire with no query parameters and return the same snapshot regardless of which preset the operator selected on the date-range picker. Both chart card descriptions surface "Shows current state; not affected by the date range above." inline.
+
+**Rationale:**
+- Per the iter-091 / iter-002 / iter-005 (Phase 12.5a) snapshot decisions, both endpoints answer "what is currently deployed?", not "what changed in this window?". The wire shape itself does not accept date parameters; forwarding `from` / `to` to the helpers would be cosmetic noise that the helpers immediately drop.
+- The analytics page's date-range picker is page-level (it applies to the page's URL state), but only churn / growth / member-activity charts consume it. Hiding the picker when the 12.5 charts are visible would be confusing (it would still apply to the three time-windowed charts above); putting "(snapshot)" badges next to the picker preset for these two charts would clutter the toolbar.
+- Surfacing the snapshot semantics inline in each chart's card description ("Shows current state; not affected by the date range above.") is the lightest-weight signal: an operator who scans across the page reads the description and knows why the chart did not move when they flipped the picker. The phrasing matches Stripe's "lifetime" / Linear's "all-time" cohort language.
+- The empty-state gate folds both charts into the six-way `showOnboardingHint` condition because a brand-new game has no role assignments AND no permission grants AND no audit activity AND no churn AND no growth; once any of those flips non-zero, the operator is past first-time onboarding regardless of which chart shows the signal first.
+
+**Trade:** the divergence between time-windowed and snapshot charts on the same surface adds a small cognitive load. Acceptable: the inline copy is explicit, and the alternative (separate "Snapshot" and "Time-windowed" pages) would fragment the analytics surface for V1's three-chart-plus-two-chart split. A future iteration that adds more snapshot charts could regroup if the pattern continues.
+
+### Phase 12.5b: donut chart includes "Other" aggregate as a slice when otherCount > 0
+
+**Decision:** `<RoleDistributionChart>` renders one slice per top-N role plus an additional "Other" slice when the server's `otherCount > 0`. The donut's visible arc lengths sum to `totalAssignments` rather than just the top-N total. The "Other" slice is positioned at the tail (after the top-N slices) and gets the eleventh entry in the color palette (`slate`).
+
+**Rationale:**
+- A donut whose visible arcs do not sum to the announced `totalAssignments` would mislead operators into thinking the chart is showing the whole population. Including "Other" as a visible slice keeps the visualization honest about what is and is not represented.
+- The `Legend` below the donut maps each color to the name; "Other" appears in the legend as a normal entry, so an operator who clicks (or hovers) the slice gets the same affordance as any role.
+- A two-tile summary header (Total assignments, Unique role names) above the donut surfaces the population size and the cardinality - so even when "Other" is large the operator can read off "5 roles in top-10, 47 unique names overall, top-10 covers 80% of assignments" by combining the legend + the summary.
+- Color palette mirrors the Phase 12.3b growth chart's 11-entry palette so the analytics page has visual consistency: `blue` / `violet` / `emerald` / `amber` / `rose` / `cyan` / `indigo` / `lime` / `fuchsia` / `orange` / `slate`. The slate-as-Other choice is a soft visual signal: it is the most muted of the 11 colors so the eye lands on the named slices first.
+
+**Trade:** when the cohort fits comfortably in the top-10 (e.g., a small game with 4 roles), the donut renders 4 slices and no "Other" slice. The chart looks the same as it would have without the aggregation logic. Acceptable: there is no visual cost to the simple case, and the complex case stays honest.
+
+### Phase 12.5b: permission usage chart uses stacked horizontal bars to encode role grants vs member overrides
+
+**Decision:** `<PermissionUsageChart>` renders a Tremor `<BarChart>` with `layout="vertical"` (which flips Tremor's BarChart into horizontal-bar rendering, since Tremor's "vertical layout" means "the categorical axis is vertical") and `stack`, with two color categories (`Role grants` in `blue`, `Member overrides` in `violet`). Each bar's total length is the permission key's combined count; the visible blue / violet split shows the dominant driver per permission at a glance.
+
+**Rationale:**
+- The wire shape carries `roleGrants` and `memberOverrides` separately on every item; collapsing them into a single `total` would lose the signal an operator wants ("did this permission spread because of role grants, or because of member-level overrides?").
+- Stacked horizontal bars are the canonical visualization for "this column has two sub-categories" when the column count is small (15 in V1) and the categorical labels are long (permission keys like `guild.invite_member` would not fit rotated 90 degrees on a normal axis).
+- A non-stacked side-by-side layout would double the visual width per row, halving the chart's usable density. Stacked keeps the cohort visible without scroll on most viewports.
+- Tooltip on hover shows both segments' values, so the operator can read off the exact split per permission without doing arithmetic from the bar segments.
+- The `chartHeightClass` is computed from row count (`h-56` for 1-3 rows, `h-72` for 4-6, `h-96` for 7-9, `h-[32rem]` for 10-15) so the bar density stays readable across cohort sizes. Fixed-height would crush bars on full cohorts; auto-height would jump as the data changes.
+
+**Trade:** stacked bars make it slightly harder to compare absolute role-grant counts across permissions (the role-grant segments do not all start at zero on the x-axis). Acceptable: the dominant operator question is "what is the total usage per permission?" (which the bar length answers) and "what is the role / override split?" (which the segment colors answer). An operator who needs raw role-grant counts across permissions can read them from the API directly or wait for a future iteration that ships a "role grants" tab.
+
+### Phase 12.5b: empty-state gate widens to a six-way condition; charts own per-state copy
+
+**Decision:** the page-level `<AnalyticsEmptyState>` (the Phase 12.1 first-time-user tutorial deep-link) renders only when ALL six datasets are empty: `JUNJO_DOCS_BASE_URL` is set AND zero churn departures AND zero churn groups AND zero growth series AND `memberActivity.totalEvents === 0` AND `roleDistribution.totalAssignments === 0` AND `permissionUsage.totalCount === 0`. Each individual chart still owns its own per-state empty copy when its own dataset is empty (e.g., "No active members hold any role yet" when only the role distribution is empty).
+
+**Rationale:**
+- The page-level empty state is reserved for the first-time-user onboarding case where the tutorial deep-link is the most useful next step. Once any one of the six signals flips non-zero, the operator is past onboarding and the tutorial deep-link becomes noise.
+- Snapshot charts (role distribution, permission usage) are particularly useful as onboarding signals because they answer "is this game configured at all?" - a brand-new game has no roles assigned and no permissions granted, so both charts are zero. The moment the operator runs the tutorial and assigns a role or grants a permission, both charts flip non-zero and the tutorial deep-link disappears.
+- Per-chart empty copy stays in each chart's component so the operator who lands on a partially-configured game (e.g., they have groups and members but have not yet defined roles) gets specific guidance on each empty chart. The page-level deep-link covers the truly-first-time case.
+- The six-way gate is a small AND chain in one place. Adding new charts in future iterations would extend this gate by one term per new dataset; the pattern stays uniform.
+
+**Trade:** the page-level empty state is now harder to trigger than it was in Phase 12.1 (where it rendered unconditionally on game load). Acceptable: the six-way condition correctly identifies the truly-first-time case; the other empty paths are handled at the chart level where the copy is more specific.
+

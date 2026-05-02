@@ -1251,6 +1251,92 @@ export interface AdminPermissionCheckResult {
   viaRoleId?: string;
 }
 
+// Phase 12.5a wire shapes mirroring `WireAdminRoleDistribution` /
+// `WireAdminRoleSlice` and `WireAdminPermissionUsage` /
+// `WireAdminPermissionUsageItem` from `packages/server/src/routes/admin.ts`.
+// Both endpoints are pure snapshot endpoints (no `from` / `to` query
+// parameters in V1); the dashboard's page-level date-range picker is
+// irrelevant here. The two charts (Phase 12.5b) render side-by-side: a
+// Tremor `<DonutChart>` for role distribution and a Tremor horizontal
+// `<BarChart>` for permission usage.
+
+export interface AdminRoleSlice {
+  name: string;
+  count: number;
+}
+
+export interface AdminRoleDistribution {
+  // Sum of every active-member role assignment in non-soft-deleted groups
+  // across this game. Equals the sum of every `topRoles[*].count` plus
+  // `otherCount`. Surfaced in the chart's card description.
+  totalAssignments: number;
+  // Count of distinct role names with at least one active assignment.
+  // Differs from `topRoles.length` when the cohort overflows the top-10
+  // cap; the chart shows it in the card description so the operator
+  // knows whether the "Other" slice represents 0 or many roles.
+  uniqueRoleNames: number;
+  // Top-10 role names ranked by count (desc) with name ascending as the
+  // tiebreaker. Always 10 entries or fewer; sorted server-side. Empty
+  // population returns `[]`.
+  topRoles: AdminRoleSlice[];
+  // Combined count for role names outside the top-10 (the donut's
+  // "Other" slice). Zero when the cohort fits in the top-10.
+  otherCount: number;
+}
+
+export interface AdminPermissionUsageItem {
+  permission: string;
+  // Number of `RolePermission` rows for this key across non-soft-deleted
+  // groups in this game. Each role grant counts once regardless of how
+  // many members the role has.
+  roleGrants: number;
+  // Number of `MemberPermissionOverride` rows for this key across
+  // non-soft-deleted groups in this game. All overrides count regardless
+  // of the underlying member's status (operator-authored config exists
+  // independently of member lifecycle).
+  memberOverrides: number;
+  // `roleGrants + memberOverrides`. The bar chart sorts by this column.
+  total: number;
+}
+
+export interface AdminPermissionUsage {
+  // Sum of every `total` across observed permission keys (top-15 plus
+  // other). Surfaced in the chart's card description.
+  totalCount: number;
+  // Count of distinct permission keys with at least one row counted.
+  // Differs from `items.length` when the cohort overflows the top-15
+  // cap; the chart shows it in the card description so the operator
+  // knows whether the "Other" tail represents 0 or many keys.
+  uniqueKeys: number;
+  // Top-15 permission keys ranked by `total` (desc) with permission
+  // ascending as the tiebreaker. Always 15 entries or fewer; sorted
+  // server-side. Empty population returns `[]`.
+  items: AdminPermissionUsageItem[];
+  // Combined count for permission keys outside the top-15 (the bar
+  // chart's footer aggregate). Zero when the cohort fits in the top-15.
+  otherCount: number;
+}
+
+export function fetchAdminGameRoleDistribution(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminRoleDistribution> {
+  return adminFetch<AdminRoleDistribution>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/role-distribution`,
+    opts,
+  );
+}
+
+export function fetchAdminGamePermissionUsage(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminPermissionUsage> {
+  return adminFetch<AdminPermissionUsage>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/permission-usage`,
+    opts,
+  );
+}
+
 // Mirrors the server-side caps in `routes/admin.schema.ts:adminCheckPermissionQuery`
 // so the dashboard's tester form can enforce the same limit via input
 // maxLength attributes. Reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (128)

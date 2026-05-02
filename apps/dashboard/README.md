@@ -422,9 +422,23 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   fold `memberActivity.totalEvents === 0` into the four-way condition
   that gates the page-level `<AnalyticsEmptyState>`.
 - 12.5a: cross-game admin role-distribution + permission-usage analytics
-  endpoints (server-side; no dashboard surface yet). Snapshot endpoints
-  with no `from` / `to` query parameters; the dashboard's page-level
-  date-range picker is irrelevant to the 12.5b charts.
-- 12.5b: dashboard role distribution donut + permission usage horizontal
-  bar chart consuming the 12.5a endpoints. Side-by-side layout per
-  VISION's "Two charts side by side" framing. Closes Phase 12.
+  endpoints. Snapshot endpoints with no `from` / `to` query parameters;
+  the dashboard's page-level date-range picker is irrelevant.
+- 12.5b (this iteration, closes Phase 12): dashboard role distribution
+  donut + permission usage horizontal bar chart consuming the 12.5a
+  endpoints. New `lib/admin.ts` exports (`AdminRoleDistribution`,
+  `AdminRoleSlice`, `AdminPermissionUsage`, `AdminPermissionUsageItem`,
+  plus `fetchAdminGameRoleDistribution` / `fetchAdminGamePermissionUsage`
+  helpers). Two new Client Components (`<RoleDistributionChart>` Tremor
+  `<DonutChart>` with 11-entry color palette including the "Other"
+  aggregate; `<PermissionUsageChart>` Tremor `<BarChart layout="vertical"
+  stack>` with stacked role-grants + member-overrides segments per bar
+  and a dynamic height class scaled by row count). The analytics page's
+  `Promise.all` extends from four legs to six (snapshot fetches ignore
+  the date range; chart card descriptions surface the snapshot semantics
+  inline so a date-range change does not confuse). Two charts render
+  side-by-side at the bottom in a `lg:grid-cols-2` responsive grid,
+  stacking on narrow viewports. The page-level `<AnalyticsEmptyState>`
+  gate widens to a six-way condition (adds
+  `roleDistribution.totalAssignments === 0` AND
+  `permissionUsage.totalCount === 0`).
