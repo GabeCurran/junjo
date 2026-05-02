@@ -15,6 +15,7 @@ import {
   datetimeLocalToIso,
 } from "../../../../../components/analytics/date-range-picker";
 import { GroupChurnChart } from "../../../../../components/analytics/group-churn-chart";
+import { GroupGrowthChart } from "../../../../../components/analytics/group-growth-chart";
 import { Topbar } from "../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -27,8 +28,10 @@ import {
   AdminDisabledError,
   type AdminGame,
   type AdminGroupChurn,
+  type AdminGroupGrowth,
   fetchAdminGame,
   fetchAdminGameGroupChurn,
+  fetchAdminGameGroupGrowth,
 } from "../../../../../lib/admin";
 import { getDocsBaseUrl } from "../../../../../lib/junjo";
 
@@ -135,10 +138,12 @@ async function AnalyticsBody({
 
   let game: AdminGame;
   let churn: AdminGroupChurn;
+  let growth: AdminGroupGrowth;
   try {
-    [game, churn] = await Promise.all([
+    [game, churn, growth] = await Promise.all([
       fetchAdminGame(gameId),
       fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
+      fetchAdminGameGroupGrowth(gameId, { from: fromIso, to: toIso }),
     ]);
   } catch (err) {
     if (err instanceof AdminDisabledError) {
@@ -160,16 +165,20 @@ async function AnalyticsBody({
     );
   }
 
-  // The chart renders unconditionally now (Phase 12.2b). The chart owns
-  // its own empty-state copy when the window has zero matching groups or
-  // zero departures; the page-level `<AnalyticsEmptyState>` only renders
-  // when the operator has not configured `JUNJO_DOCS_BASE_URL` AND the
-  // chart has nothing to show, which is the early-onboarding case where
-  // the tutorial deep-link is the most useful next step. Charts 12.3 -
-  // 12.5 will land alongside the churn chart in subsequent iterations.
+  // The charts each render their own per-state empty copy when the
+  // window has nothing to show. The page-level `<AnalyticsEmptyState>`
+  // only fires when the operator has configured `JUNJO_DOCS_BASE_URL`
+  // AND the dashboard truly has no data anywhere in the cohort - the
+  // first-time-user onboarding path where the tutorial deep-link is the
+  // most useful next step. Both churn and growth are checked because
+  // either signal counts as "this game already has activity"; growth's
+  // `series.length` covers groups that have never seen a departure.
   const docsBaseUrl = getDocsBaseUrl();
   const showOnboardingHint =
-    docsBaseUrl !== null && churn.totalDeparturesInWindow === 0 && churn.totalGroupsInWindow === 0;
+    docsBaseUrl !== null &&
+    churn.totalDeparturesInWindow === 0 &&
+    churn.totalGroupsInWindow === 0 &&
+    growth.series.length === 0;
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
@@ -177,6 +186,7 @@ async function AnalyticsBody({
         <span className="font-mono text-[11px]">{game.id}</span>
       </p>
       <GroupChurnChart data={churn} />
+      <GroupGrowthChart data={growth} />
       {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
     </div>
   );

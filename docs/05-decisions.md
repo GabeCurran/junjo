@@ -4608,5 +4608,64 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the operator cannot drill into individual aggregate-bucketed groups from the chart. Acceptable: the dashboard's group browser (Phase 11.4) is the right surface for per-group inspection; the chart's job is to show top-N trends + everything-else context.
 
+### Phase 12.3b: chart pre-formats bucket labels for the x-axis instead of forwarding raw ISO strings
+
+**Decision:** `<GroupGrowthChart>` runs every `data.buckets[i]` ISO 8601 string through a cadence-aware `Intl.DateTimeFormat` formatter before placing it in the `bucket` field of each row Tremor consumes. Daily-or-coarser buckets render as `Apr 28`; hourly / 6-hourly buckets render as `Apr 28, 12 PM`. The original ISO is reachable via the parallel `data.buckets` array if a future custom tooltip wants full precision.
+
+**Rationale:**
+- Tremor's `<LineChart>` uses `row[index]` verbatim as the x-axis tick label and the tooltip's row header. Forwarding ISO 8601 strings produces ticks like `2026-04-28T00:00:00.000Z` which crowds the axis and offers nothing readable.
+- A custom Tremor tooltip is a heavier surface than a one-line formatter; deferring it until a real need lets the chart ship today with a clean axis.
+- The cadence-aware formatter mirrors the server's `pickGrowthBucketSizeMs` ladder: hourly cadences need the time component; daily-or-coarser cadences only need the date. A single fixed format would either lose precision on hourly windows or crowd daily windows.
+- `Intl.DateTimeFormat` is a Node 18+ / browser-native primitive; no third-party date library added (matches the iter-060 / iter-082 stance).
+
+**Trade:** the operator cannot read the exact millisecond from the chart. Acceptable: the chart answers "trend over time", not "what happened at exactly this moment"; the audit log viewer (Phase 11.8b) already exposes per-row millisecond timestamps for that question.
+
+### Phase 12.3b: line color palette is an 11-entry ordered array; series order is the ranking axis
+
+**Decision:** the chart maps category index to color via a fixed `SERIES_COLORS = ["blue", "violet", "emerald", "amber", "rose", "cyan", "indigo", "lime", "fuchsia", "orange", "slate"]` array (11 entries: top-10 max + 1 aggregate). Server returns series sorted by end-count desc with deterministic tiebreaking, so the operator's #1-rank group always gets `blue`, the #2 always gets `violet`, etc. The Tailwind safelist regex in `tailwind.config.ts` keeps every Tailwind color name buildable.
+
+**Rationale:**
+- Tremor's `<LineChart>` pins line colors to category position; the order of `categories` and `colors` props is the contract.
+- A randomized or hash-based color assignment would produce different colors for the same group across re-renders (or across deploys with different group ids in the cohort), which makes mental models hard to build.
+- 11 entries covers the maximum line count (10 top-N groups + 1 aggregate) without recycling. The palette picks distinct hue families to maximize legibility; warm and cool hues alternate so adjacent ranks stay distinguishable.
+- The safelist is already in place from Phase 12.2b (which needed it for the `colors={["blue"]}` BarChart prop); extending it to the full palette is a no-op since the regex already matches every Tailwind color utility.
+
+**Trade:** when the cohort changes (a group gets created / deleted between requests) the rank shuffle re-colors the lines. Acceptable: the legend keeps the names anchored so the operator can re-orient; absolute color stability across cohort changes would require a far more complex stable-id-to-color mapping that the dashboard does not need today.
+
+### Phase 12.3b: chart uses Tremor `startEndOnly` for windows with more than 12 buckets
+
+**Decision:** the chart passes `startEndOnly={data.buckets.length > 12}` to Tremor's `<LineChart>`. Narrow windows (<=12 buckets) keep every x-axis tick visible; wide windows (a 30-day window at daily bucketing yields 31 buckets) render only the first and last labels.
+
+**Rationale:**
+- A 30-day window at daily bucketing produces 31 ticks; rendering all 31 labels crowds the axis to the point that nothing is readable. Tremor's default rotation policy doesn't help past about 15 ticks.
+- `startEndOnly` is Tremor's documented escape hatch; the alternative (a custom `tickFormatter` that returns empty strings for middle ticks) is hacky and fragile.
+- 12 is a heuristic cutoff: 12 ticks fits comfortably on a desktop chart at the dashboard's 1280px+ design width without wrapping. Below that, every tick is useful; above that, the first / last anchor is enough and the tooltip surfaces individual values on hover.
+- Falls back gracefully: a future iteration that wants every label visible can override the prop on a per-window basis without restructuring the data flow.
+
+**Trade:** wide windows lose middle x-axis labels; the operator hovers to read intermediate bucket values. Acceptable: hovering is the primary inspection mode for line charts, not reading static labels.
+
+### Phase 12.3b: empty-state path folds growth into the page-level `<AnalyticsEmptyState>` gate
+
+**Decision:** the page-level `<AnalyticsEmptyState>` (the Phase 12.1 / 12.2b "no data yet" tutorial deep-link) now requires growth's `series.length === 0` in addition to the existing churn-zero conditions (`totalGroupsInWindow === 0` AND `totalDeparturesInWindow === 0`). All four conditions plus `JUNJO_DOCS_BASE_URL` being set must hold for the empty state to render.
+
+**Rationale:**
+- A game that has groups but no departures yet (a brand-new game with one freshly created group, no kicks / leaves) used to fall through to the empty-state because churn alone was zero. With growth shipped, that game now sees a useful growth chart with one line tracking the new group's first members; the empty state would be redundant and misleading.
+- Folding `growth.series.length === 0` into the gate ensures the empty state only renders when the cohort truly has no data anywhere - the early-onboarding case where a tutorial deep-link is the most useful next step.
+- The chart owns its own per-state empty copy ("no groups in this game yet") so a game with zero groups still gets a legible chart card; the page-level empty state stays for the operator who hasn't connected a server yet.
+
+**Trade:** the empty-state condition is now a four-way AND, which is more complex than 12.2b's two-way. Acceptable: each predicate is independent and easy to reason about ("does the cohort have any signal at all?"); refactoring to a single helper if a third chart adds another predicate is a one-line change.
+
+### Phase 12.3b: parallel fetch grows from two to three legs without restructuring
+
+**Decision:** `<AnalyticsBody>` extends its existing `Promise.all([fetchAdminGame, fetchAdminGameGroupChurn])` to a three-leg call adding `fetchAdminGameGroupGrowth(gameId, { from, to })`. The combined `try / catch` failure handler stays unchanged - any one of the three legs throwing routes through the same `AdminDisabledError` / not-found / generic-error branches.
+
+**Rationale:**
+- Sequential `await`s for chart fetches would multiply perceived latency by N; parallel `Promise.all` keeps the page's response time bounded by the slowest fetch regardless of how many charts ship.
+- The game fetch hits the 60s revalidate cache the game detail page already populates so it costs nothing on cache hit. Churn and growth are fresh queries but each is bounded by the same 60s revalidate, so subsequent page loads within the window are also free.
+- The merged failure path is acceptable because every recovery action is the same: the operator either sets `JUNJO_ADMIN_TOKEN`, fixes a bad gameId, or retries. Per-fetch failure isolation would require N-way `Promise.allSettled` plus N-way error rendering, which adds complexity without operator-visible benefit at this point.
+- Adding charts 12.4 / 12.5 in subsequent iterations is a one-line extension to the array (assuming the same wire-shape stance holds); the page structure does not need to change.
+
+**Trade:** if the growth endpoint becomes flakier than churn, both fail together. Acceptable: every admin endpoint shares the same Postgres + Hono backend, so per-endpoint reliability differences are noise.
+
 
 

@@ -359,5 +359,36 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   tutorial deep-link) only when the operator has set
   `JUNJO_DOCS_BASE_URL` AND both `totalGroupsInWindow` and
   `totalDeparturesInWindow` are zero (early-onboarding case).
-- 12.3 - 12.5: remaining Tremor charts (growth over time, member
-  activity heatmap, role / permission distribution).
+- 12.3a: cross-game admin group-growth analytics endpoint
+  `GET /v1/admin/games/:gameId/analytics/group-growth?from=&to=&topN=`
+  returns time-bucketed cumulative active member counts across the window
+  for the top-N groups (default 5; bounded 1-10) plus an "All others"
+  aggregated series when the game has more groups than `topN`. The
+  bucket size is auto-picked from the window length (`<=1d` -> hourly,
+  `<=7d` -> 6-hourly, `<=30d` -> daily, `<=90d` -> 3-day, longer ->
+  weekly).
+- 12.3b (this iteration): dashboard group growth chart consuming the
+  12.3a endpoint. New `<GroupGrowthChart>` Client Component
+  (`components/analytics/group-growth-chart.tsx`) renders a Tremor
+  `<LineChart>` with one line per top-N group plus an "All others" line
+  when the game has more groups than `topN`. The component pivots the
+  server's per-series `data` arrays into per-bucket records the chart
+  consumes, pre-formats bucket labels via `Intl.DateTimeFormat` (date
+  only for daily-or-coarser buckets, date + time for hourly), assigns
+  colors from an 11-entry palette in series order (Tremor pins line
+  colors to category position), and uses `startEndOnly` for windows
+  with more than 12 buckets so the x-axis stays readable. Three-tile
+  summary header (window / cadence / series count). Empty states
+  surface when the game has no groups (most common early-onboarding
+  case) or the window produced no buckets. New `lib/admin.ts` helpers
+  (`fetchAdminGameGroupGrowth`, `AdminGroupGrowth`,
+  `AdminGroupGrowthSeries`, `FetchAdminGroupGrowthParams`) mirror the
+  server's `WireAdminGroupGrowth` shape byte-for-byte. The analytics
+  page extends `<AnalyticsBody>` to fetch growth alongside game + churn
+  in a single `Promise.all`, render `<GroupGrowthChart>` directly below
+  `<GroupChurnChart>`, and fold growth's `series.length === 0` into the
+  three-way condition that gates the page-level
+  `<AnalyticsEmptyState>` (so a brand-new game truly with no data still
+  sees the tutorial deep-link).
+- 12.4 - 12.5: remaining Tremor charts (member activity heatmap, role /
+  permission distribution).

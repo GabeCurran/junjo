@@ -1117,6 +1117,76 @@ export function fetchAdminGameGroupChurn(
   return adminFetch<AdminGroupChurn>(search ? `${path}?${search}` : path, opts);
 }
 
+// Phase 12.3a wire shape mirroring `WireAdminGroupGrowth` and
+// `WireAdminGroupGrowthSeries` from `packages/server/src/routes/admin.ts`.
+// The dashboard's `<GroupGrowthChart>` (Phase 12.3b) renders one line per
+// series at every bucket boundary; `key` is opaque (group id or
+// `all-others` aggregate) and `name` is the human label rendered in the
+// legend / tooltip.
+export interface AdminGroupGrowthSeries {
+  // `group:<id>` for per-group rows or `all-others` for the aggregated
+  // tail when the cohort exceeds `topN`. Stable across requests so the
+  // chart's legend keeps colors consistent across re-renders.
+  key: string;
+  // The group's name, or `"All others"` for the aggregate. Rendered as
+  // the line label in the legend and tooltip.
+  name: string;
+  // Set for per-group series; null for the aggregate row.
+  groupId: string | null;
+  // Cumulative active member counts aligned 1:1 with `buckets`.
+  data: number[];
+}
+
+export interface AdminGroupGrowth {
+  // Always populated (server applies the default 30-day window when the
+  // caller omits `from` / `to`). Echoed verbatim so the chart's card
+  // description can confirm the resolved window.
+  from: string;
+  to: string;
+  // Server-picked bucket size (auto-derived from window length); the
+  // chart surfaces it in the card description as a human-readable
+  // cadence ("hourly", "daily", "weekly").
+  bucketSizeMs: number;
+  // ISO 8601 timestamps for every bucket boundary, ordered chronologically.
+  // The chart uses these as the x-axis index column.
+  buckets: string[];
+  // One entry per top-N group plus an "All others" aggregate when more
+  // groups exist than the requested `topN`. Empty when the game has no
+  // groups in the window.
+  series: AdminGroupGrowthSeries[];
+}
+
+// Mirrors the server-side cap in `routes/admin.schema.ts:groupGrowthQuery`.
+// Surfaced here so the dashboard's preset selector can clamp without
+// bouncing off the server with a 400.
+export const ADMIN_GROUP_GROWTH_TOP_N_DEFAULT = 5;
+export const ADMIN_GROUP_GROWTH_TOP_N_MIN = 1;
+export const ADMIN_GROUP_GROWTH_TOP_N_MAX = 10;
+
+export interface FetchAdminGroupGrowthParams {
+  // ISO 8601 timestamps. Both bounds are optional; the server applies a
+  // default 30-day window when omitted. Empty strings are dropped so the
+  // server's `min(1)` Zod constraint does not 400 on a stale URL.
+  from?: string;
+  to?: string;
+  // 1-10; server defaults to 5 when omitted.
+  topN?: number;
+}
+
+export function fetchAdminGameGroupGrowth(
+  gameId: string,
+  params: FetchAdminGroupGrowthParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupGrowth> {
+  const qs = new URLSearchParams();
+  if (params.from !== undefined && params.from.length > 0) qs.set("from", params.from);
+  if (params.to !== undefined && params.to.length > 0) qs.set("to", params.to);
+  if (params.topN !== undefined) qs.set("topN", String(params.topN));
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/group-growth`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupGrowth>(search ? `${path}?${search}` : path, opts);
+}
+
 // Phase 11.9a-i wire shape mirroring `PermissionCheckResult` from
 // `@junjo/shared`. The admin endpoint reuses the per-game check route's
 // resolution logic byte-for-byte (same source taxonomy, same viaRoleId
