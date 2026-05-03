@@ -436,6 +436,49 @@ flex-wrap.
   in the header (not the data) and the values for the demo dataset
   are all "-".
 
+## V.10 group detail - roles tab
+
+**Before:** On the 375px mobile viewport the Roles card header used
+`flex flex-row items-start justify-between gap-4` unconditionally, so
+the "+ Add role" button held the right side of the row and squeezed
+the title block ("Roles" + the description "Roles defined for this
+group, ordered by priority (highest first). Higher priority wins
+tiebreaks when a member has multiple roles. 3 roles total.") into a
+~50%-width column that wrapped the description across eight short
+lines. Same shape as the V.7 API-keys header that was already fixed.
+
+**Fix:** Swapped the `CardHeader` className to
+`flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5`,
+mirroring the V.7 `api-keys-section.tsx` pattern (mobile stacks
+title-block over button; from `sm:` up the original single-row layout
+returns). One CSS edit, no behavior change. Description now spans the
+full card width on mobile (5 wrapped lines instead of 8) and the
+"+ Add role" button stretches full-width directly underneath. Desktop
+rendering is byte-identical to before.
+
+**Acceptable as-is:**
+
+- The roles table on mobile only shows Name and a truncated
+  "PRIORIT" header column; Color, Default, Permissions, and the
+  Edit/Delete actions are clipped to the right inside the
+  `overflow-x-auto` wrapper. Same shape as the V.9 follow-up filed
+  for the members table - collapse-to-card on mobile is a structural
+  reshape, not a CSS fix. Already covered by the V.9 follow-up entry
+  below ("Members table mobile clipping" applies equally to V.10-V.14
+  per its own note).
+- The "Sub-groups" tab label wraps to two lines ("Sub-/groups") on
+  mobile because the six tab labels share the row at 375px. Same
+  observation as V.9 (filed under structural section already); the
+  full row of tabs is the structural shape, not a single label fix.
+- ~500px of empty vertical space below the roles card on mobile.
+  Same `flex-1 px-6 py-8` layout intent flagged in V.5/V.6/V.7. Not a
+  polish bug.
+- Desktop description ("Higher priority wins tiebreaks when a member
+  has multiple roles. 3 roles total.") wraps onto a second line at
+  1440px because the action column reserves ~150px for the "+ Add
+  role" button. Two lines is fine; the alternative would be a
+  shorter description that loses the tiebreak rule.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
