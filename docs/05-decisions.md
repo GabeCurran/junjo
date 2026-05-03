@@ -5094,3 +5094,16 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 
 **Trade:** three additional indexes mean three additional btree updates per `INSERT INTO "Group"` / `INSERT INTO "GroupMember"` / `INSERT INTO "ExternalIdentity"`. For Group + ExternalIdentity those are infrequent operations (game-scoped, not per-request), so write amplification is a non-issue. For GroupMember it is one extra btree update per join/leave/kick - acceptable, and the `joinedAt DESC, id DESC` keys are tiny (a timestamp + a cuid). The `Group(gameId, createdAt DESC, id DESC)` index also supersedes the dropped `Group(gameId)` so the net write-cost change for Group is zero (one for one).
 
+
+### Phase 14.6: error code inventory consolidated at `apps/docs/pages/api-reference/errors.mdx`
+
+**Decision:** every `JunjoError` `code` value the server or SDK produces is documented in a single canonical reference page. The page lives at `apps/docs/pages/api-reference/errors.mdx` (the established docs directory, not the VISION-suggested `apps/docs/pages/api/errors.mdx` - the existing meta uses `api-reference/`). The page is wired into `apps/docs/pages/api-reference/_meta.ts` as the second entry (`errors: "Errors"`, between `index` and `groups`) so it sits next to the Overview which already references it.
+
+**Inventory result:** no codes required normalization. The full set, all `snake_case` and unique:
+
+- Server (`packages/server/src/errors.ts` + `middleware/error.ts`): `bad_request` (400), `parent_cycle` (400), `role_group_mismatch` (400), `invalid_api_key` (401), `invalid_admin_token` (401), `permission_denied` (403), `not_found` (404), `already_member` (409), `role_has_members` (409), `role_name_taken` (409), `invitation_expired` (410), `invitation_used` (410), `restore_window_expired` (410), `rate_limit_exceeded` (429), `internal` (500).
+- SDK-only (`packages/sdk/src/{adapters,webhooks,index,groups,http}.ts`): `invalid_config` (auth adapter constructors), `not_implemented` (`Junjo#whoami` placeholder), `webhook_signature_missing` / `webhook_timestamp_missing` / `webhook_timestamp_invalid` / `webhook_timestamp_out_of_tolerance` / `webhook_invalid_signature` / `webhook_invalid_body` (all 400, raised by `verifyWebhook`), `internal` (SDK fallback for non-2xx responses with missing or non-JSON bodies; preserves the original HTTP status on `error.status`).
+
+**Why a separate page when the Overview already lists 7 codes:** the Overview's table is "reserved codes the server returns"; this page is the full inventory including SDK-only codes that never round-trip through HTTP. The Overview table stays as a quick-reference for the most common server codes and now links to the full Errors page.
+
+**Trade:** a small amount of duplication (the 7 Overview codes also appear on the Errors page). Acceptable: the Overview is read by people skimming for "what is the auth header?", the Errors page is read by people writing exception-handling code. Deduping by removing the Overview table would force the latter audience to bounce; keeping both is the user-facing-friendly choice.

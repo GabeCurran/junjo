@@ -1,5 +1,6 @@
 export default {
   index: "Overview",
+  errors: "Errors",
   groups: "Groups",
   invitations: "Invitations",
   members: "Members",

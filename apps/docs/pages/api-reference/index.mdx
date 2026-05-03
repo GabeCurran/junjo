@@ -56,7 +56,7 @@ Reserved codes the server returns today:
 | `rate_limit_exceeded` | 429 | Per-API-key token-bucket exceeded. Response carries a `Retry-After` header (seconds, integer >= 1) indicating the minimum wait before the next request will be admitted. Tunable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars (defaults: 600 sustained, 100 burst). |
 | `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
 
-Per-resource pages may introduce additional codes; those are listed alongside the routes that raise them.
+Per-resource pages may introduce additional codes; those are listed alongside the routes that raise them. The full inventory of every code the server and SDK can produce - including the SDK-only codes raised before any HTTP request (auth-adapter misconfiguration, webhook signature failures) - is on the [Errors](/api-reference/errors) page.
 
 ## Rate limiting
 
