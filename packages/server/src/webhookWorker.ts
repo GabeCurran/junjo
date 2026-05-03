@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { formatJunjoEventForDiscord } from "./discordFormatter.js";
+import { logger } from "./logger.js";
 import { formatJunjoEventForSlack } from "./slackFormatter.js";
 
 // Backoff schedule between attempts. After attempt N fails (and the
@@ -153,7 +154,10 @@ export async function deliverOne(
   } catch (err) {
     httpStatus = null;
     httpOk = false;
-    console.error(`[junjo-server] webhook delivery ${delivery.id} failed (network/abort)`, err);
+    logger.error(
+      { err, deliveryId: delivery.id, endpointId: delivery.endpoint.id },
+      "webhook delivery failed (network/abort)",
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -258,7 +262,7 @@ export function startWebhookWorker(prisma: PrismaClient, opts: WorkerOptions = {
     try {
       await runWorkerOnce(prisma, opts);
     } catch (err) {
-      console.error("[junjo-server] webhook worker tick failed", err);
+      logger.error({ err }, "webhook worker tick failed");
     }
   };
 

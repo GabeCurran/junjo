@@ -39,6 +39,15 @@ const EnvSchema = z.object({
         .int("RATE_LIMIT_BURST must be a non-negative integer")
         .nonnegative("RATE_LIMIT_BURST must be a non-negative integer"),
     ),
+  // Minimum log level for the structured logger (Phase 14.2). One of
+  // `error`, `warn`, `info`, `debug`, `silent`. Defaults to `info`;
+  // `silent` suppresses every line. Empty string falls back to the
+  // default; unrecognized values are rejected at startup.
+  LOG_LEVEL: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? "info" : v))
+    .pipe(z.enum(["error", "warn", "info", "debug", "silent"])),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { logger } from "./logger.js";
 
 export const SOFT_DELETE_RETENTION_DAYS = 7;
 export const HARD_DELETE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -44,10 +45,10 @@ export function startHardDeleteSweeper(
     try {
       const removed = await sweepHardDeletes(prisma, { retentionDays });
       if (removed > 0) {
-        console.log(`[junjo-server] hard-deleted ${removed} expired soft-deleted group(s)`);
+        logger.info({ removed }, "hard-deleted expired soft-deleted groups");
       }
     } catch (err) {
-      console.error("[junjo-server] hard-delete sweep failed", err);
+      logger.error({ err }, "hard-delete sweep failed");
     }
   };
 

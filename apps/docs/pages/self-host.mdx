@@ -39,7 +39,7 @@ docker run \
   ghcr.io/junjo/server:latest
 ```
 
-The container exits non-zero if `DATABASE_URL` is missing or unreachable on startup. Logs go to stdout in the standard Node format; route your container runtime's log collector at it (Docker's default driver, fluent-bit, datadog-agent, etc.).
+The container exits non-zero if `DATABASE_URL` is missing or unreachable on startup. Logs go to stdout as line-delimited JSON when `NODE_ENV=production` (pretty-printed in any other environment); route your container runtime's log collector at it (Docker's default driver, fluent-bit, datadog-agent, etc.). See [Observability](#observability) for the line shape.
 
 > The `ghcr.io/junjo/server:latest` image is the V1 release target. The Dockerfile in the repo at `packages/server/Dockerfile` is currently a placeholder; the production multi-stage build lands when V1 ships. Until then, run from source (see "Local from source" below).
 
@@ -126,6 +126,7 @@ node packages/server/dist/index.js
 | `JUNJO_ADMIN_TOKEN` | no | | Server-wide bearer token gating the cross-game admin endpoints (`/v1/admin/*`, `/v1/users/:junjoUserId/games`). When unset every admin request returns `401 invalid_admin_token`. Self-hosters with one game per server can leave this unset; cloud / dashboard deployments set it to a long random string. Compared in constant time. |
 | `RATE_LIMIT_PER_MINUTE` | no | `600` | Sustained refill rate of the per-API-key token-bucket rate limit on `/v1/*` routes. Set to `0` to disable rate limiting (e.g., when running behind a gateway that handles it). Must be a non-negative integer. |
 | `RATE_LIMIT_BURST` | no | `100` | Maximum bucket capacity for the per-API-key rate limit. A saturated bucket lets up to `burst` requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active. |
+| `LOG_LEVEL` | no | `info` | Minimum level the structured logger (Phase 14.2) emits. One of `error`, `warn`, `info`, `debug`, `silent`. Production (`NODE_ENV=production`) writes one JSON object per line on stdout; any other environment pretty-prints via `pino-pretty`. Pipe the production stream into your log aggregator (Datadog, Loki, CloudWatch, ELK) and filter on `level`, `service`, `msg`, plus per-line context fields like `deliveryId` (webhook worker), `path`/`method` (unhandled errors), `signal` (shutdown). |
 
 Validation lives in [`packages/server/src/env.ts`](https://github.com/GabeCurran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
 
@@ -264,7 +265,11 @@ Caddy auto-detects SSE and disables buffering, so no additional config is needed
 
 ## Observability
 
-The server logs request lines and unhandled errors to stdout. Structured logging, metrics endpoints, and tracing hooks are not in V1; the runnable surface area is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses request lines, or an APM that wraps the Node process at boot.
+The server emits structured logs to stdout via [pino](https://github.com/pinojs/pino) (Phase 14.2). When `NODE_ENV=production` each line is a JSON object (one per `\n`); in any other environment lines are pretty-printed via `pino-pretty` for readability. Each line carries `level`, `time` (ISO 8601), `service: "junjo-server"`, `msg`, plus per-line context fields like `deliveryId` and `endpointId` (webhook worker), `path` and `method` (unhandled errors caught by the Hono error middleware), `signal` (graceful shutdown), and `removed` (soft-delete sweeper summary). `LOG_LEVEL` (default `info`) sets the minimum level; valid values are `error`, `warn`, `info`, `debug`, `silent`.
+
+Pipe the production stream into your log aggregator. The shape is friendly to every common backend: Datadog parses pino out of the box, Loki / Grafana ingest line-delimited JSON via promtail, CloudWatch and ELK use a similar JSON parser. Filter on `level >= warn` for alerting, on `msg` for specific events ("webhook delivery failed (network/abort)"), and on context fields for per-resource investigation.
+
+Metrics endpoints and distributed tracing are not in V1. The runnable surface is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses these JSON lines, or an APM that wraps the Node process at boot.
 
 The two operationally interesting failure modes:
 

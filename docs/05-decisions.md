@@ -4967,3 +4967,41 @@ The full `JunjoEvent` payload (including its discriminator `type` and its id) go
 
 **Trade:** the production code has a constructor parameter that 99% of callers will never use. Acceptable: the parameter is optional with a sensible default; the test cost is real and the production cost is zero (one extra closure capture per limiter instance).
 
+### Phase 14.2: structured logging via pino with JSON in production and pino-pretty in dev
+
+**Decision:** new `packages/server/src/logger.ts` wraps [pino](https://github.com/pinojs/pino) (~9KB minified, the standard fast JSON logger for Node). The module exports `createLogger(opts)` (configures the level, the ISO 8601 timestamp, the `service: "junjo-server"` base bindings, and the production-vs-dev transport branch), `setLogger(next)` / `getLogger()` (manage a module-level singleton), and a `logger` accessor that delegates `.error` / `.warn` / `.info` / `.debug` to the active singleton via variadic forwarding. Production (`NODE_ENV=production`) emits one JSON object per line on stdout; any other environment pretty-prints via `pino-pretty`. `LOG_LEVEL` (default `info`, valid values `error`/`warn`/`info`/`debug`/`silent`) sets the minimum level. The five `console.log`/`console.error` call sites in `packages/server/src/**` are replaced: `index.ts` (server lifecycle), `middleware/error.ts` (unhandled errors), `softDelete.ts` (sweep summaries + failures), `webhookWorker.ts` (per-delivery failures + per-tick failures). `seed.cli.ts` is the explicit carve-out: it intentionally uses `console.log` because the operator copies the printed `prefix` and `full` API key out of their terminal, and routing that through pino-pretty's level prefixes (or pino's structured-field shape) would either obscure the value or leak the secret into log aggregation.
+
+**Rationale:**
+- Operator-facing benefit: production log lines are now parseable by Datadog / Loki / CloudWatch / ELK out of the box without writing a custom log parser. Each line carries `level`, `time` (ISO 8601), `service: "junjo-server"`, `msg`, plus per-line context fields (`deliveryId`, `endpointId`, `path`, `method`, `signal`, `removed`) that the dashboard or oncall can filter on. The previous `[junjo-server] webhook delivery <id> failed (network/abort) <Error>` strings worked for `tail -f` but were a chore to pattern-match in a log aggregator.
+- Pino over `winston` / `bunyan` / hand-rolled JSON: pino is the canonical fast JSON logger for Node, ships with `pino-pretty` for dev readability, and benchmarks at ~5x faster than winston in JSON mode (most of the difference is pino's lazy serialization). Bunyan is unmaintained; hand-rolling JSON loses pino's automatic error serialization (`{ err }` becomes `{ err: { type, message, stack } }` with one line of code).
+- Pino as a regular dep, not a peer dep: the server is a runtime, not a library; consumers don't choose the logger. Bundle size is irrelevant for a long-running Node process. Same reasoning as iter-031's `jose` dep choice for the SDK.
+- `pino-pretty` as a regular dep, not devDep: in production the transport is skipped (the prod branch never imports it); in dev / tests the transport is loaded. Devs running `npm install --omit=dev` get the production path automatically; devs running `npm install` get the pretty path. Making pino-pretty a devDep would mean a dev who forgot to `npm install --include=dev` would see "Cannot find module 'pino-pretty'" at boot - confusing and avoidable.
+- The module-level singleton starts at level `silent` so importing `logger.ts` for its types (or for `setLogger` in tests) never emits anything by accident. The server entry point installs the real logger via `setLogger(createLogger({ level, nodeEnv }))` after `loadEnv()` resolves; tests pass their own logger through `createLogger({ destination })`.
+- The `logger` accessor uses variadic forwarding (`(...args) => activeLogger.method(...args)`) instead of a Proxy. Both work; the variadic form is simpler and avoids confusion about Proxy receiver-binding for pino's `this`-using methods.
+
+**Trade:** `seed.cli.ts` keeps its `console.log` calls. The strict reading of VISION 14.2 ("Replace console.log / console.error calls in packages/server/src/**") would have us replace every site, but the seed CLI is interactive and prints data the operator copies; structured logging actively makes that worse. Documented inline in the file so future contributors don't "fix" it back.
+
+### Phase 14.2: LOG_LEVEL env var with `silent` as a valid value
+
+**Decision:** `LOG_LEVEL` is an enum env var validated by Zod: `error | warn | info | debug | silent`, defaulting to `info`. `silent` is a valid value (it suppresses every line). Tests can be configured to run quietly via `LOG_LEVEL=silent`, and operators who want zero log volume on a hot machine can do the same.
+
+**Rationale:**
+- `info` is the right default. `debug` would flood production with noise; `warn` would silently swallow `info`-level lifecycle events ("server listening", "shutting down") that operators expect to see.
+- `silent` exists because pino supports it natively and it's the cleanest way to fully disable logging for tests / one-off CLI scripts. The default singleton in `logger.ts` uses `silent` so importing the module never emits anything by accident.
+- Five-value enum (vs allowing arbitrary numeric levels): pino supports numeric thresholds (e.g., `log.level = 35`) for advanced filtering, but the V1 surface only ships at-coarsely-tiered levels and exposing numeric overrides invites confusion. A future iteration can widen the schema additively if anyone asks.
+- Validated with `z.enum(...)` so a typo (`LOG_LEVEL=trace`, `LOG_LEVEL=verbose`) fails fast at startup with "LOG_LEVEL Invalid enum value. Expected 'error' | 'warn' | 'info' | 'debug' | 'silent', received 'trace'" rather than silently degrading to the default.
+
+**Trade:** removing `silent` later would be a breaking change. Acceptable: the semantic is well-defined and pino's own ladder includes it.
+
+### Phase 14.2: tests use a Writable destination seam, not vi.spyOn(console)
+
+**Decision:** logger tests construct each logger instance with `createLogger({ destination })` where `destination` is a `Writable` from `node:stream` that buffers JSON-line bytes. Tests parse each captured line and assert on the resulting object's `level` / `msg` / `service` / `time` / context fields. Zero tests use `vi.spyOn(console, "error")`.
+
+**Rationale:**
+- Pino's documented test pattern is "pass a destination". The destination seam already exists in pino's API (`pino(options, destination)`); the logger's `createLogger` just forwards through it. No extra abstraction layer.
+- Spying on `console.error` would test the wrong thing - the logger no longer calls `console.error` (it writes to pino's destination); the indirection exists exactly because consumers of structured logs need stable output, and spying on the indirection layer would be brittle.
+- Supplying a destination also bypasses the `pino-pretty` transport (which would otherwise spawn a worker thread and write to real stdout). Tests want raw JSON-line bytes for parsing; the dev pretty-print path is irrelevant at test time. The `createLogger` factory enforces this: when `destination` is set, the transport branch is skipped.
+- 14 tests cover: every level (error / warn / info / debug / silent), level filtering (debug suppressed at info, info suppressed at warn, all suppressed at silent), context-field forwarding (object + msg overload), error serialization (`{ err: new Error(...) }` becomes `{ err: { type, message, stack } }`), JSON shape (every line parses), service-tag presence, ISO 8601 time format, the production destination override, plus five singleton tests covering `setLogger` / `getLogger` / the `logger` accessor's delegation and replacement semantics.
+
+**Trade:** none. The destination seam is the right shape and is already in pino's public API.
+

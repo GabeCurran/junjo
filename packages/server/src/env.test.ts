@@ -105,4 +105,27 @@ describe("loadEnv", () => {
   it("rejects a non-numeric RATE_LIMIT_PER_MINUTE", () => {
     expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_PER_MINUTE: "abc" })).toThrow();
   });
+
+  it("defaults LOG_LEVEL to info", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.LOG_LEVEL).toBe("info");
+  });
+
+  it("treats empty LOG_LEVEL as the default", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: "" });
+    expect(env.LOG_LEVEL).toBe("info");
+  });
+
+  it("accepts every supported LOG_LEVEL value", () => {
+    for (const level of ["error", "warn", "info", "debug", "silent"] as const) {
+      const env = loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: level });
+      expect(env.LOG_LEVEL).toBe(level);
+    }
+  });
+
+  it("rejects an unknown LOG_LEVEL", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: "trace" })).toThrow(
+      /LOG_LEVEL/,
+    );
+  });
 });
