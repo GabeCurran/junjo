@@ -231,7 +231,7 @@ invitation.createdAt;     // Date
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `roleId` | `RoleId` | none | The role to grant when the invitation is accepted. Not validated against the group's roles in V1; Phase 3 wires that. |
+| `roleId` | `RoleId` | none | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`junjo.members.assignRole`](/sdk/members#assignrole) afterward) and not validated against the group's roles. |
 
 ### Returns
 
@@ -366,7 +366,7 @@ The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox Use
 
 ### Returns
 
-`Member` with `joinedAt: Date`. `roles` is `[]` in V1 (Phase 3.2 wires role assignment from the invitation's `roleId`).
+`Member` with `joinedAt: Date`. `roles` is `[]` immediately after redemption; the invitation's `roleId` is not auto-applied today, so call [`members.assignRole`](/sdk/members#assignrole) after acceptance if you need it.
 
 ### Errors
 
@@ -738,7 +738,7 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 ### Behavior
 
 - **Single group per stream.** One connection covers one group; subscribe to N groups with N calls.
-- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) (Phase 5.2) or webhooks (Phase 5.3) for durable propagation.
+- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) or [webhooks](/api-reference/webhooks) for durable propagation.
 - **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
 - **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
 

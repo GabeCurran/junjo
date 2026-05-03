@@ -90,7 +90,7 @@ A response is retried when:
 - The request fails before a response arrives (network error, DNS failure, connection abort, request timeout > 10 seconds).
 
 A response is **not** retried (and the delivery is marked `failed` immediately) when:
-- The HTTP response is any other `4xx`. The receiver explicitly told us this request is malformed; retrying with the same body wastes both sides' time. Fix the receiver and request a manual replay (Phase 5.5 will expose this).
+- The HTTP response is any other `4xx`. The receiver explicitly told us this request is malformed; retrying with the same body wastes both sides' time. Fix the receiver; manual replay is a post-V1 idea.
 
 A 2xx response marks the delivery `delivered` and stops retrying.
 

@@ -14,7 +14,7 @@ The group-scoped routes (`GET /v1/groups/:id/members` and `GET /v1/groups/:id/me
 | `groupId` | string | The group this membership is in. |
 | `userId` | string | The dev's external user id (the same value the SDK passed in or the row was seeded with), not the internal `JunjoUser` id. |
 | `status` | string | `"active"`, `"invited"`, `"left"`, or `"kicked"`. |
-| `roles` | string[] | Role ids the member is assigned to. Always `[]` until Phase 3.2 wires role assignment. |
+| `roles` | string[] | Role ids the member is assigned to. |
 | `metadata` | object | Free-form per-game state; defaults to `{}`. |
 | `notesPublic` | string \| null | Officer-readable note visible to other members. |
 | `notesPrivate` | string \| null | Officer-only note. |

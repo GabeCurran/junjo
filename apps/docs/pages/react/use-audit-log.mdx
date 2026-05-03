@@ -114,7 +114,7 @@ async function handleKick() {
 }
 ```
 
-A future Phase 7.5 optimistic-updates layer may invalidate the audit log on relevant mutations from the same provider, removing the need for explicit `refetch` calls in the mutation-driven pattern. Polling and manual refresh stay correct in either world.
+A post-V1 cache layer may invalidate the audit log on relevant mutations from the same provider, removing the need for explicit `refetch` calls in the mutation-driven pattern. Polling and manual refresh stay correct in either world.
 
 ## Errors
 
@@ -127,7 +127,7 @@ If `useAuditLog` is called outside a `<JunjoProvider>`, it throws synchronously 
 
 ## Composing with `useGroup` and other hooks
 
-`useAuditLog` is the only Phase 7 list hook that does not open its own SSE subscription, so it adds zero stream cost when rendered alongside `useGroup` or `useMembers`. The trade is the no-live-updates limitation above; consumers needing both a member roster AND a live audit log should poll `useAuditLog`'s `refetch` while letting `useMembers` carry the live-updates load.
+`useAuditLog` is the only list hook that does not open its own SSE subscription, so it adds zero stream cost when rendered alongside `useGroup` or `useMembers`. The trade is the no-live-updates limitation above; consumers needing both a member roster AND a live audit log should poll `useAuditLog`'s `refetch` while letting `useMembers` carry the live-updates load.
 
 ## Testing
 

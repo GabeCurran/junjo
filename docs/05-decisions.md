@@ -5411,3 +5411,44 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 
 **Caveats:** (1) the audit was self-driven by the loop agent; same caveat as the prior audits. (2) `docs/09-ux-review.md` is a frozen-in-time artifact; the dashboard and docs surfaces will continue to evolve and will need a re-audit before V1.1. (3) The whoami implementation does not exercise the auth adapter's `null` return-shape contract any harder than the adapter constructors already do; if a custom BYO adapter throws instead of returning `null`, the throw propagates unchanged (test covers this case so the behavior is documented, not silent).
 
+---
+
+## 2026-05-03 (Phase 14.17 - documentation cleanup)
+
+### Retired roadmap-internal "shipped (Phase X.Y)" annotations from the public docs site
+
+**Decision:** swept `apps/docs/pages/**/*.mdx` to remove every "shipped (Phase X.Y)" annotation, every "Phase X.Y will land / will introduce / wires that" forward-looking note, and every "(Phase X.Y)" parenthetical pointer to a specific roadmap sub-task. The public docs site no longer references the internal `.loop/VISION.md` phase numbering. Internal docs under `docs/` (this file, `docs/03-architecture.md`, `docs/05-decisions.md`, `docs/06-09-*.md`) retain their phase references because they're internal artifacts and the phase numbers anchor to the loop run logs.
+
+**Why:** the `.loop/VISION.md` phase numbering is a roadmap construct private to the loop's planning cadence. It was never meaningful to a developer reading the docs site (they have no `VISION.md` to cross-reference) and it leaked the project's internal sequencing into the public surface. Status tables in `react/index.mdx`, `roblox/index.mdx`, and `sdk/index.mdx` had a "Status" column whose only content was "shipped (Phase X.Y)" - that column carried zero information for the reader and three forms of clutter (the redundant "shipped" word, the parenthetical phase number, the implicit promise that the docs would track shipping order). Replacing the "Status" column with a "Description" / "Notes" column collapses the same content into the row's existing prose without the roadmap-leak.
+
+**What changed concretely:**
+
+- `apps/docs/pages/react/index.mdx`: status table reshaped from "Status" column ("shipped (Phase 7.X)" + description) to "Description" column. The standalone "What ships today" heading became "Hooks and components" since the "today" wording was just buying time before V1 shipped.
+- `apps/docs/pages/roblox/index.mdx`: same reshape on the Luau SDK status table; "Manual verification (Phase 8.1 + 8.2 + 8.3)" heading lost the phase suffix.
+- `apps/docs/pages/sdk/index.mdx`: namespace and top-level method tables lost their "Status" columns. The `whoami` row kept its full prose since the missing-adapter behavior is non-obvious and the row predates this cleanup.
+- `apps/docs/pages/react/use-{audit-log,can,group,members,invitations,mutation}.mdx`: replaced 6 "Phase 7.5 will introduce..." / "Phase 7.5 roadmap" forward-looking notes with "post-V1 idea" framing. The actual Phase 7.5 work that shipped (`useMutation` + `applyOptimistic`) is described elsewhere on the same pages; the *additional* ideas these notes referred to (shared subscription cache, reactive permission cache invalidation, purpose-built mutation wrappers like `useKickMember`) are genuinely deferred and now read as deferred instead of "next iteration".
+- `apps/docs/pages/api-reference/admin.mdx`: stripped ~25 "(Phase 11.X)" / "(Phase 12.X)" parentheticals describing which dashboard surface backed each admin endpoint. The dashboard surfaces are documented in their own pages; the admin endpoint reference does not need to spell out which dashboard tab calls it.
+- `apps/docs/pages/api-reference/{groups,members,invitations,events,webhooks}.mdx`, `apps/docs/pages/sdk/{groups,members}.mdx`: replaced "(Phase X.Y)" cross-references with anchor-style links into other pages, or dropped them entirely when the surrounding prose already named the relevant feature.
+- `apps/docs/pages/self-host.mdx`: dropped 3 "(Phase 14.X)" pointers from the env-var table and the observability section.
+- `apps/docs/pages/auth/byo.mdx`: dropped "(Phase 8.3 in the roadmap)" from the Roblox recipe heading and replaced "The Phase 8.3 RobloxUserIdAdapter..." with a plain link to `/roblox`.
+
+**Two latent doc-rot claims corrected in the same pass:**
+
+1. `apps/docs/pages/api-reference/groups.mdx` line 45 said "the server does not verify [defaultRoleId] on create (Phase 3.1 will)". Phase 3.1 has shipped (the roles CRUD routes); the server still does not verify `defaultRoleId` references an existing role at group-create time. Rewrote to "the server does not verify this on create (a defensive existence check is a post-V1 idea)" so the doc states the actual behavior with no false promise.
+2. `apps/docs/pages/api-reference/{groups,invitations}.mdx` and `apps/docs/pages/sdk/groups.mdx` claimed the invitation's `roleId` is auto-applied to the new member at acceptance time, gated by "Phase 3.2 wires role assignment from the invitation's roleId". Reading `acceptInvitationByCodeHandler` in `packages/server/src/routes/invitations.ts:126`: the handler creates a `groupMember` row but does NOT consult `invitation.roleId` and does NOT write a `MemberRole` row. The `roleId` field on invitations is stored but unused at acceptance. Rewrote both docs sites to: "A role hint stored on the invitation. Not auto-applied at acceptance time today (call `members.assignRole` afterward) and not validated against the group's roles." This is the closest the docs can get to the truth without changing the server: the field exists on the wire, it's stored, but the dev has to apply the role themselves.
+
+**Why now and not as part of Phase 14.10 (documentation drift check):** Phase 14.10 was scoped to `docs/03-architecture.md` and `docs/02-scope.md` (the internal architecture and scope docs). Phase 14.17 is the matching pass over the public Nextra docs site at `apps/docs/`. The two surfaces have different audiences and different drift patterns: the internal docs drift on architecture details (which file holds what, which env var means what), while the public docs drift on roadmap-language leakage (forward-looking notes that reference a roadmap the reader can't see).
+
+**What was deliberately NOT changed:**
+
+- Internal `docs/05-decisions.md` (this file) keeps its phase headings - the headings ARE the loop's audit trail, they're how morning-Gabe finds the decision behind a commit.
+- Internal `docs/03-architecture.md` keeps any phase references in context - the audience is internal contributors who can read VISION.md.
+- `docs/06-security.md`, `docs/07-api-review.md`, `docs/08-code-quality.md`, `docs/09-ux-review.md` keep their Phase 14.X headings - those audit docs are inventory-style and the heading anchors them to the iteration that produced them.
+- Test files, code comments, and commit messages were not touched. They're internal artifacts; the loop's commit history is allowed to reference its own phases.
+
+**Why the two correctness fixes (defaultRoleId + invitation.roleId) ride along with the cleanup:** discovering them was a side effect of reading every Phase X.Y reference to verify it was actually outdated. The first reflex was to mark them as cleanup, but they were actually *false claims about server behavior*, not just stale internal references. Splitting them into a separate iteration would have meant either (a) leaving the doc claiming false behavior for one more iteration, or (b) introducing a "doc-correctness" iteration that's barely distinct from the cleanup pass. The cleaner solution is to fix the false claims in the same commit and document it explicitly here.
+
+**Verify gate:** all three phases (style, biome, typecheck, test) pass on the post-edit tree. This iteration touches docs only; behavior is unchanged.
+
+**Caveats:** (1) the cleanup is a stylistic + correctness pass over MDX prose; it does not touch any code, schema, route, or test. The "no behavior change" rule from hard rule 11 applies in full. (2) Future iterations that ship new V1 features must NOT reintroduce "(Phase X.Y)" annotations into `apps/docs/pages/**.mdx`; the convention is now "describe the behavior, link to related pages, omit the roadmap pointer". (3) The two correctness fixes (`defaultRoleId` and `invitation.roleId` not auto-applied) are documented as "post-V1 idea" rather than scheduled for V1 because both are additive changes that do not block launch and both have a workaround (validate / assign the role client-side or via a follow-up call).
+

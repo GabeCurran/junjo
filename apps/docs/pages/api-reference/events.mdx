@@ -114,4 +114,4 @@ The V1 hub is single-process and does not persist events. Specifically:
 - **No fan-out across processes.** Two server processes do not share the same hub. A horizontally-scaled deployment needs a transport-level bus added behind the `EventHub` interface.
 - **No durability.** Events live only as long as the process that published them. Mutations that succeed at the database level publish best-effort to the hub; a process crash between commit and publish loses the event for any subscriber.
 
-Audit log (`audit.list`, Phase 5.2) and webhook delivery (Phase 5.3) provide the durable counterparts to this transient stream. Use SSE for live UX and dashboards; use webhooks or `audit.list` for reliable propagation to other systems.
+Audit log ([`audit.list`](/api-reference/audit)) and [webhook delivery](/api-reference/webhooks) provide the durable counterparts to this transient stream. Use SSE for live UX and dashboards; use webhooks or `audit.list` for reliable propagation to other systems.

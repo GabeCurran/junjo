@@ -178,7 +178,7 @@ await junjo.members.overridePermission(
 );
 ```
 
-The override wins over any role-derived grant during permission resolution (Phase 3.5). Idempotent: setting the same `grant` value twice returns the existing override unchanged.
+The override wins over any role-derived grant during permission resolution (see [Permissions](/sdk/permissions)). Idempotent: setting the same `grant` value twice returns the existing override unchanged.
 
 The permission key is auto-registered into the per-game catalog on first sight (the same `PermissionDef` table populated by `roles.grantPermission`). Permission keys are 1-128 characters.
 

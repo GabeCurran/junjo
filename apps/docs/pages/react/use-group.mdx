@@ -151,7 +151,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Multiple consumers
 
-Two `useGroup(sameId)` calls inside the same provider open two SSE subscriptions and two snapshot fetches today; there is no shared cache yet. Promote the hook into a parent component and pass `group` / `members` down if you need a single source of truth. A shared cache layer is on the Phase 7.5 roadmap and will be transparent to callers when it lands.
+Two `useGroup(sameId)` calls inside the same provider open two SSE subscriptions and two snapshot fetches today; there is no shared cache yet. Promote the hook into a parent component and pass `group` / `members` down if you need a single source of truth. A shared cache layer is a post-V1 idea and would be transparent to callers when it lands.
 
 ## Testing
 

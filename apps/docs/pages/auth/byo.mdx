@@ -93,7 +93,7 @@ This pattern (use `createRemoteJWKSet` + `jwtVerify` from `jose`) generalizes to
 
 `jose` is already a runtime dep of `@junjo/sdk`, so importing from it costs nothing additional.
 
-## Recipe 3: Roblox `LocalPlayer.UserId` (Phase 8.3 in the roadmap)
+## Recipe 3: Roblox `LocalPlayer.UserId`
 
 Roblox does not give the dev's backend a session token; the user id comes from the player object on the server. The "verification" is that the request originates from the same Roblox server that owns the player. The adapter is a passthrough wrapper that brands the numeric id as a string:
 
@@ -115,7 +115,7 @@ export function robloxUserIdAdapter(): AuthAdapter {
 }
 ```
 
-The Phase 8.3 `RobloxUserIdAdapter` (in `junjo-roblox`, the Luau SDK) ships an equivalent adapter for use inside Roblox Studio. The recipe above is the TypeScript counterpart for the non-Roblox half of the integration (a Node backend that the Roblox script forwards requests to).
+The `RobloxUserIdAdapter` shipped by [`junjo-roblox`](/roblox) (the Luau SDK) is an equivalent adapter for use inside Roblox Studio. The recipe above is the TypeScript counterpart for the non-Roblox half of the integration (a Node backend that the Roblox script forwards requests to).
 
 ## Recipe 4: passthrough adapter for tests
 

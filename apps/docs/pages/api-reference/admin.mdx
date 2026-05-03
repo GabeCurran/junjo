@@ -88,7 +88,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/stats`
 
-Returns aggregate counts across every game on the deployment. Used by the dashboard's home page (Phase 11.2) to render the four overview cards.
+Returns aggregate counts across every game on the deployment. Used by the dashboard's home page to render the four overview cards.
 
 ### Response
 
@@ -180,7 +180,7 @@ Returns the most recent audit entries across every game on the deployment, with 
 
 - Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps ordering stable when two rows share the same millisecond timestamp.
 - Soft-deleted-group entries are included; the audit log preserves history regardless of the group's lifecycle state.
-- No pagination. The home page renders 20-100 items at most. A future game-wide audit page (Phase 11.8) will own paginated cross-game audit; this endpoint stays terse on purpose.
+- No pagination. The home page renders 20-100 items at most. The game-wide audit page owns paginated per-game audit; this endpoint stays terse on purpose.
 
 ### Errors
 
@@ -198,7 +198,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games`
 
-Lists every game on the deployment with batched per-game stats. Used by the dashboard's games list page (Phase 11.3) to render a table of every game alongside its group / member / API-key counts.
+Lists every game on the deployment with batched per-game stats. Used by the dashboard's games list page to render a table of every game alongside its group / member / API-key counts.
 
 ### Query parameters
 
@@ -368,7 +368,7 @@ No body required.
 
 ### Behavior
 
-- Mirrors `seed.createApiKey` and the webhook-secret-on-create-only convention from Phase 5.5.
+- Mirrors `seed.createApiKey` and the webhook-secret-on-create-only convention.
 - The secret is generated on the server (32 bytes of `randomBytes` rendered as base64url) and scrypt-hashed before storage.
 
 ### Errors
@@ -743,7 +743,7 @@ Lists a member's permission overrides.
 
 ## POST /v1/admin/games/:gameId/groups/:groupId/invitations
 
-Creates an invitation for a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/invitations` semantics exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior. Backs the dashboard's "Invite member" dialog (Phase 11.5d-ii) which has three tabs (by-userId / by-code / by-link); all three call this endpoint.
+Creates an invitation for a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/invitations` semantics exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior. Backs the dashboard's "Invite member" dialog, which has three tabs (by-userId / by-code / by-link); all three call this endpoint.
 
 Path parameters:
 
@@ -797,7 +797,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/groups/:groupId/roles
 
-Lists the roles in a group on the cross-game admin surface. Backs the dashboard's group detail Roles tab (Phase 11.6b). Returns a bare `WireAdminRole[]` (no pagination wrapper); roles are conventionally a small list (10s, not 1000s). Sorted by `(priority desc, id desc)` so the highest-authority roles appear first.
+Lists the roles in a group on the cross-game admin surface. Backs the dashboard's group detail Roles tab. Returns a bare `WireAdminRole[]` (no pagination wrapper); roles are conventionally a small list (10s, not 1000s). Sorted by `(priority desc, id desc)` so the highest-authority roles appear first.
 
 Path parameters:
 
@@ -853,7 +853,7 @@ Body (JSON):
 | `color` | string \| omitted | `null` | 7-character hex color (e.g. `#ff5050`); validated against `^#[0-9a-fA-F]{6}$`. |
 | `isDefault` | boolean \| omitted | `false` | Per-role tag; the single canonical default for a group lives on `Group.defaultRoleId`. |
 
-Response: `201 Created` with the created `WireAdminRole`. The `permissions` array is empty by definition (Phase 11.6a-ii will own grant / revoke; until then create + the dashboard's Add-role dialog produce a fresh role with no permissions).
+Response: `201 Created` with the created `WireAdminRole`. The `permissions` array is empty by definition; use [`POST /v1/admin/games/:gameId/roles/:roleId/permissions`](#post-v1admingamesgameidrolesroleidpermissions) to grant after creation.
 
 Behavior:
 
@@ -924,7 +924,7 @@ Response: `204 No Content` on success.
 
 Behavior:
 
-- Blocks if any `MemberRole` rows reference the role (returns `409 role_has_members`); the operator must reassign members first via the dashboard's row actions (Phase 11.5c-ii) or the per-game `members.removeRole` API.
+- Blocks if any `MemberRole` rows reference the role (returns `409 role_has_members`); the operator must reassign members first via the dashboard's row actions or the per-game `members.removeRole` API.
 - On success, hard-deletes the row, writes a `role.deleted` audit entry with `payload: { name, priority, color, isDefault }` (full snapshot), invalidates the per-group permission cache, and dispatches a `role.deleted` `JunjoEvent`.
 
 Errors:
@@ -999,7 +999,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/permissions
 
-Lists registered permission keys for a game (the `PermissionDef` catalog). Backs the dashboard's group detail Permissions matrix tab column list (Phase 11.6c).
+Lists registered permission keys for a game (the `PermissionDef` catalog). Backs the dashboard's group detail Permissions matrix tab column list.
 
 Path parameters:
 
@@ -1038,7 +1038,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/groups/:groupId/audit
 
-Returns a timestamp-paginated audit feed for one group. Backs the dashboard's group detail Audit tab (Phase 11.7a-ii). Mirrors the per-game `GET /v1/groups/:id/audit` route byte-for-byte: same query schema, same pagination, same response shape.
+Returns a timestamp-paginated audit feed for one group. Backs the dashboard's group detail Audit tab. Mirrors the per-game `GET /v1/groups/:id/audit` route byte-for-byte: same query schema, same pagination, same response shape.
 
 Path parameters:
 
@@ -1093,7 +1093,7 @@ Errors:
 
 ## PUT /v1/admin/games/:gameId/groups/:a/relationships/:b
 
-**Phase 11.7b-i.** Set or update a directed relationship row from group `a` to group `b`. Backs the dashboard's group detail Relationships tab (Phase 11.7b-ii). Mirrors the per-game `PUT /v1/groups/:a/relationships/:b` semantics byte-for-byte: same body shape, same idempotence rules, same audit shape, same `group.relationship.changed` event dispatch.
+Set or update a directed relationship row from group `a` to group `b`. Backs the dashboard's group detail Relationships tab. Mirrors the per-game `PUT /v1/groups/:a/relationships/:b` semantics byte-for-byte: same body shape, same idempotence rules, same audit shape, same `group.relationship.changed` event dispatch.
 
 Path parameters:
 
@@ -1140,7 +1140,7 @@ Errors:
 
 ## DELETE /v1/admin/games/:gameId/groups/:a/relationships/:b
 
-**Phase 11.7b-i.** Clear the directed A->B relationship row. Mirrors the per-game `DELETE /v1/groups/:a/relationships/:b` semantics byte-for-byte: idempotent on missing rows, audit entry per actually-cleared direction, `group.relationship.changed` event with `relationship: null` per cleared direction.
+Clear the directed A->B relationship row. Mirrors the per-game `DELETE /v1/groups/:a/relationships/:b` semantics byte-for-byte: idempotent on missing rows, audit entry per actually-cleared direction, `group.relationship.changed` event with `relationship: null` per cleared direction.
 
 Path parameters: same as `PUT`.
 
@@ -1167,7 +1167,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/groups/:a/relationships/:b
 
-**Phase 11.7b-i.** Fetch the directed A->B relationship row, or 404 if no such row exists. Mirrors the per-game `GET /v1/groups/:a/relationships/:b`.
+Fetch the directed A->B relationship row, or 404 if no such row exists. Mirrors the per-game `GET /v1/groups/:a/relationships/:b`.
 
 Path parameters: same as `PUT`.
 
@@ -1187,7 +1187,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/groups/:a/relationships
 
-**Phase 11.7b-i.** List every directed relationship where group `a` is the A-side ("this group's stance toward others"). Mirrors the per-game `GET /v1/groups/:a/relationships`.
+List every directed relationship where group `a` is the A-side ("this group's stance toward others"). Mirrors the per-game `GET /v1/groups/:a/relationships`.
 
 Path parameters:
 
@@ -1211,7 +1211,7 @@ Errors:
 
 ## PUT /v1/admin/games/:gameId/groups/:groupId/parent
 
-**Phase 11.7c-i.** Set or clear the sub-group / alliance parent of a group. Mirrors the per-game `PUT /v1/groups/:id/parent` byte-for-byte: body shape, idempotence rules, audit shape, cycle detection, and `group.updated` `JunjoEvent` dispatch.
+Set or clear the sub-group / alliance parent of a group. Mirrors the per-game `PUT /v1/groups/:id/parent` byte-for-byte: body shape, idempotence rules, audit shape, cycle detection, and `group.updated` `JunjoEvent` dispatch.
 
 Path parameters:
 
@@ -1246,7 +1246,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/groups/:groupId/children
 
-**Phase 11.7c-i.** List the direct children of a group. Mirrors the per-game `GET /v1/groups/:id/children` byte-for-byte.
+List the direct children of a group. Mirrors the per-game `GET /v1/groups/:id/children` byte-for-byte.
 
 Path parameters:
 
@@ -1271,7 +1271,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/audit
 
-**Phase 11.8a.** Returns a timestamp-paginated audit feed scoped to one game (across every group, including soft-deleted ones). Backs the dashboard's game-wide audit log viewer (Phase 11.8b). The cross-group fan-in distinguishes this endpoint from `GET /v1/admin/games/:gameId/groups/:groupId/audit` (which is per-group and excludes soft-deleted groups).
+Returns a timestamp-paginated audit feed scoped to one game (across every group, including soft-deleted ones). Backs the dashboard's game-wide audit log viewer. The cross-group fan-in distinguishes this endpoint from `GET /v1/admin/games/:gameId/groups/:groupId/audit` (which is per-group and excludes soft-deleted groups).
 
 Path parameters:
 
@@ -1332,7 +1332,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/permissions/check
 
-**Phase 11.9a-i.** Resolves the canonical answer to "can user X do Y in group Z?" for any game on the deployment. Mirrors the per-game `GET /v1/permissions/check` (iter 022) byte-for-byte: same query shape, same `PermissionCheckResult` wire format, same resolution order, same in-process cache. Backs the dashboard's permission check tester (Phase 11.9a-ii).
+Resolves the canonical answer to "can user X do Y in group Z?" for any game on the deployment. Mirrors the per-game `GET /v1/permissions/check` byte-for-byte: same query shape, same `PermissionCheckResult` wire format, same resolution order, same in-process cache. Backs the dashboard's permission check tester.
 
 Path parameters:
 
@@ -1395,7 +1395,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games/:gameId/analytics/group-churn`
 
-Phase 12.2a. Returns the binned tenure histogram of departures (kicked + left members) for groups created within `[from, to)`. Backs the dashboard's group churn chart (Phase 12.2b).
+Returns the binned tenure histogram of departures (kicked + left members) for groups created within `[from, to)`. Backs the dashboard's group churn chart.
 
 Path parameters:
 
@@ -1471,7 +1471,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games/:gameId/analytics/group-growth`
 
-Phase 12.3a. Returns time-bucketed cumulative active member counts across the supplied window for the top-N groups (by current active count) plus an "All others" aggregated series. Backs the dashboard's group growth chart (Phase 12.3b).
+Returns time-bucketed cumulative active member counts across the supplied window for the top-N groups (by current active count) plus an "All others" aggregated series. Backs the dashboard's group growth chart.
 
 Path parameters:
 
@@ -1548,7 +1548,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games/:gameId/analytics/member-activity`
 
-Phase 12.4a. Returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week and hour-of-day across every group in the game (cross-group fan-in). Backs the dashboard's member activity heatmap (Phase 12.4b).
+Returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week and hour-of-day across every group in the game (cross-group fan-in). Backs the dashboard's member activity heatmap.
 
 Path parameters:
 
@@ -1577,7 +1577,7 @@ interface WireAdminMemberActivity {
 Behavior:
 
 - **Cross-group fan-in.** Every audit entry on every group in the game contributes one to the matching cell, regardless of the entry's `action`. The dashboard renders the grid as a heatmap so any signal of "when do players show up?" surfaces.
-- **Soft-deleted groups are INCLUDED.** The audit log preserves history regardless of group lifecycle (matches the per-game audit feed at Phase 11.8a / iter-082). A group deleted last week still contributes its prior activity to the heatmap.
+- **Soft-deleted groups are INCLUDED.** The audit log preserves history regardless of group lifecycle (matches the per-game audit feed). A group deleted last week still contributes its prior activity to the heatmap.
 - **UTC bucketing.** Day-of-week is `EXTRACT(DOW FROM createdAt)` server-side, which matches JS's `Date.getUTCDay()`: 0=Sunday, 1=Monday, ..., 6=Saturday. Hour is `EXTRACT(HOUR FROM createdAt)`: 0-23. The dashboard rotates the day axis client-side if it wants Mon-first visualization.
 - **Half-open `[from, to)` filter.** Both bounds are optional and independent (you can supply only `from` or only `to`). A row at exactly `from` is included; a row at exactly `to` is excluded. Mirrors the per-game audit feed's `since` / `before` convention.
 - **Empty population** (a game with zero matching audit entries) returns 200 with the fully-zero grid and `totalEvents: 0`.
@@ -1614,7 +1614,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games/:gameId/analytics/role-distribution`
 
-Phase 12.5a. Returns a top-10 list of role names ranked by the count of active-member assignments, aggregated across every non-soft-deleted group in the game. Backs the dashboard's role distribution donut chart (Phase 12.5b).
+Returns a top-10 list of role names ranked by the count of active-member assignments, aggregated across every non-soft-deleted group in the game. Backs the dashboard's role distribution donut chart.
 
 Path parameters:
 
@@ -1622,7 +1622,7 @@ Path parameters:
 |------|----------|-------------|
 | `gameId` | yes | The game id. URL-decoded. |
 
-No query parameters in V1: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker (Phase 12.1) is irrelevant to this endpoint.
+No query parameters in V1: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker is irrelevant to this endpoint.
 
 Response:
 
@@ -1681,7 +1681,7 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 
 ## `GET /v1/admin/games/:gameId/analytics/permission-usage`
 
-Phase 12.5a. Returns a top-15 list of permission keys ranked by the combined count of role grants (`RolePermission` rows) plus member-level overrides (`MemberPermissionOverride` rows). Backs the dashboard's permission usage horizontal bar chart (Phase 12.5b).
+Returns a top-15 list of permission keys ranked by the combined count of role grants (`RolePermission` rows) plus member-level overrides (`MemberPermissionOverride` rows). Backs the dashboard's permission usage horizontal bar chart.
 
 Path parameters:
 
@@ -1714,7 +1714,7 @@ Behavior:
 - **Both row types count.** Each `RolePermission` row contributes 1 to `roleGrants`; each `MemberPermissionOverride` row contributes 1 to `memberOverrides`. The chart's bars represent `total` (the combined sum).
 - **All `MemberPermissionOverride` rows count regardless of member status.** Operator-authored config exists independently of member lifecycle; an override on a kicked member is still a deployment-state fact about the game.
 - **Soft-deleted groups are excluded** (both their roles' grants and their members' overrides drop out).
-- **Permission keys with `total === 0` are invisible.** A registered `PermissionDef` row with no grants and no overrides does not appear in `items` or `uniqueKeys`. The catalog endpoint at `/v1/admin/games/:gameId/permissions` (Phase 11.6a-ii) is the right place to enumerate every registered key.
+- **Permission keys with `total === 0` are invisible.** A registered `PermissionDef` row with no grants and no overrides does not appear in `items` or `uniqueKeys`. The catalog endpoint at [`/v1/admin/games/:gameId/permissions`](#get-v1admingamesgameidpermissions) is the right place to enumerate every registered key.
 - **Empty population** returns 200 with `{ totalCount: 0, uniqueKeys: 0, items: [], otherCount: 0 }`.
 - **404 only when the gameId itself does not exist.**
 - **Tiebreaks alphabetically.** Two keys with the same combined `total` sort by `permission asc`.
