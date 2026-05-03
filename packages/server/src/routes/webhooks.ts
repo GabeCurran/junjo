@@ -80,7 +80,7 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
       ...serializeWebhookEndpoint(created),
       secret: finalSecret,
     };
-    return c.json(wire);
+    return c.json(wire, 201);
   });
 
   r.get("/", async (c) => {
@@ -89,7 +89,10 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
       where: { gameId },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
-    return c.json({ items: endpoints.map(serializeWebhookEndpoint) });
+    return c.json({
+      items: endpoints.map(serializeWebhookEndpoint),
+      nextCursor: null,
+    });
   });
 
   r.patch("/:id", async (c) => {

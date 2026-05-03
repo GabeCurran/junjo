@@ -220,9 +220,13 @@ export class WebhookEndpointsApi {
   }
 
   // No pagination by design: typical games have a handful of endpoints.
-  // Adding `?limit&cursor` later is an additive change.
+  // Adding `?limit&cursor` later is an additive change; the server already
+  // returns the Page<T> envelope with nextCursor: null today.
   async list(): Promise<WebhookEndpoint[]> {
-    const wire = await this.http.get<{ items: WireWebhookEndpoint[] }>("/v1/webhooks");
+    const wire = await this.http.get<{
+      items: WireWebhookEndpoint[];
+      nextCursor: string | null;
+    }>("/v1/webhooks");
     return wire.items.map(deserializeEndpoint);
   }
 

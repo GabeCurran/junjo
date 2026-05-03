@@ -124,7 +124,7 @@ Each endpoint carries:
 
 ### `POST /v1/webhooks`
 
-Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
+Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response is 201 Created and includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
 
 | Validation | Notes |
 |------------|-------|
@@ -142,7 +142,7 @@ Errors:
 
 ### `GET /v1/webhooks`
 
-Returns `{ items: WebhookEndpoint[] }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included.
+Returns `{ items: WebhookEndpoint[], nextCursor: null }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included. The response conforms to the same `Page<T>` envelope as every other list endpoint; today there is no pagination (typical games have a handful of endpoints) so `nextCursor` is always `null`. Adding `?limit&cursor` later is a purely additive change.
 
 ### `PATCH /v1/webhooks/:id`
 

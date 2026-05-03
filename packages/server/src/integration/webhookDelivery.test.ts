@@ -67,7 +67,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           events: ["group.updated"],
         }),
       });
-      expect(registerRes.status).toBe(200);
+      expect(registerRes.status).toBe(201);
       const endpoint = (await registerRes.json()) as { id: string; secret: string };
       expect(endpoint.secret).toMatch(/^[A-Za-z0-9_-]+$/);
 

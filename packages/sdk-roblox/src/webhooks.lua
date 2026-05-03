@@ -29,8 +29,9 @@ function Endpoints:create(input)
 end
 
 -- Returns every endpoint configured for the calling game, newest first.
--- Server response shape is `{ items: [...] }`; the SDK flattens to a
--- plain array for ergonomics.
+-- Server response shape is `{ items: [...], nextCursor: null }` (the
+-- standard Page<T> envelope; pagination is not used today). The SDK
+-- flattens to a plain array for ergonomics.
 function Endpoints:list()
 	local res = self._http:get("/v1/webhooks")
 	if type(res) == "table" and res.items ~= nil then
