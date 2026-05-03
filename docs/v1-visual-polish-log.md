@@ -619,6 +619,49 @@ prior layout.
   comments at the top of `relationships-table.tsx`. Not a polish
   issue, just a content note for morning-Gabe.
 
+## V.14 group-sub-groups
+
+**Before:** On 1440px desktop the surface rendered cleanly: two stacked
+cards ("Parent group" with the parent breadcrumb + Edit / clear actions,
+"Direct children" with the empty-state "No children yet" panel and the
+"Add child" button). Active members card, active tab underline, and
+breadcrumb header all matched the established group-detail shell. Mobile
+(375px capture) had the same V.7 / V.10 / V.13 `CardHeader` crush
+problem applied to BOTH cards: each header used
+`flex flex-row items-start justify-between gap-4`, which forced the
+title + description column into ~12 characters of width while the
+action buttons (`Edit parent` + trash on the parent card; `Add child` on
+the children card) hung off the right edge of the card. Description copy
+broke into one or two words per line.
+
+**Fix:** Same fix as V.7 / V.10 / V.13 applied to both `CardHeader`s in
+`apps/dashboard/components/dashboard/sub-groups-table.tsx` (`ParentCard`
+and `ChildrenCard`): swap to
+`flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5`.
+On mobile, the title + description span the full card width and the
+action row (or single action button) drops below them onto its own line.
+Desktop unchanged - every modifier above `sm:` reproduces the prior
+layout.
+
+**Acceptable as-is:**
+
+- The captured mobile PNG is still wider than 375px because the
+  `GroupDetailTabs` strip overflows (V.14b shared follow-up under
+  "Structural issues to revisit later"). Out of V.14's scope.
+- After the CardHeader fix, the parent breadcrumb's inner row
+  (`<Layers>` icon + PARENT label + 25-char mono CUID + "Open parent"
+  link) still clips the "Open parent" link off the right edge on a
+  375px capture. The row uses
+  `flex items-center justify-between` and the long mono CUID + button
+  side-by-side just don't fit at mobile width. Different problem class
+  and different fix shape from the CardHeader stack (probably stacked
+  inner row or `break-all` + `flex-wrap`). Filed as V.14c follow-up
+  rather than fixed this iteration per protocol-17a.
+- Empty-state for "Direct children" - dashed-border card with `GitBranch`
+  icon, "No children yet" headline, and helper copy with inline
+  `<code>parentGroupId</code>` token - reads cleanly on desktop and
+  mobile post-fix. Acceptable as-is.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row

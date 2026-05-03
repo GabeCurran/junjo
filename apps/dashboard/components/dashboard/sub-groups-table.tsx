@@ -346,7 +346,7 @@ function ParentCard({ group, gameId }: { group: AdminGroup; gameId: string }) {
   const hasParent = group.parentGroupId !== null;
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Parent group</CardTitle>
           <CardDescription>
@@ -447,7 +447,7 @@ function ChildrenCard({
 }) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Direct children</CardTitle>
           <CardDescription>
