@@ -58,6 +58,48 @@ them byte-identical for the sync gate.
   side. Standard mermaid behaviour and helpful for cross-referencing the steps
   from prose.
 
+## V.3 webhook-delivery.mmd
+
+**Before:** Two of the four DB-message labels were inconsistent with the
+others. Step 3 read `WebhookEndpoint WHERE gameId AND disabledAt IS NULL /
+AND (events IS EMPTY OR events contains type)` - no SELECT verb, so the
+reader had to infer that this was a query (step 8 right next to it reads
+`SELECT id FROM WebhookDelivery WHERE...`, parallel structure broken). Step
+11 read `SELECT WebhookDelivery + WebhookEndpoint` - the `+` for join is
+non-SQL shorthand that requires inference.
+
+**Fix:** Added `SELECT` prefix to step 3
+(`SELECT WebhookEndpoint WHERE...`) so it parallels step 8. Replaced `+`
+with `JOIN` in step 11 (`SELECT WebhookDelivery JOIN WebhookEndpoint`). All
+three byte-identical fences (`tools/diagrams/source/webhook-delivery.mmd`,
+`apps/docs/pages/api-reference/webhooks.mdx`,
+`apps/docs/pages/self-host.mdx`) updated together to keep the sync gate
+satisfied.
+
+**Acceptable as-is:**
+
+- Step 7 (`Route-->>Route: respond to caller (HTTP 2xx)`) renders as a
+  small self-loop that sticks slightly out of the Mutation route lane on
+  the left. This is mermaid's default rendering for self-messages in
+  sequenceDiagram; it is legible and the alternative (a separate "Caller"
+  participant) would add a lane just to host one arrow. Out of scope for a
+  visual polish iteration.
+- Step 13's HMAC label wraps the five header names across two lines
+  (`x-junjo-event, x-junjo-event-id,` then `x-junjo-delivery-id,
+  x-junjo-timestamp, x-junjo-signature`). The break splits the three
+  id-related headers across the wrap. Acceptable: any wrap point is
+  somewhat arbitrary, and the current two-line layout fits within the
+  format-is-junjo alt frame without overflowing.
+- Step 16's `INSERT WebhookDelivery per endpoint` keeps the natural-language
+  qualifier "per endpoint" rather than the more SQL-conventional
+  `INSERT INTO ... (one row per endpoint)`. The terser form fits on one
+  line within the BEGIN/COMMIT block and the multi-row semantics are clear
+  from context (the alt frame is gated on "one or more endpoints
+  matched").
+- The two phases (Enqueue, Drain) render as labelled background bars at
+  different vertical bands. Visually distinct, conveys the request-then-
+  worker handoff cleanly.
+
 ## Structural issues to revisit later
 
 (none yet)
