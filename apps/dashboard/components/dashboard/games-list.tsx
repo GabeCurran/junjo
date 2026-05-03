@@ -56,19 +56,21 @@ function GameRow({ game }: GameRowProps) {
           className="group flex items-baseline gap-2"
         >
           <span className="text-sm font-medium group-hover:underline">{game.name}</span>
-          <span className="font-mono text-xs text-muted-foreground">{game.id}</span>
+          <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+            {game.id}
+          </span>
         </Link>
       </td>
-      <td className="py-3 pr-4 text-right text-sm tabular-nums">
+      <td className="hidden py-3 pr-4 text-right text-sm tabular-nums sm:table-cell">
         {numberFormatter.format(game.groupCount)}
       </td>
       <td className="py-3 pr-4 text-right text-sm tabular-nums">
         {numberFormatter.format(game.activeMemberCount)}
       </td>
-      <td className="py-3 pr-4 text-right text-sm tabular-nums">
+      <td className="hidden py-3 pr-4 text-right text-sm tabular-nums md:table-cell">
         {numberFormatter.format(game.apiKeyCount)}
       </td>
-      <td className="py-3 pr-4 text-right text-xs text-muted-foreground">
+      <td className="hidden py-3 pr-4 text-right text-xs text-muted-foreground md:table-cell">
         {dateFormatter.format(new Date(game.createdAt))}
       </td>
       <td className="py-3 text-right">
@@ -116,10 +118,13 @@ export async function GamesList() {
           <thead>
             <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
               <th className="py-2 pr-4 text-left font-medium">Name</th>
-              <th className="py-2 pr-4 text-right font-medium">Groups</th>
-              <th className="py-2 pr-4 text-right font-medium">Active members</th>
-              <th className="py-2 pr-4 text-right font-medium">API keys</th>
-              <th className="py-2 pr-4 text-right font-medium">Created</th>
+              <th className="hidden py-2 pr-4 text-right font-medium sm:table-cell">Groups</th>
+              <th className="py-2 pr-4 text-right font-medium">
+                <span className="sm:hidden">Members</span>
+                <span className="hidden sm:inline">Active members</span>
+              </th>
+              <th className="hidden py-2 pr-4 text-right font-medium md:table-cell">API keys</th>
+              <th className="hidden py-2 pr-4 text-right font-medium md:table-cell">Created</th>
               <th className="py-2 font-medium" aria-label="Open game" />
             </tr>
           </thead>

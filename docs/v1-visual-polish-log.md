@@ -204,6 +204,71 @@ layout is byte-identical (no truncate ever fired there).
   height; with content shorter than the viewport, the trailing dark
   area is the unfilled flex-1 region. Layout intent, not a bug.
 
+## V.6 games list
+
+**Before:** Mobile (375px) was visually broken in two ways. The
+`Topbar` had a fixed `h-14` (56px) with `items-center justify-between`,
+so when the page-level description ("Every game registered on this
+Junjo deployment.") wrapped to two lines on a narrow viewport, the
+title block overflowed the 56px header height while the right-aligned
+`Create game` button stayed centred at the original height - the
+button visually overlapped the wrapped subtitle text. Separately, the
+games table is six columns (Name + CUID, Groups, Active members, API
+keys, Created, Open). At 375px viewport the CUID column alone needs
+~250px (25-char `font-mono text-xs` string with no wrap), pushing the
+remaining columns past the right edge of `overflow-x-auto`. The
+captured PNG showed only the Name column with the CUID truncated
+mid-character and every other column off-screen.
+
+**Fix:** Two scoped edits, one shared component and one page-local.
+
+`apps/dashboard/components/dashboard/topbar.tsx` now uses
+`flex min-h-14 flex-col gap-2 ... py-3 sm:flex-row sm:items-center
+sm:justify-between sm:gap-4 sm:py-0`. The header is a column on
+mobile (title block on top, actions row underneath) and the original
+single-row layout from the `sm:` breakpoint up. `min-h-14` preserves
+the 56px desktop height (no visual change) while letting mobile grow
+to fit the title + description + actions stack. The title block also
+gets `min-w-0` and the actions row gets `flex-shrink-0` so future
+long titles wrap into the title block instead of pushing the button
+off-screen.
+
+`apps/dashboard/components/dashboard/games-list.tsx` was made
+responsive on a per-column basis: the inline CUID span is now
+`hidden sm:inline` (gone on mobile, present from sm: up); the Groups
+column is `hidden sm:table-cell`; the API keys and Created columns
+are `hidden md:table-cell`; the Active members header reads
+`Members` on mobile (sm:hidden span) and `Active members` from sm: up
+(hidden sm:inline span). Final mobile layout is a tight three-column
+table - Name, Members, Open - with no horizontal scroll. Desktop
+layout is byte-identical (all six columns with full headers).
+
+**Acceptable as-is:**
+
+- "Screenshot Demo" wraps to two lines (`Screenshot` / `Demo`) on
+  mobile because the Name column allocates just under 168px. The
+  wrap is on the word boundary and both lines remain at
+  `text-sm font-medium`. Forcing nowrap or further shrinking the
+  Members column would either truncate longer game names or make
+  the numeric value look cramped against the Open arrow. Acceptable
+  trade-off for two-word names; longer names (e.g., 4-word) would
+  wrap to three lines, which is still readable.
+- Active members header reads "Members" on mobile rather than the
+  full "Active members". Verb-stripped form fits in one line at the
+  narrow column width and is unambiguous in context (the next
+  column is the count). Desktop retains the full descriptor.
+- The `+ Create game` button on mobile sits under the description
+  rather than to the right of it, which is the natural consequence
+  of the `flex-col` topbar on mobile. Adds one row of vertical
+  height to the topbar but the button is still tap-targetable
+  without competing with the title text.
+- Sidebar is collapsed on mobile (the global sidebar layout owns
+  this); only the hamburger trigger and the Junjo wordmark remain
+  in the top strip. Untouched by this iteration.
+- Five rows of CUID/numeric data on a card with ~700-800px of empty
+  vertical real estate below it is the same `flex-1 px-6 py-8`
+  layout intent flagged in V.5. Not a polish bug.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
