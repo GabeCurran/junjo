@@ -44,6 +44,50 @@ Cloudflare Access, a corporate SSO gateway) and either disable the Basic Auth ga
 setting credentials your proxy injects, or layer them. The Basic Auth check runs in
 Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 
+## End-to-end tests (Playwright)
+
+V1 ships a small Playwright suite under `apps/dashboard/e2e/`. The bar is
+"present and passing locally"; CI integration is deferred to a separate
+workstream so an overnight loop iteration cannot regress on a missing
+browser binary.
+
+```sh
+# from the repo root, one-time per machine:
+npx playwright install chromium
+
+# bring up Postgres + the Junjo server in one terminal:
+npm run dev -w @junjo/server
+
+# bring up the Junjo server admin token + a seeded admin API key, then run
+# the suite (it boots `next dev` for you on port 13030):
+JUNJO_BASE_URL=http://127.0.0.1:8787 \
+  JUNJO_ADMIN_API_KEY=<seeded-key> \
+  JUNJO_ADMIN_TOKEN=<admin-token> \
+  DASHBOARD_ADMIN_USER=admin \
+  DASHBOARD_ADMIN_PASSWORD=admin-e2e-password \
+  npm run e2e -w @junjo/dashboard
+```
+
+Two specs ship today:
+
+- `e2e/smoke.spec.ts` confirms each top-level dashboard route renders
+  without a 5xx, has the correct `<title>`, and exposes the five-item
+  sidebar nav. Also asserts the Basic Auth gate denies missing
+  credentials. Runs without a Junjo server reachable.
+- `e2e/happy-path.spec.ts` walks the canonical operator flow: create a
+  game via the dashboard dialog, issue an API key (capturing the
+  one-shot secret from the dialog), seed a group via direct
+  `POST /v1/groups` against `JUNJO_BASE_URL` with that secret, then
+  navigate back into the groups table and the group detail page. The
+  spec auto-skips when the Junjo server at `JUNJO_BASE_URL` is not
+  reachable.
+
+The Playwright config lives at `apps/dashboard/playwright.config.ts`.
+The `e2e/` directory is excluded from the dashboard's `tsc --noEmit`
+typecheck because Playwright provides its own type-checking via the
+`playwright test` runner; this keeps the production typecheck cycle
+fast and free of test-only dependencies.
+
 ## Conventions
 
 - License header on every TypeScript file:
