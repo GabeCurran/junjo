@@ -216,15 +216,24 @@ The API-key middleware checks `revokedAt` on every request and returns `401 inva
 
 ## Health checks
 
-The server exposes a single health endpoint for load balancer probes:
+The server exposes two probes, intentionally split by depth:
 
-```
-GET /healthz
-```
+### `GET /` - liveness
 
-Returns `200 OK` with body `ok` when the process is running. The check is intentionally cheap: no database round-trip, no auth. It tells you "the Node process is up and listening," not "Postgres is reachable." For a deeper liveness probe, hit `GET /v1/whoami` with a valid API key; it returns `200 { gameId }` only if the API-key middleware can read from the `ApiKey` table.
+Returns `200 OK` with `{ "name": "junjo-server", "version": "<v>" }`. No database round-trip, no auth, no shared state read. Use this for Kubernetes `livenessProbe`, container-level health checks, and anything where "is the Node process accepting connections?" is the only question. The version string is also useful for confirming which build is running.
 
-The unversioned root `GET /` returns the server name and version, useful for confirming which build is running.
+### `GET /healthz` - readiness
+
+Returns `200 OK` with `{ "status": "ok", "db": { "ok": true }, "webhookWorker": { "ok": true }, "timestamp": "<ISO 8601>" }` when both components are healthy. Returns `503 Service Unavailable` with `"status": "degraded"` and per-component `reason` strings when any leg fails. Use this for Kubernetes `readinessProbe` and load balancer pool admission - a degraded server should stop receiving traffic but should not be killed and restarted (the underlying Postgres or worker may recover).
+
+Two checks are folded into one response:
+
+- **`db`** - issues `SELECT 1` against Postgres with a 2-second timeout. A timeout reports `{ "ok": false, "reason": "db ping timeout after 2000ms" }`. A connection-level error (DNS, TCP refused, auth failure) surfaces the underlying error message verbatim.
+- **`webhookWorker`** - reads the worker's last-tick timestamp from its in-process handle. The worker initializes the heartbeat to its own startup time and refreshes it on every tick completion (success or caught error). A heartbeat older than 60 seconds (12x the 5-second tick interval) reports `{ "ok": false, "reason": "worker heartbeat is <ms>ms old (threshold 60000ms)", "ageMs": <ms> }`. A heartbeat that is `null` (the worker handle is configured but no tick has finished) reports `{ "ok": false, "reason": "worker has not completed a tick yet" }`.
+
+When the deployment does not configure a worker handle (the `healthz.worker` option on `createApp` is omitted), the worker leg reports trivially ok - `/healthz` answers "is the worker doing its job?" and a deployment without a worker has no worker to check. The DB ping always runs.
+
+The deeper `/v1/whoami` route remains available behind a valid API key for callers that want to verify the API-key middleware path end-to-end; `/healthz` covers the same shape without requiring a key.
 
 ## Background workers
 

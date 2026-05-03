@@ -49,6 +49,7 @@ import {
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import { groupsRouter } from "./routes/groups.js";
+import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
 import {
   acceptInvitationByCodeHandler,
   declineInvitationByCodeHandler,
@@ -88,6 +89,17 @@ export interface CreateAppOptions {
   // requests pass through with no bucket bookkeeping. Tests can also pass
   // a pre-built `RateLimiter` instance for fixed-clock control.
   rateLimit?: { perMinute?: number; burst?: number } | RateLimiter | null;
+  // Phase 14.3: deep `/healthz` consults the webhook worker's last-tick
+  // heartbeat alongside the DB ping. Production wires the worker handle
+  // returned from `startWebhookWorker` (`WorkerHandle.getLastHeartbeat`
+  // satisfies `WorkerHeartbeatProvider`); tests pass a stub. When the
+  // option is omitted, the worker leg of `/healthz` reports trivially ok
+  // (the deployment did not configure a worker to check).
+  healthz?: {
+    worker?: WorkerHeartbeatProvider;
+    workerStaleMs?: number;
+    dbTimeoutMs?: number;
+  };
 }
 
 // Builds a fresh Hono app per call so tests can boot one server per file
@@ -112,7 +124,17 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   app.onError(errorHandler);
 
   app.get("/", (c) => c.json({ name: "junjo-server", version: "0.0.0" }));
-  app.get("/healthz", (c) => c.text("ok"));
+  // Real `/healthz` (Phase 14.3): pings the DB and reads the worker
+  // heartbeat. Returns 200 when both pass, 503 with per-component
+  // `reason` strings otherwise. The cheap liveness probe stays at `/`.
+  app.get(
+    "/healthz",
+    healthCheckHandler(prisma, {
+      worker: opts.healthz?.worker,
+      workerStaleMs: opts.healthz?.workerStaleMs,
+      dbTimeoutMs: opts.healthz?.dbTimeoutMs,
+    }),
+  );
 
   const v1 = new Hono();
   // Public route registered before the auth middleware. Hono composes

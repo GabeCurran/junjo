@@ -13,6 +13,7 @@ import {
   pollDueDeliveries,
   runWorkerOnce,
   signWebhookBody,
+  startWebhookWorker,
 } from "./webhookWorker.js";
 import { enqueueWebhookDeliveries } from "./webhooks.js";
 
@@ -625,5 +626,42 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       expect(row.status).toBe("failed");
       expect(row.attemptCount).toBe(1);
     });
+  });
+});
+
+describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
+  it("initializes lastHeartbeat to the worker's startup time", () => {
+    const t0 = new Date("2026-05-02T17:00:00.000Z");
+    const fakePrisma = {} as unknown as PrismaClient;
+    const handle = startWebhookWorker(fakePrisma, {
+      intervalMs: 1_000_000,
+      now: () => t0,
+    });
+    try {
+      const initial = handle.getLastHeartbeat();
+      expect(initial.toISOString()).toBe(t0.toISOString());
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("returns a Date that exposes a stable reading via getLastHeartbeat()", () => {
+    const fakePrisma = {} as unknown as PrismaClient;
+    const handle = startWebhookWorker(fakePrisma, { intervalMs: 1_000_000 });
+    try {
+      const a = handle.getLastHeartbeat();
+      const b = handle.getLastHeartbeat();
+      expect(a).toBeInstanceOf(Date);
+      expect(b).toBeInstanceOf(Date);
+      expect(a.toISOString()).toBe(b.toISOString());
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("stop() returns void and is safe to call once", () => {
+    const fakePrisma = {} as unknown as PrismaClient;
+    const handle = startWebhookWorker(fakePrisma, { intervalMs: 1_000_000 });
+    expect(() => handle.stop()).not.toThrow();
   });
 });

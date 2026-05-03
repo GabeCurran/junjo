@@ -249,6 +249,13 @@ export async function runWorkerOnce(
 
 export interface WorkerHandle {
   stop(): void;
+  // Phase 14.3: returns the timestamp of the most recent tick completion
+  // (success or caught error), or the worker's startup time if no tick
+  // has finished yet. Initialized to `now()` at construction so a freshly
+  // started worker reports healthy until the stale threshold is exceeded;
+  // a worker stuck on its very first tick will go stale after the
+  // threshold elapses just like one that stopped firing later.
+  getLastHeartbeat(): Date;
 }
 
 // Schedules `runWorkerOnce` on a `setInterval`. The handle is `unref`'d
@@ -257,16 +264,23 @@ export interface WorkerHandle {
 // `runWorkerOnce` directly with a fixed `now` and never start a timer.
 export function startWebhookWorker(prisma: PrismaClient, opts: WorkerOptions = {}): WorkerHandle {
   const intervalMs = opts.intervalMs ?? WEBHOOK_WORKER_INTERVAL_MS;
+  const now = opts.now ?? (() => new Date());
+  let lastHeartbeat = now();
 
   const tick = async () => {
     try {
       await runWorkerOnce(prisma, opts);
     } catch (err) {
       logger.error({ err }, "webhook worker tick failed");
+    } finally {
+      lastHeartbeat = now();
     }
   };
 
   const handle = setInterval(() => void tick(), intervalMs);
   if (typeof handle.unref === "function") handle.unref();
-  return { stop: () => clearInterval(handle) };
+  return {
+    stop: () => clearInterval(handle),
+    getLastHeartbeat: () => lastHeartbeat,
+  };
 }

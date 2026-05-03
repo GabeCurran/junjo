@@ -9,17 +9,24 @@ import { startWebhookWorker } from "./webhookWorker.js";
 const env = loadEnv();
 setLogger(createLogger({ level: env.LOG_LEVEL, nodeEnv: env.NODE_ENV }));
 
+// Workers boot before `createApp` so the webhook worker's heartbeat
+// handle can be passed into the deep `/healthz` route (Phase 14.3). The
+// soft-delete sweeper does not need a heartbeat surface in V1; if a
+// future deployment wants to surface its tick liveness too, add a
+// matching `getLastHeartbeat()` to its handle and thread it through
+// `healthz.workers`.
+const sweeper = startHardDeleteSweeper(prisma);
+const webhookWorker = startWebhookWorker(prisma);
+
 const app = createApp({
   adminToken: env.JUNJO_ADMIN_TOKEN,
   rateLimit: { perMinute: env.RATE_LIMIT_PER_MINUTE, burst: env.RATE_LIMIT_BURST },
+  healthz: { worker: webhookWorker },
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   logger.info({ port: info.port }, "junjo-server listening");
 });
-
-const sweeper = startHardDeleteSweeper(prisma);
-const webhookWorker = startWebhookWorker(prisma);
 
 const shutdown = async (signal: string) => {
   logger.info({ signal }, "junjo-server shutting down");
