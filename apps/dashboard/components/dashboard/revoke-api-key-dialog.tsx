@@ -56,7 +56,7 @@ export function RevokeApiKeyDialog({ gameId, keyId, prefix }: RevokeApiKeyDialog
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" className="h-8 px-2 text-xs sm:h-9 sm:px-3 sm:text-sm">
           Revoke
         </Button>
       </DialogTrigger>

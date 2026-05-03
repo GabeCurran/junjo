@@ -269,6 +269,95 @@ layout is byte-identical (all six columns with full headers).
   vertical real estate below it is the same `flex-1 px-6 py-8`
   layout intent flagged in V.5. Not a polish bug.
 
+## V.7 game detail
+
+**Before:** Mobile (375px) had three layered overflow problems on the API
+keys panel. (1) The card header used `flex-row items-start justify-between`
+unconditionally, so the `Issue key` button stayed pinned to the right and
+squeezed the description ("Server-side keys for SDK calls. The full secret
+is shown exactly once on issuance.") into a six-line stack on the left. (2)
+The keys table was five columns (Prefix, Created, Revoked, Status, Revoke
+action); on a 375px viewport only Prefix and Created fit visually inside
+the `overflow-x-auto` wrapper. (3) Even after hiding the low-priority
+columns, the default `size="sm"` Revoke button (`h-9 px-3`) plus the card's
+`p-6` (24px each side) and the page's `px-6` left ~290px for the row, which
+was ~10px short of fitting `prefix + Active badge + Revoke text` on a
+375px viewport. The iter-7/iter-8 attempts saw this and started
+spiralling on padding/font-size tweaks; iter-9 ships a focused four-cycle
+fix.
+
+**Fix:** Three scoped edits, all in
+`apps/dashboard/components/dashboard/`.
+
+`api-keys-section.tsx`:
+- `SectionShell` `CardHeader` is now
+  `flex-col gap-3 space-y-0 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-0 sm:p-6`,
+  matching the V.5/V.6 mobile-stack pattern (title block on top, action
+  button below; from `sm:` up the original single-row layout). The
+  description block carries `min-w-0` and the action wrapper carries
+  `flex-shrink-0` so a long title would wrap rather than push the button
+  off-screen.
+- `CardContent` adds `p-4 pt-0 sm:p-6 sm:pt-0` so mobile cards reclaim
+  ~16px of horizontal real estate that desktop keeps.
+- `ApiKeyRow` hides the `Created` column on mobile
+  (`hidden sm:table-cell`) and the `Revoked` column on mobile + sm
+  (`hidden md:table-cell`); the matching `<th>` cells get the same
+  visibility classes. The `Status` badge stays visible at every
+  viewport because it carries the revoked/active distinction implicitly
+  for screen-reader users and visibly for everyone else. Prefix font
+  drops to `text-xs sm:text-sm` on mobile so 16-character prefixes fit.
+
+`revoke-api-key-dialog.tsx`:
+- `DialogTrigger` button gets
+  `className="h-8 px-2 text-xs sm:h-9 sm:px-3 sm:text-sm"`, shrinking
+  the trigger by ~16px horizontally on mobile while leaving desktop
+  byte-identical.
+
+After the four-cycle render-Read loop (broken stale-server state ->
+column hide + header stack -> card padding shrink -> Revoke trigger
+shrink), all of `Prefix | Active | Revoke` now fit cleanly inside the
+375px card with no horizontal scroll.
+
+**Acceptable as-is:**
+
+- The Next.js dev-tool floating widget overlaps the description
+  ("issuance" -> "suance") in mobile captures. This is a `next dev`
+  artifact (the indicator is suppressed in production builds via
+  `devIndicators: false` and is not present in the actual user-facing
+  app); polish-log convention here matches V.5/V.6 which also caught
+  the floating `N` widget with no remediation.
+- The card description still wraps to three lines on mobile
+  ("Server-side keys for SDK calls. The full / secret is shown exactly
+  once on / issuance."). The break is on word boundaries and conveys
+  the warning cleanly; trimming the prose would lose the "shown
+  exactly once" hint that operators need to see before clicking
+  Issue.
+- The Revoke button on mobile uses `text-xs h-8 px-2` so the touch
+  target is ~32px tall. This is below the 44px Apple/Google touch
+  guideline. Acceptable trade-off because (a) the button is rarely
+  used (revocation is a destructive infrequent action), (b) the
+  alternative (icon-only with no text) loses scannability, and (c)
+  desktop retains the full `sm` size. Could be revisited if a11y
+  audit (separate pass) flags it.
+- Stat tiles stack vertically on mobile (~110-130px each, ~360px
+  total). Same vertical-density observation as V.5; appropriate for
+  a 375px viewport.
+- Game-name CUID (`cmoq5pkqx00o7sc4q997icskc`, 24 chars) renders on a
+  single line in `font-mono text-xs` on mobile and fits within the
+  available width. No `break-all` was added preemptively; if a longer
+  CUID appears in production it would wrap but the current layout
+  reserves the space.
+- `Active` badge text wraps onto a second line of the row on mobile
+  in some captures (the inline-flex badge container is ~58px tall
+  total). Acceptable density at this viewport.
+- The desktop `Created`-formatted dates render as `May 3, 2026`
+  while the table header reads `CREATED`. Date-only granularity is
+  the right call here (issuance dates rarely need minute precision
+  in a list view); the audit log surface gets the timestamp form.
+- Five rows of API key data on a card with ~700-800px of empty
+  vertical real estate below it on desktop is the same `flex-1
+  px-6 py-8` layout intent flagged in V.5. Not a polish bug.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row

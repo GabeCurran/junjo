@@ -21,16 +21,18 @@ interface SectionShellProps {
 function SectionShell({ gameId, children }: SectionShellProps) {
   return (
     <Card>
-      <CardHeader className="flex-row items-start justify-between space-y-0">
-        <div className="space-y-1.5">
+      <CardHeader className="flex-col gap-3 space-y-0 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-0 sm:p-6">
+        <div className="min-w-0 space-y-1.5">
           <CardTitle className="text-base">API keys</CardTitle>
           <CardDescription>
             Server-side keys for SDK calls. The full secret is shown exactly once on issuance.
           </CardDescription>
         </div>
-        <CreateApiKeyDialog gameId={gameId} />
+        <div className="flex-shrink-0">
+          <CreateApiKeyDialog gameId={gameId} />
+        </div>
       </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">{children}</CardContent>
     </Card>
   );
 }
@@ -62,16 +64,16 @@ function ApiKeyRow({ gameId, apiKey }: ApiKeyRowProps) {
   const revoked = apiKey.revokedAt !== null;
   return (
     <tr className="border-b border-border last:border-0">
-      <td className="py-3 pr-4">
-        <span className="font-mono text-sm">{apiKey.prefix}</span>
+      <td className="py-3 pr-3 sm:pr-4">
+        <span className="font-mono text-xs sm:text-sm">{apiKey.prefix}</span>
       </td>
-      <td className="py-3 pr-4 text-xs text-muted-foreground">
+      <td className="hidden py-3 pr-4 text-xs text-muted-foreground sm:table-cell">
         {dateFormatter.format(new Date(apiKey.createdAt))}
       </td>
-      <td className="py-3 pr-4 text-xs text-muted-foreground">
+      <td className="hidden py-3 pr-4 text-xs text-muted-foreground md:table-cell">
         {apiKey.revokedAt ? dateFormatter.format(new Date(apiKey.revokedAt)) : "-"}
       </td>
-      <td className="py-3 pr-4">
+      <td className="py-3 pr-2 sm:pr-4">
         {revoked ? (
           <Badge variant="muted">Revoked</Badge>
         ) : (
@@ -131,10 +133,10 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
         <table className="w-full">
           <thead>
             <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="py-2 pr-4 text-left font-medium">Prefix</th>
-              <th className="py-2 pr-4 text-left font-medium">Created</th>
-              <th className="py-2 pr-4 text-left font-medium">Revoked</th>
-              <th className="py-2 pr-4 text-left font-medium">Status</th>
+              <th className="py-2 pr-3 text-left font-medium sm:pr-4">Prefix</th>
+              <th className="hidden py-2 pr-4 text-left font-medium sm:table-cell">Created</th>
+              <th className="hidden py-2 pr-4 text-left font-medium md:table-cell">Revoked</th>
+              <th className="py-2 pr-2 text-left font-medium sm:pr-4">Status</th>
               <th className="py-2 font-medium" aria-label="Revoke" />
             </tr>
           </thead>
