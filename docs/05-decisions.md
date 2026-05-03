@@ -5165,3 +5165,43 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 - All `actorUserId is null in V1 (no auth-adapter actor wired)` notes - explains why every audit row has `actorUserId: null` and signals the future iteration that wires it.
 
 **Trade:** route docstrings get terser, so a reader landing in the middle of `routes/admin.ts` no longer gets a 30-line preamble explaining what the route does end-to-end. The api reference page (`apps/docs/pages/api-reference/`) is the canonical place for that level of detail; in-source comments now stay focused on what the code itself does not communicate. A future reviewer who feels a trim went too far can restore from `git log -p` - the audit favors removing redundant text and the bar for "is this load-bearing?" is set deliberately high.
+
+### Phase 14.7 (react + shared slice): closing slice; tighten WHY blocks, drop dead cross-module pointers
+
+**Decision:** the third and final slice of the comment audit covers `packages/react/src/**` and `packages/shared/src/**` production sources. Same per-package convention as the sdk and server slices: tests in `src/**` are out of scope (matches the established pattern; the sdk + server slices touched zero test files).
+
+**Headline finding:** react + shared production source was already lean. Both packages were authored by hand rather than bulk-generated like the server's route handlers, so there were no Phase X.Y suffixes, no "Backs the dashboard's X tab" pointers, no "Mirrors per-game route Y byte-for-byte" doc-blocks, and no "Behavior:" enumerations. The audit found 11 comments across both packages combined - 1 in `packages/react/src/useAuditLog.ts` and 10 in `packages/shared/src/types.ts` - all of which were already legitimate WHY. The slice produced 2 small files of changes (8 lines removed, 17 lines reformulated) rather than the server slice's 800+ lines.
+
+**What got tightened (react):**
+
+- `useAuditLog.ts` `void actionsKey` comment: collapsed from 5 lines to 3. The original spelled out the sort-stable-serialization mechanism + the actionsRef indirection + the membership-only refetch criterion in three separate sub-clauses; the trim keeps the load-bearing two-thirds (refetch detuning + actionsRef indirection) and lets the sort-stable detail die since the serialization itself is visible in `useMemo` two lines above.
+
+**What got tightened (shared/types.ts):**
+
+- `parentGroupId` field comment: dropped "Set via `groups.setParent`" cross-module pointer. The SDK method name is independent of the type doc; the pointer is a guess that rots when the SDK refactors. Kept "null = top-level group. Cycle-checked server-side." (both load-bearing: the null semantic isn't obvious from `GroupId | null`, and the cycle-check would surprise a reader who assumes free-set).
+- `priority` field comment: dropped "Used by the SDK's 'can this member act on that member' helper" pointer (same rot risk). Kept "Higher number = more authority. You can't kick someone with a higher priority than yours." - the convention + concrete counterexample is the WHY.
+- `GroupRelationshipType` comment: collapsed "The SDK exposes a setRelationship(a, b, type, { mutual: true }) helper that writes both rows when you want symmetry" (cross-module API restating) into "symmetry is opt-in (`setRelationship(..., { mutual: true })` writes both rows)" - the parenthetical hint stays since asymmetric-as-default is the load-bearing storage invariant and the example helps readers see the shape.
+- `AuthAdapter.verifyToken` comment: dropped "Verifies the player's session token and returns the dev's own user id" (paraphrased the function name + return type). Kept "The userId is opaque to Junjo: whatever the dev's auth provider returns (Clerk user_xyz, Supabase uuid, Roblox UserId as string)" - the opacity contract + concrete examples is the WHY.
+- `WebhookEndpoint.events` comment: dropped "Subset of event types this endpoint subscribes to" (paraphrases the field name + array type). Kept "Empty array = match every event type (the friendly default)" - the empty-as-wildcard semantic is the load-bearing surprise.
+- `WebhookEndpoint.disabledAt` comment: dropped "Toggle with `endpoints.update(id, { disabled })`" cross-module pointer. Kept "When set, the endpoint is muted: matching events do not enqueue deliveries" (the muting invariant is the WHY).
+- `CreateWebhookEndpointInput.secret` + `format` comments: dropped "Optional." preambles (both fields use `?`). Kept the substantive defaults ("server generates a 32-byte base64url secret" and "Defaults to 'junjo'").
+- Identity section preamble: collapsed "Branded string aliases. Zero runtime cost; they exist purely so..." to "Brand prevents `kick(groupId, userId)` from being called with the args swapped" - the example is the WHY; the "branded string aliases" prefix paraphrases the next 8 lines of `Brand<T, B>` + `type GameId = Brand<...>`.
+
+**What stayed (representative):**
+
+- All `setBy: UserId | null` / `createdBy: UserId | null` / `actorUserId: UserId | null` "null when set by the server itself with no acting user (no auth-adapter actor wired yet in V1)" notes - matches the server slice's preservation of the same V1-transitional marker; signals the future iteration that wires the actor.
+- `GroupKind` and `PermissionKey` "Open string" preambles - the opacity contract + the "server stores it verbatim and never branches on it" guarantee + the dev-defined-taxonomy framing is the WHY for why these are `string` and not enums.
+- `Member.notesPublic` / `notesPrivate` "officer-only" example - the difference is invisible from the field types alone.
+- `PermissionCheckResult.viaRoleId` "When source = role, the role that granted it. When source = override, omitted" - explains the discriminant link between two fields that the type alone does not.
+- `MemberPermissionOverride.grant` "true = grant regardless of roles. false = revoke regardless of roles" - the boolean meaning is non-obvious from the field name alone.
+- `Invitation.targetUserId` "null = open invite (anyone with the code/link). Set = direct push to a specific user" - the null semantic carries product meaning.
+- `CreateInvitationInput.expiresIn` "e.g. '7d', '1h', parsed by the server" - the string format contract is invisible from `string` alone.
+- `AuditEntry.targetId` "Free-form pointer to whatever the action targeted: a user id, role id, permission key. Type depends on action" - the action-tagged-union contract.
+- Events section preamble - "Each event carries enough denormalized data for a handler to act on it without a follow-up API call" + the cost/benefit framing - architectural decision that future contributors must understand before "normalizing" the event payloads.
+- `WebhookEndpointFormat` wire-format paragraph - the discord/slack-skip-HMAC carve-out is non-obvious and parallels the server-slice keeper in `webhookWorker.ts`.
+- `WebhookEndpointWithSecret` "Returned exactly once" warning - critical security contract, parallels the sdk-slice keeper in `webhooks.ts`.
+- `useAuditLog.ts` `void actionsKey` comment (the 3-line tightened version) - explains why the variable exists at all (ESLint would otherwise flag the seemingly-dead `actionsKey` participation in `useCallback`'s deps array).
+
+**Trade:** the bar for "load-bearing" was set the same as the server slice. The react + shared slice produced fewer trims because the source was already curated; the meaningful output is the closure of Phase 14.7 ("partial: react / shared remain" -> "[x]"). Future audits should assume hand-authored utility code (shared types, react hooks) needs lighter treatment than bulk-generated route handlers.
+
+**Why this is the closing slice and not a fourth + fifth (apps/dashboard, apps/docs):** dashboard is proprietary and out of scope per hard rule 7; docs are MDX content rather than code. Phase 14.7 as written ("packages/{server,sdk,shared,react}/src/**") is now complete.

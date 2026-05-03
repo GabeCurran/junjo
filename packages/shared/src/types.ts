@@ -2,9 +2,8 @@
 // Identity
 // =====================================================================
 //
-// Branded string aliases. Zero runtime cost; they exist purely so a
-// function signature like `kick(groupId, userId)` can't be called with
-// the args swapped without TypeScript complaining.
+// Brand prevents `kick(groupId, userId)` from being called with the args
+// swapped (TS would accept it if both were plain `string`).
 
 declare const brand: unique symbol;
 type Brand<T, B> = T & { readonly [brand]: B };
@@ -39,8 +38,7 @@ export interface Group {
   visibility: GroupVisibility;
   metadata: GroupMetadata;
   defaultRoleId: RoleId | null;
-  // The parent in a sub-group / alliance hierarchy. null for top-level
-  // groups. Set via `groups.setParent`; cycle-checked server-side.
+  // null = top-level group. Cycle-checked server-side.
   parentGroupId: GroupId | null;
   memberCount: number;
   createdAt: Date;
@@ -98,9 +96,8 @@ export interface Role {
   id: RoleId;
   groupId: GroupId;
   name: string;
-  // Higher number = more authority. Used by the SDK's "can this member
-  // act on that member" helper (you can't kick someone with a higher
-  // priority than yours).
+  // Higher number = more authority. You can't kick someone with a higher
+  // priority than yours.
   priority: number;
   color: string | null;
   isDefault: boolean;
@@ -163,9 +160,9 @@ export interface MemberPermissionOverride {
 // Open string. "ally" / "enemy" / "neutral" are conventional but the
 // dev can use any tag they want ("trade-partner", "vassal", etc.).
 //
-// Stored *directed* (A -> B) so asymmetric relationships are possible.
-// The SDK exposes a setRelationship(a, b, type, { mutual: true }) helper
-// that writes both rows when you want symmetry.
+// Stored *directed* (A -> B) so asymmetric relationships are possible;
+// symmetry is opt-in (`setRelationship(..., { mutual: true })` writes
+// both rows).
 export type GroupRelationshipType = string;
 
 export interface GroupRelationship {
@@ -351,8 +348,7 @@ export type JunjoEventType = JunjoEvent["type"];
 // =====================================================================
 
 export interface AuthAdapter {
-  // Verifies the player's session token and returns the dev's own user
-  // id. The id is opaque to Junjo: it's whatever the dev's auth provider
+  // The userId is opaque to Junjo: whatever the dev's auth provider
   // returns (Clerk user_xyz, Supabase uuid, Roblox UserId as string).
   verifyToken(token: string): Promise<{ userId: UserId } | null>;
 }
@@ -379,13 +375,12 @@ export interface WebhookEndpoint {
   id: WebhookEndpointId;
   gameId: GameId;
   url: string;
-  // Subset of event types this endpoint subscribes to. Empty array
-  // means "match every event type" (the friendly default).
+  // Empty array = match every event type (the friendly default).
   events: JunjoEventType[];
   format: WebhookEndpointFormat;
   createdAt: Date;
   // When set, the endpoint is muted: matching events do not enqueue
-  // deliveries. Toggle with `endpoints.update(id, { disabled })`.
+  // deliveries.
   disabledAt: Date | null;
 }
 
@@ -399,10 +394,10 @@ export interface WebhookEndpointWithSecret extends WebhookEndpoint {
 export interface CreateWebhookEndpointInput {
   url: string;
   events?: JunjoEventType[];
-  // Optional. When omitted the server generates a 32-byte base64url
-  // secret and returns it on the create response.
+  // When omitted, the server generates a 32-byte base64url secret and
+  // returns it on the create response.
   secret?: string;
-  // Optional. Defaults to "junjo".
+  // Defaults to "junjo".
   format?: WebhookEndpointFormat;
 }
 
