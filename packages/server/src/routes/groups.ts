@@ -20,7 +20,6 @@ import {
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
-  toPublicMember,
   toPublicRole,
 } from "../events.js";
 import { findJunjoUserId } from "../identity.js";

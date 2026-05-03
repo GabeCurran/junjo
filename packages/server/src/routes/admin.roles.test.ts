@@ -88,7 +88,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     const officer = await prisma.role.create({
       data: { groupId: seed.groupId, name: "Officer", priority: 100, color: "#aabbcc" },
     });
-    const member = await prisma.role.create({
+    await prisma.role.create({
       data: { groupId: seed.groupId, name: "Member", priority: 0 },
     });
     const veteran = await prisma.role.create({
