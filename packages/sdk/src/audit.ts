@@ -34,10 +34,9 @@ export function deserializeAuditEntry(w: WireAuditEntry): AuditEntry {
 export class AuditApi {
   constructor(private readonly http: HttpClient) {}
 
-  // Returns audit entries for a group, newest first. Pass `before: Date`
-  // to fetch a page strictly older than a given timestamp; the returned
-  // `nextCursor` is the ISO 8601 createdAt of the last item, ready to
-  // feed back in as `before` on the next call.
+  // Pass `before: Date` to fetch a page strictly older than that
+  // timestamp. `nextCursor` is the ISO 8601 createdAt of the last item,
+  // ready to feed straight back in as `before` on the next call.
   async list(groupId: GroupId, opts?: ListAuditOptions): Promise<Page<AuditEntry>> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));

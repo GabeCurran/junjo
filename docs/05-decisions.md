@@ -5107,3 +5107,28 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 **Why a separate page when the Overview already lists 7 codes:** the Overview's table is "reserved codes the server returns"; this page is the full inventory including SDK-only codes that never round-trip through HTTP. The Overview table stays as a quick-reference for the most common server codes and now links to the full Errors page.
 
 **Trade:** a small amount of duplication (the 7 Overview codes also appear on the Errors page). Acceptable: the Overview is read by people skimming for "what is the auth header?", the Errors page is read by people writing exception-handling code. Deduping by removing the Overview table would force the latter audience to bounce; keeping both is the user-facing-friendly choice.
+
+
+### Phase 14.7 (sdk slice): trim WHAT-only docstrings, keep cross-process and security WHY
+
+**Decision:** the comment audit ships per-package, one commit per iteration (per VISION's "4 commits max" rule, applied as one slice per iteration to satisfy hard rule 1's "one logical change"). This iteration covers `packages/sdk/src/**` only; `packages/server/src/**`, `packages/react/src/**`, and `packages/shared/src/**` are tracked as a `[ ] partial` PROGRESS entry and ship in subsequent iterations.
+
+**What got removed:**
+
+- Method docstrings that just paraphrase the signature (`async create(...)`: "Creates an endpoint and returns it including the signing secret.") - the type already says it.
+- "Called by X" pointers (`// Reachable as `junjo.webhooks.endpoints`.`, `// The hot path for any game logic`) - drift as the code moves; never load-bearing.
+- Restated error inventories on `verifyWebhook` (`Throws JunjoError on missing headers, malformed timestamp, ...`) - the new `apps/docs/pages/api-reference/errors.mdx` (Phase 14.6) is the canonical place.
+- Stale phase references in private helpers (`buildCreateBody`'s "Phase 3.1 ships role CRUD only. The grant / revoke routes ... arrive in Phase 3.3" - 3.3 has long since shipped). Re-cast as evergreen WHY.
+
+**What stayed (representative):**
+
+- `WEBHOOK_SIGNATURE_SCHEME`'s "must stay in sync with the server's `webhookWorker.ts`" - cross-process invariant; bumping one without the other breaks every receiver.
+- `constantTimeEqual`'s "Web Crypto has no public timingSafeEqual" - security-critical, explains why we hand-rolled the loop.
+- `WebhookEndpointsApi#create`'s "secret is returned exactly once; persist it immediately" - non-recoverable security caveat.
+- `audit.list`'s `nextCursor` format (ISO 8601 `createdAt` of the last item, ready to feed back as `before`) - opaque-string cursor type is non-self-documenting.
+- `subscribe`'s "resolves after the server has accepted the connection, so 401 / 404 surface as a thrown `JunjoError` rather than via `onError`" - resolution-vs-onError split is non-obvious from the signature.
+- All public adapter config docstrings (`jwtAdapter` / `clerkAdapter` / `supabaseAdapter`) - structural-typing constraints + peer-dep rationale + integration examples are the user's first encounter with each adapter.
+
+**Trade:** the audit is a judgment call on each comment. The `groups.ts#delete` "Soft delete with a 7-day undo window" comment, for instance, was kept (the 7-day window is a real policy that the type doesn't carry) but trimmed (`Pass `hard: true` to bypass.` was redundant with the `opts?: { hard?: boolean }` signature, so the trim left "Soft delete with a 7-day undo window; `hard: true` bypasses it."). A future reviewer might pull on either side; the rule of thumb is: if a future reader would be surprised without the comment, keep it.
+
+**Why one slice per iteration vs one big audit:** the iteration log + PROGRESS + verify cost is amortized either way; the value of splitting is that each iteration's diff is small enough to review by eye without a separate code-review tool. Server is the largest package (~33K lines) and would benefit from being its own iteration regardless.

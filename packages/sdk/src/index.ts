@@ -72,16 +72,11 @@ export class Junjo {
     this.webhooks = new WebhooksApi(this.http);
   }
 
-  // The hot path for any game logic: "is this user allowed to do X in
-  // this group?" Server-side cached. Boolean wrapper around `check`.
   async can(userId: UserId, groupId: GroupId, permission: PermissionKey): Promise<boolean> {
     const result = await this.check(userId, groupId, permission);
     return result.allowed;
   }
 
-  // Slightly richer than `can`: returns *why* a check passed or failed.
-  // Useful for admin tooling and "you don't have permission because
-  // your role X is missing key Y" UX.
   async check(
     userId: UserId,
     groupId: GroupId,
@@ -103,8 +98,6 @@ export class Junjo {
     return result;
   }
 
-  // Resolve a player session token to a Junjo user id. Calls the
-  // configured auth adapter and the cross-game identity layer (cloud).
   async whoami(_token: string): Promise<{ userId: UserId } | null> {
     throw NOT_IMPLEMENTED;
   }

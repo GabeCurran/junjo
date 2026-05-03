@@ -111,10 +111,10 @@ export function deserializeGroup(w: WireGroup): Group {
   };
 }
 
-// Builds the open-code invite body. Drops `targetUserId`: the open-code
-// path is by definition not addressed to a specific user, so silently
-// passing one in via the shared `CreateInvitationInput` shape would be a
-// programmer error masquerading as a feature.
+// Drops `targetUserId`: the open-code path is by definition not addressed
+// to a specific user, so silently passing one in via the shared
+// `CreateInvitationInput` shape would be a programmer error masquerading
+// as a feature.
 function buildOpenInviteBody(input?: CreateInvitationInput): Record<string, string> {
   const body: Record<string, string> = {};
   if (input?.roleId !== undefined) body.roleId = input.roleId;
@@ -162,7 +162,7 @@ export class GroupsApi {
     return deserializeGroup(wire);
   }
 
-  // Soft delete with a 7-day undo window. Pass `hard: true` to bypass.
+  // Soft delete with a 7-day undo window; `hard: true` bypasses it.
   async delete(id: GroupId, opts?: { hard?: boolean }): Promise<void> {
     const path = opts?.hard
       ? `/v1/groups/${encodeURIComponent(id)}?hard=true`
@@ -258,12 +258,9 @@ export class GroupsApi {
 
   // ------ Real-time ------
 
-  // Open an SSE stream against `GET /v1/events/:groupId` and call
-  // `handler` once per delivered event, with `Date` fields rehydrated.
-  // Returns a `Subscription` whose `close()` cancels the underlying
-  // fetch. Resolves after the server has accepted the connection (so
-  // 401 / 404 surface as a thrown `JunjoError` rather than via
-  // `onError`); mid-stream failures fire `onError` and end the stream.
+  // Resolves after the server has accepted the connection, so 401 / 404
+  // surface as a thrown `JunjoError` rather than via `onError`; mid-stream
+  // failures fire `onError` and end the stream.
   async subscribe(
     groupId: GroupId,
     handler: (event: JunjoEvent) => void,
