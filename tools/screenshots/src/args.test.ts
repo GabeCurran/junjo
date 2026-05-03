@@ -6,18 +6,27 @@ describe("parseArgs", () => {
     expect(parseArgs(["--target=dashboard"])).toEqual({ target: "dashboard" });
   });
 
-  it("parses --target with --base, --route, --out-dir", () => {
+  it("parses --target with --base, --route, --viewport, --out-dir", () => {
     const result = parseArgs([
       "--target=docs",
       "--base=http://localhost:3000",
       "--route=home",
+      "--viewport=mobile",
       "--out-dir=/tmp/out",
     ]);
     expect(result).toEqual({
       target: "docs",
       base: "http://localhost:3000",
       route: "home",
+      viewport: "mobile",
       outDir: "/tmp/out",
+    });
+  });
+
+  it("parses --viewport on its own", () => {
+    expect(parseArgs(["--target=dashboard", "--viewport=mobile"])).toEqual({
+      target: "dashboard",
+      viewport: "mobile",
     });
   });
 

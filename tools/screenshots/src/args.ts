@@ -2,6 +2,7 @@ export type CliArgs = {
   target: string;
   base?: string;
   route?: string;
+  viewport?: string;
   outDir?: string;
 };
 
@@ -31,6 +32,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   const result: CliArgs = { target };
   if (opts.base) result.base = opts.base;
   if (opts.route) result.route = opts.route;
+  if (opts.viewport) result.viewport = opts.viewport;
   if (opts["out-dir"]) result.outDir = opts["out-dir"];
   return result;
 }

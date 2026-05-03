@@ -5811,3 +5811,38 @@ The route-filter (`--route=<slug>`) shipped in Phase 15.1 with `route-filter.ts`
 - The README's slug list for the dashboard is hand-maintained; if `buildDashboardRoutes()` gains or loses a route, the README will drift. This is a low-frequency change (the dashboard route surface is essentially complete after Phase 11/12) and the agent can self-correct on the next dashboard iteration. A future hardening pass could auto-generate the list from the source via a vitest snapshot, but that is out of scope for 15.4.
 - The visual feedback loop's value depends on the agent actually invoking it. Until the prompt-template paste lands, this is on the agent's judgement; the workflow is documented but not yet enforced.
 
+## 2026-05-03 (Phase 15.5 - Mobile viewport audit)
+
+### What landed
+
+`tools/screenshots/src/viewport-filter.ts` (mirror of `route-filter.ts`) plus a `--viewport=<name>` flag on the crawler, wired through `args.ts` and `crawl.ts`. The crawler now rebuilds a shallow-cloned config with the filtered viewport list before calling `runCrawl`, so existing route-iteration logic stays untouched. Four new unit tests in `viewport-filter.test.ts`, two new args tests covering the flag in isolation and combined with other flags. README gains a "Mobile viewport audit (Phase 15.5)" section codifying when to run an audit, how to run it (mobile-only crawl via the new flag), an inspection checklist (overflow, cropping, illegible text, touch targets, navigation reachability, empty states, modal placement, chart rendering), and a recording-findings convention. PROGRESS.md marks 15.5 done.
+
+### Why a flag plus methodology, not "do the audit"
+
+Phase 15.5 (`Mobile viewport audits (dashboard + docs)`) was added to PROGRESS.md by an earlier iteration but never made it into VISION.md, and prior iterations called it "too vague to ship as a code change in one iteration" (iteration 029 notes). A literal audit pass needs a running Junjo server, a seeded DB, the dashboard `next dev` server booted with the right env vars, and a vision-capable reviewer to walk ~30 PNGs. The loop's `verify.ps1` cannot reliably boot any of that infrastructure, and even if it could, the audit output is a list of issues - not a code artifact. So the iteration-shaped deliverable is the infrastructure for the audit (a viewport filter that halves crawl time when only mobile matters) plus the methodology a future reviewer needs to actually run one (the README section). Both pieces are durable; the audit cycle is now a repeatable ritual rather than an ad-hoc inspection.
+
+### Why a separate filter and not a config-level filter
+
+The existing `--route=<slug>` filter and the new `--viewport=<name>` filter compose: `--target=docs --route=sdk-groups --viewport=mobile` captures exactly one PNG, which is the right granularity for both an audit follow-up ("did fixing the column width fix the overflow on this one route?") and a Phase 13 docs iteration that touched a single MDX page. Pushing the filter into the config (e.g., a `MOBILE_ONLY=1` env var read by `dashboard.ts` / `docs.ts`) would couple the filter to the config layer rather than the CLI layer, which is wrong: the filter is a per-invocation concern, not a per-config one.
+
+### Filter behaviour (unchanged from --route convention)
+
+`filterViewports(viewports, undefined)` returns a copy of all viewports (callers cannot mutate the source). `filterViewports(viewports, "mobile")` returns the matching viewport. `filterViewports(viewports, "tablet")` throws with the list of known viewport names enumerated in the message, mirroring the route-filter discovery pattern - the slug-not-found error is itself the discovery interface.
+
+### Index.md regeneration trade
+
+When `--viewport=mobile` is passed, the runner overwrites `INDEX.md` to list only the mobile captures from this crawl, which loses the desktop rows from any prior full crawl. This matches the existing `--route` flag behaviour (which already overwrites the index to a single-row catalog when used). The README calls this out and instructs contributors to rerun without filters to restore the full catalog. The alternative - merge-into-existing-INDEX semantics - was rejected because the index is a regenerated artifact, not a hand-maintained one, and merge logic would obscure what was actually captured this run.
+
+### What was deliberately NOT done
+
+- Did NOT add visual-regression diffing (Phase 17 territory; explicitly deferred in VISION).
+- Did NOT add a `--viewports=mobile,desktop` multi-viewport filter. The single-name filter covers "give me one viewport"; "give me both" is the unfiltered default. There is no concrete in-between use case today.
+- Did NOT add a tablet viewport (768x1024 or 1024x768). The catalog targets two viewports per VISION 15.1; adding a third would expand the catalog without a corresponding inspection convention. Tablets are a 6-month-out concern at best.
+- Did NOT plumb the audit findings into a tracked file (e.g., `tools/screenshots/AUDIT_FINDINGS.md`). Findings belong in GitHub issues so they have an owner and a state machine; a tracked file would calcify into a stale list. The README's "Recording findings" subsection makes the issue-per-finding convention explicit instead.
+- Did NOT auto-detect mobile-overflow programmatically (e.g., comparing the captured PNG width against the viewport width, or extracting the document scrollWidth). That would require Puppeteer DOM evaluation per route, which complicates the crawler and produces false positives on intentionally-wide content (charts, code blocks). Human review with the inspection checklist is the right tool for this signal.
+
+### Caveats
+
+- The audit ritual itself is human-driven and not enforced by `verify.ps1`. The README documents when to run one; whoever owns a release is expected to run it before publishing. There is no automation that pages someone if an audit is overdue.
+- `--viewport=mobile` does not change the viewport definitions in the config - it only filters which viewports the runner iterates over. If a future contributor needs to override the mobile dimensions (e.g., audit at 414x896 for an iPhone 11 Pro Max simulation), they must edit the config's `viewports` array directly. A `--viewport-width` / `--viewport-height` override pair was considered and rejected as gold-plating; the catalog standardises on 375x812 and audit findings should reference that baseline.
+

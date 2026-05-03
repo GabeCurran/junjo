@@ -68,12 +68,22 @@ npm run screenshots -- --target=docs
 # Capture a single route only (used by the agent's visual feedback loop)
 npm run screenshots -- --target=dashboard --route=group-detail-members
 
+# Capture a single viewport only (mobile-only audit cycle, see "Mobile viewport audit" below)
+npm run screenshots -- --target=dashboard --viewport=mobile
+
+# Combine route + viewport for the tightest cycle
+npm run screenshots -- --target=docs --route=sdk-groups --viewport=mobile
+
 # Override the base URL (skip the bundled dev-server boot)
 npm run screenshots -- --target=dashboard --base=http://localhost:13030
 
 # Override the output directory
 npm run screenshots -- --target=dashboard --out-dir=/tmp/screenshots
 ```
+
+The `--route` and `--viewport` flags both rewrite `INDEX.md` to cover only
+the current crawl. This is fine for ad-hoc audit and feedback cycles; rerun
+without filters to restore the full catalog index.
 
 ## Output
 
@@ -296,6 +306,94 @@ own initiative when it judges a UI change worth visual validation.
 > (segments joined with hyphens; `index.mdx` becomes `home`). See
 > `tools/screenshots/README.md` "Visual feedback loop" for the full
 > protocol, env-var pre-requisites, and inspection checklist.
+
+## Mobile viewport audit (Phase 15.5)
+
+The catalog captures every route at desktop (1440x900) and mobile (375x812
+with a 2x scale factor and `isMobile: true`) so layout regressions on small
+screens get visible signal. A "mobile audit" is the periodic pass where a
+human (or the loop's vision-capable agent) walks every mobile PNG and
+records issues. It is separate from the per-iteration visual feedback loop
+above: the feedback loop catches mobile breakage on routes the iteration
+touched; the audit catches breakage everywhere else.
+
+### When to run an audit
+
+- Before publishing a marketing-visible release (the dashboard demo or the
+  docs site landing).
+- After a layout-shell change in the dashboard (`apps/dashboard/app/layout.tsx`,
+  the sidebar, the topbar, breadcrumbs).
+- After a Tailwind / shadcn / Tremor major-version upgrade.
+- Quarterly as a cadence even when nothing obvious has changed; mobile
+  regressions creep in from CSS-resolver order changes, third-party bumps,
+  and content edits that exceed unstated width assumptions.
+
+### How to run an audit
+
+1. Start the Junjo server (dashboard target only; the docs target needs no
+   backend). Set the dashboard env vars per "Dashboard catalog" above.
+2. Capture mobile-only for both targets:
+
+   ```sh
+   npm run screenshots -- --target=dashboard --viewport=mobile
+   npm run screenshots -- --target=docs --viewport=mobile
+   ```
+
+   The `--viewport=mobile` filter halves the crawl time vs. capturing both
+   viewports (the audit only cares about mobile output).
+3. Walk the resulting PNGs route by route. The output sits at
+   `tools/screenshots/output/<area>/<slug>.mobile.png` and the
+   `INDEX.md` for the area lists every capture in one place.
+
+### Inspection checklist
+
+For each PNG:
+
+- **Horizontal overflow.** Anything wider than 375 CSS px forces a
+  horizontal scrollbar; tables, code blocks, and pre-formatted content are
+  the usual offenders.
+- **Cropped content.** Cards, dialogs, and chart legends that get clipped
+  by the viewport edge.
+- **Illegible text.** Font sizes below ~14px, low-contrast secondary text,
+  text that wraps mid-word because of fixed widths.
+- **Touch targets.** Interactive elements smaller than ~44px square; in
+  particular icon-only buttons in the sidebar / topbar / table rows.
+- **Navigation reachability.** The sidebar collapses on mobile; confirm
+  the trigger is visible and tappable, and that the nav links are
+  reachable from the collapsed state.
+- **Empty / error states.** Fixture-seeded data covers the happy path; if
+  a route has an empty state worth screenshotting, capture it manually
+  and add it to the audit notes (the catalog does not seed every state).
+- **Modal and dialog placement.** Dialogs that exceed viewport height get
+  cut off without scroll context; verify the close affordance is reachable.
+- **Chart rendering** (analytics routes only). Tremor charts have minimum
+  width assumptions; under 375px some collapse to unreadable shapes.
+
+### Recording findings
+
+Each audit produces an issue list, not a checklist of "passed routes". Open
+a GitHub issue per finding (or a single audit-issue with a checkbox list
+for batch fixes), tag it `mobile`, and reference the offending PNG by its
+relative path so the next audit can confirm the fix:
+
+```
+Route: /games/<gameId>/groups/<groupId>?tab=permissions
+PNG: tools/screenshots/output/dashboard/group-permissions.mobile.png
+Issue: permission matrix overflows horizontally; column headers clip at
+  the right edge starting around the 4th permission key.
+```
+
+The audit does not alter the catalog itself (PNGs are gitignored). Findings
+go to issues; fixes happen in the relevant package; the next audit
+confirms regression.
+
+### Why this is documentation, not a vitest gate
+
+The crawl needs a live dev server (and for the dashboard target, a live
+Junjo server with seeded fixtures). The loop's `verify.ps1` cannot
+reliably boot either, so the audit is a human-in-the-loop ritual rather
+than an automated check. The infrastructure is here; the cadence is on
+whoever owns the release.
 
 ## Why Puppeteer and not Playwright
 

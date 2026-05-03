@@ -6,6 +6,7 @@ import { startDevServer } from "./dev-server.ts";
 import { resolveRoutes } from "./resolve-routes.ts";
 import { filterRoutes } from "./route-filter.ts";
 import { runCrawl } from "./runner.ts";
+import { filterViewports } from "./viewport-filter.ts";
 
 async function main(argv: readonly string[]): Promise<void> {
   let args: ReturnType<typeof parseArgs>;
@@ -38,7 +39,9 @@ async function main(argv: readonly string[]): Promise<void> {
   try {
     const baseRoutes = await resolveRoutes(config);
     const routes = filterRoutes(baseRoutes, args.route);
-    const captures = await runCrawl({ config, routes, outDir, baseUrl });
+    const viewports = filterViewports(config.viewports, args.viewport);
+    const filteredConfig = { ...config, viewports };
+    const captures = await runCrawl({ config: filteredConfig, routes, outDir, baseUrl });
     process.stdout.write(`captured ${captures.length.toString()} screenshot(s) to ${outDir}\n`);
   } finally {
     if (stop) await stop();
@@ -48,7 +51,7 @@ async function main(argv: readonly string[]): Promise<void> {
 function printUsage(error: string): void {
   process.stderr.write(`error: ${error}\n\n`);
   process.stderr.write(
-    "usage: tsx src/crawl.ts --target=<name> [--base=<url>] [--route=<slug>] [--out-dir=<path>]\n",
+    "usage: tsx src/crawl.ts --target=<name> [--base=<url>] [--route=<slug>] [--viewport=<name>] [--out-dir=<path>]\n",
   );
 }
 
