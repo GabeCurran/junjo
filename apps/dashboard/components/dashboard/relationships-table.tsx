@@ -300,7 +300,7 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
 export function RelationshipsTable({ relationships, gameId, groupId }: RelationshipsTableProps) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Relationships</CardTitle>
           <CardDescription>

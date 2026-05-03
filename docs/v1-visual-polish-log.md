@@ -574,6 +574,51 @@ break-all is functionally inert there).
   cleanly with the icon-circle + mono action label + relative timestamp
   pattern consistent with `recent-activity-feed`.
 
+## V.13 group detail - relationships tab
+
+**Before:** Mobile (375px) `RelationshipsTable` card header used
+`flex flex-row items-start justify-between gap-4`, which forced the
+"Relationships" title + descriptive paragraph into a narrow left column
+beside the "Add relationship" button. The description was crushed to a
+~12-character-wide column with most lines holding one or two words, and
+the action button hung off the right edge of the visible card area.
+
+**Fix:** Mirrored the V.7 / V.10 mobile-stack pattern - changed the
+`CardHeader` to
+`flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5`
+in `apps/dashboard/components/dashboard/relationships-table.tsx`. The
+title + description now span the full card width on mobile and the
+"Add relationship" button drops onto its own line beneath them.
+Desktop is byte-identical because every modifier above `sm:` is the
+prior layout.
+
+**Acceptable as-is:**
+
+- Captured mobile PNG is still wider than 375px because
+  `GroupDetailTabs` strip overflows (the V.14b shared follow-up
+  filed under "Structural issues to revisit later"). Out of V.13's
+  scope.
+- The relationships table itself sits inside `overflow-x-auto`, so on
+  mobile the TYPE column header is truncated to "TYP" and the edit /
+  delete icon buttons are clipped off the right edge of the card. Same
+  V.9-style table-on-mobile clipping noted in V.9-V.12; the wrapper
+  scrolls on touch but offers no visual scroll affordance, and the
+  action buttons stay clipped on capture. Filed under the existing
+  V.9 follow-up in "Structural issues to revisit later" rather than
+  re-described here, because the per-relationship row is much smaller
+  than the members row and lifting it into a tap-to-expand mobile card
+  would be a bigger redesign than V.9's own.
+- The single "rival" relationship row reads cleanly on desktop with a
+  monospace `groupBId`, mono `rival` badge in the muted variant, the
+  "May 3, 2026" `since` value in muted-foreground text, and the
+  Edit / Delete icon buttons right-aligned. Empty-state is a dashed
+  card with the `Link2` icon + helper copy, never visible in the demo
+  fixture but inspected in source.
+- Description copy mentions that "mutual" pairs render as one row each
+  from both sides; this is the V1 limitation called out in source
+  comments at the top of `relationships-table.tsx`. Not a polish
+  issue, just a content note for morning-Gabe.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
