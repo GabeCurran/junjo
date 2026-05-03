@@ -3,7 +3,12 @@ import { fileURLToPath } from "node:url";
 import { buildDashboardRoutes, seedScreenshotFixtures } from "../seed-fixtures.ts";
 import type { CrawlConfig, PrepareResult } from "../types.ts";
 
-const DEFAULT_PORT = 13130;
+// Defaults to 3000 to match the user's standard `npm run dev:dashboard`
+// port. Combined with isAlreadyServing() in dev-server.ts, the crawler
+// reuses the running dashboard from the dev workflow rather than
+// spawning a parallel instance. Override via SCREENSHOTS_DASHBOARD_PORT
+// for unusual setups.
+const DEFAULT_PORT = 3000;
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 const DEFAULT_ADMIN_USER = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin-screenshots";
