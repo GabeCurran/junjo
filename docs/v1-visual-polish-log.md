@@ -528,6 +528,52 @@ the same shape). Adding nothing new to the structural list.
   `guild` badge + `invite-only` badge across multiple rows. Word
   wrap is on token boundaries and stays readable; no fix needed.
 
+## V.12 group detail - audit tab
+
+**Before:** Mobile (375px) audit feed overflowed horizontally because each
+row's actor/target line concatenated long monospace CUIDs (~25 chars each)
+with no break opportunity. The `<p className="mt-0.5 text-xs ...">` had
+default `overflow-wrap: normal`, so the unbreakable mono tokens pushed the
+row past the card width and ultimately past the page width. Captured PNG
+came in at 1296px wide on a 375px viewport target.
+
+**Fix:** Added `break-all` to the actor/target paragraph in
+`apps/dashboard/components/dashboard/audit-feed.tsx`. Long mono CUIDs now
+wrap mid-token within the row's content column instead of overflowing.
+Desktop is byte-identical (the prose words "actor" / "target" / "system"
+plus the raised dot separator never approach the line width at 1440px, so
+break-all is functionally inert there).
+
+**Acceptable as-is:**
+
+- Captured mobile PNG is still 1296px wide because the
+  `GroupDetailTabs` strip (`flex items-center gap-1`, no wrap or
+  horizontal-scroll affordance) renders six tabs at ~95px each and forces
+  the page wider than 375px. Same root cause behind every group-detail
+  surface's mobile capture coming in at >= 1296px (V.9-V.11 each filed
+  this under `## Structural issues to revisit later`). Newly added as the
+  separate `V.14b` follow-up below since the fix touches a single shared
+  component and benefits V.9-V.14 together.
+- Audit-row wrapping breaks IDs at arbitrary positions (e.g., a CUID may
+  break mid-token after ~14 chars on mobile). Acceptable: copy-paste of
+  the visible string still yields the full ID (browsers reassemble the
+  text-node content), and the alternative (`break-words`) does not break
+  CUIDs because they have no internal break opportunity.
+- "Filter by action" + "Rows / page-size" controls stack vertically on
+  mobile via the existing `flex flex-col sm:flex-row` toolbar; no edits
+  needed. Pagination footer (`Showing the newest page` + Previous/Next)
+  also stacks correctly.
+- Every audit row's payload `<details>` is collapsed by default, so the
+  `<pre>` block's potential horizontal overflow never triggers in the
+  default screenshot. If an operator expands a payload on mobile, the
+  inner `<pre>` already carries `overflow-x-auto` so it scrolls inside
+  the row rather than pushing the page wider.
+- Six action types are visible across the demo dataset (group.parent.set,
+  group.relationship.set, role.assigned, member.joined, member.invited,
+  permission.granted, role.created, group.created). Hierarchy reads
+  cleanly with the icon-circle + mono action label + relative timestamp
+  pattern consistent with `recent-activity-feed`.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
@@ -536,6 +582,21 @@ the same shape). Adding nothing new to the structural list.
   default -> `ArrowRight`) would let the eye scan event types at a
   glance. Out of scope for visual polish; the row is functional and
   legible without it.
+
+- **Group detail tab strip mobile overflow (V.14b follow-up).**
+  `apps/dashboard/components/dashboard/group-detail-tabs.tsx` renders six
+  tabs (Members / Roles / Permissions / Audit / Relationships /
+  Sub-groups) with `flex items-center gap-1 border-b border-border` and
+  no wrap or horizontal-scroll handling. At the 375px mobile viewport
+  the row is ~590px wide, which forces the page to ~1296px and is the
+  reason every group-detail capture (V.9-V.14) comes in wider than the
+  target viewport. Real fix: add `overflow-x-auto` (and possibly
+  `whitespace-nowrap` on each tab) so the strip scrolls horizontally
+  inside the page width rather than extending the page itself. One CSS
+  class on the shared component, benefits V.9-V.14 simultaneously.
+  Filed as V.14b below so a future iteration owns the cross-cutting
+  visual fix without expanding any single V.9-V.14 surface beyond its
+  protocol-17a one-fix scope.
 
 - **Members table mobile clipping (V.9 follow-up).** At the 375px
   mobile viewport the table renders only the User and Status columns;

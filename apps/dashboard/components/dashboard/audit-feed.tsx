@@ -84,7 +84,7 @@ function AuditRow({ entry }: AuditRowProps) {
             {relativeTime(entry.createdAt)}
           </time>
         </div>
-        <p className="mt-0.5 text-xs text-muted-foreground">
+        <p className="mt-0.5 break-all text-xs text-muted-foreground">
           {entry.actorUserId ? (
             <>
               actor <span className="font-mono">{entry.actorUserId}</span>
