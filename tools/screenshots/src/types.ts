@@ -22,13 +22,23 @@ export type DevServer = {
   startupTimeoutMs?: number;
 };
 
+export type PrepareResult = {
+  routes: RouteSpec[];
+};
+
 export type CrawlConfig = {
   area: string;
   baseUrl?: string;
   basicAuth?: { username: string; password: string };
   viewports: Viewport[];
-  routes: RouteSpec[];
+  routes?: RouteSpec[];
   devServer?: DevServer;
+  // When present, called after the dev server is up but before any
+  // capture begins. Returns the routes to crawl, replacing `routes`.
+  // Lets a config seed its backing data (calling out to the Junjo API,
+  // a fixtures script, etc.) and produce route paths that include
+  // freshly-resolved IDs.
+  prepare?: () => Promise<PrepareResult>;
 };
 
 export type CapturedScreenshot = {

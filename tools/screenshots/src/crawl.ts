@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { ArgsError, parseArgs } from "./args.ts";
 import { loadConfig } from "./config-loader.ts";
 import { startDevServer } from "./dev-server.ts";
+import { resolveRoutes } from "./resolve-routes.ts";
 import { filterRoutes } from "./route-filter.ts";
 import { runCrawl } from "./runner.ts";
 
@@ -19,7 +20,6 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   const { config } = await loadConfig(args.target);
-  const routes = filterRoutes(config.routes, args.route);
   const outDir = args.outDir ?? defaultOutDir(args.target);
 
   let baseUrl = args.base ?? config.baseUrl;
@@ -36,6 +36,8 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   try {
+    const baseRoutes = await resolveRoutes(config);
+    const routes = filterRoutes(baseRoutes, args.route);
     const captures = await runCrawl({ config, routes, outDir, baseUrl });
     process.stdout.write(`captured ${captures.length.toString()} screenshot(s) to ${outDir}\n`);
   } finally {

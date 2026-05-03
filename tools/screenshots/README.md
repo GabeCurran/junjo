@@ -6,8 +6,8 @@ markdown INDEX file alongside the PNGs so the catalog is browsable in
 the file tree.
 
 This workspace is part of Phase 15 of the V1 roadmap. Phase 15.1
-(this commit) ships the crawler infrastructure. Phase 15.2 adds the
-dashboard route config; Phase 15.3 adds the docs route config.
+shipped the crawler infrastructure. Phase 15.2 adds the dashboard
+route config + fixture seeder. Phase 15.3 adds the docs route config.
 
 ## Layout
 
@@ -22,7 +22,11 @@ tools/screenshots/
     route-filter.ts    --route=<slug> filtering
     index-md.ts        Renders the per-area INDEX.md table
     types.ts           CrawlConfig, RouteSpec, Viewport
-    configs/           (Phase 15.2 / 15.3 land target configs here)
+    resolve-routes.ts  Picks between static `routes` and `prepare()`
+    seed-fixtures.ts   HTTP-based idempotent fixture seeder
+    configs/
+      dashboard.ts     Phase 15.2 (dev server + seed + route list)
+      docs.ts          (Phase 15.3 lands the docs config here)
   output/              Generated PNGs and INDEX.md (gitignored)
   README.md
   package.json
@@ -83,49 +87,89 @@ PNGs are gitignored (large binaries, regeneratable). The committed
 artifact for the catalog is the route config itself plus this README;
 the PNGs live only in a contributor's local checkout.
 
-## How configs work (for Phase 15.2 / 15.3)
+## How configs work
 
 A config is a TypeScript file at `src/configs/<target>.ts` exporting a
-`CrawlConfig` as default. Sketch:
+`CrawlConfig` as default. Two flavors:
+
+**Static routes** (the docs config, Phase 15.3):
 
 ```ts
 import type { CrawlConfig } from "../types.ts";
 
 const config: CrawlConfig = {
-  area: "dashboard",
-  basicAuth: { username: "admin", password: "admin-screenshots" },
+  area: "docs",
   viewports: [
     { name: "desktop", width: 1440, height: 900 },
     { name: "mobile", width: 375, height: 812, isMobile: true },
   ],
   routes: [
-    { slug: "home", path: "/", description: "Dashboard home" },
-    {
-      slug: "groups-list",
-      path: "/games/g_demo/groups",
-      description: "Groups table",
-      waitFor: "table",
-    },
+    { slug: "home", path: "/", description: "Docs landing" },
+    { slug: "getting-started", path: "/getting-started", description: "Tutorial" },
   ],
   devServer: {
-    command: "npm run dev -- --port 13030 --hostname 127.0.0.1",
-    cwd: "../../apps/dashboard",
-    port: 13030,
-    readyPath: "/api/health",
+    command: "npm run dev -w @junjo/docs -- --port 13131 --hostname 127.0.0.1",
+    cwd: "../../",
+    port: 13131,
+    readyPath: "/",
   },
 };
 
 export default config;
 ```
 
+**Dynamic routes via `prepare()`** (the dashboard config, Phase 15.2):
+
+The dashboard's URLs include freshly-resolved IDs (`/games/<gameId>`,
+`/games/<gameId>/groups/<groupId>?tab=...`) so the routes cannot be
+written as static literals. Instead, the config's `prepare()` hook
+calls the fixture seeder, which idempotently populates a "Screenshot
+Demo" game on the live Junjo server and returns the resolved IDs;
+those IDs feed `buildDashboardRoutes()` which returns the route list
+the crawler iterates over.
+
 The crawler:
 
 1. Loads the config for `--target`.
-2. If the config has `devServer` and no `--base` flag was passed, spawns
-   the dev server and waits for `readyPath` to return < 500.
-3. Launches headless chromium, captures each (route, viewport) pair as a
-   full-page PNG, writes the INDEX.md alongside.
-4. Tears down the dev server if it was spawned.
+2. If the config has `devServer` and no `--base` flag was passed,
+   spawns the dev server and waits for `readyPath` to return < 500.
+3. If the config has `prepare()`, calls it; otherwise uses
+   `config.routes`.
+4. Launches headless chromium, captures each (route, viewport) pair
+   as a full-page PNG, writes the INDEX.md alongside.
+5. Tears down the dev server if it was spawned.
+
+## Dashboard catalog (Phase 15.2)
+
+The dashboard target needs a live Junjo server reachable at
+`JUNJO_BASE_URL` plus a server-side admin token (`JUNJO_ADMIN_TOKEN`)
+so the seeder can create the "Screenshot Demo" game and ephemerally
+issue an API key for it. The dashboard's own basic-auth credentials
+match the dashboard env var convention. The full env-var matrix for
+`npm run screenshots:dashboard`:
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `JUNJO_BASE_URL` | no | `http://127.0.0.1:8787` | Junjo server origin (seeder + dashboard talk to this) |
+| `JUNJO_ADMIN_TOKEN` | yes | - | Admin token; seeder bounces off the cross-game admin endpoints with it |
+| `JUNJO_ADMIN_API_KEY` | for the dashboard | empty string | Per-game key the dashboard reads at boot for env validation; any valid key works (the seeder issues its own ephemeral key for writes) |
+| `DASHBOARD_ADMIN_USER` | no | `admin` | Basic-auth user the crawler authenticates as |
+| `DASHBOARD_ADMIN_PASSWORD` | no | `admin-screenshots` | Basic-auth password (must match what the dashboard expects) |
+| `SCREENSHOTS_DASHBOARD_PORT` | no | `13130` | Port `next dev` is bound to during the crawl |
+
+Bring up the Junjo server (`npm run dev -w @junjo/server`) with the
+admin token configured, then:
+
+```sh
+npm run screenshots:dashboard
+```
+
+The seeder's idempotency rules: a "Screenshot Demo" game is reused if
+already present; the three demo groups (`Wolves of Ironvale`, `Storm
+Riders`, `Ironvale Alliance`) are created only if missing; each demo
+member is invited + accepted only if not already in the group; the
+parent / rival relationships are set only if not already present.
+Re-running the seeder is cheap and safe.
 
 ## Visual feedback loop (Phase 15.4)
 
