@@ -203,11 +203,99 @@ subsequent captures are fast.
 
 ## Visual feedback loop (Phase 15.4)
 
-Future iteration: the loop's agent (which has vision) will use the
-`--route=<slug>` flag to capture a single page after a UI change, then
-read the PNG back via the Read tool to validate look + layout. The
-single-route filter keeps the cycle tight (one capture takes a few
-seconds, vs. the full ~30-screenshot crawl).
+The loop's agent has vision: it can read PNGs as images via the Read
+tool and judge layout, contrast, cropping, and overflow directly. When
+working on user-facing UI (Phase 11 dashboard, Phase 12 analytics, Phase
+13 docs), the agent uses the single-route filter to capture just the
+page it changed and reads the result back before committing.
+
+### Workflow
+
+1. Make the UI change (component, route, MDX page).
+2. Capture the affected route only:
+
+   ```sh
+   npm run screenshots -- --target=dashboard --route=<slug>
+   npm run screenshots -- --target=docs --route=<slug>
+   ```
+
+3. Read both viewports back (the Read tool renders PNGs inline):
+
+   - `tools/screenshots/output/<area>/<slug>.desktop.png`
+   - `tools/screenshots/output/<area>/<slug>.mobile.png`
+
+4. Inspect for: cropped content, broken layouts, illegible text,
+   contrast failures, mobile-viewport overflow, missing or empty states.
+
+5. Iterate on the code, recapture, re-read. The single-route filter
+   keeps each cycle to a few seconds vs. the ~30-screenshot full crawl.
+
+### Where slugs come from
+
+**Dashboard slugs** are static literals in
+`src/seed-fixtures.ts::buildDashboardRoutes()`. Current set: `home`,
+`games`, `audit`, `permissions`, `analytics`, `game-detail`,
+`groups-list`, `group-members`, `group-roles`, `group-permissions`,
+`group-audit`, `group-relationships`, `group-sub-groups`, `game-audit`,
+`permission-check`, `game-analytics`.
+
+**Docs slugs** derive from MDX file paths via
+`src/discover-docs-routes.ts`. Path segments are joined with hyphens:
+`apps/docs/pages/sdk/groups.mdx` becomes the slug `sdk-groups`;
+`apps/docs/pages/auth/clerk.mdx` becomes `auth-clerk`;
+`apps/docs/pages/index.mdx` becomes `home`.
+
+The crawler validates `--route=<slug>` against the resolved route list
+and fails fast with an enumerated list of known slugs if no match is
+found, so a quick way to list available slugs is to pass an obviously
+wrong one and read the error message.
+
+### When to use it
+
+Use it for any iteration that ships rendered output: dashboard
+components, analytics charts, docs page formatting, layout shells,
+themed UI primitives. Skip it for non-visual work (server routes, SDK
+APIs that don't render, prose-only docs edits that don't touch markdown
+formatting structure).
+
+### Pre-requisites
+
+The first invocation of the day pays the puppeteer chromium download
+cost (one-time, ~280MB; see "First-time setup" above). The dashboard
+target additionally needs a running Junjo server and the env vars
+listed in "Dashboard catalog" above. The docs target needs nothing
+beyond a working repo install.
+
+### Loop prompt-template integration
+
+Hard rule 9 of `.loop/prompt-template.md` forbids the agent from
+editing the harness directly. The snippet below is the canonical
+prompt-template addition; Gabe pastes it manually into the
+"Architectural conventions" area of `.loop/prompt-template.md` (above
+"Hard rules - non-negotiable") to wire the workflow into every loop
+iteration. Until that paste lands, the agent uses the workflow on its
+own initiative when it judges a UI change worth visual validation.
+
+> ### Visual feedback loop (UI work only)
+>
+> When implementing Phase 11 / 12 / 13 work that produces rendered
+> output, after a substantial UI change run:
+>
+> ```sh
+> npm run screenshots -- --target=dashboard --route=<slug>
+> ```
+>
+> (or `--target=docs` for `apps/docs/pages/**.mdx` changes). Then read
+> the resulting PNGs at
+> `tools/screenshots/output/<area>/<slug>.{desktop,mobile}.png` via the
+> Read tool. If anything looks off (cropped content, broken layout,
+> illegible text, mobile overflow), iterate before committing. Slugs
+> for the dashboard target are listed in
+> `tools/screenshots/src/seed-fixtures.ts::buildDashboardRoutes()`;
+> slugs for the docs target are derived from MDX file paths
+> (segments joined with hyphens; `index.mdx` becomes `home`). See
+> `tools/screenshots/README.md` "Visual feedback loop" for the full
+> protocol, env-var pre-requisites, and inspection checklist.
 
 ## Why Puppeteer and not Playwright
 

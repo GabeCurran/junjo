@@ -5781,3 +5781,33 @@ The normalisation also strips a leading UTF-8 BOM on either side. None of the cu
 - The vitest assertion runs as part of every `npm test`, so it lengthens the diagrams workspace test runtime by a few hundred milliseconds (the file IO cost of reading 4 source files and 6 MDX files). This is well below the noise floor of the rest of the test suite.
 - The CLI script can also be wired into a pre-commit hook if Gabe ever adopts husky; it is currently invoked only via `npm test` (the verify gate path) and `npm run diagrams:check-sync` (the direct path).
 
+## 2026-05-03 (Phase 15.4 - Visual feedback loop documentation)
+
+### What landed
+
+`tools/screenshots/README.md` "Visual feedback loop (Phase 15.4)" section rewritten from a forward-reference into canonical documentation: the agent's workflow (capture, read, inspect, iterate), the slug taxonomy for both targets (dashboard slugs are static literals in `seed-fixtures.ts::buildDashboardRoutes()`; docs slugs are MDX-path derived with hyphen joins), when to use the workflow, env-var pre-requisites, and a paste-ready prompt-template snippet for Gabe to drop into `.loop/prompt-template.md`. No code changed; the `--route=<slug>` filter that Phase 15.4 calls out as a requirement was already shipped in Phase 15.1 (`tools/screenshots/src/route-filter.ts` + the corresponding test file), so this iteration is documentation-only.
+
+### Why the prompt-template paste lives in the README, not the harness
+
+VISION 15.4 says "Update `.loop/prompt-template.md` (the architectural-conventions area, not the hard rules) with a 'Visual feedback loop' section". Hard rule 9 forbids the agent from editing the harness: "You MUST NOT modify `.loop/run.ps1`, `.loop/verify.ps1`, or `.loop/prompt-template.md`". The hard rules explicitly override VISION when they conflict ("These override anything in VISION.md if they conflict"), same situation as Phase 16.6's `verify.ps1` conflict.
+
+The bridge: the canonical wording lives in `tools/screenshots/README.md` as a blockquote that is shaped exactly like a prompt-template addition. Gabe can paste it into `.loop/prompt-template.md` in one move when he reviews the morning batch. The README is checked in to git; the snippet is durable and the agent can refine it across iterations as the workflow evolves. Until the paste lands, the agent uses the workflow on its own initiative when it judges a UI change worth visual validation - which is the same outcome the prompt-template addition is trying to encode.
+
+The alternative was to write a dedicated `tools/screenshots/PROMPT_SNIPPET.md` file, but a single canonical doc with the workflow protocol AND the snippet beside it is easier to keep in sync than two files that have to evolve together.
+
+### Why no new code or tests
+
+The route-filter (`--route=<slug>`) shipped in Phase 15.1 with `route-filter.ts` and `route-filter.test.ts`. The slug-not-found error message that the workflow relies on for slug discovery already exists in that module. The dashboard slug literals (`home`, `games`, `audit`, ...) and the docs slug derivation (`apps/docs/pages/sdk/groups.mdx` -> `sdk-groups`) are both already implemented and tested in 15.2 and 15.3 respectively. There is no new behaviour to test in 15.4; the work is to make the workflow legible to the agent and to morning-Gabe.
+
+### What was deliberately NOT done
+
+- Did NOT touch `.loop/prompt-template.md` (hard rule 9). The README snippet is paste-ready when Gabe wants to wire it in.
+- Did NOT add a new `--routes=<slug1,slug2,...>` multi-slug filter. VISION 15.4 mentions "one or two pages without doing the full crawl"; the existing single-slug filter handles the "one page" case fine, and "two pages" is two invocations. Adding a multi-slug filter would be a small but unbounded API expansion and there is no concrete agent workflow today that needs it.
+- Did NOT add a `--list-slugs` flag. The existing slug-not-found error message enumerates the full known list, which serves the discovery use case without adding a new code path. If agent or contributor friction shows up around slug discovery later, the flag is a few lines.
+- Did NOT introduce a "slugs" reference page in `apps/docs/pages/`. The slug taxonomy is internal-loop infrastructure, not a public API; documenting it in the workspace README keeps it next to the code that defines it.
+
+### Caveats
+
+- The README's slug list for the dashboard is hand-maintained; if `buildDashboardRoutes()` gains or loses a route, the README will drift. This is a low-frequency change (the dashboard route surface is essentially complete after Phase 11/12) and the agent can self-correct on the next dashboard iteration. A future hardening pass could auto-generate the list from the source via a vitest snapshot, but that is out of scope for 15.4.
+- The visual feedback loop's value depends on the agent actually invoking it. Until the prompt-template paste lands, this is on the agent's judgement; the workflow is documented but not yet enforced.
+
