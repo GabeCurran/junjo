@@ -8,6 +8,67 @@ Junjo gives your game the building blocks it would otherwise spend a quarter wri
 
 Junjo is the same layer Stripe is for payments, Auth0 is for auth, or Pusher is for real-time: an HTTP API plus a thin native SDK. You bring your game; Junjo handles the social graph.
 
+## How it fits together
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  subgraph clients["Your game"]
+    nodeApp["Node game server"]
+    browserApp["Browser client"]
+    robloxApp["Roblox place"]
+    dashboard["apps/dashboard (admin UI)"]
+  end
+
+  subgraph sdks["Junjo SDKs"]
+    tsSdk["@junjo/sdk (Node + browser)"]
+    reactSdk["@junjo/react (hooks)"]
+    robloxSdk["junjo-roblox (Luau)"]
+  end
+
+  subgraph server["junjo-server"]
+    hono["Hono HTTP (REST + SSE) /v1"]
+    eventHub["EventHub (in-process SSE broadcast)"]
+    webhookWorker["WebhookWorker (HMAC + retries)"]
+    prisma["Prisma client"]
+  end
+
+  postgres[("Postgres")]
+
+  subgraph auth["Auth providers (verify session tokens)"]
+    clerk["Clerk"]
+    supabase["Supabase"]
+    jwt["JWT issuer"]
+  end
+
+  subgraph subscribers["Outbound consumers"]
+    sseClient["SSE consumers (live UIs)"]
+    webhookSink["Webhook subscribers (Discord, Slack, custom)"]
+  end
+
+  nodeApp --> tsSdk
+  browserApp --> reactSdk
+  reactSdk --> tsSdk
+  robloxApp --> robloxSdk
+  dashboard --> tsSdk
+
+  tsSdk -- HTTPS --> hono
+  robloxSdk -- HTTPS --> hono
+
+  hono --> eventHub
+  hono --> webhookWorker
+  hono --> prisma
+  webhookWorker --> prisma
+  prisma --> postgres
+
+  hono -- verifyToken --> clerk
+  hono -- verifyToken --> supabase
+  hono -- verifyToken --> jwt
+
+  eventHub -- SSE stream --> sseClient
+  webhookWorker -- signed POST --> webhookSink
+```
+
 ## What it gives you
 
 - **Groups** with kinds you define (`"guild"`, `"party"`, `"faction"`), visibility levels, metadata, and soft-delete with a 7-day undo window.

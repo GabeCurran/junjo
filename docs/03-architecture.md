@@ -1,5 +1,68 @@
 # 03 - Architecture
 
+## System architecture at a glance
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  subgraph clients["Your game"]
+    nodeApp["Node game server"]
+    browserApp["Browser client"]
+    robloxApp["Roblox place"]
+    dashboard["apps/dashboard (admin UI)"]
+  end
+
+  subgraph sdks["Junjo SDKs"]
+    tsSdk["@junjo/sdk (Node + browser)"]
+    reactSdk["@junjo/react (hooks)"]
+    robloxSdk["junjo-roblox (Luau)"]
+  end
+
+  subgraph server["junjo-server"]
+    hono["Hono HTTP (REST + SSE) /v1"]
+    eventHub["EventHub (in-process SSE broadcast)"]
+    webhookWorker["WebhookWorker (HMAC + retries)"]
+    prisma["Prisma client"]
+  end
+
+  postgres[("Postgres")]
+
+  subgraph auth["Auth providers (verify session tokens)"]
+    clerk["Clerk"]
+    supabase["Supabase"]
+    jwt["JWT issuer"]
+  end
+
+  subgraph subscribers["Outbound consumers"]
+    sseClient["SSE consumers (live UIs)"]
+    webhookSink["Webhook subscribers (Discord, Slack, custom)"]
+  end
+
+  nodeApp --> tsSdk
+  browserApp --> reactSdk
+  reactSdk --> tsSdk
+  robloxApp --> robloxSdk
+  dashboard --> tsSdk
+
+  tsSdk -- HTTPS --> hono
+  robloxSdk -- HTTPS --> hono
+
+  hono --> eventHub
+  hono --> webhookWorker
+  hono --> prisma
+  webhookWorker --> prisma
+  prisma --> postgres
+
+  hono -- verifyToken --> clerk
+  hono -- verifyToken --> supabase
+  hono -- verifyToken --> jwt
+
+  eventHub -- SSE stream --> sseClient
+  webhookWorker -- signed POST --> webhookSink
+```
+
+The diagram above is committed at `tools/diagrams/source/system-architecture.mmd` and rendered to PNG via `npm run diagrams -- --file=system-architecture` for offline review. The committed `.mmd` source and the Mermaid fence above must stay byte-identical (Phase 16.6 wires a sync gate).
+
 ## Pattern: API-first, thin native SDKs
 
 Same shape as Stripe, Auth0, Clerk, Supabase, Pusher, Twilio. The HTTP API is the source of truth. Every SDK is a thin client. Anyone can use raw HTTP if no SDK exists yet - that's the universal escape hatch.
