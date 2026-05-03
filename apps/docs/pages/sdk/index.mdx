@@ -61,4 +61,4 @@ In addition to the resource namespaces, `Junjo` exposes a small set of cross-cut
 |--------|--------|
 | [`junjo.can(userId, groupId, permission)`](/sdk/permissions) | shipped (Phase 3.5). Boolean wrapper around `check`. |
 | [`junjo.check(userId, groupId, permission)`](/sdk/permissions) | shipped (Phase 3.5). Returns the full `PermissionCheckResult`. |
-| `junjo.whoami(token)` | Stubbed; lands with the auth-adapter pathway in Phase 6. |
+| `junjo.whoami(token)` | shipped (Phase 14.16). Delegates to the configured `authAdapter.verifyToken`; returns `{ userId } \| null`. Throws `JunjoError({ code: "invalid_config" })` if no `authAdapter` was passed to the constructor. |

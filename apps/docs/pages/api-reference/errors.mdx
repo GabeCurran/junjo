@@ -55,8 +55,7 @@ These codes are produced by the TypeScript SDK before any HTTP request, or by he
 
 | code | status | when it is raised | how to handle |
 |------|--------|-------------------|---------------|
-| `invalid_config` | none | An auth adapter constructor (`jwtAdapter`, `clerkAdapter`, `supabaseAdapter`) was called with required arguments missing or of the wrong type. | Fix the adapter setup. The `message` field names the field at fault. |
-| `not_implemented` | none | A method that is reserved in the SDK surface but not yet implemented (today: `Junjo#whoami`). | Do not call the method. The roadmap fills these in over time; new SDK versions remove the throw site. |
+| `invalid_config` | none | An auth adapter constructor (`jwtAdapter`, `clerkAdapter`, `supabaseAdapter`) was called with required arguments missing or of the wrong type, or `Junjo#whoami` was called without an `authAdapter` configured on the client. | Fix the setup. The `message` field names the field at fault. |
 | `webhook_signature_missing` | 400 | `verifyWebhook` was called and the request had no `X-Junjo-Signature` header. | Reject the request. Returning 400 is the right HTTP response. |
 | `webhook_timestamp_missing` | 400 | Same, but for the `X-Junjo-Timestamp` header. | Same as above. |
 | `webhook_timestamp_invalid` | 400 | The `X-Junjo-Timestamp` header value is not a parseable ISO 8601 timestamp. | Reject. The sender is not a real Junjo deployment, or the proxy mangled the header. |
@@ -79,7 +78,7 @@ class JunjoError extends Error {
 }
 ```
 
-`status` is optional because SDK-only codes (`invalid_config`, `not_implemented`) do not have an HTTP status. For codes that originate on the server, `status` is always populated.
+`status` is optional because SDK-only codes (`invalid_config`) do not have an HTTP status. For codes that originate on the server, `status` is always populated.
 
 ## Adding a new code
 

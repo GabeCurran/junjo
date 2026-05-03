@@ -34,8 +34,6 @@ export interface JunjoConfig {
 
 const DEFAULT_BASE_URL = "https://api.junjo.io";
 
-const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
-
 // =====================================================================
 // Top-level client
 // =====================================================================
@@ -54,6 +52,7 @@ export class Junjo {
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
   private readonly http: HttpClient;
+  private readonly authAdapter: AuthAdapter | undefined;
 
   constructor(config: JunjoConfig) {
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
@@ -70,6 +69,7 @@ export class Junjo {
     this.invitations = new InvitationsApi(this.http);
     this.audit = new AuditApi(this.http);
     this.webhooks = new WebhooksApi(this.http);
+    this.authAdapter = config.authAdapter;
   }
 
   async can(userId: UserId, groupId: GroupId, permission: PermissionKey): Promise<boolean> {
@@ -98,8 +98,14 @@ export class Junjo {
     return result;
   }
 
-  async whoami(_token: string): Promise<{ userId: UserId } | null> {
-    throw NOT_IMPLEMENTED;
+  async whoami(token: string): Promise<{ userId: UserId } | null> {
+    if (!this.authAdapter) {
+      throw new JunjoError(
+        "whoami requires an authAdapter; pass one to `new Junjo({ authAdapter })`",
+        "invalid_config",
+      );
+    }
+    return this.authAdapter.verifyToken(token);
   }
 }
 
