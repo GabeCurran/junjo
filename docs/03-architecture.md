@@ -54,8 +54,8 @@ flowchart LR
   prisma --> postgres
 
   hono -- verifyToken --> clerk
-  hono -- verifyToken --> supabase
-  hono -- verifyToken --> jwt
+  hono --> supabase
+  hono --> jwt
 
   eventHub -- SSE stream --> sseClient
   webhookWorker -- signed POST --> webhookSink
