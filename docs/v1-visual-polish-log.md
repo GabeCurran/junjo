@@ -479,6 +479,55 @@ rendering is byte-identical to before.
   role" button. Two lines is fine; the alternative would be a
   shorter description that loses the tiebreak rule.
 
+## V.11 group detail - permissions tab
+
+**Before:** Rendered desktop and mobile after the V.8b admin-shared
+unblock. Desktop (1440px) shows the Permissions matrix card cleanly:
+title + description, the "Register a new permission key" input plus
+"+ Add column" button on a single inline row, and a 4-column table
+(ROLE + 3 keys: group.bank.withdraw, group.invite, group.kick) with
+3 role rows (officer / veteran / recruit) showing the brand-red
+checked state on grants and empty-square on revokes. Hierarchy reads
+clean, contrast is fine, no overlap, no cropping.
+
+Mobile (375px) shows two of the responsive patterns the earlier
+surfaces already established working correctly here without any
+edit needed: the input + "+ Add column" stack vertically (the
+button is full-width below the input) and the explanatory blurbs
+wrap on word boundaries within the card width.
+
+**Fix:** None applied. Per protocol 17a step 2 (surface acceptable
+-> mark done, write short log, commit, exit) the visible state on
+both viewports is acceptable for V1 polish; the only mobile-side
+issue is the matrix-table horizontal clipping, which is already
+covered by the existing "Members table mobile clipping" structural
+follow-up (per its own note, the entry applies to V.10-V.14
+sharing the same DataTable shell, and the permissions matrix is
+the same shape). Adding nothing new to the structural list.
+
+**Acceptable as-is:**
+
+- Permissions-matrix table on mobile clips after the ROLE column
+  and a partial first key column header ("grou..." for
+  `group.bank.withdraw`); the other two key columns are off-screen
+  inside `overflow-x-auto`. Same DataTable + overflow-x-auto shape
+  as members and roles tables; covered by the V.9 structural
+  follow-up which explicitly extends to V.10-V.14.
+- "Sub-groups" tab label wraps to two lines on mobile because the
+  six tabs share the row at 375px. Same observation as V.9 / V.10;
+  the tabs row is the structural shape, not a single label fix.
+- Description "...3 roles x 3 keys." uses a literal `x` rather
+  than `x` (U+00D7) for the dimensions. ASCII keeps the
+  no-em/en-dash lint happy and matches the rest of the dashboard's
+  ASCII-only copy convention; the typographic multiplication sign
+  is not worth a special-case here.
+- The bottom of the matrix card sits ~600px above the bottom of
+  the viewport on desktop. Same `flex-1 px-6 py-8` layout intent
+  flagged in V.5 / V.6 / V.7 / V.10. Not a polish bug.
+- Mobile capture's group header stacks "Wolves of Ironvale" +
+  `guild` badge + `invite-only` badge across multiple rows. Word
+  wrap is on token boundaries and stays readable; no fix needed.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
