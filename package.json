@@ -6,6 +6,10 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*", "examples/*", "tools/*"],
   "scripts": {
+    "dev": "concurrently --names server,dashboard,docs --prefix-colors blue,green,yellow --kill-others-on-fail \"npm:dev:server\" \"npm:dev:dashboard\" \"npm:dev:docs\"",
+    "dev:server": "npm run dev -w @junjo/server",
+    "dev:dashboard": "npm run dev -w @junjo/dashboard -- -p 3000",
+    "dev:docs": "npm run dev -w @junjo/docs -- -p 3001",
     "build": "npm run build -w @junjo/shared && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "biome lint .",
@@ -24,6 +28,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@changesets/cli": "^2.27.11",
+    "concurrently": "^9.2.1",
     "typescript": "^5.6.3"
   },
   "engines": {
