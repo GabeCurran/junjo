@@ -87,6 +87,12 @@ export interface CreateAppOptions {
     workerStaleMs?: number;
     dbTimeoutMs?: number;
   };
+  webhooks?: {
+    // Production cloud must leave this false. Self-host development sets it
+    // when receivers run on the same machine; index.ts derives it from the
+    // WEBHOOK_ALLOW_PRIVATE_HOSTS env var.
+    allowPrivateHosts?: boolean;
+  };
 }
 
 // One Hono app per call so tests can boot one server per file without
@@ -326,7 +332,10 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
-  v1.route("/webhooks", webhooksRouter(prisma));
+  v1.route(
+    "/webhooks",
+    webhooksRouter(prisma, { allowPrivateHosts: opts.webhooks?.allowPrivateHosts }),
+  );
   app.route("/v1", v1);
 
   return app;

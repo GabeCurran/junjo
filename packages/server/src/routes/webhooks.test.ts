@@ -166,6 +166,20 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(res.status).toBe(400);
     });
 
+    it("rejects a loopback / link-local / private URL by default (SSRF guard)", async () => {
+      for (const url of [
+        "http://localhost:8080/hook",
+        "http://127.0.0.1/hook",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/hook",
+        "http://192.168.1.10/hook",
+      ]) {
+        const res = await jsonRequest("POST", "/v1/webhooks", { url });
+        expect(res.status, `expected 400 for ${url}`).toBe(400);
+      }
+      expect(await prisma.webhookEndpoint.count()).toBe(0);
+    });
+
     it("rejects a secret that is too short", async () => {
       const res = await jsonRequest("POST", "/v1/webhooks", {
         url: "https://dev.example.com/hook",
@@ -309,6 +323,16 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(body).not.toHaveProperty("secret");
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
       expect(stored?.url).toBe("https://renamed.example.com/hook");
+    });
+
+    it("rejects a URL pivot to a private host (SSRF guard on PATCH)", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, {
+        url: "http://169.254.169.254/latest/meta-data/",
+      });
+      expect(res.status).toBe(400);
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
+      expect(stored?.url).toBe("https://dev.example.com/hook");
     });
 
     it("updates the events filter", async () => {

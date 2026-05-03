@@ -39,6 +39,14 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v === "" ? "info" : v))
     .pipe(z.enum(["error", "warn", "info", "debug", "silent"])),
+  // Operator escape hatch for webhook URL SSRF guard. Default false rejects
+  // POST /v1/webhooks { url: ... } pointed at loopback / link-local /
+  // RFC1918 / IPv6 ULA hosts. Self-host devs running a receiver on the same
+  // machine set "true" or "1" to permit them.
+  WEBHOOK_ALLOW_PRIVATE_HOSTS: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

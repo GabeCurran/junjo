@@ -18,6 +18,7 @@ const app = createApp({
   adminToken: env.JUNJO_ADMIN_TOKEN,
   rateLimit: { perMinute: env.RATE_LIMIT_PER_MINUTE, burst: env.RATE_LIMIT_BURST },
   healthz: { worker: webhookWorker },
+  webhooks: { allowPrivateHosts: env.WEBHOOK_ALLOW_PRIVATE_HOSTS },
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {

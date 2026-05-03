@@ -128,4 +128,27 @@ describe("loadEnv", () => {
       /LOG_LEVEL/,
     );
   });
+
+  it("defaults WEBHOOK_ALLOW_PRIVATE_HOSTS to false", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.WEBHOOK_ALLOW_PRIVATE_HOSTS).toBe(false);
+  });
+
+  it("accepts 'true' / '1' as enabling WEBHOOK_ALLOW_PRIVATE_HOSTS", () => {
+    expect(
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: "true" })
+        .WEBHOOK_ALLOW_PRIVATE_HOSTS,
+    ).toBe(true);
+    expect(
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: "1" })
+        .WEBHOOK_ALLOW_PRIVATE_HOSTS,
+    ).toBe(true);
+  });
+
+  it("treats other WEBHOOK_ALLOW_PRIVATE_HOSTS values as false", () => {
+    for (const v of ["", "false", "0", "yes", "no"]) {
+      const env = loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: v });
+      expect(env.WEBHOOK_ALLOW_PRIVATE_HOSTS).toBe(false);
+    }
+  });
 });
