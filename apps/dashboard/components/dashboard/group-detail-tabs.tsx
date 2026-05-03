@@ -97,7 +97,7 @@ export function GroupDetailTabs({ gameId, groupId, active }: GroupDetailTabsProp
     <div
       role="tablist"
       aria-label="Group sections"
-      className="flex items-center gap-1 border-b border-border"
+      className="flex items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-border"
     >
       {TAB_DEFS.map((tab) => {
         const isActive = tab.value === active;

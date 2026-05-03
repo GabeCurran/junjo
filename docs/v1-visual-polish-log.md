@@ -662,6 +662,41 @@ layout.
   `<code>parentGroupId</code>` token - reads cleanly on desktop and
   mobile post-fix. Acceptable as-is.
 
+## V.14b group-detail tab strip mobile overflow
+
+**Before:** `apps/dashboard/components/dashboard/group-detail-tabs.tsx`
+rendered the six-tab strip (Members / Roles / Permissions / Audit /
+Relationships / Sub-groups) with
+`flex items-center gap-1 border-b border-border` and no wrap or
+horizontal-scroll handling. At a 375px mobile viewport the row was
+~590px wide, which (a) forced the page itself wider than 375px - the
+reason every V.9-V.14 mobile capture came in around 1296px - and (b)
+let "Sub-groups" wrap to a second line so the label rendered as
+"Sub-" / "groups" stacked at the right edge of the strip.
+
+**Fix:** Added `overflow-x-auto whitespace-nowrap` to the tablist
+container className. Mobile renders Members / Roles / Permissions
+inline on one line at the natural width and lets the user scroll
+horizontally to reach Audit / Relationships / Sub-groups; the page
+itself collapses back to the 375px viewport. Desktop unchanged
+because all six tabs fit in the wider viewport so the
+`overflow-x-auto` never triggers a scrollbar. One className edit on
+the shared `GroupDetailTabs` server component; benefits V.9-V.14
+simultaneously.
+
+**Acceptable as-is:**
+
+- The hidden tabs (Audit / Relationships / Sub-groups) are not
+  visually hinted - no fade gradient at the right edge to suggest
+  "scroll for more". Touch users will discover the scroll naturally
+  and desktop never triggers it; adding a fade overlay is polish-of-
+  polish and would require a second container element. Acceptable for
+  V1; can revisit if user testing surfaces discoverability issues.
+- The fix does not change the underlying structural posture
+  (six-tab strip designed for desktop; mobile relies on horizontal
+  scroll). A wholesale mobile redesign (e.g., tab dropdown, swipe
+  carousel) is out of polish-pass scope.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
@@ -670,21 +705,6 @@ layout.
   default -> `ArrowRight`) would let the eye scan event types at a
   glance. Out of scope for visual polish; the row is functional and
   legible without it.
-
-- **Group detail tab strip mobile overflow (V.14b follow-up).**
-  `apps/dashboard/components/dashboard/group-detail-tabs.tsx` renders six
-  tabs (Members / Roles / Permissions / Audit / Relationships /
-  Sub-groups) with `flex items-center gap-1 border-b border-border` and
-  no wrap or horizontal-scroll handling. At the 375px mobile viewport
-  the row is ~590px wide, which forces the page to ~1296px and is the
-  reason every group-detail capture (V.9-V.14) comes in wider than the
-  target viewport. Real fix: add `overflow-x-auto` (and possibly
-  `whitespace-nowrap` on each tab) so the strip scrolls horizontally
-  inside the page width rather than extending the page itself. One CSS
-  class on the shared component, benefits V.9-V.14 simultaneously.
-  Filed as V.14b below so a future iteration owns the cross-cutting
-  visual fix without expanding any single V.9-V.14 surface beyond its
-  protocol-17a one-fix scope.
 
 - **Members table mobile clipping (V.9 follow-up).** At the 375px
   mobile viewport the table renders only the User and Status columns;
