@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "bench": "vitest bench --outputJson=bench-results/baseline.json",
     "postinstall": "prisma generate",
     "prisma:format": "prisma format",
     "prisma:generate": "prisma generate",

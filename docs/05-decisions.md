@@ -5269,3 +5269,35 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 **Why not wired into `verify.ps1`:** the verify gate is the single quality gate (style + biome + typecheck + tests + prisma format); adding `size` would add ~2-3s per loop iteration to a check that only matters on SDK source changes. Future iteration that ships a release-prep workflow (npm publish + size + changeset publish) is where the size gate belongs.
 
 **Where to read the number after a regression fail:** the `size-limit` CLI reports both the measured size and the diff vs the limit. The committed limit doubles as the baseline number a future PR has to argue against (e.g. "this PR adds 1.4 kB to /adapters because we now bundle a built-in Auth0 adapter; here's why that's worth it"). Bumping the limit is a deliberate decision that future-Gabe takes only after weighing the size delta against feature value.
+
+### Phase 14.11 (performance benchmarks): vitest `bench()` suite at 10K/100K/50K seed targets, baseline captured
+
+**Decision:** add `packages/server/src/bench/*.bench.ts` driven by Vitest's built-in `bench()` API. The seed (`src/bench/setup.ts`) inserts 10K groups, 100K JunjoUsers + ExternalIdentities, 100K active GroupMembers (round-robin to ~10 per group), and 50K AuditEntries against `BENCH_DATABASE_URL` (falls back to `TEST_DATABASE_URL`); a marker game (`__bench_marker_v1__`) lets repeat invocations short-circuit the seed. `npm run bench --workspace @junjo/server` runs the suite and writes `bench-results/baseline.json` (gitignored). Bench files use the `.bench.ts` extension so they are invisible to `npm test`.
+
+**Measured V1 baseline** (Windows 11, Docker Postgres 16 on `localhost:5433`, vitest 2.1.9, default 500ms-per-bench loop, indexes per Phase 14.5 in place):
+
+| Operation | median | p75 | p99 | hz (ops/s) | sample n |
+|---|---|---|---|---|---|
+| `groups.list` first page (limit=50, no cursor, gameId-scoped) | 3.22 ms | 3.41 ms | 4.37 ms | 306 | 154 |
+| `groups.list` mid-list page (limit=50, cursor near 5000) | 5.42 ms | 5.64 ms | 6.45 ms | 184 | 93 |
+| `members.list` first page (limit=50, ~10 active members) | 2.77 ms | 3.14 ms | 4.41 ms | 345 | 173 |
+| `audit.list` group-scoped, no filter (limit=50) | 0.89 ms | 1.02 ms | 1.57 ms | 1075 | 538 |
+| `audit.list` group-scoped, single-action filter | 1.01 ms | 1.14 ms | 1.47 ms | 975 | 488 |
+| `audit.list` group-scoped, before-cursor walk | 1.70 ms | 1.85 ms | 2.57 ms | 571 | 286 |
+| `can()` cold cache (`resolvePermission` full DB walk) | 3.46 ms | 3.70 ms | 4.81 ms | 283 | 142 |
+| `can()` warm cache (in-memory `PermissionCache.get`) | 0.0006 ms | 0.0006 ms | 0.0013 ms | 1,655,371 | 827,686 |
+| `deliverOne` junjo format, mock fetcher (HMAC sign + DB update) | 7.84 ms | 8.24 ms | 11.16 ms | 125 | 63 |
+
+**Why these numbers and not others:** the eight operations above are the ones a Junjo cloud node spends most of its CPU on once the cache is warm. `groups.list` and `members.list` cover the dashboard's primary read paths; `audit.list` covers the audit log viewer plus webhook reconciliation; `can()` cold/warm covers the permission resolver, which fires on every authorization decision; `deliverOne` covers the only background-loop hot path. Bench through Prisma directly (not through `app.request`) so the numbers isolate the DB + ORM + cache layers. The Hono + middleware overhead is on the order of microseconds and consistent across operations; benching it would just add noise.
+
+**Why the warm cache is sub-microsecond:** `PermissionCache.get` is one Map lookup plus a TTL comparison against `Date.now()`. The 1.6M ops/s figure is real (vitest captured 827K samples in 500ms) and means the cache is effectively free at single-instance scale; the cost of `can()` is dominated by the cold path. The 5800x cold-vs-warm gap is the operator-facing case for keeping the cache TTL generous (60s today; tightening it to seconds would force most checks back onto the cold path).
+
+**Why the bench doesn't separately measure cold OS page cache:** flushing Postgres / OS page cache from a Node test process is not portable (Linux needs `sync; echo 3 > /proc/sys/vm/drop_caches` as root; Windows has no equivalent). The numbers above are steady-state with a hot OS cache; this is the right baseline for sustained-load operation. A genuinely cold start would be slower for the first few requests after deploy, but that's a one-time cost the steady-state numbers don't speak to.
+
+**Why `.bench.ts` and not a separate runner:** Vitest 2.x's `bench()` API ships with statistical reporting (median, p75, p99, RME) out of the box and uses the same lifecycle hooks (`beforeAll` / `describe.skipIf`) as the existing test suite. A separate runner (tinybench standalone, Mitata) would duplicate setup code without adding measurement quality. `vitest bench` excludes `*.test.ts` and `vitest run` excludes `*.bench.ts` by default, so the two suites can coexist without grep filtering.
+
+**Why the baseline JSON is gitignored:** the JSON contains absolute file paths and machine-specific timing noise; checking it in would surface false drift on every PR (different hardware, different times). The committed baseline is the table above plus the seed-target constants in `setup.ts`. To regression-check a candidate change locally, run `npm run bench -- --compare=bench-results/baseline.json` after capturing a fresh baseline on the same hardware.
+
+**Why this isn't wired into `verify.ps1`:** benches take ~4-5 seconds of measurement plus a one-time ~30-60s seed; running them on every loop iteration would dwarf the test suite. Bench runs are an opt-in operator workflow, surfaced in the README.
+
+**Caveats for a future iteration that re-runs:** (1) hardware drift will move the absolute numbers; treat the table as order-of-magnitude. The shape (warm-cache 5000x faster than cold; cursor-paginated read 1.7x slower than head; deliverOne dominated by the HMAC + DB update round-trip) is the durable signal. (2) Bumping any value in `BENCH_TARGETS` invalidates this baseline; bump `BENCH_MARKER_NAME` together so the next `npm run bench` rebuilds the seed. (3) The bench seed and the test fixture share `TEST_DATABASE_URL` by default; running `npm test` between bench invocations wipes the marker and forces a re-seed. Pointing `BENCH_DATABASE_URL` at its own database avoids the double-seed cost.
