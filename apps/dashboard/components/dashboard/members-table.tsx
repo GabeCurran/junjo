@@ -13,7 +13,7 @@ import {
   type AdminGroupMemberList,
   type AdminMemberRole,
   type AdminMemberStatusFilter,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";

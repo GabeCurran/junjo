@@ -4,7 +4,7 @@
 import { BarChart } from "@tremor/react";
 import { ActivitySquare } from "lucide-react";
 
-import type { AdminGroupChurn } from "../../lib/admin";
+import type { AdminGroupChurn } from "../../lib/admin-shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface GroupChurnChartProps {

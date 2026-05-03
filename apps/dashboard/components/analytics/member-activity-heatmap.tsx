@@ -4,7 +4,7 @@
 import { Activity } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AdminMemberActivity } from "../../lib/admin";
+import type { AdminMemberActivity } from "../../lib/admin-shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface MemberActivityHeatmapProps {

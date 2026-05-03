@@ -11,7 +11,10 @@ import {
   clearRelationshipAction,
   setRelationshipAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH, type AdminGroupRelationship } from "../../lib/admin";
+import {
+  ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH,
+  type AdminGroupRelationship,
+} from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";

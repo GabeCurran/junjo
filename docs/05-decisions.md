@@ -5846,3 +5846,95 @@ When `--viewport=mobile` is passed, the runner overwrites `INDEX.md` to list onl
 - The audit ritual itself is human-driven and not enforced by `verify.ps1`. The README documents when to run one; whoever owns a release is expected to run it before publishing. There is no automation that pages someone if an audit is overdue.
 - `--viewport=mobile` does not change the viewport definitions in the config - it only filters which viewports the runner iterates over. If a future contributor needs to override the mobile dimensions (e.g., audit at 414x896 for an iPhone 11 Pro Max simulation), they must edit the config's `viewports` array directly. A `--viewport-width` / `--viewport-height` override pair was considered and rejected as gold-plating; the catalog standardises on 375x812 and audit findings should reference that baseline.
 
+
+## 2026-05-03 (V.8b - dashboard admin client/server split)
+
+### What landed
+
+`apps/dashboard/lib/admin-shared.ts` (new) holds every runtime-free
+type / interface / type-alias / constant from the previous monolithic
+`lib/admin.ts` - the wire-shape interfaces (AdminStats, AdminAuditEntry,
+AdminGame, AdminGroup, AdminRole, etc.), the discriminated string-union
+types (AdminGroupVisibility, AdminMemberStatus, AdminPermissionSource,
+etc.), and every ADMIN_* constant the form components rely on for
+maxLength / pattern / page-size validation. `lib/admin.ts` keeps its
+`import "server-only"` directive and every helper function (adminFetch /
+adminMutate / adminDelete plus every fetch* / create* / update* /
+revoke* / etc. helper) plus the `AdminDisabledError` sentinel; it now
+imports the types it needs from `./admin-shared` and re-exports the
+shared module via `export * from "./admin-shared"` so server-side
+callers continue to import from `./admin` with no changes. The 22
+`"use client"` components under `components/dashboard/` and
+`components/analytics/` flipped their `from "../../lib/admin"` imports
+to `from "../../lib/admin-shared"`.
+
+### Why a split, not a server-only directive removal
+
+`lib/admin.ts` imports `getAdminToken` and `getJunjoBaseUrl` from
+`./junjo`, which itself begins with `import "server-only"` (the
+`@junjo/sdk` singleton constructs the client at module load when env
+vars are present). Removing only the `lib/admin.ts` server-only
+directive would not break the chain - `./junjo` still drags the SDK +
+env loader through any module that transitively imports `lib/admin.ts`
+into a client bundle. The split moves the type / constant declarations
+into a fresh module that imports neither `./junjo` nor anything that
+imports `./junjo`; that module is safe to import from a Client
+Component, and the runtime helpers stay in the server-only module
+where the `getAdminToken` chain belongs.
+
+### Why every type / constant moves, not just the ones a client
+component touches today
+
+The audit was that 22 client components consume an irregular subset of
+the wire-shape types and ADMIN_* constants. Splitting only the
+currently-consumed names would create a precedent for "if a client
+component needs another type, move that one type next iteration"
+churn. The cost of moving every runtime-free declaration once is one
+~400-line file; the alternative is N future iterations each touching
+both modules. Wire-shape types are stable (they mirror the server's
+WireAdmin* shapes byte-for-byte) so the split file does not need to
+change as the dashboard adds new client features unless the wire shape
+itself changes - in which case both files would have changed under the
+old scheme too.
+
+### What was deliberately NOT done
+
+- Did NOT rename `lib/admin.ts` to `lib/admin-server.ts`. The existing
+  import path is stable for ~20 server-side callers (pages, Server
+  Components, Server Actions). Adding a new sibling module
+  (`admin-shared.ts`) that the runtime module imports is one new file
+  and zero churn for existing imports; renaming would touch every
+  caller for no functional gain.
+- Did NOT introduce a tsconfig path alias (`@/lib/admin-shared`). The
+  components were already on the relative-path convention (`../../lib/...`)
+  because `apps/dashboard/tsconfig.json` does not declare a `@/`
+  baseUrl. Touching tsconfig + every component's import would expand
+  the scope without enabling anything. A future iteration that
+  introduces aliases globally would update `lib/admin.ts` and
+  `lib/admin-shared.ts` together.
+- Did NOT collapse `AdminDisabledError` into the shared module. Only
+  server-side callers throw it, and only server-side callers branch on
+  `instanceof AdminDisabledError`; moving the class to the shared
+  module would put a runtime construct alongside the type-only
+  declarations. The class stays in `lib/admin.ts`.
+- Did NOT extract individual phase-grouped sub-modules (e.g.,
+  `admin-groups-shared.ts`, `admin-roles-shared.ts`,
+  `admin-analytics-shared.ts`). One file is easier to grep than seven;
+  the wire-shape mirror is per-server-route, not per-dashboard-tab, so
+  any sub-grouping would be arbitrary. Future iterations can split
+  if the file grows past readable bounds (still well under 500 lines
+  today).
+
+### Caveats
+
+- The polish-iter-010 attempt at this split called the new file
+  `admin-groups-shared.ts` and only relocated the V.8 (groups list)
+  consumers' types. That attempt never committed (rolled back after
+  the iter-011 timeout); the file does not exist on disk. This
+  iteration supersedes that name and lands the broader split.
+- Server-side callers still get every shared symbol via
+  `export * from "./admin-shared"`. A future ESLint pass could enforce
+  "client components must import from `lib/admin-shared`, not
+  `lib/admin`" via a custom rule, but a plain code-review check
+  catches it today and the split's value is the runtime separation,
+  not the import-path enforcement.

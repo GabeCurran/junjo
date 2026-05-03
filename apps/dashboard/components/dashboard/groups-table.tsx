@@ -20,7 +20,7 @@ import {
   type AdminGroupOrder,
   type AdminGroupSort,
   type AdminGroupVisibility,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";

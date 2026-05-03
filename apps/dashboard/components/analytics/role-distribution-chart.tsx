@@ -5,7 +5,7 @@ import { DonutChart, Legend } from "@tremor/react";
 import { PieChart } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AdminRoleDistribution, AdminRoleSlice } from "../../lib/admin";
+import type { AdminRoleDistribution, AdminRoleSlice } from "../../lib/admin-shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface RoleDistributionChartProps {

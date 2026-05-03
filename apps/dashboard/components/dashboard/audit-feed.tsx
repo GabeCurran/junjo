@@ -11,7 +11,7 @@ import {
   ADMIN_AUDIT_PAGE_SIZE_OPTIONS,
   type AdminGroupAuditEntry,
   type AdminGroupAuditPage,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 

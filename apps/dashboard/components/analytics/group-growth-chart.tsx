@@ -5,7 +5,7 @@ import { LineChart } from "@tremor/react";
 import { TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin";
+import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin-shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface GroupGrowthChartProps {

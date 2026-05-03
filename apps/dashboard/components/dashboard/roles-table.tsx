@@ -3,7 +3,7 @@
 
 import { ShieldCheck } from "lucide-react";
 
-import type { AdminRole } from "../../lib/admin";
+import type { AdminRole } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { CreateRoleDialog } from "./create-role-dialog";

@@ -21,7 +21,7 @@ import {
   clearParentAction,
   setParentAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import type { AdminGroup } from "../../lib/admin";
+import type { AdminGroup } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";

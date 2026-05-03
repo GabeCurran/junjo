@@ -5,7 +5,7 @@ import { BarChart } from "@tremor/react";
 import { ShieldCheck } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AdminPermissionUsage, AdminPermissionUsageItem } from "../../lib/admin";
+import type { AdminPermissionUsage, AdminPermissionUsageItem } from "../../lib/admin-shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface PermissionUsageChartProps {

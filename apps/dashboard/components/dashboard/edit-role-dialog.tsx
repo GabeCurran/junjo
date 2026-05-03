@@ -9,7 +9,7 @@ import {
   type UpdateRoleResult,
   updateRoleAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_ROLE_NAME_MAX_LENGTH, type AdminRole } from "../../lib/admin";
+import { ADMIN_ROLE_NAME_MAX_LENGTH, type AdminRole } from "../../lib/admin-shared";
 import { Button } from "../ui/button";
 import {
   Dialog,

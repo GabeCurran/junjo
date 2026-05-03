@@ -8,7 +8,7 @@ import {
   clearMemberPermissionOverrideAction,
   listMemberPermissionOverridesAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import type { AdminMemberPermissionOverride } from "../../lib/admin";
+import type { AdminMemberPermissionOverride } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {

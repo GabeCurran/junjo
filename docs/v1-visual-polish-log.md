@@ -358,6 +358,50 @@ shrink), all of `Prefix | Active | Revoke` now fit cleanly inside the
   vertical real estate below it on desktop is the same `flex-1
   px-6 py-8` layout intent flagged in V.5. Not a polish bug.
 
+## V.8b admin-shared client/server split
+
+**Before:** Every group-detail surface (`group-members`, `group-roles`,
+`group-permissions`, `group-audit`, `group-relationships`,
+`group-sub-groups`) plus the game-wide audit, permission-check tester,
+and analytics surfaces failed to compile with "you're importing a
+component that needs server-only" because 22 `"use client"` components
+imported wire-shape types and ADMIN_* constants from
+`apps/dashboard/lib/admin.ts`, which begins with `import "server-only";`
+and (via `./junjo`) drags the SDK + env loader into the client bundle.
+The dashboard `next dev` build error rendered as a giant red overlay
+on every affected route, blocking the visual polish PNG capture.
+
+**Fix:** Carved every runtime-free declaration (interfaces, type
+aliases, constants) out of `lib/admin.ts` into a new
+`apps/dashboard/lib/admin-shared.ts` (no `import "server-only"`, no
+imports from `./junjo`). `lib/admin.ts` re-exports the relocated
+names via `export * from "./admin-shared"` so server-side callers
+keep importing from `./admin` unchanged; the function definitions
+(adminFetch / adminMutate / adminDelete plus every
+fetchAdmin* / createAdmin* / etc. helper) and the
+`AdminDisabledError` sentinel class stay where they are. The 22
+`"use client"` components in `apps/dashboard/components/dashboard/`
+and `apps/dashboard/components/analytics/` flipped their imports
+from `"../../lib/admin"` to `"../../lib/admin-shared"`. Dashboard
+typecheck + biome + verify all green; group-members renders cleanly
+on desktop and mobile.
+
+**Acceptable as-is:**
+
+- The split lives under two filenames (`lib/admin.ts` +
+  `lib/admin-shared.ts`) rather than collapsing the runtime
+  helpers into a third name (e.g., `lib/admin-server.ts`). Keeping
+  the existing import path stable for every server-side caller was
+  the priority; renaming the runtime module would touch every page +
+  Server Action + server-only component for no functional benefit.
+- The polish of `group-members` itself (V.9) is a separate
+  iteration. This one only restored the ability to render group
+  detail surfaces; the per-surface visual review begins next iteration.
+- Mobile capture of `group-members` already shows the "Sub-groups"
+  tab label clipping at the right edge of the viewport. Filed as
+  V.9 follow-up territory; not fixed here because V.8b is the
+  structural unblock, not the V.9 polish.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row

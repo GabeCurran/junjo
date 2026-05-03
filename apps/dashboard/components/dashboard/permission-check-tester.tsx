@@ -13,7 +13,7 @@ import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   type AdminPermissionCheckResult,
   type AdminPermissionSource,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";

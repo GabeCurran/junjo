@@ -13,7 +13,7 @@ import {
   ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH,
   type AdminAuditEntry,
   type AdminGameAuditPage,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
