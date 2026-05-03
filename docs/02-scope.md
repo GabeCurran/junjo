@@ -40,8 +40,8 @@ Gabe explicitly chose **all-at-once** release model over phased shipping. Estima
 
 ### Real-time
 
-- SSE subscription per group + per game
-- Events: `member.joined`, `member.left`, `role.changed`, `permission.granted`, `permission.revoked`, `group.updated`, `group.relationship.changed`, plus an admin event channel
+- SSE subscription per group (`GET /v1/events/:groupId`)
+- Events: `member.joined`, `member.left`, `member.invited`, `role.created`, `role.changed`, `role.deleted`, `permission.granted`, `permission.revoked`, `group.updated`, `group.deleted`, `group.relationship.changed`
 - Webhooks dispatched on the same events with retries + HMAC signing
 
 ### Auth

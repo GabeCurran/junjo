@@ -74,13 +74,13 @@ The `packages/server/src/` tree:
 Junjo emits a `JunjoEvent` whenever a group's state changes. Every consumer of those events (SSE clients, the future webhook delivery worker, audit log readers) reads through the same in-process `EventHub` (`eventHub.ts`). Two delivery surfaces share that bus:
 
 - **SSE** (`GET /v1/events/:groupId`, this iteration): a long-lived HTTP stream for live UX. Transient and best-effort: events that arrive while no subscriber is connected are dropped. Heartbeat-padded so reverse proxies do not idle-close. The SDK's `groups.subscribe()` (Phase 5.1c) wraps this; any SSE-capable HTTP client can subscribe today.
-- **Webhooks** (Phase 5.3 + 5.5 + 9.1 + 9.2): persistent fan-out to dev-configured HTTP endpoints. Backed by `WebhookDelivery` rows so retries and at-least-once semantics are durable across process restarts. Phase 5.3a (iteration 029) shipped the enqueue side: every published event also creates one `pending` row per matching `WebhookEndpoint`. Phase 5.3b (iteration 030) shipped the HTTP delivery worker (`webhookWorker.ts`): an in-process `setInterval` polls due `pending` rows every 5 seconds, signs each request with HMAC-SHA256 using the endpoint's secret, POSTs the JSON body, and transitions the row state based on the response. Retries follow exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 and 429) are treated as permanent failure. Phase 5.5 (iteration 031) shipped the dev-facing CRUD (`routes/webhooks.ts`) for configuring endpoints over the API and renamed the `WebhookEndpoint.hashedSecret` column to `secret`. Phase 9.1 (iteration 046) added a `format` column on `WebhookEndpoint` (default `"junjo"`) and a `discordFormatter.ts` module. Phase 9.2 (iteration 047) added `"slack"` to the format enum and a `slackFormatter.ts` module: when `format = "discord"` or `"slack"` the worker translates the stored `JunjoEvent` payload into a provider-shaped body and POSTs without HMAC headers (Discord and Slack webhook URLs are themselves the auth token). The signing scheme, CRUD shape, and provider wire formats are documented at `apps/docs/pages/api/webhooks.mdx`, `apps/docs/pages/api/webhooks-discord.mdx`, and `apps/docs/pages/api/webhooks-slack.mdx`.
+- **Webhooks** (Phase 5.3 + 5.5 + 9.1 + 9.2): persistent fan-out to dev-configured HTTP endpoints. Backed by `WebhookDelivery` rows so retries and at-least-once semantics are durable across process restarts. Phase 5.3a (iteration 029) shipped the enqueue side: every published event also creates one `pending` row per matching `WebhookEndpoint`. Phase 5.3b (iteration 030) shipped the HTTP delivery worker (`webhookWorker.ts`): an in-process `setInterval` polls due `pending` rows every 5 seconds, signs each request with HMAC-SHA256 using the endpoint's secret, POSTs the JSON body, and transitions the row state based on the response. Retries follow exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 and 429) are treated as permanent failure. Phase 5.5 (iteration 031) shipped the dev-facing CRUD (`routes/webhooks.ts`) for configuring endpoints over the API and renamed the `WebhookEndpoint.hashedSecret` column to `secret`. Phase 9.1 (iteration 046) added a `format` column on `WebhookEndpoint` (default `"junjo"`) and a `discordFormatter.ts` module. Phase 9.2 (iteration 047) added `"slack"` to the format enum and a `slackFormatter.ts` module: when `format = "discord"` or `"slack"` the worker translates the stored `JunjoEvent` payload into a provider-shaped body and POSTs without HMAC headers (Discord and Slack webhook URLs are themselves the auth token). The signing scheme, CRUD shape, and provider wire formats are documented at `apps/docs/pages/api-reference/webhooks.mdx`, `apps/docs/pages/api-reference/webhooks-discord.mdx`, and `apps/docs/pages/api-reference/webhooks-slack.mdx`.
 
-The SSE-specific contract is documented in `apps/docs/pages/api/events.mdx`. Two things to know about the architecture:
+The SSE-specific contract is documented in `apps/docs/pages/api-reference/events.mdx`. Two things to know about the architecture:
 
 - The hub is single-process. Two server processes do not share state. When the deployment scales horizontally, the hub interface is the seam where a transport-level bus (Redis pub/sub, NATS, Postgres `LISTEN`/`NOTIFY`) plugs in. The `EventHub` API does not change.
 - Mutation routes call `dispatchEvent<E>(prisma, hub, payload)` after their transaction commits (the same after-commit pattern used by `permissionCache.invalidateGroup`). `dispatchEvent` is a thin wrapper in `events.ts` that calls `publishEvent` (which stamps `id` and `occurredAt` and invokes the hub) and then `await enqueueWebhookDeliveries(prisma, event)` so the durable webhook queue is written in the same logical step as the SSE broadcast. The hub is threaded into each mutation router via `createApp({ events: { hub } })` so tests can swap in a fresh `EventHub` without touching the singleton; production uses the module-level singleton. A crash between commit and dispatch loses the event for transient subscribers AND skips the webhook enqueue; we accept this best-effort property for V1 (the `audit.list` log captures every state change durably regardless).
-- The publish-vs-mutation mapping is exhaustive: every mutation that has a corresponding case in the `JunjoEvent` union publishes, and every mutation that has no event-union case publishes nothing (`groups.create`, `members.setMetadata` / `setNotes`, `roles.update`, `members.overridePermission` / `clearPermissionOverride`, `invitations.decline` / `revoke`). The full table lives in `apps/docs/pages/api/events.mdx`. No-op routes (idempotent calls where nothing actually changed) skip the publish; this matches the audit-log convention.
+- The publish-vs-mutation mapping is exhaustive: every mutation that has a corresponding case in the `JunjoEvent` union publishes, and every mutation that has no event-union case publishes nothing (`groups.create`, `members.setMetadata` / `setNotes`, `roles.update`, `members.overridePermission` / `clearPermissionOverride`, `invitations.decline` / `revoke`). The full table lives in `apps/docs/pages/api-reference/events.mdx`. No-op routes (idempotent calls where nothing actually changed) skip the publish; this matches the audit-log convention.
 
 ### Background sweeps
 
@@ -421,20 +421,27 @@ junjo/
 │   │   │   │   ├── edit-member-notes-dialog.tsx (Client: notesPublic + notesPrivate textareas)
 │   │   │   │   ├── set-permission-override-dialog.tsx (Client: permission key + grant/revoke radio)
 │   │   │   │   ├── view-permission-overrides-dialog.tsx (Client: fetches on open, per-row clear)
-│   │   │   │   ├── group-detail-tabs.tsx       (Server: role="tablist" with 4 tabs)
+│   │   │   │   ├── invite-member-dialog.tsx    (Client: 3-tab dialog by-userId / by-code / by-link)
+│   │   │   │   ├── group-detail-tabs.tsx       (Server: role="tablist" with 6 tabs)
 │   │   │   │   ├── roles-table.tsx             (Client: hand-rolled HTML table)
 │   │   │   │   ├── create-role-dialog.tsx      (Client: useFormState; create role)
 │   │   │   │   ├── edit-role-dialog.tsx        (Client: useFormState; edit role)
 │   │   │   │   ├── delete-role-dialog.tsx      (Client: destructive confirm)
 │   │   │   │   ├── permissions-matrix.tsx     (Client: roles x keys, optimistic toggle, register-key input)
 │   │   │   │   ├── audit-feed.tsx              (Client: per-group audit feed with action filter + cursor pagination)
+│   │   │   │   ├── relationships-table.tsx     (Client: hand-rolled HTML table + Set / Clear dialogs)
+│   │   │   │   ├── sub-groups-table.tsx        (Client: parent breadcrumb + children list + Set / Clear / Add dialogs)
 │   │   │   │   ├── game-audit-feed.tsx        (Client: game-wide audit feed with action/actor/target/date-range filters + CSV export)
-│   │   │   │   └── permission-check-tester.tsx (Client: form + result panel for the per-game permission check tester)
+│   │   │   │   ├── permission-check-tester.tsx (Client: form + result panel for the per-game permission check tester)
+│   │   │   │   └── mobile-nav.tsx              (Client: hamburger menu mirroring the desktop sidebar nav below the md breakpoint)
 │   │   │   ├── analytics/                     (Phase 12.1+: chart components and the date-range picker)
 │   │   │   │   ├── date-range-picker.tsx      (Client: 24h / 7d / 30d / 90d / custom radio group)
 │   │   │   │   ├── analytics-empty-state.tsx  ("No data yet" shell with optional tutorial deep-link)
 │   │   │   │   ├── group-churn-chart.tsx      (Client: Tremor BarChart + summary tiles; Phase 12.2b)
-│   │   │   │   └── group-growth-chart.tsx     (Client: Tremor LineChart + summary tiles; Phase 12.3b)
+│   │   │   │   ├── group-growth-chart.tsx     (Client: Tremor LineChart + summary tiles; Phase 12.3b)
+│   │   │   │   ├── member-activity-heatmap.tsx (Client: hand-rolled 7x24 HTML table heatmap; Phase 12.4b)
+│   │   │   │   ├── role-distribution-chart.tsx (Client: Tremor DonutChart + Legend; Phase 12.5b)
+│   │   │   │   └── permission-usage-chart.tsx (Client: Tremor horizontal stacked BarChart; Phase 12.5b)
 │   │   │   └── ui/
 │   │   │       ├── button.tsx                (shadcn primitive, hand-vendored)
 │   │   │       ├── card.tsx                  (shadcn primitive, hand-vendored)
