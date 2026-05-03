@@ -5132,3 +5132,36 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 **Trade:** the audit is a judgment call on each comment. The `groups.ts#delete` "Soft delete with a 7-day undo window" comment, for instance, was kept (the 7-day window is a real policy that the type doesn't carry) but trimmed (`Pass `hard: true` to bypass.` was redundant with the `opts?: { hard?: boolean }` signature, so the trim left "Soft delete with a 7-day undo window; `hard: true` bypasses it."). A future reviewer might pull on either side; the rule of thumb is: if a future reader would be surprised without the comment, keep it.
 
 **Why one slice per iteration vs one big audit:** the iteration log + PROGRESS + verify cost is amortized either way; the value of splitting is that each iteration's diff is small enough to review by eye without a separate code-review tool. Server is the largest package (~33K lines) and would benefit from being its own iteration regardless.
+
+## 2026-05-03
+
+### Phase 14.7 (server slice): trim WHAT-paragraph route docstrings, keep cross-process and contract WHY
+
+**Decision:** the second slice of the comment audit covers `packages/server/src/**` production sources (route handlers, middleware, helpers, and schema files). Same rule of thumb as the sdk slice: trim comments that paraphrase the code; keep comments that capture cross-process invariants, security caveats, design contracts (idempotence, "no event because no event-type in the union"), Postgres / Prisma gotchas, and the non-obvious behavior choices an outside reader would mistake.
+
+**What got removed:**
+
+- "(Phase X.Y)" suffixes on every route registration in `app.ts` and on every doc-block in `routes/admin.ts` / `routes/groups.ts` / `routes/admin.schema.ts`. Phases 11.x / 12.x have all shipped; the suffixes referenced shipped work as if it were future, drifting as the code moves.
+- "Backs the dashboard's X tab" / "Backs the dashboard's Y chart" pointers - where the route is consumed is not WHY the route is shaped the way it is.
+- "Mirrors the per-game route X byte-for-byte" + body-shape paraphrases in admin handlers - the diff between admin and per-game is the gameId path scope plus the auth middleware; readers tracing a behavior from one to the other can `git grep` for the shared serializer.
+- "Response shape:" code-block-in-comment paragraphs that paraphrase the TypeScript interface declared two lines below.
+- Multi-line "Behavior:" lists where each bullet reads like "Sorted by X" / "Returns 404 when Y" / "Defaults to Z" - the code expresses these directly and the API reference page covers them for callers.
+- Stale phase pointers in `routes/roles.ts` and `routes/members.ts` that referenced "Phase 3.2 will populate MemberRole" / "Phase 3.3 will populate RolePermission" (both shipped 6+ months ago).
+- Section divider banners (`// ===== Phase 11.5a: cross-game group detail =====`) in `admin.ts` - the function name and its surroundings already place the reader.
+
+**What stayed (representative):**
+
+- `eventHub.ts`'s "V1 is single-process by design; horizontal scale-out needs Redis / NATS / pg LISTEN-NOTIFY" - architectural ceiling that future contributors must understand before scaling.
+- `identity.ts`'s race-safety paragraph (P2002 + retry + "must be a top-level PrismaClient because Postgres marks the transaction failed") - non-obvious from the code; the retry was added in response to an actual race in test fixtures.
+- `webhookWorker.ts`'s "discord / slack omit HMAC headers because those targets ignore unknown headers and authenticate via URL token" - explains what looks like missing security at a glance.
+- `webhookWorker.ts`'s "WEBHOOK_WORKER_DRAIN_MS = 30s matches a typical orchestrator's terminationGracePeriod" - explains the magic number.
+- `permissions.ts`'s resolution-order paragraph (override > role > default; non-active members get `none` because role rows survive leave/kick) - this is the canonical contract callers reason about; the inline comment beats jumping to `apps/docs`.
+- `routes/admin.ts`'s "Status is intentionally NOT consulted [in growth analytics]" - prevents a future contributor from "fixing" the resolver by adding a status filter that would silently corrupt historical counts.
+- `routes/admin.ts`'s "soft-deleted-group entries ARE included [in member-activity heatmap]" + the cohort-vs-activity-volume distinction - subtle policy choice that callers will assume the wrong way without the note.
+- `routes/admin.ts`'s `EXTRACT(...)::int4` cast comment - explains why the SQL uses an integer cast (otherwise pg returns bigint and downstream JS arithmetic gets clumsy).
+- `app.ts`'s "rate limit must run BEFORE apiKey middleware to reject before paying scrypt verify" + "every public + admin route below MUST register before the per-game apiKeyMiddleware" - middleware ordering is load-bearing; the dashboard would 401 every page load if the order flipped.
+- `routes/admin.ts`'s "WireAdminPermissionDef.description nullable so a future write path can add values without breaking consumers" - forward-compat caveat invisible from the type.
+- `webhookWorker.ts`'s `inFlight` Set comment ("setInterval does not serialize callbacks; tracking every in-flight tick lets stop() drain all of them") - explains a Set where a single Promise would look sufficient.
+- All `actorUserId is null in V1 (no auth-adapter actor wired)` notes - explains why every audit row has `actorUserId: null` and signals the future iteration that wires it.
+
+**Trade:** route docstrings get terser, so a reader landing in the middle of `routes/admin.ts` no longer gets a 30-line preamble explaining what the route does end-to-end. The api reference page (`apps/docs/pages/api-reference/`) is the canonical place for that level of detail; in-source comments now stay focused on what the code itself does not communicate. A future reviewer who feels a trim went too far can restore from `git log -p` - the audit favors removing redundant text and the bar for "is this load-bearing?" is set deliberately high.

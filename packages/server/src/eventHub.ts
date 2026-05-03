@@ -1,15 +1,11 @@
 import type { GroupId, JunjoEvent } from "@junjo/shared";
 
-// Listener invoked once per event matching the subscribed group. Listeners
-// are called synchronously in registration order; failures in one listener
-// do not interrupt the others.
 export type EventListener = (event: JunjoEvent) => void;
 
-// In-process pub/sub bus keyed by groupId. The SSE route subscribes; the
-// mutation routes call `publish`. There is no persistence and no fan-out
+// In-process pub/sub bus keyed by groupId. No persistence, no fan-out
 // across processes: a horizontally-scaled deployment will need a
-// transport-level bus (Redis, NATS, Postgres LISTEN/NOTIFY) plugged in
-// behind this same interface. V1 is single-process by design.
+// transport-level bus (Redis, NATS, Postgres LISTEN/NOTIFY) behind this
+// same interface. V1 is single-process by design.
 export class EventHub {
   private readonly subscribers = new Map<string, Set<EventListener>>();
 
@@ -35,9 +31,8 @@ export class EventHub {
       try {
         listener(event);
       } catch {
-        // Swallow listener errors so one misbehaving subscriber cannot
-        // starve the others. Listeners are responsible for their own
-        // observability.
+        // Swallow so one misbehaving subscriber cannot starve the others;
+        // listeners own their observability.
       }
     }
   }

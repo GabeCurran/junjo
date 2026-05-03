@@ -1,10 +1,9 @@
 // @cloud-only
 //
-// Cross-tenant admin endpoints (Phase 10.2 + 11.2a). All routes here are gated
-// by the admin token (separate auth scheme from per-game API keys), so they
-// live outside the per-game `apiKeyMiddleware` chain. Mirror SDK is
-// intentionally NOT shipped in V1 per VISION; the dashboard calls these
-// endpoints directly via fetch.
+// Cross-tenant admin endpoints, gated by the admin token (separate auth
+// scheme from per-game API keys); they live outside the per-game
+// `apiKeyMiddleware` chain. No SDK mirror in V1 by design; the dashboard
+// calls these endpoints directly via fetch.
 
 import type {
   GameId,
@@ -99,43 +98,16 @@ export interface WireUserGames {
   games: WireUserGameRow[];
 }
 
-// `GET /v1/users/:junjoUserId/games`. The `junjoUserId` path parameter is the
-// internal cross-game id (a `JunjoUser.id`), not a dev-supplied external user
-// id; the dashboard knows this id because it queried Postgres directly or
-// observed it on a webhook payload.
+// The `junjoUserId` path parameter is the internal cross-game id (a
+// `JunjoUser.id`), not a dev-supplied external user id; the dashboard
+// knows it from a direct Postgres query or a webhook payload.
 //
-// Response shape:
-//
-//   {
-//     junjoUserId: "...",
-//     games: [
-//       { gameId, externalUserId, joinedGroupCount },
-//       ...
-//     ]
-//   }
-//
-// Behavior:
-//
-//   - A `junjoUserId` with no `ExternalIdentity` rows returns 200 with
-//     `games: []`. The route does not 404 because the user might exist but
-//     have no cross-game footprint (newly-created JunjoUser whose first
-//     ExternalIdentity is still pending), and "no games" is the same answer
-//     for the consumer either way.
-//
-//   - `joinedGroupCount` is the count of `GroupMember` rows in `status:
-//     "active"` whose group belongs to the listed game and is not
-//     soft-deleted. Matches the `Group.memberCount` precedent (and the
-//     permission resolver's "non-active = effectively not a member" rule).
-//
-//   - Games are sorted by `gameId` ascending for deterministic output;
-//     pagination is intentionally absent (a single Junjo user across more
-//     than a few hundred games is not a V1 concern).
+// A `junjoUserId` with no `ExternalIdentity` rows returns 200 with empty
+// `games`, NOT 404: a newly-created JunjoUser may have no cross-game
+// footprint yet, and "no games" is the same answer for the consumer.
 export function listUserGamesHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const junjoUserId = c.req.param("junjoUserId");
-    // Hono's path-parameter typing widens to `string | undefined`; the
-    // matched route guarantees a non-empty value at runtime, but the
-    // type system needs a defensive narrow.
     if (!junjoUserId) throw Errors.badRequest("junjoUserId is required");
 
     const identities = await prisma.externalIdentity.findMany({
@@ -148,8 +120,7 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
       return c.json<WireUserGames>({ junjoUserId, games: [] });
     }
 
-    // Single batched query for active memberships across every game the
-    // user has an identity in; the in-memory tally below avoids N+1 counts.
+    // One batched query + in-memory tally avoids N+1 counts.
     const memberRows = await prisma.groupMember.findMany({
       where: {
         junjoUserId,
@@ -175,10 +146,6 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// =====================================================================
-// Phase 11.2a: dashboard home aggregate stats + recent audit feed
-// =====================================================================
-
 export interface WireAdminStats {
   totalGames: number;
   totalGroups: number;
@@ -188,24 +155,12 @@ export interface WireAdminStats {
 
 const STATS_AUDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-// `GET /v1/admin/stats` returns aggregate counts for the dashboard home
-// overview cards. Four parallel `count` queries; the result is cheap to
-// recompute and the dashboard caches it for 60s via Next.js `revalidate`.
-//
-// Counting rules:
-//
-//   - `totalGames`: every row in `Game` (no soft-delete column on `Game`).
-//   - `totalGroups`: groups not soft-deleted. Soft-deleted-but-undeleted-
-//     soon groups are excluded; the dashboard's "active groups" mental
-//     model wins over including the 7-day pending-deletion window.
-//   - `totalActiveMembers`: `status: "active"` members in non-soft-deleted
-//     groups. Matches the `Group.memberCount` precedent and the permission
-//     resolver's "non-active = effectively not a member" rule.
-//   - `totalAuditEntriesLast24h`: every audit row whose `createdAt` falls
-//     in `[now() - 24h, now()]`, regardless of group soft-delete state.
-//     Soft-deleted-group entries are still part of the audit history, and
-//     the dashboard's "events in last 24h" card reflects activity volume,
-//     not surviving-group volume.
+// Active-set semantics: `totalGroups` and `totalActiveMembers` exclude
+// soft-deleted groups (the dashboard's "active groups" mental model
+// wins over including the 7-day pending-deletion window).
+// `totalAuditEntriesLast24h` is unfiltered: soft-deleted-group entries
+// are still part of audit history, and the card reflects activity
+// volume, not surviving-group volume.
 export function getAdminStatsHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const since = new Date(Date.now() - STATS_AUDIT_WINDOW_MS);
@@ -245,10 +200,8 @@ export interface WireAdminAuditPage {
   items: WireAdminAuditEntry[];
 }
 
-// Prisma row shape we ask for via `include`. Defining it explicitly lets the
-// serializer take a typed parameter rather than a structural subset, and
-// keeps the call site in `listRecentAuditHandler` honest about which fields
-// it requested.
+// Mirrors the `include` shape so the serializer can take a typed
+// parameter and the call site stays honest about requested fields.
 type AdminAuditRow = AuditEntry & {
   group: Pick<Group, "name" | "gameId" | "softDeletedAt"> & {
     game: Pick<Game, "name">;
@@ -271,23 +224,9 @@ export function serializeAdminAuditEntry(row: AdminAuditRow): WireAdminAuditEntr
   };
 }
 
-// `GET /v1/admin/audit?limit=20` returns the most recent audit entries
-// across every game on the deployment, with the parent group's name and
-// the parent game's name pivoted into each item so the dashboard's
-// activity-feed card can render `<game> / <group>` headings without an
-// N+1 lookup.
-//
-// Behavior:
-//
-//   - Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps
-//     ordering stable when two rows share the same millisecond timestamp.
-//   - Soft-deleted-group entries are included; the audit log preserves
-//     history regardless of the group's lifecycle state. `groupSoftDeleted`
-//     on each item lets the dashboard mark the row visually.
-//   - No pagination: the home page only renders 20-100 items. A future
-//     game-wide audit page (Phase 11.8) will own paginated cross-game
-//     audit; this endpoint stays terse on purpose.
-//   - `limit` defaults to 20 and is capped at 100.
+// Pivots `<game> / <group>` names into each row so the activity-feed card
+// renders without an N+1 lookup. No pagination by design: the home card
+// only renders 20-100 items.
 export function listRecentAuditHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const parsed = listRecentAuditQuery.safeParse({
@@ -322,10 +261,6 @@ export function listRecentAuditHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// =====================================================================
-// Phase 11.3a: cross-game games + API key management
-// =====================================================================
-
 export interface WireAdminGame {
   id: string;
   name: string;
@@ -352,11 +287,10 @@ export interface WireAdminApiKeyList {
   items: WireAdminApiKey[];
 }
 
-// The dev-facing key string `prefix.secret` is included only on the create
-// response. Subsequent `GET /v1/admin/games/:gameId/api-keys` calls return
-// `WireAdminApiKey` (no key, no secret) - the secret is stored only as a
-// scrypt hash and cannot be recovered. Mirrors the webhook endpoint
-// `secret`-on-create-only convention from Phase 5.5.
+// `key` is on the wire only at creation time; the secret is stored only
+// as a scrypt hash and cannot be recovered, so subsequent list calls
+// return `WireAdminApiKey` (no key). Mirrors the webhook-secret-once-on-
+// create convention.
 export interface WireAdminApiKeyCreated extends WireAdminApiKey {
   key: string;
 }
@@ -386,25 +320,10 @@ function toWireApiKey(row: ApiKey): WireAdminApiKey {
   };
 }
 
-// `GET /v1/admin/games?limit=100` returns every game with batched stats per
-// game (group / active member / non-revoked API key counts).
-//
-// Behavior:
-//
-//   - Sorted by `(createdAt desc, id desc)`. Newest games first matches the
-//     dashboard's games list page; the id tiebreaker keeps ordering stable
-//     across same-millisecond rows.
-//   - `groupCount` and `activeMemberCount` exclude soft-deleted groups
-//     (mirrors `WireAdminStats`: active-set semantics).
-//   - `apiKeyCount` excludes revoked keys (the dashboard cares about
-//     "currently usable keys", not lifetime issuance).
-//   - No pagination cursor; capped at 200 rows, default 100. Additive
-//     pagination is fine if a deployment grows past that.
-//
-// Implementation note: stats per game are computed via three batched
-// queries (one Prisma `groupBy` for groups, one `findMany` over members
-// joined to their group, one `groupBy` for API keys), tallied in memory.
-// Avoids 3*N round-trips for N games.
+// Three batched queries + in-memory tally avoids 3*N round-trips.
+// `groupCount` / `activeMemberCount` exclude soft-deleted groups
+// (active-set semantics); `apiKeyCount` excludes revoked keys (dashboard
+// cares about currently-usable, not lifetime issuance).
 export function listAdminGamesHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const parsed = listAdminGamesQuery.safeParse({ limit: c.req.query("limit") });
@@ -471,10 +390,8 @@ export function listAdminGamesHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `POST /v1/admin/games` with `{ name }` creates a new game. Returns
-// `201 Created` with the full `WireAdminGame` shape (zero counts on a
-// brand-new game). Names are not unique (matches the schema; the dashboard
-// can enforce a UX-level uniqueness guard).
+// Names are not unique (the schema does not enforce it; UX-level guards
+// belong in the dashboard).
 export function createAdminGameHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const json = await c.req.json().catch(() => null);
@@ -495,10 +412,8 @@ export function createAdminGameHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `GET /v1/admin/games/:gameId` returns the same shape as the list, scoped
-// to a single game. The dashboard uses this on the game detail page so the
-// counts stay live (the list view's 60s `revalidate` cache could otherwise
-// be stale relative to a recent membership change).
+// Counts are computed fresh per request rather than reading the list
+// view's 60s `revalidate` cache.
 export function getAdminGameHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -521,10 +436,8 @@ export function getAdminGameHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `GET /v1/admin/games/:gameId/api-keys` lists every API key for a game,
-// active and revoked. The `revokedAt` field lets the dashboard render
-// revoked badges on past keys without losing them from the operator's
-// view. The secret is never on the wire (stored only as a scrypt hash).
+// Includes revoked keys so the dashboard can render "revoked" badges on
+// past keys without losing them from the operator's view.
 export function listAdminApiKeysHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -543,14 +456,9 @@ export function listAdminApiKeysHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `POST /v1/admin/games/:gameId/api-keys` issues a fresh API key. The
-// returned `key` field carries the dev-facing `prefix.secret` form and is
-// the ONLY time the secret will appear on the wire (it is stored only as
-// scrypt-hashed). The dashboard surfaces `key` in a copy-to-clipboard
-// dialog and warns the operator that they will not see it again.
-//
-// Mirrors `seed.createApiKey` and the webhook-secret-on-create-only
-// convention from Phase 5.5.
+// `key` carries the dev-facing `prefix.secret` and is the only time the
+// secret appears on the wire (storage is scrypt-only). Mirrors
+// `seed.createApiKey` and the webhook secret-once-on-create convention.
 export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -569,10 +477,6 @@ export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
     return c.json<WireAdminApiKeyCreated>({ ...toWireApiKey(apiKey), key: raw.full }, 201);
   };
 }
-
-// =====================================================================
-// Phase 11.4a: cross-game group browser
-// =====================================================================
 
 export interface WireAdminGroup {
   id: string;
@@ -623,44 +527,10 @@ async function batchActiveMemberCounts(
   return new Map(rows.map((r) => [r.groupId, r._count._all]));
 }
 
-// `GET /v1/admin/games/:gameId/groups` lists every (non-soft-deleted) group
-// in a game with the dashboard's TanStack Table in mind: pagination via
-// `offset` / `limit`, free-text name search via `q` (case-insensitive
-// `contains`), exact filter on `kind` and `visibility`, and three sort
-// fields (`createdAt`, `name`, `memberCount`) in either order.
-//
-// Response shape:
-//
-//   {
-//     items: WireAdminGroup[],
-//     total: number,
-//     hasMore: boolean,
-//   }
-//
-// Behavior:
-//
-//   - Soft-deleted groups are excluded; this is the operator's "what is
-//     live now" view, not a lifecycle history. A future `?includeDeleted`
-//     flag is additive.
-//   - `q`, `kind`, `visibility` are AND-combined when supplied together.
-//     Empty `q` ("") is rejected at the schema layer (the schema requires
-//     `min(1)`); pass the parameter unset to drop the filter.
-//   - `sort=createdAt` and `sort=name` order at the database level with
-//     `(field <order>, id asc)` for stable tiebreaking. Pagination is
-//     `skip` / `take`.
-//   - `sort=memberCount` is computed (no denormalized counter on the
-//     Group row), so the handler fetches every matching row, batches the
-//     member count, sorts in memory by `(count <order>, id asc)`, then
-//     slices to `[offset, offset+limit)`. To bound the work, the matching
-//     set is hard-capped at `ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS`; if the
-//     filtered count exceeds the cap, the route returns 400 with a hint
-//     to narrow the filter. In practice the dashboard's filter chips make
-//     this trivial.
-//   - 404 when the game does not exist (existence-leak rules don't apply
-//     here; this is admin-token-gated).
-//   - `total` reflects the matching set BEFORE pagination so TanStack
-//     Table can render an accurate page count. `hasMore` is the derived
-//     `offset + items.length < total`.
+// `sort=memberCount` has no denormalized counter, so the handler fetches
+// every matching row, batches counts, sorts in memory, then slices.
+// `ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS` caps that work; over the cap the
+// route 400s with a "narrow your filter" hint.
 export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -717,9 +587,7 @@ export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
         if (a.count !== b.count) {
           return order === "asc" ? a.count - b.count : b.count - a.count;
         }
-        // Stable tiebreaker by id asc so the same offset returns the same
-        // row across calls (subject to inserts / deletes between calls,
-        // which offset-based pagination already accepts as a quirk).
+        // Tiebreaker so the same offset returns the same row across calls.
         return a.row.id.localeCompare(b.row.id);
       });
       const sliced = enriched.slice(offset, offset + limit);
@@ -750,14 +618,10 @@ export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke` flips `revokedAt`
-// to now() if not already set. Idempotent on already-revoked: returns the
-// unchanged row without bumping the timestamp (the original revoke
-// timestamp is the one operators care about). The row is never hard-
-// deleted so the historic prefix can resolve in audit/log lookups.
-//
-// Cross-game scope: a key id that exists but belongs to a different game
-// returns 404 (existence is not leaked across the gameId path scope).
+// Idempotent on already-revoked: keeps the original `revokedAt`
+// (operators care about when the revoke happened, not when they retried).
+// Rows are never hard-deleted so the historic prefix resolves in audit
+// lookups.
 export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -779,12 +643,6 @@ export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
     return c.json<WireAdminApiKey>(toWireApiKey(updated));
   };
 }
-
-// =====================================================================
-// Phase 11.5a: cross-game group detail + members listing
-// =====================================================================
-
-// Single-group fetch reuses `WireAdminGroup` from Phase 11.4a.
 
 export interface WireAdminMemberRole {
   id: string;
@@ -844,16 +702,9 @@ function toWireAdminGroupMember(
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId` returns a single group's
-// detail in the same wire shape as the list endpoint (Phase 11.4a). The
-// dashboard's group detail page header consumes this; counts are computed
-// fresh per request rather than reading the list's revalidated cache.
-//
-// 404 when the game does not exist OR when the group does not exist OR
-// when the group exists but belongs to a different game OR when the group
-// is soft-deleted. Cross-game existence is not leaked through the gameId
-// path scope. The dashboard's not-found mapping (substring-match on the
-// error envelope) routes the operator to Next.js's 404 page.
+// Cross-game existence is not leaked through the gameId path scope: a
+// group that exists in another game collapses with the missing /
+// soft-deleted cases into 404.
 export function getAdminGroupHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -874,32 +725,10 @@ export function getAdminGroupHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId/members` lists members of a
-// single group with their roles populated for the dashboard's members tab
-// (TanStack Table with role chips). Pagination is offset / limit; the
-// status filter narrows to one of `active | left | kicked | invited` or
-// returns every status with `?status=all`. Default is `active` since the
-// roster panel is the dominant view.
-//
-// Behavior:
-//
-//   - Sorted by `(joinedAt desc, id desc)`. Newest joins first matches
-//     the dashboard's mental model and the per-game `members.list` route.
-//   - `q` performs a case-insensitive substring search against the dev's
-//     external user id (the `ExternalIdentity.externalUserId` field, NOT
-//     the internal `junjoUserId`). This is the field operators recognize.
-//     The search runs as a Postgres `contains` on the joined identity row.
-//   - Roles are populated via two batched queries: one `MemberRole.findMany`
-//     for join rows scoped to the page's member ids, plus one
-//     `Role.findMany` for the role rows themselves. The handler fans out
-//     the result to per-member arrays in memory. This keeps the fetch at
-//     four total queries (count + member page + member-roles + role rows
-//     + identities) regardless of page size.
-//   - 404 propagates from the same group existence checks the single-group
-//     handler enforces.
-//   - `total` reflects the matching set BEFORE pagination so the dashboard
-//     can render an accurate page count.
-//   - `hasMore` is `offset + items.length < total`.
+// `q` searches the dev-facing `ExternalIdentity.externalUserId` (what
+// operators recognize), not the internal `junjoUserId`. Roles are
+// populated via two batched queries + in-memory fan-out so total fetch
+// is bounded regardless of page size.
 export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -929,10 +758,8 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
     }
     const { limit, offset, status, q } = parsed.data;
 
-    // Build the where clause. The status filter is straightforward; the q
-    // filter has to traverse `JunjoUser -> ExternalIdentity (gameId, ...)`
-    // because the wire shape's `externalUserId` lives on a related row.
-    // Prisma's relation filters compose cleanly against the page query.
+    // `q` traverses `JunjoUser -> ExternalIdentity (gameId, ...)` because
+    // the wire's `externalUserId` lives on a related row.
     const where: Prisma.GroupMemberWhereInput = {
       groupId,
       ...(status !== "all" ? { status } : {}),
@@ -1022,16 +849,8 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// =====================================================================
-// Phase 11.5c-i: cross-game member row actions
-// (kick, edit notes / metadata, override permission set / clear, list overrides)
-// =====================================================================
-
-// Wire format for member-level permission overrides on the admin surface.
-// Identical shape to the per-game route's response (the dashboard renders
-// the same data either way); duplicated here so admin handlers do not
-// reach across into the per-game `routes/members.ts` module for a single
-// helper.
+// Structural duplicate of the per-game `WireMemberPermissionOverride`;
+// admin handlers do not import across the cloud-only boundary.
 export interface WireAdminMemberPermissionOverride {
   groupId: string;
   userId: string;
@@ -1063,11 +882,9 @@ interface AdminMemberContext {
   externalUserId: string;
 }
 
-// Resolve the (gameId, groupId, externalUserId) tuple to a concrete
-// `Group` + `GroupMember`. Collapses every "doesn't exist" cause - missing
-// game-scope, soft-deleted group, no `ExternalIdentity` for the user, no
-// `GroupMember` row - into a single 404 to avoid leaking existence through
-// the path scope. Mirrors the per-game leave / kick / patch precedent.
+// Collapses every "doesn't exist" cause (cross-game group, soft-delete,
+// missing ExternalIdentity, missing GroupMember) into a single 404 to
+// avoid existence-leak through the path scope.
 async function loadAdminMemberContext(
   prisma: PrismaClient,
   gameId: string,
@@ -1090,9 +907,7 @@ async function loadAdminMemberContext(
   return { group, member, junjoUserId, externalUserId };
 }
 
-// Reload a single GroupMember row, its roles, and its identity to build
-// the post-mutation `WireAdminGroupMember` response. Same role-sort rule
-// as the list endpoint (priority desc, name asc tiebreaker).
+// Same role-sort as the list endpoint (priority desc, name asc).
 async function loadAdminGroupMemberAfterMutation(
   prisma: PrismaClient,
   gameId: string,
@@ -1117,22 +932,16 @@ async function loadAdminGroupMemberAfterMutation(
     if (a.priority !== b.priority) return b.priority - a.priority;
     return a.name.localeCompare(b.name);
   });
-  // `gameId` is in scope for callers; declared here only to mark the
-  // identity lookup as scoped (the row's externalUserId is the caller's
-  // path parameter so we round-trip it directly without re-querying).
+  // Marks the identity lookup as scoped; the externalUserId is round-
+  // tripped from the path so we skip re-querying.
   void gameId;
   return toWireAdminGroupMember(member, externalUserId, roles);
 }
 
-// `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/kick`
-// kicks a member from the group. Mirrors the per-game route's semantics
-// exactly: only transitions an active member to "kicked"; non-active
-// rows return their current state with no audit entry. The optional
-// `reason` lands on the audit `payload`. `actorUserId` is null on the
-// admin surface (no auth-adapter actor wired); the operator is the
-// dashboard itself, behind the admin token. Dispatches a `member.left`
-// event with `reason: "kicked"` so SSE subscribers and webhooks see the
-// change just like a per-game-key kick.
+// Only transitions an active member to "kicked"; non-active rows return
+// their current state with no audit entry. `actorUserId` is null in V1
+// (no auth-adapter actor wired); the operator is the dashboard itself
+// behind the admin token.
 export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1192,17 +1001,11 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
   };
 }
 
-// `PATCH /v1/admin/games/:gameId/groups/:groupId/members/:userId`
-// updates a member's metadata and / or notes. Body is partial:
-// `{ metadata?, notesPublic?, notesPrivate? }`. Empty body returns 400.
-// Metadata replaces wholesale and is always treated as a change when
-// supplied (jsonb storage may not preserve key order; matches the
-// `groups.update` precedent). Notes fields are diffed per-field; a
-// notes-only PATCH where every supplied field equals the stored value is
-// a no-op (no DB write, no audit). Up to two audit entries fire per call:
-// `member.metadata.updated` and `member.notes.updated`. No JunjoEvent
-// fires for either action (per VISION 5.1b: notes / metadata mutations
-// have no `JunjoEvent`-union counterpart). `actorUserId` is null.
+// Metadata replaces wholesale and is treated as a change whenever
+// supplied (jsonb may not preserve key order; matches `groups.update`).
+// Notes are diffed per-field; a notes-only PATCH that matches stored
+// values is a true no-op. No JunjoEvent fires (no metadata/notes event
+// in the union). Up to two audit entries per call.
 export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1290,15 +1093,9 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
-// sets or updates a member-level permission override. Body: `{ grant }`.
-// Idempotent on matching `grant` (no audit, no DB write, no setAt bump).
-// On change writes one `permission.override.set` audit entry with
-// `before/after`. The permission key is auto-registered into
-// `PermissionDef` on first sight per game (matches `roles.grantPermission`
-// and the per-game override route). Invalidates the in-memory permission
-// cache for the group after commit so the next `permissions.check`
-// reflects the new value. `actorUserId` is null.
+// Idempotent on matching `grant`. First sight of a permission key
+// auto-registers `PermissionDef`. Cache is invalidated after commit so
+// the next `permissions.check` reflects the new value.
 export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1387,11 +1184,8 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
   };
 }
 
-// `DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
-// clears a member-level permission override. Idempotent: a missing row
-// returns 204 with no audit entry. The `PermissionDef` registry row is
-// preserved across clears (matches the per-game route's monotonic-catalog
-// stance). Invalidates the in-memory permission cache after commit.
+// Idempotent on missing row. The `PermissionDef` registry row is
+// preserved across clears (catalog is monotonic per game).
 export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1444,10 +1238,6 @@ export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient):
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions`
-// lists a member's permission overrides. Returns a bare array (no
-// pagination wrapper); a member typically has a handful of overrides, not
-// thousands. Sorted by `permissionKey` ascending for deterministic output.
 export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1470,51 +1260,12 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
   };
 }
 
-// =====================================================================
-// Phase 11.5d-i: cross-game invitation creation
-// =====================================================================
-
-// `POST /v1/admin/games/:gameId/groups/:groupId/invitations` creates an
-// invitation for a group on the cross-game admin surface. Mirrors the
-// per-game `POST /v1/groups/:id/invitations` semantics exactly so a
-// dashboard caller and a per-game-key caller can ship the same JSON
-// payload and observe the same behavior:
+// `roleId` is forwarded verbatim, NOT validated against `Role`; an
+// invalid roleId surfaces at accept time.
 //
-//   - Body shape is `{ targetUserId?, roleId?, expiresIn? }`. Body itself
-//     is optional and may be omitted entirely (for an open-code invitation
-//     with no role and no expiry).
-//   - When `targetUserId` is set, the invitation is direct (only that
-//     user can accept). When it is absent, the invitation is open-code
-//     (anyone with the code can accept).
-//   - When `expiresIn` is set, it's a `<positive integer><unit>` string
-//     (units `s|m|h|d`) and the route stamps `expiresAt = now() + expiresIn`.
-//     Non-positive durations (e.g. `0d`) return 400.
-//   - `roleId` is forwarded verbatim and not validated against `Role`
-//     (matches the per-game route; an invalid roleId surfaces at accept
-//     time when the dev's flow tries to assign it).
-//
-// Audit + event semantics match per-game:
-//
-//   - One `member.invited` audit entry per call. `actorUserId` is null
-//     (the admin endpoint has no auth-adapter actor wired; the operator
-//     is the dashboard itself behind the admin token). `targetId` is the
-//     `targetUserId` for direct invitations, null for open-code.
-//   - `payload` carries `{ invitationId, code, targetUserId, roleId,
-//     expiresAt: ISO8601|null, source: "admin" }`. The `source` discriminator
-//     lets audit consumers distinguish admin-issued invitations from
-//     per-game-key calls (which set `source: "bulk-invite"` for bulk
-//     operations and omit `source` entirely otherwise).
-//   - Dispatches a `member.invited` JunjoEvent so SSE subscribers and
-//     webhook endpoints see the same event shape a per-game-key invite
-//     would emit.
-//
-// 404 collapses missing / soft-deleted / cross-game group, mirroring the
-// row-action handlers' contract.
-//
-// The dashboard's "Invite member" dialog (Phase 11.5d-ii) calls this
-// endpoint for all three tabs (by-userId / by-code / by-link); the
-// by-link tab additionally builds a URL client-side from the response's
-// `code`.
+// Audit `payload.source: "admin"` lets consumers distinguish admin-
+// issued invitations from per-game-key calls (which set `bulk-invite`
+// for bulk and omit `source` otherwise).
 export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1589,16 +1340,8 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
   };
 }
 
-// =====================================================================
-// Phase 11.6a-i: cross-game roles CRUD
-// =====================================================================
-
-// Wire shape for an admin-issued role response. Structural duplicate of
-// `WireRole` from `routes/roles.ts` (per the iter-068 boundary stance:
-// admin handlers don't import across the cloud-only boundary; ~10 lines
-// of duplicated wire shape is cheaper than reaching into the per-game
-// module). The dashboard's `lib/admin.ts` will mirror this byte-for-byte
-// in 11.6b.
+// Structural duplicate of `WireRole` from `routes/roles.ts`; admin
+// handlers do not import across the cloud-only boundary.
 export interface WireAdminRole {
   id: string;
   groupId: string;
@@ -1623,10 +1366,8 @@ export function toWireAdminRole(role: Role, permissions: string[]): WireAdminRol
   };
 }
 
-// Loads a role by id, enforces game scope, and rejects soft-deleted-group
-// rows. Collapses every "not visible" cause into a single 404 to avoid
-// existence enumeration through the path scope. Mirrors the per-game
-// `loadScopedRole` helper from `routes/roles.ts`.
+// Cross-game / soft-deleted-group / missing all collapse to 404 to
+// avoid existence enumeration through the path scope.
 async function loadAdminScopedRole(
   prisma: PrismaClient,
   gameId: string,
@@ -1674,12 +1415,6 @@ async function batchLoadAdminRolePermissionKeys(
   return map;
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId/roles` lists the roles in
-// a group on the cross-game admin surface. Returns a bare `WireAdminRole[]`
-// (no pagination wrapper); roles are conventionally a small list (10s, not
-// 1000s). Sorted by `(priority desc, id desc)` so the highest-authority
-// roles appear first; matches the per-game route's order. 404 collapses
-// missing / cross-game / soft-deleted group.
 export function listAdminGroupRolesHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1708,18 +1443,9 @@ export function listAdminGroupRolesHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `POST /v1/admin/games/:gameId/groups/:groupId/roles` creates a role.
-// Mirrors the per-game `POST /v1/groups/:id/roles` body shape and audit
-// shape exactly: `{ name, priority, color?, isDefault? }`; on success
-// writes a `role.created` audit entry with `payload: { name, priority,
-// color, isDefault }` and `targetId` set to the new role id; dispatches
-// a `role.created` `JunjoEvent` so SSE subscribers and webhook endpoints
-// see the same event a per-game-key create would emit (behavior parity
-// with the per-game route per the iter-068 / 070 / 071 stance); returns
-// the created role with an empty `permissions` array and HTTP 201.
-// `name` is unique per group (409 `role_name_taken` on duplicate;
-// explicit pre-check before transaction). 404 collapses missing /
-// cross-game / soft-deleted group.
+// `name` is unique per group; an explicit pre-check returns 409
+// `role_name_taken` before the transaction (cleaner than relying on the
+// unique-constraint failure surfacing through the error middleware).
 export function createAdminGroupRoleHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1786,18 +1512,8 @@ export function createAdminGroupRoleHandler(prisma: PrismaClient, hub: EventHub)
   };
 }
 
-// `PATCH /v1/admin/games/:gameId/roles/:roleId` updates a role. Mirrors
-// the per-game `PATCH /v1/roles/:id` semantics: partial body
-// `{ name?, priority?, color?, isDefault? }` (empty body 400; `color: null`
-// clears the color). Per-field diff against the stored row; only fields
-// whose new value differs land in both the update and the audit payload.
-// Fully no-op PATCH (every supplied field equals the stored value) writes
-// no audit entry and no DB row. 409 `role_name_taken` if `name` collides
-// with another role in the same group. The audit's `payload` is
-// `{ before, after }` with only the changed fields. Does NOT dispatch a
-// `JunjoEvent` because there is no `RoleUpdatedEvent` in the
-// `JunjoEvent` union (per VISION 5.1b: role rename / priority / color
-// edits are audit-only; only role assignment changes fire `role.changed`).
+// Does NOT dispatch a JunjoEvent: there is no `RoleUpdatedEvent` in the
+// union; only role assignment changes fire `role.changed`.
 export function updateAdminRoleHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1874,14 +1590,8 @@ export function updateAdminRoleHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `DELETE /v1/admin/games/:gameId/roles/:roleId` deletes a role. Mirrors
-// the per-game `DELETE /v1/roles/:id` semantics: blocks on assigned
-// members with 409 `role_has_members`; the operator must reassign first.
-// On success hard-deletes the row, writes a `role.deleted` audit entry
-// with the full snapshot in `payload`, invalidates the per-group
-// permission cache, and dispatches a `role.deleted` `JunjoEvent` so SSE
-// subscribers and webhook endpoints see the same event a per-game-key
-// delete would emit. Returns 204.
+// Blocks on assigned members with 409 `role_has_members`; the operator
+// must reassign first.
 export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1928,32 +1638,17 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
   };
 }
 
-// =====================================================================
-// Phase 11.6a-ii: cross-game role-permission grant / revoke + per-game
-// permission catalog
-// =====================================================================
-
-// Wire shape for a registered permission key. Returned by the catalog
-// endpoint that the dashboard's Permissions matrix tab consumes for its
-// "registered keys" column list (Phase 11.6c). Mirrors the `PermissionDef`
-// schema's serializable fields; `description` is included as a nullable
-// field even though no V1 endpoint populates it, so a future write path
-// can add values without breaking the wire shape.
+// `description` is on the wire as a nullable field even though no V1
+// endpoint populates it, so a future write path can add values without
+// breaking consumers.
 export interface WireAdminPermissionDef {
   key: string;
   description: string | null;
   createdAt: string;
 }
 
-// `POST /v1/admin/games/:gameId/roles/:roleId/permissions` grants a
-// permission key to a role on the cross-game admin surface. Mirrors the
-// per-game `POST /v1/roles/:id/permissions` semantics exactly: idempotent
-// on already-granted (no audit, no DB write), auto-registers the
-// `PermissionDef` row on first sight per game, dispatches a
-// `permission.granted` `JunjoEvent` (behavior parity so SSE subscribers
-// and webhook endpoints see the same event a per-game-key grant would
-// emit), invalidates the per-group permission cache. 404 collapses
-// missing / cross-game / soft-deleted-parent-group via `loadAdminScopedRole`.
+// Idempotent on already-granted. First sight of a key auto-registers
+// `PermissionDef`; revoke does NOT unregister (catalog is monotonic).
 export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2018,13 +1713,8 @@ export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: Event
   };
 }
 
-// `DELETE /v1/admin/games/:gameId/roles/:roleId/permissions/:permission`
-// revokes a permission key from a role. Mirrors the per-game
-// `DELETE /v1/roles/:id/permissions/:permission` semantics exactly:
-// idempotent on already-revoked / never-granted (no audit, no DB write),
-// preserves the `PermissionDef` registry row (revoke does not "forget"
-// the key for the game), dispatches a `permission.revoked` `JunjoEvent`,
-// invalidates the per-group permission cache.
+// Idempotent on already-revoked / never-granted. PermissionDef registry
+// is preserved.
 export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2076,27 +1766,10 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
   };
 }
 
-// `GET /v1/admin/games/:gameId/permissions` lists registered permission
-// keys for a game. Backs the dashboard's Permissions matrix tab column
-// list (Phase 11.6c). Returns a bare `WireAdminPermissionDef[]` (no
-// pagination wrapper); permission catalogs are conventionally a small
-// list (10s, not 1000s; one row per `PermissionDef` ever used in the
-// game). Sorted by `key` ascending; matches the dashboard's stable-column-
-// order expectation. 404 if the gameId itself does not exist (matches
-// `getAdminGameHandler`).
-//
-// PermissionDef rows are auto-registered by:
-//   - `POST /v1/admin/games/:gameId/roles/:roleId/permissions` (this iter)
-//   - `POST /v1/roles/:id/permissions` (the per-game grant route)
-//   - `POST /v1/groups/:id/members/:userId/permissions/:permission` (per-game
-//     member override; iter 021)
-//   - `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission`
-//     (admin override; iter 068)
-//
-// Revoking does not remove the `PermissionDef` row; the catalog is
-// monotonic per game, so the matrix tab's column list never shrinks
-// across the lifetime of a game. A future cleanup endpoint could prune
-// unused defs additively.
+// PermissionDef rows are auto-registered by every grant + override
+// route. Revoke does NOT remove the row; the catalog is monotonic per
+// game so the matrix-tab column list never shrinks across a game's
+// lifetime. A future cleanup endpoint could prune unused defs.
 export function listAdminGamePermissionsHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2119,36 +1792,12 @@ export function listAdminGamePermissionsHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId/audit` returns a
-// timestamp-paginated audit feed for one group, backing the dashboard's
-// group detail Audit tab (Phase 11.7a-ii). Mirrors the per-game
-// `listAuditForGroup` (iter 028) byte-for-byte: same `listAuditQuery`
-// schema (`limit` 1-100 default 50, `before` ISO 8601, `actions[]`
-// validated against `AUDIT_ACTIONS`), same `(createdAt desc, id desc)`
-// ordering, same `Page<WireAuditEntry>` response shape with
-// `nextCursor` set to the ISO `createdAt` of the last item when more
-// pages exist. Caller pages by passing `nextCursor` back as `before`.
+// Reuses `WireAuditEntry` (not `WireAdminAuditEntry`) because the
+// dashboard's group detail page already knows gameId / groupId from URL
+// context, so the cross-game-name fields would be dead weight here.
 //
-// Wire shape reuses `WireAuditEntry` and the `serializeAuditEntry`
-// helper from `routes/audit.ts`. The per-group entry shape is
-// functionally identical regardless of which surface fetched it (the
-// dashboard already knows the gameId / groupId from the URL path), so
-// reusing the helper avoids a ~40-line structural duplicate. Mirrors
-// the iter-070 invitation precedent where the admin invitation handler
-// reuses `serializeInvitation` and `WireInvitation`. Does NOT reuse
-// `WireAdminAuditEntry` (the recent-audit cross-game shape from iter
-// 059) - that shape carries `gameName` / `groupName` / `groupSoftDeleted`
-// fields the dashboard's group detail page already has from URL
-// context.
-//
-// 404 collapses missing / cross-game / soft-deleted groups via the
-// same three-check pattern `getAdminGroupHandler` and
-// `listAdminGroupMembersHandler` use; the dashboard's
-// `notFound()`-on-substring-match routes operators to Next.js's 404
-// page if the URL is stale. Matches the per-game route's
-// soft-delete-excluded behavior (the per-group audit tab is not
-// reachable without a live group; cross-game recent-audit at
-// `/v1/admin/audit` is the surface for soft-deleted-group activity).
+// 404 on soft-deleted groups: cross-game recent-audit at `/v1/admin/audit`
+// is the surface for soft-deleted-group activity.
 export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2200,61 +1849,22 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Wire shape for the per-game audit feed (Phase 11.8a). Reuses
-// `WireAdminAuditEntry` from iter 059's cross-game recent-audit feed:
-// the dashboard's game-wide audit page renders entries across multiple
-// groups so it needs `groupId` + `groupName` + `groupSoftDeleted` per
-// row, and reusing the existing shape keeps the cross-game home feed
-// and the per-game audit page parsable by the same dashboard helper.
-// The page wrapper extends the cross-game shape with `nextCursor`:
-// the per-game feed is paginated (timestamp-based via `before`), the
-// cross-game home feed is not.
+// Reuses `WireAdminAuditEntry`: the per-game audit page spans multiple
+// groups, so it needs the `groupName` + `groupSoftDeleted` columns the
+// home feed already carries.
 export interface WireAdminGameAuditPage {
   items: WireAdminAuditEntry[];
   nextCursor: string | null;
 }
 
-// `GET /v1/admin/games/:gameId/audit` returns a timestamp-paginated
-// audit feed scoped to one game (across every group, including
-// soft-deleted groups). Backs the dashboard's game-wide audit log
-// viewer (Phase 11.8b).
+// Soft-deleted-group entries ARE included (the audit log preserves
+// history regardless of lifecycle); each row carries `groupSoftDeleted`
+// so the dashboard can mark them. This is the key behavior difference
+// from the per-group audit route, which 404s on soft-deleted groups.
 //
-// Filters (all optional, all combinable):
-//   - `limit`: 1-100, default 50 (matches the existing per-group +
-//     cross-game audit shapes).
-//   - `before` / `since`: ISO 8601 timestamps. Combined they form a
-//     date-range filter (`since <= createdAt < before`). Either or
-//     both may be omitted.
-//   - `actions[]`: repeats per filter value (`?actions=foo&actions=bar`),
-//     OR semantics, validated against `AUDIT_ACTIONS`.
-//   - `actorUserId`: exact match on the stored `AuditEntry.actorUserId`
-//     (the internal `JunjoUser.id`). The dashboard surfaces the value
-//     from a prior row; future iterations could add an external-id
-//     resolver.
-//   - `targetId`: exact match on the stored `AuditEntry.targetId`. The
-//     stored value depends on the route (sometimes external user id,
-//     sometimes member id, sometimes role id). Exact-match-only.
-//
-// Behavior:
-//   - Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps
-//     ordering stable when two rows share the same millisecond.
-//   - Soft-deleted-group entries ARE included; the audit log preserves
-//     history regardless of group lifecycle. Each row carries
-//     `groupSoftDeleted: boolean` so the dashboard can mark them
-//     visually. (This is the key behavior difference from the per-group
-//     `listAdminGroupAuditHandler` route, which 404s on soft-deleted
-//     groups.)
-//   - Returns `Page<WireAdminAuditEntry>` with `nextCursor` set to the
-//     ISO `createdAt` of the last item when more pages exist. Caller
-//     pages by passing `nextCursor` back as `before`.
-//   - 404 only when the gameId itself does not exist; never when the
-//     game has zero audit entries (returns 200 with `items: []`).
-//
-// Wire-format note: reuses `WireAdminAuditEntry` (the cross-game
-// recent-audit shape from iter 059, including `gameId` + `gameName`
-// for compatibility with the same dashboard helper used by the home
-// page activity feed). The dashboard ignores the `gameId` / `gameName`
-// fields since URL context already carries them.
+// `actorUserId` filter is exact-match against the internal `JunjoUser.id`;
+// `targetId` is exact against whatever the writing route stored
+// (external user id / member id / role id depending on the route).
 export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2321,13 +1931,8 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// `loadAdminScopedGroupPair(prisma, gameId, [a, b])` collapses the standard
-// 404-cause set for the two-group endpoints (set / clear / get): missing
-// group, cross-game group, or soft-deleted group on either side. Used by
-// `setAdminGroupRelationshipHandler`, `clearAdminGroupRelationshipHandler`,
-// and `getAdminGroupRelationshipHandler`. The single-group list endpoint
-// uses a separate inline lookup. Returns void on success; throws
-// `Errors.notFound("group")` on any failure cause.
+// Throws `Errors.notFound("group")` if either side is missing, in
+// another game, or soft-deleted.
 async function loadAdminScopedGroupPair(
   prisma: PrismaClient,
   gameId: string,
@@ -2340,24 +1945,9 @@ async function loadAdminScopedGroupPair(
   if (groups.length !== 2) throw Errors.notFound("group");
 }
 
-// `PUT /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
-// Mirrors the per-game route in `routes/groups.ts:1510` byte-for-byte:
-// body shape `{ type, mutual? }`, idempotent on each direction (already
-// matching `type` -> no DB write, no audit entry, no `since` bump), audit
-// entry `group.relationship.set` on the *origin* group's audit log per
-// changed direction (mutual writes can produce up to two audit entries),
-// `group.relationship.changed` JunjoEvent dispatched per changed direction
-// after the transaction commits, and self-relationships rejected with
-// `400 bad_request`. The 404 collapse covers missing / cross-game /
-// soft-deleted groups on either side via `loadAdminScopedGroupPair`.
-//
-// Reuses `serializeGroupRelationship` and `WireGroupRelationship` from
-// `routes/relationships.ts` (the same helper module the per-game routes
-// use). The dashboard's group detail Relationships tab (Phase 11.7b-ii)
-// will mirror the wire shape in `lib/admin.ts` byte-for-byte.
-//
-// `actorUserId` is null on the audit row (V1 has no auth-adapter actor
-// wired); same as the per-game route.
+// Idempotent per direction (matching `type` is a no-op: no DB write, no
+// audit, no `since` bump). The audit entry lives on the *origin* group's
+// log; mutual writes can produce up to two audit entries.
 export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2445,15 +2035,8 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
   };
 }
 
-// `DELETE /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
-// Mirrors the per-game route in `routes/groups.ts:1603` byte-for-byte:
-// idempotent on missing rows (no audit, no event, returns 204), audit
-// entry `group.relationship.cleared` per actually-deleted direction, and
-// `group.relationship.changed` JunjoEvent with `relationship: null`
-// dispatched per cleared direction after the transaction commits. The
-// `?mutual=true` query clears both directions; each direction is
-// independent. Self-relationships return `400 bad_request`. 404 collapses
-// missing / cross-game / soft-deleted groups via `loadAdminScopedGroupPair`.
+// Idempotent on missing rows (no audit, no event, 204). Each direction
+// is independent under `?mutual=true`.
 export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2525,17 +2108,8 @@ export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Ev
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:a/relationships/:b` (Phase 11.7b-i).
-// Mirrors the per-game route in `routes/groups.ts:1674` byte-for-byte:
-// returns the directed A->B row when present, 404 when no such row
-// exists. Both groups must be in the calling game; cross-game lookups
-// collapse to 404 to avoid leaking existence (same rule as the per-game
-// route). Self-relationship lookups return 404 (the row cannot exist).
-//
-// Differs subtly from the per-game route: the per-game route throws
-// `Errors.notFound("relationship")` (the resource the caller asked
-// about), but the admin route also uses "relationship" to keep the wire
-// envelope identical for dashboard parsers.
+// Cross-game lookups collapse to 404; self-relationship lookups also
+// 404 (the row cannot exist).
 export function getAdminGroupRelationshipHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2562,13 +2136,8 @@ export function getAdminGroupRelationshipHandler(prisma: PrismaClient): Handler 
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:a/relationships` (Phase 11.7b-i).
-// Mirrors the per-game route in `routes/groups.ts:1701` byte-for-byte:
-// returns a bare `WireGroupRelationship[]` of every row where the group
-// is the A-side ("this group's outgoing stance"), sorted by `groupBId`
-// ascending. The B-side ("incoming") is left for a future
-// `?direction=incoming` filter as the per-game route documents. 404 on
-// missing / cross-game / soft-deleted A-side group.
+// Returns the A-side ("outgoing stance") only; the B-side ("incoming")
+// would be a future `?direction=incoming` additive filter.
 export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2591,22 +2160,10 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
   };
 }
 
-// `PUT /v1/admin/games/:gameId/groups/:groupId/parent` (Phase 11.7c-i).
-// Mirrors the per-game route in `routes/groups.ts:1731` byte-for-byte:
-// body shape `{ parentGroupId: string | null }` (the field is required;
-// `null` clears, a non-null value sets); idempotent on matching value
-// (no DB write, no audit entry); cycle detection walks the candidate
-// parent's ancestor chain bounded at `ADMIN_MAX_PARENT_DEPTH = 100`;
-// self-parent and any cycle hit `400 parent_cycle`. The 404 collapse
-// covers missing / cross-game / soft-deleted groups on either the
-// child or the candidate parent. On a value change, one transaction
-// updates the row and writes a single audit entry: `group.parent.set`
-// when the new value is non-null; `group.parent.cleared` when it is
-// null. The audit `payload` is `{ before, after }` (each may be null);
-// the audit row's `targetId` is the new parent id (null when cleared);
-// `actorUserId` is null. Dispatches a `group.updated` JunjoEvent (no
-// dedicated `GroupParentChangedEvent` in the union, mirroring the
-// per-game route's choice).
+// Cycle detection walks the candidate parent's ancestor chain bounded
+// at `ADMIN_MAX_PARENT_DEPTH = 100`; self-parent and any cycle 400
+// `parent_cycle`. Dispatches `group.updated` (there is no dedicated
+// `GroupParentChangedEvent` in the union).
 export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2691,15 +2248,8 @@ export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub):
   };
 }
 
-// `GET /v1/admin/games/:gameId/groups/:groupId/children` (Phase 11.7c-i).
-// Mirrors the per-game route in `routes/groups.ts:1815` byte-for-byte:
-// returns a bare `WireAdminGroup[]` of direct children (groups whose
-// `parentGroupId` points at this one); grandchildren are NOT recursed.
-// Soft-deleted children are excluded. Sorted by `(createdAt desc, id
-// desc)` to match `groups.list` ordering. Each item carries a freshly
-// counted `memberCount` from a single batched `groupBy` (matches the
-// per-game route's pattern; avoids N round-trip counts for large child
-// sets). 404 collapses missing / cross-game / soft-deleted parent.
+// Direct children only; grandchildren are NOT recursed. `memberCount`
+// per child comes from a single batched `groupBy` to avoid N round-trips.
 export function listAdminGroupChildrenHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -2734,29 +2284,12 @@ export interface CheckAdminPermissionHandlerOptions {
   cache?: PermissionCache;
 }
 
-// `GET /v1/admin/games/:gameId/permissions/check?userId=&groupId=&permission=`.
+// Shares the singleton `permissionCache` with the per-game route so a
+// dashboard poke-around hydrates the same cache the dev's runtime
+// queries hit; behavior parity is essential.
 //
-// Phase 11.9a-i. Mirrors the per-game `GET /v1/permissions/check` (iter
-// 022) byte-for-byte: same query shape, same `PermissionCheckResult` wire
-// format, same resolution order (member-status gate -> override -> role
-// -> default), same in-process cache. Backs the dashboard's permission
-// check tester (Phase 11.9a-ii) which composes a form taking
-// (userId, groupId, permission) and renders the result with badges.
-//
-// The admin and per-game routes share the singleton `permissionCache`
-// so a poke-around session in the dashboard hydrates the same cache the
-// dev's runtime queries hit, and a mutation through any surface
-// (per-game roles routes, per-game override routes, or the admin
-// counterparts shipped in 11.5c-i / 11.6a-i / 11.6a-ii) invalidates the
-// shared cache via `invalidateGroup`. Behavior parity is essential: the
-// answer to "can user X do Y in group Z?" must be identical regardless
-// of which surface asked.
-//
-// 404 collapses missing / cross-game / soft-deleted-group into one
-// envelope (matches the per-group / per-member admin handlers'
-// existence-not-leaked rule). The `gameId` path parameter scopes the
-// `ExternalIdentity` and cache key, so a userId from a different game
-// resolves to `source: "none"` rather than leaking through.
+// `gameId` scopes the cache key, so a userId from another game resolves
+// to `source: "none"` rather than leaking through.
 export function checkAdminPermissionHandler(
   prisma: PrismaClient,
   opts: CheckAdminPermissionHandlerOptions = {},
@@ -2800,33 +2333,14 @@ export function checkAdminPermissionHandler(
   };
 }
 
-// Phase 12.2a: cross-game group-churn analytics. Returns the binned
-// tenure histogram of departures (kicked + left members) across every
-// group in the game that was created within `[from, to)`.
+// Cohort-shaped: the date window applies to `Group.createdAt`, NOT to
+// the departures' timestamps. A group created today with a year-old
+// departure counts; a year-old group with a today departure does not.
+// This answers "how does churn look for the cohort of groups born in
+// this window?".
 //
-// Wire shape carries:
-//   - the resolved `from` / `to` (echoed verbatim or null when omitted),
-//   - the count of groups that fell inside the window (the population),
-//   - the count of departures from that population (the sample),
-//   - one row per bin with the bin's wire-stable label, the half-open
-//     [minMs, maxMs) bounds (or null on either end), and the count.
-//
-// Behavior:
-//   - "Departure" = `GroupMember` with `status` in `("left", "kicked")`
-//     and `leftAt` non-null. Tenure is `leftAt - joinedAt` in
-//     milliseconds, computed in JS rather than SQL so the bin
-//     boundaries stay readable.
-//   - The window applies to `Group.createdAt`, NOT to the departures'
-//     timestamps. A group created today with a year-old departure
-//     counts; a year-old group with a today departure does not. This
-//     is what VISION's "for groups created in the date range" means:
-//     answer the question "how does churn look for the cohort of
-//     groups born in this window?".
-//   - Soft-deleted groups are excluded (matches the rest of the admin
-//     read surface). The audit log preserves history but the analytics
-//     view ignores it.
-//   - Empty population (no matching groups) returns 0 in every bin.
-//   - 404 only when the gameId itself does not exist.
+// Tenure (`leftAt - joinedAt`) is computed in JS rather than SQL so bin
+// boundaries stay readable.
 export interface WireAdminGroupChurnBin {
   label: string;
   minMs: number | null;
@@ -2843,12 +2357,8 @@ export interface WireAdminGroupChurn {
 }
 
 function pickChurnBin(tenureMs: number): number {
-  // Returns the index of the matching bin in `ANALYTICS_GROUP_CHURN_BINS`.
-  // Iterates in array order; the first half-open match wins. The last
-  // bin's `maxMs: null` always matches, so a tenure that falls past
-  // every finite upper bound lands there. A non-finite or negative
-  // tenure (clock skew between joinedAt and leftAt) is clamped to bin
-  // 0 so the histogram never silently drops a row.
+  // Negative tenures (clock skew between joinedAt and leftAt) clamp to
+  // bin 0 so the histogram never silently drops a row.
   if (!Number.isFinite(tenureMs) || tenureMs < 0) return 0;
   for (let i = 0; i < ANALYTICS_GROUP_CHURN_BINS.length; i += 1) {
     const bin = ANALYTICS_GROUP_CHURN_BINS[i];
@@ -2858,8 +2368,7 @@ function pickChurnBin(tenureMs: number): number {
     if (maxMs !== null && tenureMs >= maxMs) continue;
     return i;
   }
-  // Should be unreachable - the last bin's `maxMs: null` matches
-  // anything - but fall back to the last bin defensively.
+  // Unreachable - the last bin's `maxMs: null` always matches.
   return ANALYTICS_GROUP_CHURN_BINS.length - 1;
 }
 
@@ -2938,47 +2447,14 @@ export function getGroupChurnHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Phase 12.3a: cross-game group-growth analytics. Returns time-bucketed
-// cumulative active member counts across the supplied window for the
-// top-N groups (by current active member count) plus an "All others"
-// aggregated series. The dashboard's `<GroupGrowthChart>` (Phase 12.3b)
-// consumes the series-of-series shape verbatim and feeds it into Tremor's
-// `<LineChart>`.
+// "Active at T" = `joinedAt <= T` AND (`leftAt IS NULL` OR `leftAt > T`).
+// Status is intentionally NOT consulted: a member who was active at T
+// and kicked at T+1 still counts at T. Reading status would double-
+// filter and produce wrong historical counts.
 //
-// Wire shape carries:
-//   - the resolved `from` / `to` (the actual window the handler used,
-//     post-defaults; both are always populated since the defaults supply
-//     bounds when omitted),
-//   - `bucketSizeMs`: the bucket width the handler chose based on window
-//     length (hourly for <=1d, 6h for <=7d, daily for <=30d, etc.),
-//   - `buckets`: ISO 8601 timestamps for every bucket boundary, ordered
-//     chronologically (the chart renders these as the X axis),
-//   - `series`: one entry per top-N group plus one "All others" entry
-//     when the population exceeds top-N. Each carries an opaque `key`
-//     for chart legend stability, the human `name`, optionally the
-//     `groupId` (null for the aggregate), and a `data` array of counts
-//     aligned 1:1 with `buckets`.
-//
-// Behavior:
-//   - "Active at T" means a member row where `joinedAt <= T` AND
-//     (`leftAt IS NULL` OR `leftAt > T`). Status is intentionally NOT
-//     consulted: a member that was active at T but later kicked at T+1
-//     still counts at T. The lifecycle taxonomy is captured by the
-//     `joinedAt` / `leftAt` timestamps; reading status would
-//     double-filter and produce wrong historical counts.
-//   - Groups are ranked by their active count at the window's `to`
-//     boundary (the rightmost bucket). A tie on count breaks by
-//     groupId ascending so the ranking is deterministic.
-//   - Soft-deleted groups are excluded from both the ranking and the
-//     aggregate (matches the rest of the admin read surface).
-//   - When the population fits inside top-N (groups.length <= topN),
-//     the response carries `groups.length` series and no "All others"
-//     row.
-//   - 404 only when the gameId itself does not exist; a brand-new
-//     game with zero groups returns 200 with `series: []`.
-//   - The handler caps bucket count at `ADMIN_GROUP_GROWTH_MAX_BUCKETS`
-//     to bound work; a window pathological enough to require more
-//     buckets than the cap returns 400 with that hint.
+// Groups rank by active count at the window's `to` boundary; the
+// `ADMIN_GROUP_GROWTH_MAX_BUCKETS` cap bounds work for pathological
+// custom windows.
 export interface WireAdminGroupGrowthSeries {
   key: string;
   name: string;
@@ -2999,12 +2475,9 @@ const GROWTH_ONE_DAY_MS = 24 * GROWTH_ONE_HOUR_MS;
 const GROWTH_ONE_WEEK_MS = 7 * GROWTH_ONE_DAY_MS;
 const GROWTH_ONE_MONTH_MS = 30 * GROWTH_ONE_DAY_MS;
 
-// Picks a bucket size that targets ~25 boundaries for the dashboard's
-// preset windows. Custom windows fall through to the closest matching
-// bucket; pathological windows (multi-year) get weekly buckets. The
-// caller still has to enforce the `ADMIN_GROUP_GROWTH_MAX_BUCKETS` cap
-// downstream because a custom window can pick a small bucket size and
-// blow past the cap (e.g. 365 days at daily bucketing = 365 buckets).
+// Targets ~25 boundaries for the dashboard's preset windows. The caller
+// still enforces `ADMIN_GROUP_GROWTH_MAX_BUCKETS` because a custom window
+// can pick a small bucket size and blow past the cap.
 function pickGrowthBucketSizeMs(windowMs: number): number {
   if (windowMs <= GROWTH_ONE_DAY_MS) return GROWTH_ONE_HOUR_MS;
   if (windowMs <= GROWTH_ONE_WEEK_MS) return 6 * GROWTH_ONE_HOUR_MS;
@@ -3089,13 +2562,8 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
       });
     }
 
-    // Pull every member row whose active interval (joinedAt..leftAt)
-    // overlaps the window. A row that joined after `to` cannot be
-    // active at any bucket; a row that left at-or-before `from` cannot
-    // be active at any bucket either. Status is NOT filtered: an
-    // `active` row counts as long as joinedAt <= T, and a `left` /
-    // `kicked` / `invited` row counts as long as joinedAt <= T AND
-    // (leftAt IS NULL OR leftAt > T).
+    // Every member whose active interval overlaps the window. Status is
+    // NOT filtered (see the resolver-vs-historical note above the type).
     const members = await prisma.groupMember.findMany({
       where: {
         groupId: { in: groups.map((g) => g.id) },
@@ -3115,8 +2583,6 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
       bucket.push({ groupId: m.groupId, joinedAt: m.joinedAt, leftAt: m.leftAt });
     }
 
-    // For each group, compute the count at every bucket boundary plus
-    // the count at `to` (used for top-N ranking).
     const perGroupCounts = new Map<string, number[]>();
     const endCounts = new Map<string, number>();
     for (const g of groups) {
@@ -3129,7 +2595,6 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
       endCounts.set(g.id, countActiveAtForGroup(rows, toMs));
     }
 
-    // Rank by end-count desc, ties broken by groupId asc.
     const ranked = [...groups].sort((a, b) => {
       const ca = endCounts.get(a.id) ?? 0;
       const cb = endCounts.get(b.id) ?? 0;
@@ -3177,36 +2642,13 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Phase 12.4a: cross-game member-activity heatmap. Returns a 7x24 grid of
-// audit-entry counts pivoted by UTC day-of-week and hour-of-day. The
-// dashboard's heatmap (Phase 12.4b) renders the grid as a Tailwind grid
-// with opacity scaling; Tremor doesn't ship a heatmap primitive.
+// Soft-deleted-group entries are INCLUDED (this answers an activity-
+// volume question, not a cohort question; the audit log preserves
+// history regardless of group lifecycle).
 //
-// Wire shape carries:
-//   - the supplied `from` / `to` (echoed verbatim or null when omitted),
-//   - `totalEvents`: the sum of every cell, surfaced for empty-state
-//     branching on the dashboard side (a game with zero audit entries
-//     in the window renders the "no activity yet" callout instead of
-//     a heatmap of zeros),
-//   - `cells`: a `[7][24]` 2D array; `cells[day][hour]` is the count
-//     for UTC `day` in `0..6` (0=Sunday) and UTC `hour` in `0..23`.
-//
-// Behavior:
-//   - Audit entries from soft-deleted groups are INCLUDED (matches the
-//     Phase 11.8a / iter-082 stance for the per-game audit feed: the
-//     audit log preserves history regardless of group lifecycle, and
-//     this heatmap answers an activity-volume question).
-//   - The window is half-open `[from, to)` when both bounds are
-//     supplied; either bound can be omitted. Mirrors `groupChurnQuery`'s
-//     filter shape.
-//   - Empty population (no matching audit entries) returns the
-//     fully-zero grid with `totalEvents: 0`.
-//   - 404 only when the gameId itself does not exist.
-//   - Aggregation runs in Postgres via `$queryRaw` with `EXTRACT(DOW)`
-//     and `EXTRACT(HOUR)` rather than pulling every audit row over
-//     the wire. Audit entries can be high-volume; SQL-side aggregation
-//     keeps the response bounded at 168 rows max regardless of source
-//     data size.
+// Aggregation runs in Postgres via `$queryRaw` so the response is bounded
+// at 168 rows regardless of source-data size. Pulling every audit row
+// over the wire would scale poorly with audit volume.
 export interface WireAdminMemberActivity {
   from: string | null;
   to: string | null;
@@ -3237,27 +2679,20 @@ export function getMemberActivityHandler(prisma: PrismaClient): Handler {
     });
     if (!game) throw Errors.notFound("game");
 
-    // Build a 7x24 grid of zeros. The dashboard renders even all-zero
-    // grids (with the empty-state callout gated on `totalEvents === 0`)
-    // so the cell count must always be deterministic.
+    // The dashboard renders even all-zero grids (gated on
+    // `totalEvents === 0` for the empty-state callout), so cell count
+    // must always be deterministic.
     const cells: number[][] = [];
     for (let d = 0; d < ANALYTICS_MEMBER_ACTIVITY_DAYS; d += 1) {
       cells.push(new Array<number>(ANALYTICS_MEMBER_ACTIVITY_HOURS).fill(0));
     }
 
-    // Conditional `[from, to)` filter. `Prisma.empty` collapses to a
-    // no-op fragment when a bound is omitted, so a supplied-only bound
-    // works without a separate query path.
     const fromCondition = from ? Prisma.sql`AND ae."createdAt" >= ${new Date(from)}` : Prisma.empty;
     const toCondition = to ? Prisma.sql`AND ae."createdAt" < ${new Date(to)}` : Prisma.empty;
 
-    // EXTRACT(DOW FROM ts) returns 0=Sunday through 6=Saturday (matches
-    // JS's `Date.getUTCDay()`). EXTRACT(HOUR FROM ts) returns 0-23.
-    // Both are cast to int4 so Prisma's pg driver maps them to JS
-    // numbers (int8/bigint would otherwise come through as bigint).
-    // The COUNT(*) result is also cast to int because per-bucket counts
-    // are bounded by audit volume in 168 cells; bigint precision is
-    // unnecessary and JS-number arithmetic is cleaner downstream.
+    // `::int4` casts on EXTRACT and COUNT(*) so the pg driver maps them
+    // to JS numbers; without the cast, COUNT(*) returns bigint and JS
+    // arithmetic downstream gets clumsy.
     const rows = await prisma.$queryRaw<Array<{ dow: number; hour: number; count: number }>>`
       SELECT
         EXTRACT(DOW FROM ae."createdAt")::int AS dow,
@@ -3273,8 +2708,8 @@ export function getMemberActivityHandler(prisma: PrismaClient): Handler {
 
     let totalEvents = 0;
     for (const row of rows) {
-      // Defensive: a malformed EXTRACT result should never happen, but
-      // a count out of range would silently corrupt the grid.
+      // Defensive bounds checks; a malformed EXTRACT row would silently
+      // corrupt the grid otherwise.
       const dow = Number(row.dow);
       const hour = Number(row.hour);
       const count = Number(row.count);
@@ -3296,38 +2731,10 @@ export function getMemberActivityHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Phase 12.5a: cross-game role distribution analytics. Returns a top-10
-// list of role names ranked by the count of active-member assignments,
-// aggregated across every non-soft-deleted group in the game. Two groups
-// that both have a role named "Officer" contribute to the same slice.
-//
-// Wire shape carries:
-//   - `totalAssignments`: sum of every counted MemberRole row (top-10
-//     plus other),
-//   - `uniqueRoleNames`: total distinct role.name values with at least
-//     one active assignment,
-//   - `topRoles`: up to 10 entries sorted by `count desc, name asc`,
-//   - `otherCount`: assignments belonging to role names outside the
-//     top-10 so the chart can render an "Other" slice without a second
-//     fetch.
-//
-// Behavior:
-//   - Only `active` member assignments contribute. Kicked / left /
-//     invited members keep their MemberRole rows but their assignments
-//     drop out (matches the active-set semantics used by
-//     `Group.memberCount` and the home page's `totalActiveMembers`).
-//   - Soft-deleted groups are excluded.
-//   - Role names with zero active assignments do NOT appear in
-//     `topRoles` or `uniqueRoleNames` (a role that exists but has no
-//     active members is invisible to the chart; the donut would render
-//     a zero-area slice anyway).
-//   - Empty population returns
-//     `{ totalAssignments: 0, uniqueRoleNames: 0, topRoles: [], otherCount: 0 }`.
-//   - 404 only when the gameId itself does not exist.
-//   - No date window in V1: the chart answers "what is deployed right
-//     now?", not "what was assigned in this window?". The dashboard's
-//     page-level date-range picker (Phase 12.1) is irrelevant here;
-//     12.5b will surface that trade inline in the chart description.
+// Aggregates by role name (two groups with an "Officer" role contribute
+// to the same slice). Only `active` assignments contribute (active-set
+// semantics, matching `Group.memberCount`). No date window: this answers
+// "what is deployed right now?", not "what was assigned in this window?".
 export interface WireAdminRoleSlice {
   name: string;
   count: number;
@@ -3379,8 +2786,6 @@ export function getRoleDistributionHandler(prisma: PrismaClient): Handler {
       countByRoleId.set(row.roleId, row._count._all);
     }
 
-    // Aggregate by role.name across every role in the game (a role name
-    // shared by two groups contributes to the same slice).
     const countByName = new Map<string, number>();
     for (const role of roles) {
       const c = countByRoleId.get(role.id) ?? 0;
@@ -3407,36 +2812,10 @@ export function getRoleDistributionHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Phase 12.5a: cross-game permission usage analytics. Returns a top-15
-// list of permission keys ranked by the combined count of role grants
-// (`RolePermission` rows) plus member-level overrides
-// (`MemberPermissionOverride` rows). The dashboard's permission usage
-// chart (Phase 12.5b) renders the result as a horizontal Tremor
-// `<BarChart>`.
-//
-// Wire shape carries:
-//   - `totalCount`: sum of `roleGrants + memberOverrides` across every
-//     observed key (top-15 plus other),
-//   - `uniqueKeys`: total distinct permission keys with at least one
-//     row counted,
-//   - `items`: up to 15 entries sorted by `total desc, permission asc`,
-//   - `otherCount`: combined count for keys outside the top-15 so the
-//     chart can footnote the trailing aggregate.
-//
-// Behavior:
-//   - Only counts rows scoped to roles / members in non-soft-deleted
-//     groups in this game.
-//   - All `MemberPermissionOverride` rows count regardless of the
-//     underlying member's status. Operator-authored config exists
-//     independently of member lifecycle; an override on a kicked
-//     member is still a deployment-state fact about the game.
-//   - Permission keys with `total === 0` do NOT appear in `items` or
-//     `uniqueKeys`. A registered `PermissionDef` row with no grants
-//     and no overrides is invisible to the chart.
-//   - Empty population returns
-//     `{ totalCount: 0, uniqueKeys: 0, items: [], otherCount: 0 }`.
-//   - 404 only when the gameId itself does not exist.
-//   - No date window in V1 (same rationale as role distribution).
+// Counts ALL `MemberPermissionOverride` rows regardless of member
+// status: operator-authored config exists independently of member
+// lifecycle, and an override on a kicked member is still a
+// deployment-state fact about the game.
 export interface WireAdminPermissionUsageItem {
   permission: string;
   roleGrants: number;

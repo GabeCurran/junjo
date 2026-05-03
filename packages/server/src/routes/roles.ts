@@ -26,9 +26,6 @@ export interface WireRole {
   createdAt: string;
 }
 
-// Phase 3.1 ships role CRUD; Phase 3.3 will populate `permissions` via the
-// grant / revoke routes. The list is included in the wire format now (as an
-// empty array until 3.3) so the SDK type stays stable across phases.
 export function serializeRole(role: Role, permissions: string[] = []): WireRole {
   return {
     id: role.id,
@@ -42,10 +39,6 @@ export function serializeRole(role: Role, permissions: string[] = []): WireRole 
   };
 }
 
-// Loads the permission keys for a single role. Centralized so the create /
-// get / update paths emit the same wire shape; Phase 3.3 (grant / revoke)
-// will add the writers that populate `RolePermission`. Until then this
-// query returns an empty array.
 export async function loadRolePermissionKeys(
   client: PrismaClient | Prisma.TransactionClient,
   roleId: string,
@@ -58,7 +51,6 @@ export async function loadRolePermissionKeys(
   return rows.map((r) => r.permissionKey);
 }
 
-// Batched counterpart used by the list-roles route to avoid an N+1 query.
 export async function batchLoadRolePermissionKeys(
   client: PrismaClient | Prisma.TransactionClient,
   roleIds: string[],
@@ -78,8 +70,8 @@ export async function batchLoadRolePermissionKeys(
   return map;
 }
 
-// Loads a role by id and enforces calling-game scope. Soft-deleted groups
-// also collapse to 404 so a soft-deleted group does not leak its role list.
+// Cross-game and soft-deleted-group both collapse to 404 so existence
+// is not leaked across the gameId scope.
 async function loadScopedRole(
   prisma: PrismaClient,
   id: string | undefined,
@@ -180,12 +172,9 @@ export function updateRoleByIdHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Grant a permission key to a role. Idempotent: granting a permission the
-// role already has returns the unchanged role with no audit entry and no
-// DB write. The permission key is auto-registered into `PermissionDef` on
-// first sight per game (one upsert inside the same transaction); revoking
-// the permission later does not unregister the def, since the registry is
-// a "known keys" catalog for the dashboard / SDK validators.
+// Idempotent on already-granted. The first grant of a key auto-registers
+// `PermissionDef`; revoke does NOT unregister the def, since the registry
+// is a monotonic "known keys" catalog for the dashboard / SDK validators.
 export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
@@ -248,10 +237,7 @@ export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Han
   };
 }
 
-// Revoke a permission key from a role. Idempotent: revoking a permission
-// the role does not have returns the unchanged role with no audit entry.
-// The `PermissionDef` registry is preserved (revoke does not "forget" the
-// key for the game).
+// Idempotent on already-revoked. PermissionDef registry is preserved.
 export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");

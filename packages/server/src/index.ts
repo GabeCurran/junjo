@@ -9,12 +9,8 @@ import { startWebhookWorker } from "./webhookWorker.js";
 const env = loadEnv();
 setLogger(createLogger({ level: env.LOG_LEVEL, nodeEnv: env.NODE_ENV }));
 
-// Workers boot before `createApp` so the webhook worker's heartbeat
-// handle can be passed into the deep `/healthz` route (Phase 14.3). The
-// soft-delete sweeper does not need a heartbeat surface in V1; if a
-// future deployment wants to surface its tick liveness too, add a
-// matching `getLastHeartbeat()` to its handle and thread it through
-// `healthz.workers`.
+// Workers must boot before `createApp` so the webhook worker's heartbeat
+// handle can be threaded into `/healthz`.
 const sweeper = startHardDeleteSweeper(prisma);
 const webhookWorker = startWebhookWorker(prisma);
 
@@ -31,10 +27,9 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 const shutdown = async (signal: string) => {
   logger.info({ signal }, "junjo-server shutting down");
   sweeper.stop();
-  // Phase 14.4: drain the in-flight webhook delivery (if any) before
-  // closing the HTTP listener. Capped at WEBHOOK_WORKER_DRAIN_MS (30s)
-  // so a hung receiver cannot block process exit beyond a typical
-  // orchestrator's terminationGracePeriod.
+  // Drains the in-flight webhook delivery (if any). Capped at
+  // WEBHOOK_WORKER_DRAIN_MS (30s) to stay inside a typical orchestrator's
+  // terminationGracePeriod.
   await webhookWorker.stop();
   server.close();
   await disconnectPrisma();

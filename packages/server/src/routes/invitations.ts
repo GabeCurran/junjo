@@ -37,7 +37,7 @@ export function serializeInvitation(inv: Invitation): WireInvitation {
   };
 }
 
-// 16-char hex (64 bits of entropy). URL-safe and unambiguous to read aloud.
+// 16 hex chars (64 bits). URL-safe and unambiguous to read aloud.
 export function generateInvitationCode(): string {
   return randomBytes(8).toString("hex");
 }
@@ -49,9 +49,7 @@ const DURATION_MULTIPLIERS: Record<string, number> = {
   d: 86_400_000,
 };
 
-// Parses "7d", "1h", "30m", "45s" into milliseconds. Caller has already
-// run the format-regex via Zod; this function only handles arithmetic.
-// Returns `null` if the value is non-positive (the regex permits "0d").
+// Returns null on non-positive values (the Zod regex permits "0d").
 export function parseDurationMs(value: string): number | null {
   const match = /^(\d+)([smhd])$/.exec(value);
   if (!match) return null;
@@ -63,9 +61,8 @@ export function parseDurationMs(value: string): number | null {
   return n * mult;
 }
 
-// Public route handler: anyone with the code may fetch the invitation.
-// Soft-deleted groups collapse to 404 (the group is gone from the dev's
-// world and the preview UI has nothing to show).
+// Anyone with the code may fetch the preview; this handler is mounted
+// before the apiKey middleware in `app.ts`.
 export function getInvitationByCodeHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const code = c.req.param("code");
@@ -79,11 +76,9 @@ export function getInvitationByCodeHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Authed route handler: revoke (delete) an invitation by code. Idempotent
-// on already-used invitations (the row is left in place, 204 returned)
-// so the audit story of "this code was redeemed by user X" survives.
-// Unused invitations are hard-deleted; a second revoke call against the
-// same code returns 404 because the row is gone.
+// Already-used codes are left in place (so audit can still answer "who
+// redeemed this?") and return 204; unused codes are hard-deleted, so a
+// second revoke call returns 404.
 export function deleteInvitationByCodeHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const code = c.req.param("code");
@@ -103,11 +98,8 @@ export function deleteInvitationByCodeHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Loads an invitation by code and runs the precondition checks shared by
-// accept and decline: invitation exists, the group hasn't been
-// soft-deleted, the row isn't already used, the row hasn't expired. The
-// loader is parameterized over the gameId enforcement (404 on cross-game
-// codes) so the existence of an invitation in another game stays hidden.
+// Cross-game codes 404 so the existence of an invitation in another
+// game stays hidden through the gameId scope.
 async function loadRedemptionTarget(
   prisma: PrismaClient,
   code: string | undefined,
@@ -129,13 +121,8 @@ async function loadRedemptionTarget(
   return invitation;
 }
 
-// Authed route handler: accept an invitation by code. Creates a
-// `GroupMember` for the supplied external user id (find-or-creating the
-// underlying JunjoUser via ExternalIdentity), marks the invitation used,
-// and writes a `member.joined` audit entry. All four writes happen inside
-// one transaction. For direct invitations (`targetUserId` set), the body
-// userId must match; mismatches return 403 to keep direct invites pinned
-// to their target.
+// Direct invitations (with `targetUserId` set) require the body userId
+// to match; mismatches 403 to keep direct invites pinned to their target.
 export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const code = c.req.param("code");
@@ -205,12 +192,9 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
   };
 }
 
-// Authed route handler: decline an invitation by code. Marks the
-// invitation used (so it can never be redeemed) and writes nothing else;
-// no member is created, no audit entry is written. Body is optional;
-// when present, the supplied userId is recorded as `usedByUserId` (after
-// resolving to a JunjoUser) so audits answer "who burned this code".
-// Direct invitations only allow the target user to decline.
+// Body is optional; supplying `userId` records `usedByUserId` so audit
+// can answer "who burned this code". Direct invitations only allow the
+// target user to decline.
 export function declineInvitationByCodeHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const code = c.req.param("code");

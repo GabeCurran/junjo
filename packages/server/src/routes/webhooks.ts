@@ -30,9 +30,8 @@ export function serializeWebhookEndpoint(endpoint: WebhookEndpoint): WireWebhook
   };
 }
 
-// 32 random bytes -> base64url. ~43 chars, URL-safe, well above the
-// `WEBHOOK_SECRET_MIN_LENGTH` floor. Used when the dev does not supply
-// their own secret on `endpoints.create`.
+// 32 random bytes -> base64url, ~43 chars; used when the dev does not
+// supply their own secret on `endpoints.create`.
 export function generateWebhookSecret(): string {
   return randomBytes(32).toString("base64url");
 }

@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
-// Single Prisma client per process. Hot-reload (tsx watch) re-imports this
-// file repeatedly, which would leak connections without the globalThis cache.
+// `globalThis` cache survives the repeated re-imports under `tsx watch`,
+// which would otherwise leak a connection pool per file change.
 declare global {
   var __junjoPrisma: PrismaClient | undefined;
 }

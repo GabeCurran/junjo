@@ -6,15 +6,11 @@ import { listMembersForUserQuery } from "./members.schema.js";
 
 type MembersClient = PrismaClient | Prisma.TransactionClient;
 
-// V1 cap on `listForUser` since it returns a bare array (no pagination).
-// A user with more than this many memberships in a single game would
-// require a paginated rewrite; document and revisit if it ever surfaces.
+// `listForUser` has no pagination wrapper; this caps the bare-array
+// response. A user with more memberships in a single game would need a
+// paginated rewrite.
 export const LIST_FOR_USER_HARD_CAP = 1000;
 
-// Loads the role ids for a single member. Centralized so the leave / kick
-// / get-member paths emit the same wire shape; Phase 3.2 (role assignment)
-// will add the writers that populate `MemberRole`. Until then this query
-// returns an empty array.
 export async function loadMemberRoleIds(
   client: MembersClient,
   groupMemberId: string,
@@ -26,8 +22,7 @@ export async function loadMemberRoleIds(
   return rows.map((r) => r.roleId);
 }
 
-// Batched counterpart to `loadMemberRoleIds`. Used by the list endpoints
-// to avoid an N+1 query per page. Returns a `Map<groupMemberId, roleId[]>`;
+// Avoids an N+1 query per page. Returns `Map<groupMemberId, roleId[]>`;
 // callers fall back to `[]` for members with no roles.
 export async function batchLoadMemberRoleIds(
   client: MembersClient,
@@ -47,9 +42,8 @@ export async function batchLoadMemberRoleIds(
   return map;
 }
 
-// Batched lookup from `junjoUserId -> externalUserId` for a single game.
-// The list endpoints use this to map a page of GroupMember rows back to
-// the dev-supplied user ids without an N+1 ExternalIdentity query.
+// Maps a page of GroupMember rows back to dev-supplied user ids without
+// an N+1 ExternalIdentity query.
 export async function batchLoadExternalUserIds(
   client: MembersClient,
   gameId: string,
@@ -75,11 +69,8 @@ export interface WireMember {
   joinedAt: string;
 }
 
-// Serializes a `GroupMember` row to the wire format. The `userId` on the
-// wire is the dev's external user id (the same value the SDK passed in),
-// not the internal `junjoUserId`; the route is responsible for supplying
-// it (looked up via ExternalIdentity, or threaded through from the
-// request when the route already has it on hand).
+// Wire `userId` is the dev's external id; the caller looks it up via
+// ExternalIdentity (or threads it through from the request when on hand).
 export function serializeMember(
   member: GroupMember,
   externalUserId: string,
@@ -107,14 +98,8 @@ export interface WireMemberPermissionOverride {
   setBy: string | null;
 }
 
-// Serializes a `MemberPermissionOverride` row to the wire format. The
-// route is responsible for threading the dev's external `userId` and
-// the owning `groupId` through; the row itself stores `groupMemberId`
-// and `permissionKey` (foreign keys), which are not what the wire uses.
-// `setByExternalUserId` is the dev's external id of whoever set the
-// override, looked up via `ExternalIdentity`; it is null in V1 since no
-// auth-adapter actor is wired yet (parallels `Invitation.createdBy` and
-// `AuditEntry.actorUserId`).
+// `setByExternalUserId` is null in V1 (no auth-adapter actor wired);
+// parallels `Invitation.createdBy` and `AuditEntry.actorUserId`.
 export function serializeMemberPermissionOverride(
   override: MemberPermissionOverride,
   groupId: string,
@@ -131,12 +116,8 @@ export function serializeMemberPermissionOverride(
   };
 }
 
-// Authed route handler: fetch a member by their `GroupMember.id`. Scoped
-// to the calling game (a member whose group belongs to a different game
-// returns 404 to avoid leaking existence). A soft-deleted group also
-// 404s. Defensively 404s when the member's `junjoUser` has no
-// `ExternalIdentity` row in this game (a data-integrity case that
-// shouldn't happen via Junjo's own flows).
+// Cross-game / soft-deleted-group / missing-ExternalIdentity all collapse
+// to 404 to avoid leaking existence across the gameId scope.
 export function getMemberByIdHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const id = c.req.param("id");
@@ -162,14 +143,9 @@ export function getMemberByIdHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Authed route handler: list every group a user is a member of within
-// the calling game. Returns a bare array (no pagination wrapper) capped
-// at `LIST_FOR_USER_HARD_CAP`. A user with no `ExternalIdentity` row
-// for this game returns `[]` rather than 404; that distinguishes "user
-// known but not in any groups" from "user we have never seen", which is
-// the same answer for the consumer (zero memberships) and avoids a
-// route-level existence leak. Soft-deleted groups are excluded from the
-// result.
+// Returns `[]` rather than 404 for a user with no ExternalIdentity row;
+// "user known but in no groups" and "user never seen" both answer
+// "zero memberships" without leaking existence.
 export function listMembersForUserHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const externalUserId = c.req.param("userId");

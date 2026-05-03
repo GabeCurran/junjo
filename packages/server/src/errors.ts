@@ -1,7 +1,3 @@
-// Server-side error type. Routes throw `JunjoError` and the error
-// middleware turns it into a JSON response with the same shape the SDK
-// expects: { code, status, message }.
-
 export class JunjoError extends Error {
   constructor(
     readonly code: string,

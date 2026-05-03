@@ -9,16 +9,11 @@ const EnvSchema = z.object({
     .pipe(z.number().int().positive()),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   JUNJO_BASE_URL: z.string().url().optional(),
-  // Admin token gating the cross-game user query (`GET /v1/users/:junjoUserId/games`).
-  // Optional: when unset the route is effectively disabled (every request 401s),
-  // so self-hosters with one game per server can ignore it. Cloud + dashboard
-  // deployments set it to a long random string.
+  // When unset the admin endpoints are effectively disabled (every
+  // request 401s); cloud + dashboard deployments set a long random string.
   JUNJO_ADMIN_TOKEN: z.string().min(1, "JUNJO_ADMIN_TOKEN must not be empty when set").optional(),
-  // Per-API-key rate limit on `/v1/*` routes that go through the apiKey
-  // middleware. Token-bucket: `RATE_LIMIT_PER_MINUTE` is the sustained
-  // refill rate, `RATE_LIMIT_BURST` is the bucket capacity. Both default
-  // to 600 / 100 (Phase 14.1 spec). Setting either to 0 disables rate
-  // limiting entirely; "" or unset falls back to the default.
+  // Setting either rate-limit field to 0 disables rate limiting entirely;
+  // "" or unset falls back to the default.
   RATE_LIMIT_PER_MINUTE: z
     .string()
     .optional()
@@ -39,10 +34,6 @@ const EnvSchema = z.object({
         .int("RATE_LIMIT_BURST must be a non-negative integer")
         .nonnegative("RATE_LIMIT_BURST must be a non-negative integer"),
     ),
-  // Minimum log level for the structured logger (Phase 14.2). One of
-  // `error`, `warn`, `info`, `debug`, `silent`. Defaults to `info`;
-  // `silent` suppresses every line. Empty string falls back to the
-  // default; unrecognized values are rejected at startup.
   LOG_LEVEL: z
     .string()
     .optional()

@@ -1,7 +1,6 @@
-// Seed helpers for tests + local dev. createGame() inserts a Game row;
-// createApiKey() generates a fresh `prefix.secret` pair, stores the
-// hashed secret, and returns the plaintext alongside the DB record so
-// callers can use the key once and never see it again.
+// `createApiKey` returns the plaintext secret alongside the DB record;
+// the hash is what's stored, so callers must use the plaintext at hand
+// (it cannot be recovered later).
 
 import type { ApiKey, Game, PrismaClient } from "@prisma/client";
 import { type RawApiKey, generateApiKey } from "./apiKey.js";

@@ -9,9 +9,7 @@ export interface SweepOptions {
   now?: Date;
 }
 
-// Hard-deletes every Group whose softDeletedAt is older than the
-// retention window. Cascade rules on the schema take care of related
-// rows. Returns the number of groups removed so the caller can log it.
+// Cascades on the schema take care of related rows.
 export async function sweepHardDeletes(
   prisma: PrismaClient,
   opts: SweepOptions = {},
@@ -29,11 +27,6 @@ export interface SweeperHandle {
   stop(): void;
 }
 
-// In-process scheduler. Production wires this from `index.ts` so the
-// sweep runs hourly inside the same Node process as the API. Importing
-// it does nothing on its own; call `startHardDeleteSweeper(prisma)` to
-// schedule. Tests do not start the timer; they call `sweepHardDeletes`
-// directly.
 export function startHardDeleteSweeper(
   prisma: PrismaClient,
   opts: { intervalMs?: number; retentionDays?: number } = {},

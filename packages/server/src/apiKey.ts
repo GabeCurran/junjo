@@ -1,10 +1,9 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-// API keys are presented to the dev as `{prefix}.{secret}`. The prefix
-// is stored in plaintext and indexed for O(1) lookup; the secret is
-// scrypt-hashed because a database leak should not be enough to act as
-// the developer.
+// Wire format `{prefix}.{secret}`: the prefix is stored plaintext + indexed
+// for O(1) lookup; the secret is scrypt-hashed so a DB leak alone cannot
+// act as the developer.
 
 const scrypt = promisify(scryptCb) as (
   password: string,

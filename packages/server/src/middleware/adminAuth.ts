@@ -1,19 +1,12 @@
 // @cloud-only
 //
-// Admin token middleware gating cloud-only routes (the cross-game user query
-// in Phase 10.2; future cross-tenant admin endpoints). Reads `Authorization:
-// Bearer <token>` and constant-time-compares it to the configured admin
-// token. The configured token is threaded through `createApp({ adminToken })`
-// from the server entry point (which reads `JUNJO_ADMIN_TOKEN` via `loadEnv`).
+// Admin token vs per-game API key: per-game keys identify the calling
+// game and gate per-game data; the admin token is a single server-wide
+// secret for the dashboard / operator scripts that need cross-tenant
+// visibility. The two middlewares never run on the same route.
 //
-// Distinct from `apiKeyMiddleware`: per-game API keys identify which game is
-// calling and gate per-game data; the admin token is a single server-wide
-// secret intended for the dashboard or operator scripts that need
-// cross-tenant visibility. The two middlewares never run on the same route.
-//
-// When the configured token is undefined (self-host setups that never
-// configured one) every request returns 401 - the route is effectively
-// disabled rather than open. Documented in `apps/docs/pages/api/admin.mdx`.
+// An undefined `configuredToken` (self-host setups that never set one)
+// 401s every request - the routes are disabled rather than open.
 
 import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
@@ -39,16 +32,13 @@ export function adminAuthMiddleware(configuredToken: string | undefined): Middle
   };
 }
 
-// Constant-time string comparison via Buffer + timingSafeEqual. Returns
-// false on length mismatch without leaking via early return - we still run
-// a fixed-length compare against a zero buffer so the runtime is bounded
-// by max(presented.length, expected.length), not the shorter one.
+// Constant-time. Length mismatch still runs a dummy compare so the
+// timing path resembles the equal-length case and the runtime is bounded
+// by max(a.length, b.length).
 function constantTimeStringEqual(a: string, b: string): boolean {
   const aBuf = Buffer.from(a, "utf8");
   const bBuf = Buffer.from(b, "utf8");
   if (aBuf.length !== bBuf.length) {
-    // timingSafeEqual requires equal lengths; do a dummy compare to keep
-    // the timing path resembling the equal-length case, then return false.
     timingSafeEqual(aBuf, aBuf);
     return false;
   }

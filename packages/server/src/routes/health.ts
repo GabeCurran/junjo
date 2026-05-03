@@ -2,13 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import type { Context } from "hono";
 import { logger } from "../logger.js";
 
-// Phase 14.3 health-check thresholds. The worker stale threshold is 12x
-// the production worker tick interval (5s); a worker that has not
-// completed a tick in a full minute is genuinely broken, not just slow.
-// The DB ping timeout is generous enough to ride out a brief network
-// blip without the health check itself becoming the failure mode but
-// short enough that load balancers do not hold the probe open while
-// Postgres is wedged.
+// Worker stale threshold is 12x the production worker tick interval (5s):
+// a worker that has not completed a tick in a full minute is broken, not
+// slow. DB timeout is short enough to keep load balancers from holding
+// the probe open while Postgres is wedged.
 export const HEALTHZ_WORKER_STALE_MS = 60_000;
 export const HEALTHZ_DB_TIMEOUT_MS = 2_000;
 
@@ -65,11 +62,8 @@ function checkWorker(
   staleMs: number,
   now: Date,
 ): HealthCheckComponent {
-  // No provider configured: the deployment did not wire a worker handle
-  // into createApp (e.g., a test harness that never boots the background
-  // worker, or a future deployment that disables it deliberately). The
-  // health check answers "is the worker doing its job?"; with no worker
-  // to check, the answer is trivially yes.
+  // No provider means the deployment did not wire a worker handle into
+  // createApp (e.g., a test harness, or a deployment that disables it).
   if (!provider) return { ok: true };
   const last = provider.getLastHeartbeat();
   if (last === null) {
@@ -86,11 +80,8 @@ function checkWorker(
   return { ok: true };
 }
 
-// Real `/healthz` (Phase 14.3). Pings the database and reads the webhook
-// worker's last-tick heartbeat; returns `200` with `status: "ok"` only if
-// both pass, otherwise `503` with `status: "degraded"` and per-component
-// `reason` strings. The `/` route stays as the cheap liveness probe (no
-// DB, no auth); `/healthz` is the deeper readiness check.
+// Deep readiness check (DB ping + worker heartbeat). The `/` route stays
+// as the cheap liveness probe.
 export function healthCheckHandler(prisma: PrismaClient, opts: HealthCheckOptions = {}) {
   const workerStaleMs = opts.workerStaleMs ?? HEALTHZ_WORKER_STALE_MS;
   const dbTimeoutMs = opts.dbTimeoutMs ?? HEALTHZ_DB_TIMEOUT_MS;

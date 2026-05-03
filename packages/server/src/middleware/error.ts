@@ -3,8 +3,6 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { JunjoError } from "../errors.js";
 import { logger } from "../logger.js";
 
-// Hono `onError` handler. Turns a thrown JunjoError into the canonical
-// JSON shape the SDK consumes; logs anything else and returns 500.
 export const errorHandler: ErrorHandler = (err, c) => {
   if (err instanceof JunjoError) {
     return c.json(err.toJSON(), err.status as ContentfulStatusCode);

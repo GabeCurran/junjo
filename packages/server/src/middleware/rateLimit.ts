@@ -3,11 +3,7 @@ import { parseApiKey } from "../apiKey.js";
 import { Errors } from "../errors.js";
 
 export interface RateLimitConfig {
-  // Sustained tokens per minute (the refill rate). The bucket regenerates at
-  // this rate up to `burst`.
   perMinute: number;
-  // Maximum bucket capacity. A fully-saturated bucket lets `burst` requests
-  // through back-to-back before the sustained rate kicks in.
   burst: number;
 }
 
@@ -18,9 +14,6 @@ interface BucketState {
 
 export interface ConsumeResult {
   allowed: boolean;
-  // Seconds until the next token becomes available. Only set when
-  // `allowed === false`; the middleware writes it into the `Retry-After`
-  // header.
   retryAfterSeconds?: number;
 }
 
@@ -39,15 +32,13 @@ export class RateLimiter {
     const nowMs = this.now();
     const bucket = this.buckets.get(key);
     if (!bucket) {
-      // First request for this key starts with a full bucket minus the one
-      // token this request just took.
       this.buckets.set(key, { tokens: this.config.burst - 1, lastRefillMs: nowMs });
       return { allowed: true };
     }
     const elapsedMs = Math.max(0, nowMs - bucket.lastRefillMs);
     const refilled = Math.min(this.config.burst, bucket.tokens + elapsedMs * this.tokensPerMs);
     if (refilled < 1) {
-      // Round up so a sub-second wait still surfaces as Retry-After: 1.
+      // Ceil so a sub-second wait still surfaces as `Retry-After: 1`.
       const msToNextToken = (1 - refilled) / this.tokensPerMs;
       return {
         allowed: false,
@@ -68,12 +59,9 @@ export class RateLimiter {
   }
 }
 
-// Resolves the bucket key for a request. We parse the API key prefix from the
-// Authorization header (cheap string op) so each API key gets its own bucket
-// without paying the scrypt verify cost. Requests without a parseable key
-// share a single "anon" bucket; they will be rejected by apiKeyMiddleware
-// downstream anyway, but bucketing keeps the map size bounded under junk
-// traffic.
+// Buckets on the API key prefix (cheap string op) so noisy keys are
+// limited before paying the scrypt-verify cost. Unparseable headers share
+// one "anon" bucket so junk traffic cannot blow up the map.
 export function resolveBucketKey(authorizationHeader: string | null): string {
   if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) return "anon";
   const raw = authorizationHeader.slice("Bearer ".length).trim();
@@ -82,9 +70,8 @@ export function resolveBucketKey(authorizationHeader: string | null): string {
   return parsed.prefix;
 }
 
-// Returns null when rate limiting is disabled (either argument is null or
-// non-positive). Callers pass `null` through to `rateLimitMiddleware` and the
-// middleware short-circuits to a no-op.
+// Returns null when rate limiting is disabled. `rateLimitMiddleware`
+// short-circuits to a no-op when its limiter is null.
 export function buildRateLimiter(
   config: { perMinute?: number; burst?: number } | null | undefined,
 ): RateLimiter | null {

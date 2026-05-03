@@ -1,17 +1,10 @@
-// Local-dev convenience wrapper around the seed helpers. Creates one
-// Game and one ApiKey, prints both to stdout (the plaintext key is
-// shown exactly once because it is not recoverable later), then
-// disconnects so the process exits cleanly.
-//
 // Run with: npm run db:seed [-- --name "My Game"]
 //
-// Intentionally uses `console.log` / `console.error` instead of the
-// structured logger from `logger.ts` (Phase 14.2). The output is read
-// by a human who copies the API key prefix + secret out of their
-// terminal; routing it through pino-pretty's level prefixes (or pino's
-// JSON wire shape in production) would make the secret harder to copy
-// and could end up in log aggregation as a structured field. The
-// runtime server uses the structured logger; this CLI does not.
+// Intentionally uses `console.*` rather than the structured logger:
+// the plaintext API key is read off the terminal by a human and routing
+// it through pino-pretty (or pino's JSON in production) would make the
+// secret hard to copy and risk leaking it into log aggregation as a
+// structured field.
 
 import { disconnectPrisma, prisma } from "./db.js";
 import { createApiKey, createGame } from "./seed.js";

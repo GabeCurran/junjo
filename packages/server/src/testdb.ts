@@ -1,7 +1,5 @@
-// Resolves the Postgres URL used by server-side tests. Tests that need a
-// database import this rather than reading process.env directly so a
-// missing fixture surfaces a single clear error instead of a torrent of
-// connection failures.
+// Centralized so a missing fixture surfaces one clear error instead of a
+// torrent of connection failures.
 
 export function getTestDatabaseUrl(): string {
   const url = process.env.TEST_DATABASE_URL;
