@@ -150,6 +150,65 @@ to keep the sync gate satisfied.
   is real but each branch is short and the indentation makes the
   branching clear.
 
+## V.5 dashboard home
+
+**Before:** The Recent activity feed's game/group name span carried
+the `truncate` Tailwind utility (`overflow: hidden; text-overflow:
+ellipsis; white-space: nowrap`). On the 375px mobile viewport this
+ellipsised entries to `Screenshot Demo / Storm R...` (Storm Riders
+truncated by ~5 characters); the longer-name fixture row `Wolves of
+Ironvale` truncated similarly when the parent flex-wrap container's
+allocated width was tight. Desktop never tripped the truncate at
+1440px because the activity card had ample horizontal room, so the
+issue only surfaced once the mobile capture was inspected.
+
+**Fix:** Dropped the `truncate` class from the span in
+`apps/dashboard/components/dashboard/recent-activity-feed.tsx`. The
+parent already uses `flex flex-wrap items-baseline gap-x-2`, so the
+span now wraps to a new line on narrow widths instead of being
+clipped. Full game and group names render in both viewports; desktop
+layout is byte-identical (no truncate ever fired there).
+
+**Acceptable as-is:**
+
+- Every audit-feed timestamp reads the same relative time
+  ("12 minutes ago" at first capture, "27 minutes ago" at re-capture).
+  Fixture-induced: the seeder writes the rows rapid-fire so they all
+  share a creation minute. Production deployments will have a
+  staggered distribution. Not a polish issue.
+- The activity row uses a single `ArrowRight` icon for every event
+  type (`group.created`, `role.assigned`, `member.invited`,
+  `member.joined`, `group.relationship.set`). A per-action icon set
+  would improve scannability but is a structural change (icon map +
+  fallback handling for unknown actions); filed below.
+- Action verb and "in" connector are both `font-mono text-xs
+  text-muted-foreground`. The font-mono makes the verb visually
+  separable from the prose connector despite the shared muted color,
+  and the `text-sm font-medium` game/group name draws the primary
+  attention as intended. Hierarchy reads cleanly.
+- `target <cuid>` second line of each row carries a 25-char CUID in
+  `font-mono`. On mobile the line wraps after the centre dot so
+  ` * 12 minutes ago` lands on its own line; the CUID itself stays
+  intact (no `break-all`). Acceptable; copy-paste of the full target
+  ID stays one selection.
+- Stats cards stack four high on mobile (~120-140px each, ~520px
+  total) before the activity feed even starts. Vertical density is
+  typical for an overview page on a 375px viewport; the alternative
+  (2x2 grid at sm breakpoint) would shrink the 4xl-font numbers
+  awkwardly. Acceptable.
+- Topbar `<h1>` is `text-sm font-semibold` rather than the more typical
+  page-heading sizes. Intentional design (the topbar doubles as a
+  breadcrumb on detail pages); leaving as-is for V.5 polish.
+- The desktop capture has roughly 200-300px of empty space below the
+  activity card. `<main className="flex-1 px-6 py-8">` fills viewport
+  height; with content shorter than the viewport, the trailing dark
+  area is the unfilled flex-1 region. Layout intent, not a bug.
+
 ## Structural issues to revisit later
 
-(none yet)
+- **Per-action icons in the recent-activity feed.** Today every row
+  uses `ArrowRight` regardless of action. A small map (`group.*` ->
+  `Users`, `role.*` -> `ShieldCheck`, `member.*` -> `UserPlus`,
+  default -> `ArrowRight`) would let the eye scan event types at a
+  glance. Out of scope for visual polish; the row is functional and
+  legible without it.
