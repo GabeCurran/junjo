@@ -1,0 +1,9 @@
+Source directory for `.mmd` Mermaid diagrams. The renderer at
+`tools/diagrams/src/render.ts` walks this directory and writes one PNG (or
+SVG if `--format=svg`) per source into `tools/diagrams/output/`.
+
+Phase 16.1 ships the renderer + tests with no diagrams committed yet.
+Phases 16.2 through 16.5 add the actual `.mmd` files (system-architecture,
+permission-resolution, webhook-delivery, auth-flow). This file exists only
+to keep the empty directory in git so the renderer's "no sources found"
+branch is exercised consistently across fresh checkouts.

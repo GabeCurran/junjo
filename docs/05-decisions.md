@@ -5541,3 +5541,34 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 
 **Caveats:** (1) the count is 38 routes x 2 viewports = 76 PNGs, well above the VISION's "~25-30 PNGs" estimate, because the doc surface grew across phases 7 / 13 after VISION was written. The catalog is still tractable to scan; the count is the natural consequence of capturing every committed MDX page rather than a curated subset. (2) On a fresh `next dev` boot the first-page capture pays the JIT compilation cost (~2-5s); subsequent captures are fast. The total docs crawl is bounded by the slowest page, not the count, in practice.
 
+---
+
+## 2026-05-03 (Phase 16.1 - Mermaid diagram tooling setup)
+
+### New `@junjo/diagrams` workspace at `tools/diagrams/`
+
+**Decision:** Phase 16's Mermaid renderer lives at `tools/diagrams/` as a sibling of `tools/screenshots/`, picked up by the existing `tools/*` workspace glob in the root `package.json`. The runtime dependency is `@mermaid-js/mermaid-cli` (currently `^11.4.2`); the renderer at `tools/diagrams/src/render.ts` invokes the `mmdc` binary via `npx` rather than importing it as a TS library. The CLI is `npm run diagrams [-- --file=<slug>] [-- --format=svg] [-- --source-dir=...] [-- --out-dir=...]`. Sources live in `tools/diagrams/source/*.mmd` (committed); rendered PNGs and SVGs land in `tools/diagrams/output/` (gitignored, regeneratable).
+
+**Why a separate workspace and not a script in `tools/screenshots`:** the two tools share the abstract pattern of "render visual artifacts into a gitignored output directory" but their concerns differ. Screenshots needs Puppeteer + a live `next dev`; diagrams needs `mmdc` + a Mermaid syntax. Coupling them would force every `tools/screenshots` consumer to install `mmdc` (or vice versa) and would obscure which dependency belongs to which renderer. The pattern of one workspace per renderer also keeps `package.json#scripts` flat and predictable: `npm run screenshots:*` for the screenshot crawler, `npm run diagrams` for the diagram renderer.
+
+**Why invoke `mmdc` via `npx` (child process) instead of importing the library:** `@mermaid-js/mermaid-cli` ships its own CLI binary that handles theme directives, file IO, and Puppeteer chromium launch as a single black box; reimplementing that as a library call inside `render.ts` would mean duplicating its config plumbing. Spawning `npx mmdc -i ... -o ...` reuses the maintained binary, gives `stdio: "inherit"` rendering progress for free, and also means the typecheck does not depend on the library being installed (the renderer's TypeScript source has zero imports from `@mermaid-js/mermaid-cli`). The downside is one process per diagram (no shared chromium instance across diagrams in a batch render); for V1 with 4 diagrams that overhead is negligible.
+
+**Why `--file=<slug>` and not a positional arg:** the rest of the loop's tooling (`tools/screenshots`'s `--target` and `--route`) uses `--key=value` flags. Consistency matters more than typing brevity. The flag also leaves room to add `--source-dir`, `--out-dir`, and `--format` as siblings without ambiguity.
+
+**Why both PNG and SVG formats:** PNG is the format the agent reads back through the Read tool to validate layout (which is the whole reason this workspace exists); the loop agent does not see SVG as an image. SVG is included because the docs site might eventually want a build-time pre-render baked into the static export (Nextra's runtime renders client-side today, so static SVGs would be a later optimization). PNG is the default; SVG is opt-in via `--format=svg`.
+
+**Why `npx puppeteer browsers install chrome` is required before first run:** the workspace's `.puppeteerrc.cjs` sets `skipDownload: true` for the same two reasons documented in `tools/screenshots/.puppeteerrc.cjs`: (1) the workspace is rarely run, so paying a 280MB chromium download on every fresh clone hurts contributors who never invoke it; (2) Playwright's chromium under `node_modules/playwright/.local-browsers/` is reusable via `PUPPETEER_EXECUTABLE_PATH`. The README documents this setup step prominently.
+
+**Why a `source/.gitkeep` placeholder:** Phase 16.1 ships only the renderer; the actual `.mmd` files land in 16.2 through 16.5. An empty `source/` directory would not survive `git add`, so a small placeholder file holds it in version control. The placeholder also documents what 16.2 onward will populate the directory with, so a future contributor who lands on it before 16.2 ships understands the staged plan.
+
+**Why no integration test that actually invokes mmdc:** same rationale as Phase 15.1 / 15.2 / 15.3 (puppeteer launch paths are integration-only; mocking them adds maintenance cost without catching real regressions). The unit tests cover the args parser, the FS-walking source discovery, and the render-plan builder; the first end-to-end exercise is the operator's first `npm run diagrams` after Phase 16.2 adds a real diagram.
+
+**What was deliberately NOT done:**
+
+- No diagrams. 16.2 through 16.5 add the actual `.mmd` files (system architecture, permission resolution, webhook delivery, auth flow). 16.1 is purely the tooling.
+- No sync gate. 16.6 ships `tools/diagrams/check-sync.ts` to verify each `.mmd` source matches the embedded copy in the corresponding MDX page; trying to write that gate before any diagram exists would be premature.
+- No batched chromium reuse across diagrams. With four diagrams in V1 the per-render Puppeteer launch cost (~1-2s each) is acceptable; reusing a single chromium instance would couple the renderer to mmdc internals that may shift between major versions.
+- No Mermaid lint / pre-render syntax check. `mmdc` itself surfaces syntax errors on render; running an additional lint pass before the render would just duplicate that.
+
+**Caveats:** (1) `@mermaid-js/mermaid-cli` is currently major version 11; future major bumps may rename CLI flags or change default theme rendering. The hard rule "no major version bumps without operator review" already gates that. (2) The `npx mmdc` resolution depends on the binary being hoisted to `node_modules/.bin/mmdc`; npm workspaces do this by default, but a future migration to `pnpm` or `yarn` workspaces would need to re-verify the hoist. (3) The `.gitkeep` is human-readable text rather than a zero-byte file because the style-check script scans tracked files for forbidden characters and a non-empty file documents intent for future contributors who land on it before 16.2.
+

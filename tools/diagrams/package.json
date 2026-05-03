@@ -1,0 +1,22 @@
+{
+  "name": "@junjo/diagrams",
+  "version": "0.0.0",
+  "description": "Mermaid diagram source + renderer for Junjo architecture docs.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "diagrams": "tsx src/render.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "^11.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

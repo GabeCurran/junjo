@@ -16,6 +16,7 @@
     "screenshots": "npm run screenshots -w @junjo/screenshots --",
     "screenshots:dashboard": "npm run screenshots -w @junjo/screenshots -- --target=dashboard",
     "screenshots:docs": "npm run screenshots -w @junjo/screenshots -- --target=docs",
+    "diagrams": "npm run diagrams -w @junjo/diagrams --",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "npm run build && changeset publish"
