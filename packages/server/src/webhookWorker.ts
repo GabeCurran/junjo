@@ -25,6 +25,13 @@ export const WEBHOOK_WORKER_INTERVAL_MS = 5_000;
 export const WEBHOOK_WORKER_BATCH_SIZE = 50;
 export const WEBHOOK_SIGNATURE_SCHEME = "v1";
 
+// Phase 14.4: ceiling on how long graceful shutdown waits for an
+// in-flight tick to drain. Container orchestrators (Docker, Kubernetes,
+// Nomad) typically send SIGKILL 30s after SIGTERM if the process has
+// not exited; matching that ceiling means the drain never artificially
+// extends shutdown beyond the orchestrator's terminationGracePeriod.
+export const WEBHOOK_WORKER_DRAIN_MS = 30_000;
+
 export interface WebhookFetchInit {
   method: "POST";
   headers: Record<string, string>;
@@ -44,6 +51,13 @@ export interface WorkerOptions {
   intervalMs?: number;
   batchSize?: number;
   now?: () => Date;
+  // Phase 14.4: optional callback consulted by `runWorkerOnce` between
+  // deliveries. Returning true breaks the batch loop early so a graceful
+  // shutdown can drain the in-flight `deliverOne` without picking up
+  // the rest of the batch. Checked at the top of each iteration so a
+  // currently-executing `deliverOne` always finishes (Promises cannot
+  // be cancelled mid-flight).
+  shouldStop?: () => boolean;
 }
 
 export type DeliveryOutcome =
@@ -239,6 +253,7 @@ export async function runWorkerOnce(
   const ids = await pollDueDeliveries(prisma, now(), batchSize);
   const result: WorkerTickResult = { delivered: 0, pending: 0, failed: 0 };
   for (const id of ids) {
+    if (opts.shouldStop?.()) break;
     const outcome = await deliverOne(prisma, id, fetcher, now);
     if (outcome.status === "delivered") result.delivered++;
     else if (outcome.status === "failed") result.failed++;
@@ -248,7 +263,15 @@ export async function runWorkerOnce(
 }
 
 export interface WorkerHandle {
-  stop(): void;
+  // Phase 14.4: graceful shutdown. Sets the internal `stopping` flag
+  // (so `runWorkerOnce` breaks its batch loop at the next iteration
+  // boundary), clears the scheduling interval (so no new ticks fire),
+  // then awaits the in-flight tick (if any) before resolving. Capped at
+  // `drainMs` (default `WEBHOOK_WORKER_DRAIN_MS` = 30s) so a hung
+  // receiver cannot block process exit indefinitely. Idempotent: a
+  // second call after the first returns a resolved Promise once the
+  // first call's drain is complete.
+  stop(opts?: { drainMs?: number }): Promise<void>;
   // Phase 14.3: returns the timestamp of the most recent tick completion
   // (success or caught error), or the worker's startup time if no tick
   // has finished yet. Initialized to `now()` at construction so a freshly
@@ -266,21 +289,51 @@ export function startWebhookWorker(prisma: PrismaClient, opts: WorkerOptions = {
   const intervalMs = opts.intervalMs ?? WEBHOOK_WORKER_INTERVAL_MS;
   const now = opts.now ?? (() => new Date());
   let lastHeartbeat = now();
+  let stopping = false;
+  // Set rather than a single Promise because `setInterval` does not
+  // serialize callbacks: a tick that takes longer than `intervalMs`
+  // overlaps the next one. Tracking every in-flight tick lets `stop()`
+  // wait for all of them to drain rather than only the most recent.
+  const inFlight = new Set<Promise<void>>();
 
-  const tick = async () => {
-    try {
-      await runWorkerOnce(prisma, opts);
-    } catch (err) {
-      logger.error({ err }, "webhook worker tick failed");
-    } finally {
-      lastHeartbeat = now();
-    }
+  const tick = (): Promise<void> => {
+    if (stopping) return Promise.resolve();
+    const p = (async () => {
+      try {
+        await runWorkerOnce(prisma, { ...opts, shouldStop: () => stopping });
+      } catch (err) {
+        logger.error({ err }, "webhook worker tick failed");
+      } finally {
+        lastHeartbeat = now();
+      }
+    })();
+    inFlight.add(p);
+    p.finally(() => {
+      inFlight.delete(p);
+    }).catch(() => {});
+    return p;
   };
 
   const handle = setInterval(() => void tick(), intervalMs);
   if (typeof handle.unref === "function") handle.unref();
+
   return {
-    stop: () => clearInterval(handle),
+    stop: async ({ drainMs = WEBHOOK_WORKER_DRAIN_MS }: { drainMs?: number } = {}) => {
+      stopping = true;
+      clearInterval(handle);
+      if (inFlight.size === 0) return;
+      const drained = Promise.allSettled(inFlight).then(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ceiling = new Promise<void>((resolve) => {
+        timer = setTimeout(() => resolve(), drainMs);
+        if (typeof timer.unref === "function") timer.unref();
+      });
+      try {
+        await Promise.race([drained, ceiling]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
     getLastHeartbeat: () => lastHeartbeat,
   };
 }

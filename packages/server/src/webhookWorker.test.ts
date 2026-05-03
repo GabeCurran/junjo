@@ -7,6 +7,7 @@ import { createApiKey, createGame } from "./seed.js";
 import {
   WEBHOOK_BACKOFF_MS,
   WEBHOOK_MAX_ATTEMPTS,
+  WEBHOOK_WORKER_DRAIN_MS,
   type WebhookFetch,
   type WebhookFetchInit,
   deliverOne,
@@ -630,7 +631,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
 });
 
 describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
-  it("initializes lastHeartbeat to the worker's startup time", () => {
+  it("initializes lastHeartbeat to the worker's startup time", async () => {
     const t0 = new Date("2026-05-02T17:00:00.000Z");
     const fakePrisma = {} as unknown as PrismaClient;
     const handle = startWebhookWorker(fakePrisma, {
@@ -641,11 +642,11 @@ describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
       const initial = handle.getLastHeartbeat();
       expect(initial.toISOString()).toBe(t0.toISOString());
     } finally {
-      handle.stop();
+      await handle.stop();
     }
   });
 
-  it("returns a Date that exposes a stable reading via getLastHeartbeat()", () => {
+  it("returns a Date that exposes a stable reading via getLastHeartbeat()", async () => {
     const fakePrisma = {} as unknown as PrismaClient;
     const handle = startWebhookWorker(fakePrisma, { intervalMs: 1_000_000 });
     try {
@@ -655,13 +656,275 @@ describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
       expect(b).toBeInstanceOf(Date);
       expect(a.toISOString()).toBe(b.toISOString());
     } finally {
-      handle.stop();
+      await handle.stop();
     }
   });
 
-  it("stop() returns void and is safe to call once", () => {
+  it("stop() resolves a Promise<void> and is safe to call once", async () => {
     const fakePrisma = {} as unknown as PrismaClient;
     const handle = startWebhookWorker(fakePrisma, { intervalMs: 1_000_000 });
-    expect(() => handle.stop()).not.toThrow();
+    const result = handle.stop();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
+  });
+});
+
+describe("WEBHOOK_WORKER_DRAIN_MS constant (Phase 14.4)", () => {
+  it("exports a 30s ceiling matching typical orchestrator terminationGracePeriod", () => {
+    expect(WEBHOOK_WORKER_DRAIN_MS).toBe(30_000);
+  });
+});
+
+describe("runWorkerOnce shouldStop (Phase 14.4)", () => {
+  it("breaks the batch loop early when shouldStop returns true", async () => {
+    const calls: string[] = [];
+    let stop = false;
+    const fetcher: WebhookFetch = async (url) => {
+      calls.push(url);
+      stop = true;
+      return { ok: true, status: 200 };
+    };
+    const fakePrisma = {
+      webhookDelivery: {
+        findMany: async () => [{ id: "del_1" }, { id: "del_2" }, { id: "del_3" }],
+        findUnique: async ({ where }: { where: { id: string } }) => ({
+          id: where.id,
+          status: "pending",
+          attemptCount: 0,
+          payload: { id: "evt_1", type: "group.updated" },
+          endpoint: {
+            id: "wh_1",
+            url: `https://example.test/${where.id}`,
+            secret: "topsecret",
+            format: "junjo",
+          },
+        }),
+        update: async () => ({}),
+      },
+    } as unknown as PrismaClient;
+
+    const result = await runWorkerOnce(fakePrisma, {
+      fetch: fetcher,
+      shouldStop: () => stop,
+    });
+
+    expect(result.delivered).toBe(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not break the loop when shouldStop is omitted", async () => {
+    const calls: string[] = [];
+    const fetcher: WebhookFetch = async (url) => {
+      calls.push(url);
+      return { ok: true, status: 200 };
+    };
+    const fakePrisma = {
+      webhookDelivery: {
+        findMany: async () => [{ id: "del_1" }, { id: "del_2" }],
+        findUnique: async ({ where }: { where: { id: string } }) => ({
+          id: where.id,
+          status: "pending",
+          attemptCount: 0,
+          payload: { id: "evt_1", type: "group.updated" },
+          endpoint: {
+            id: "wh_1",
+            url: `https://example.test/${where.id}`,
+            secret: "topsecret",
+            format: "junjo",
+          },
+        }),
+        update: async () => ({}),
+      },
+    } as unknown as PrismaClient;
+
+    const result = await runWorkerOnce(fakePrisma, { fetch: fetcher });
+    expect(result.delivered).toBe(2);
+    expect(calls).toHaveLength(2);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain (Phase 14.4)", () => {
+  let prisma: PrismaClient;
+  let gameId: string;
+  let groupId: string;
+
+  beforeAll(() => {
+    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "WebhookDelivery", "WebhookEndpoint", "AuditEntry", "MemberPermissionOverride", "RolePermission", "MemberRole", "PermissionDef", "Role", "Invitation", "GroupRelationship", "GroupMember", "JunjoUser", "ExternalIdentity", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    await createApiKey(game.id, prisma);
+    const group = await prisma.group.create({
+      data: {
+        gameId,
+        kind: "guild",
+        name: "Crimson Wolves",
+        visibility: "invite-only",
+        metadata: {} as Prisma.InputJsonValue,
+      },
+    });
+    groupId = group.id;
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  async function makeDueEndpoint(url: string): Promise<void> {
+    await prisma.webhookEndpoint.create({
+      data: {
+        gameId,
+        url,
+        secret: "topsecret",
+        events: [],
+        disabledAt: null,
+      },
+    });
+  }
+
+  async function enqueueDueDelivery(): Promise<string[]> {
+    const event = makeGroupUpdatedEvent(gameId, groupId);
+    const ids = await enqueueWebhookDeliveries(prisma, event);
+    await prisma.webhookDelivery.updateMany({ data: { nextAttemptAt: new Date() } });
+    return ids;
+  }
+
+  it("waits for the in-flight deliverOne to complete before stop() resolves", async () => {
+    await makeDueEndpoint("https://example.test/slow");
+    const [id] = await enqueueDueDelivery();
+
+    let releaseFetcher: (() => void) | undefined;
+    let resolveStarted: (() => void) | undefined;
+    const fetcherStarted = new Promise<void>((r) => {
+      resolveStarted = r;
+    });
+    const fetcher: WebhookFetch = async () => {
+      resolveStarted?.();
+      await new Promise<void>((r) => {
+        releaseFetcher = r;
+      });
+      return { ok: true, status: 200 };
+    };
+
+    const handle = startWebhookWorker(prisma, { fetch: fetcher, intervalMs: 5 });
+    try {
+      await fetcherStarted;
+      const stopPromise = handle.stop({ drainMs: 5_000 });
+      // Give the event loop a turn so any racing tick callbacks would
+      // surface; stop should still be pending because the fetcher hangs.
+      await new Promise((r) => setTimeout(r, 30));
+      releaseFetcher?.();
+      await stopPromise;
+    } finally {
+      releaseFetcher?.();
+      await handle.stop();
+    }
+
+    const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id: id as string } });
+    expect(row.status).toBe("delivered");
+    expect(row.responseStatus).toBe(200);
+    expect(row.attemptCount).toBe(1);
+  });
+
+  it("does not pick up new deliveries after stop() is called", async () => {
+    await makeDueEndpoint("https://example.test/a");
+    await makeDueEndpoint("https://example.test/b");
+    await enqueueDueDelivery();
+
+    let callCount = 0;
+    let releaseFirst: (() => void) | undefined;
+    let resolveStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((r) => {
+      resolveStarted = r;
+    });
+    const fetcher: WebhookFetch = async () => {
+      callCount++;
+      if (callCount === 1) {
+        resolveStarted?.();
+        await new Promise<void>((r) => {
+          releaseFirst = r;
+        });
+      }
+      return { ok: true, status: 200 };
+    };
+
+    const handle = startWebhookWorker(prisma, { fetch: fetcher, intervalMs: 5 });
+    try {
+      await firstStarted;
+      const stopPromise = handle.stop({ drainMs: 5_000 });
+      // Late ticks (cleared interval) must not fire while we wait.
+      await new Promise((r) => setTimeout(r, 30));
+      releaseFirst?.();
+      await stopPromise;
+      // Quiet window after drain to ensure no late tick sneaks in.
+      await new Promise((r) => setTimeout(r, 30));
+    } finally {
+      releaseFirst?.();
+      await handle.stop();
+    }
+
+    expect(callCount).toBe(1);
+    const rows = await prisma.webhookDelivery.findMany({});
+    const delivered = rows.filter((r) => r.status === "delivered").length;
+    const pending = rows.filter((r) => r.status === "pending").length;
+    expect(delivered).toBe(1);
+    expect(pending).toBe(1);
+  });
+
+  it("clips the drain at the configured ceiling when the in-flight deliverOne hangs", async () => {
+    await makeDueEndpoint("https://example.test/hang");
+    await enqueueDueDelivery();
+
+    let resolveStarted: (() => void) | undefined;
+    const started = new Promise<void>((r) => {
+      resolveStarted = r;
+    });
+    let releaseFetcher: (() => void) | undefined;
+    const fetcher: WebhookFetch = async () => {
+      resolveStarted?.();
+      await new Promise<void>((r) => {
+        releaseFetcher = r;
+      });
+      return { ok: true, status: 200 };
+    };
+
+    const handle = startWebhookWorker(prisma, { fetch: fetcher, intervalMs: 5 });
+    try {
+      await started;
+      const t0 = Date.now();
+      // Drain ceiling fires while the fetcher is still hanging; stop()
+      // resolves at the ceiling rather than waiting for the in-flight
+      // delivery to finish.
+      await handle.stop({ drainMs: 100 });
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeGreaterThanOrEqual(80);
+      expect(elapsed).toBeLessThan(2_000);
+    } finally {
+      // Release the fetcher and await the still-pending in-flight tick
+      // so the test process tears down cleanly. In production this maps
+      // to `process.exit(0)` killing the remaining work after the
+      // ceiling fires.
+      releaseFetcher?.();
+      await handle.stop();
+    }
+  });
+
+  it("stop() is a no-op when no tick is in flight", async () => {
+    const handle = startWebhookWorker(prisma, { intervalMs: 1_000_000 });
+    const t0 = Date.now();
+    await handle.stop({ drainMs: 5_000 });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it("a second stop() call resolves cleanly after the first drain completed", async () => {
+    const handle = startWebhookWorker(prisma, { intervalMs: 1_000_000 });
+    await handle.stop();
+    await expect(handle.stop()).resolves.toBeUndefined();
   });
 });

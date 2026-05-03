@@ -244,6 +244,8 @@ Two `setInterval` schedulers run inside the server process:
 
 Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
 
+The webhook worker drains its in-flight delivery before the HTTP listener closes (Phase 14.4). On `SIGTERM` the worker stops scheduling new ticks and stops picking new rows from the current batch, but the `deliverOne` call already in flight is allowed to run to completion so the receiver gets a stable response and the row state is persisted (`delivered` / `pending` / `failed` per the usual transition rules). The drain is capped at 30 seconds so a hung receiver cannot block process exit beyond the `terminationGracePeriod` Kubernetes (and the `--time` flag on `docker stop`) ship with by default. Set `terminationGracePeriodSeconds: 35` (or higher) on the pod spec to leave a small margin above the 30s drain ceiling.
+
 ### Horizontal scaling
 
 The V1 server is single-process. Both background workers run on every instance, which is correct (the soft-delete sweeper's `deleteMany` is idempotent; the webhook worker's row updates are atomic) but wastes work. If you run more than one instance:

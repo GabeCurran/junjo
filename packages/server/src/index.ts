@@ -31,7 +31,11 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 const shutdown = async (signal: string) => {
   logger.info({ signal }, "junjo-server shutting down");
   sweeper.stop();
-  webhookWorker.stop();
+  // Phase 14.4: drain the in-flight webhook delivery (if any) before
+  // closing the HTTP listener. Capped at WEBHOOK_WORKER_DRAIN_MS (30s)
+  // so a hung receiver cannot block process exit beyond a typical
+  // orchestrator's terminationGracePeriod.
+  await webhookWorker.stop();
   server.close();
   await disconnectPrisma();
   process.exit(0);
