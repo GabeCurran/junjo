@@ -1,4 +1,4 @@
-import { type Logger as PinoLogger, type LoggerOptions, pino } from "pino";
+import { type LoggerOptions, type Logger as PinoLogger, pino } from "pino";
 
 // Structured logger (Phase 14.2). Production (NODE_ENV=production with
 // no caller-supplied destination) emits one JSON object per line on
