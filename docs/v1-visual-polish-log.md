@@ -100,6 +100,56 @@ satisfied.
   different vertical bands. Visually distinct, conveys the request-then-
   worker handoff cleanly.
 
+## V.4 auth-flow.mmd
+
+**Before:** Three DB SELECT labels were bare predicates without the
+`SELECT` verb, while the same diagram's INSERT and UPDATE labels (steps
+17, 22) carry their verb. Step 10 read `ApiKey by prefix` (natural-
+language `by`, no verb). Step 14 read `ExternalIdentity (gameId,
+externalUserId)` (bare table + key tuple). Step 20 read `ExternalIdentity
+(gameId, externalUserId) re-select` (bare with an awkward natural-
+language `re-select` qualifier). Same internal inconsistency that V.3
+fixed in webhook-delivery.
+
+**Fix:** Added `SELECT ... WHERE ...` form to all three. Step 10 is now
+`SELECT ApiKey WHERE prefix`. Steps 14 and 20 both become `SELECT
+ExternalIdentity WHERE gameId, externalUserId`; the duplicate label is
+fine because the surrounding alt frames (`mapping exists` / `first
+appearance` for step 14; `unique-constraint conflict P2002 (concurrent
+winner committed)` plus the preceding `rollback inner tx` in step 19 for
+step 20) make the second query's "re-query after conflict" semantics
+obvious without an inline qualifier. Both fences (the `.mmd` source and
+the embedded fence in `apps/docs/pages/auth/index.mdx`) updated together
+to keep the sync gate satisfied.
+
+**Acceptable as-is:**
+
+- INSERT statements (steps 17, 22) use the truncated `INSERT <Table>`
+  form rather than full SQL `INSERT INTO <Table> (...) VALUES (...)`.
+  Same convention V.3 settled on for webhook-delivery; matches the
+  brevity of sequence-diagram message labels.
+- The two-row `BEGIN / INSERT / INSERT / COMMIT` block at step 17
+  renders four lines stacked on a single message arrow. Mermaid handles
+  the multi-line label cleanly; it is dense but legible and the
+  transactional grouping is the point.
+- Step 17's `[insert wins (no concurrent first-appearance)]` and step
+  19's `[unique-constraint conflict P2002 (concurrent winner
+  committed)]` alt-frame labels are long. They wrap once each within
+  the inner alt frame and stay readable; a shorter form would lose the
+  Prisma error code or the concurrency cause, both of which matter to
+  the reader of an auth-flow diagram.
+- The trailing `Note over App,DB` at the bottom (54 words explaining
+  read-only-routes vs accept/decline lazy-create policy) wraps to four
+  lines and crowds the bottom of the canvas. Acceptable: it captures a
+  policy that is not visible in the swim-lanes themselves and is the
+  single most important thing for a reader to take away from the
+  diagram. Trimming would weaken the takeaway.
+- Phase 1's alt-block on the SDK lane (steps 2-7) renders nested two
+  levels deep (`alt no authAdapter configured` / `else authAdapter
+  present` / `alt verifies` / `else missing, expired...`). Visual depth
+  is real but each branch is short and the indentation makes the
+  branching clear.
+
 ## Structural issues to revisit later
 
 (none yet)

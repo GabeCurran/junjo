@@ -76,13 +76,13 @@ sequenceDiagram
   Note over App,DB: Phase 2 - SDK call carrying the external user id (e.g. accept invitation)
   App->>SDK: junjo.invitations.accept(code, { userId: externalUserId })
   SDK->>Server: POST /v1/invitations/{code}/accept<br/>Authorization Bearer jk_...<br/>body { userId: externalUserId }
-  Server->>DB: ApiKey by prefix
+  Server->>DB: SELECT ApiKey WHERE prefix
   DB-->>Server: gameId, hashedSecret, revokedAt
   Server->>Server: scrypt verify, check revokedAt<br/>set c.var.gameId
   Server->>Server: zod-parse body, load invitation by code
 
   Note over App,DB: Phase 3 - external id resolved to junjoUserId (race-safe, created lazily on accept or decline)
-  Server->>DB: ExternalIdentity (gameId, externalUserId)
+  Server->>DB: SELECT ExternalIdentity WHERE gameId, externalUserId
   alt mapping exists
     DB-->>Server: junjoUserId
   else first appearance for this game
@@ -92,7 +92,7 @@ sequenceDiagram
       DB-->>Server: junjoUserId (just created)
     else unique-constraint conflict P2002 (concurrent winner committed)
       DB--xServer: rollback inner tx
-      Server->>DB: ExternalIdentity (gameId, externalUserId) re-select
+      Server->>DB: SELECT ExternalIdentity WHERE gameId, externalUserId
       DB-->>Server: winner's junjoUserId
     end
   end
