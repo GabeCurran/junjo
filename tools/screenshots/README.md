@@ -6,8 +6,9 @@ markdown INDEX file alongside the PNGs so the catalog is browsable in
 the file tree.
 
 This workspace is part of Phase 15 of the V1 roadmap. Phase 15.1
-shipped the crawler infrastructure. Phase 15.2 adds the dashboard
-route config + fixture seeder. Phase 15.3 adds the docs route config.
+shipped the crawler infrastructure. Phase 15.2 added the dashboard
+route config + fixture seeder. Phase 15.3 adds the docs route config
+(an FS walk of `apps/docs/pages/**/*.mdx`).
 
 ## Layout
 
@@ -21,12 +22,13 @@ tools/screenshots/
     args.ts            CLI argument parser
     route-filter.ts    --route=<slug> filtering
     index-md.ts        Renders the per-area INDEX.md table
-    types.ts           CrawlConfig, RouteSpec, Viewport
-    resolve-routes.ts  Picks between static `routes` and `prepare()`
-    seed-fixtures.ts   HTTP-based idempotent fixture seeder
+    types.ts                  CrawlConfig, RouteSpec, Viewport
+    resolve-routes.ts         Picks between static `routes` and `prepare()`
+    seed-fixtures.ts          HTTP-based idempotent fixture seeder (dashboard)
+    discover-docs-routes.ts   FS walk over apps/docs/pages/**/*.mdx
     configs/
       dashboard.ts     Phase 15.2 (dev server + seed + route list)
-      docs.ts          (Phase 15.3 lands the docs config here)
+      docs.ts          Phase 15.3 (dev server + dynamic FS-walk routes)
   output/              Generated PNGs and INDEX.md (gitignored)
   README.md
   package.json
@@ -94,22 +96,29 @@ A config is a TypeScript file at `src/configs/<target>.ts` exporting a
 
 **Static routes** (the docs config, Phase 15.3):
 
+The docs config has no live-server dependencies. Its routes come from
+walking `apps/docs/pages/**/*.mdx` at config-load time via
+`discoverDocsRoutes()`; adding a new MDX page automatically extends
+the catalog with no code change in this workspace. Underscore-prefixed
+files / directories (`_meta.ts`, `_app.tsx`, `_drafts/`, ...) are
+skipped per Nextra convention; `index.mdx` files map to the section
+root path (`pages/sdk/index.mdx` -> `/sdk`); routes are sorted by path
+for deterministic ordering.
+
 ```ts
+import { discoverDocsRoutes } from "../discover-docs-routes.ts";
 import type { CrawlConfig } from "../types.ts";
 
 const config: CrawlConfig = {
   area: "docs",
   viewports: [
     { name: "desktop", width: 1440, height: 900 },
-    { name: "mobile", width: 375, height: 812, isMobile: true },
+    { name: "mobile", width: 375, height: 812, deviceScaleFactor: 2, isMobile: true },
   ],
-  routes: [
-    { slug: "home", path: "/", description: "Docs landing" },
-    { slug: "getting-started", path: "/getting-started", description: "Tutorial" },
-  ],
+  routes: discoverDocsRoutes(absolutePathToAppsDocsPages),
   devServer: {
     command: "npm run dev -w @junjo/docs -- --port 13131 --hostname 127.0.0.1",
-    cwd: "../../",
+    cwd: repoRoot,
     port: 13131,
     readyPath: "/",
   },
@@ -170,6 +179,27 @@ Riders`, `Ironvale Alliance`) are created only if missing; each demo
 member is invited + accepted only if not already in the group; the
 parent / rival relationships are set only if not already present.
 Re-running the seeder is cheap and safe.
+
+## Docs catalog (Phase 15.3)
+
+The docs target needs no auth and no backing server beyond `next dev`
+booting against `apps/docs/`. Run:
+
+```sh
+npm run screenshots:docs
+```
+
+The crawler boots `next dev -w @junjo/docs` on
+`SCREENSHOTS_DOCS_PORT` (default `13131`), then walks every
+`.mdx` page under `apps/docs/pages/` and captures each at desktop +
+mobile. The route count tracks the docs surface: at the time Phase
+15.3 landed there were 38 MDX pages, so the crawl produces ~76 PNGs.
+First-page capture pays the `next dev` JIT compilation cost (~2-5s);
+subsequent captures are fast.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `SCREENSHOTS_DOCS_PORT` | no | `13131` | Port `next dev` is bound to during the crawl |
 
 ## Visual feedback loop (Phase 15.4)
 

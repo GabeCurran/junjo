@@ -5512,3 +5512,32 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 
 **Caveats:** (1) the seeder issues a fresh API key on every run, which accumulates rows in `ApiKey` over time; the dashboard's API-keys panel will show them all. Acceptable for a dev environment; if it becomes annoying, an `--cleanup` flag could revoke prior keys for the demo game. (2) The relationships seed only sets one `rival` edge between primary and secondary; richer relationships (`enemy`, `ally`, `neutral`) could land if the relationships tab feels thin. (3) The mobile viewport uses `deviceScaleFactor: 2` to mirror retina rendering; this doubles file size but keeps text crisp. Desktop stays at `deviceScaleFactor: 1` because the catalog is for layout/look review, not visual fidelity benchmarking.
 
+---
+
+## 2026-05-03 (Phase 15.3 - Docs site screenshot catalog)
+
+### Dynamic walk over `apps/docs/pages/**/*.mdx` instead of a hardcoded route list
+
+**Decision:** the docs config (`tools/screenshots/src/configs/docs.ts`) does NOT enumerate routes by hand. Instead, a pure module-level helper at `tools/screenshots/src/discover-docs-routes.ts` walks `apps/docs/pages` recursively at config-load time, derives one `RouteSpec` per `.mdx` file, and feeds the resulting array into `config.routes`. The walk skips any file or directory whose name starts with `_` (Nextra convention for `_app.tsx`, `_meta.ts`, `_drafts/`, etc.). `index.mdx` files map to the section root path: `pages/index.mdx` -> `/`, `pages/sdk/index.mdx` -> `/sdk`. Routes are sorted by path for deterministic ordering.
+
+**Why dynamic and not a hardcoded list:** the docs site grew from 12-15 pages (the VISION estimate) to 38 between Phase 7 (`react/use-*` hooks) and Phase 13 (`api-reference/*` and `auth/*` adapter pages). A hardcoded list would have been silently stale by the time Phase 15.3 landed. Dynamic discovery means adding a new doc page automatically extends the catalog with no follow-up tool change. The single tradeoff is that an in-progress draft committed to `apps/docs/pages/` would also be screenshotted; that is acceptable because the catalog is for visual review (not promotional material) and the loop only commits work it considers shippable.
+
+**Why static `routes` (not `prepare()`):** the docs discovery is sync, deterministic, and depends only on the on-disk state at config load time. There is no live server to query, no IDs to substitute. Using `prepare()` would force the FS walk to run inside the crawler runtime when it could just as well run at config import. Keeping the docs config as the "static-routes flavor" of `CrawlConfig` also gives a clean, contrasting pair with the dashboard config (the "dynamic prepare flavor"), which is what the README documents as the two supported shapes.
+
+**Why discovery lives in its own module instead of inline in the config:** the FS walk has enough surface area (underscore-prefix filtering, `index.mdx` -> section-root mapping, slug + description derivation, deterministic sort) to be worth testing in isolation. `tools/screenshots/src/discover-docs-routes.test.ts` covers it with synthetic-tree fixtures (creates a tmp dir, writes `index.mdx` / nested `.mdx` / `_meta.ts` / underscore-prefixed dirs, asserts the resulting routes) plus a "real-tree" suite that calls the function against `apps/docs/pages` and asserts the well-known landing + section roots are present plus all slugs are unique. The synthetic suite catches semantic regressions (rule changes); the real-tree suite catches catalog-breaks if a docs reorganization renames `/sdk` etc.
+
+**Why descriptions are title-cased path segments separated by `>`:** the catalog INDEX.md needs a human-readable label per row. The page's H1 heading would be most informative but extracting it requires reading every MDX file at config-load time and parsing for the first `# ...` line, which adds IO and brittleness. Path segments produce an acceptable approximation: `/sdk/groups` -> "Sdk > Groups", `/api-reference/webhooks-discord` -> "Api Reference > Webhooks Discord". Section indexes get an "overview" suffix: `/sdk` -> "Sdk overview". The exact wording is unimportant; the slug + path are the durable parts of the entry.
+
+**Why port 13131 (and not 13130 like the dashboard):** the operator should be able to capture the dashboard and the docs site in parallel without either binding the other's port. The dashboard sits on 13130 (chosen in Phase 15.2 to avoid the Playwright E2E port 13030); 13131 is the next free port for the docs target. Override is `SCREENSHOTS_DOCS_PORT` for the rare case where 13131 is taken.
+
+**Why the docs target needs no `basicAuth` / `prepare()`:** the docs site is fully public (no auth gate, no login) and its routing depends only on `apps/docs/pages/**/*.mdx`. Booting `next dev -w @junjo/docs` is sufficient; the crawler then visits each derived path with no setup. This is why the docs config is nearly half the size of the dashboard config in lines of code.
+
+**What was deliberately NOT done:**
+
+- No frontmatter / H1 extraction. Descriptions stay path-derived. If a future iteration wants richer descriptions, the same module is the obvious place to add it.
+- No filtering of "draft" or "stub" pages. Every committed `.mdx` page is captured; the loop's documentation discipline already gates what lands in `apps/docs/pages/`.
+- No runtime validation that every page in the discovered list returns < 500 from the dev server. The crawler captures whatever the page renders; a 404 page would be screenshotted as a 404 page (which is itself useful catalog content).
+- No tests of the puppeteer launch path or the docs `next dev` spawning. Same rationale as Phase 15.1 / 15.2 (integration-only; first end-to-end exercise is the operator's first `npm run screenshots:docs` run).
+
+**Caveats:** (1) the count is 38 routes x 2 viewports = 76 PNGs, well above the VISION's "~25-30 PNGs" estimate, because the doc surface grew across phases 7 / 13 after VISION was written. The catalog is still tractable to scan; the count is the natural consequence of capturing every committed MDX page rather than a curated subset. (2) On a fresh `next dev` boot the first-page capture pays the JIT compilation cost (~2-5s); subsequent captures are fast. The total docs crawl is bounded by the slowest page, not the count, in practice.
+
