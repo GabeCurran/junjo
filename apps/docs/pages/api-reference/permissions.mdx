@@ -21,7 +21,7 @@ sequenceDiagram
   participant Cache as permissionCache (60s TTL)
   participant DB as Postgres (via Prisma)
 
-  Client->>Mw: GET /v1/permissions/check + Bearer jk_...<br/>?userId, groupId, permission
+  Client->>Mw: GET /v1/permissions/check?userId, groupId, permission<br/>Authorization: Bearer jk_...
   Mw->>DB: ApiKey by prefix
   DB-->>Mw: gameId + hashedSecret
   Mw->>Mw: scrypt verify, check revokedAt
