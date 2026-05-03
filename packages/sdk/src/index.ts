@@ -34,8 +34,6 @@ export interface JunjoConfig {
 
 const DEFAULT_BASE_URL = "https://api.junjo.io";
 
-const NOT_IMPLEMENTED = new JunjoError("not implemented", "not_implemented");
-
 // =====================================================================
 // Top-level client
 // =====================================================================
@@ -54,6 +52,7 @@ export class Junjo {
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
   private readonly http: HttpClient;
+  private readonly authAdapter: AuthAdapter | undefined;
 
   constructor(config: JunjoConfig) {
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
@@ -70,18 +69,14 @@ export class Junjo {
     this.invitations = new InvitationsApi(this.http);
     this.audit = new AuditApi(this.http);
     this.webhooks = new WebhooksApi(this.http);
+    this.authAdapter = config.authAdapter;
   }
 
-  // The hot path for any game logic: "is this user allowed to do X in
-  // this group?" Server-side cached. Boolean wrapper around `check`.
   async can(userId: UserId, groupId: GroupId, permission: PermissionKey): Promise<boolean> {
     const result = await this.check(userId, groupId, permission);
     return result.allowed;
   }
 
-  // Slightly richer than `can`: returns *why* a check passed or failed.
-  // Useful for admin tooling and "you don't have permission because
-  // your role X is missing key Y" UX.
   async check(
     userId: UserId,
     groupId: GroupId,
@@ -103,10 +98,14 @@ export class Junjo {
     return result;
   }
 
-  // Resolve a player session token to a Junjo user id. Calls the
-  // configured auth adapter and the cross-game identity layer (cloud).
-  async whoami(_token: string): Promise<{ userId: UserId } | null> {
-    throw NOT_IMPLEMENTED;
+  async whoami(token: string): Promise<{ userId: UserId } | null> {
+    if (!this.authAdapter) {
+      throw new JunjoError(
+        "whoami requires an authAdapter; pass one to `new Junjo({ authAdapter })`",
+        "invalid_config",
+      );
+    }
+    return this.authAdapter.verifyToken(token);
   }
 }
 

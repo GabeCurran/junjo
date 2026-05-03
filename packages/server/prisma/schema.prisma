@@ -66,6 +66,10 @@ model ExternalIdentity {
 
   @@unique([gameId, externalUserId])
   @@index([junjoUserId])
+  // Backs the per-game batched junjoUserId -> externalUserId lookup used by
+  // the members list endpoints (`WHERE gameId AND junjoUserId IN (...)`),
+  // and the gameId-scoped existence checks in `findJunjoUserId`.
+  @@index([gameId, junjoUserId])
 }
 
 // =====================================================================
@@ -100,10 +104,13 @@ model Group {
   relsAsA      GroupRelationship[] @relation("RelGroupA")
   relsAsB      GroupRelationship[] @relation("RelGroupB")
 
-  @@index([gameId])
   @@index([gameId, name])
   @@index([gameId, kind])
   @@index([parentGroupId])
+  // Backs the keyset paginated `GET /v1/groups` listing
+  // (`WHERE gameId AND softDeletedAt IS NULL ORDER BY createdAt DESC, id DESC`).
+  // Supersedes the bare `[gameId]` index since gameId is the leading column.
+  @@index([gameId, createdAt(sort: Desc), id(sort: Desc)])
 }
 
 model GroupMember {
@@ -128,6 +135,9 @@ model GroupMember {
   @@unique([groupId, junjoUserId])
   @@index([junjoUserId])
   @@index([groupId, status])
+  // Backs the keyset paginated `GET /v1/groups/:id/members` listing
+  // (`WHERE groupId ORDER BY joinedAt DESC, id DESC`).
+  @@index([groupId, joinedAt(sort: Desc), id(sort: Desc)])
 }
 
 // =====================================================================

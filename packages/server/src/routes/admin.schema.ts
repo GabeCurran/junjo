@@ -1,7 +1,6 @@
 // @cloud-only
 //
-// Schemas for admin-token-gated endpoints (Phase 11.2a, 11.3a). Co-located
-// with `routes/admin.ts` per the existing route-module convention.
+// Schemas for the admin-token-gated endpoints in `routes/admin.ts`.
 
 import { z } from "zod";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
@@ -20,20 +19,16 @@ export const createGameBody = z.object({
   name: z.string().min(1).max(GAME_NAME_MAX_LENGTH),
 });
 
-// Phase 11.4a: cross-game group browser. Caps mirror the per-game `Group`
-// schema (`name` 1-120, `kind` 1-64) plus the `GroupVisibility` union.
+// Caps mirror the per-game `Group` schema (`name` 1-120, `kind` 1-64).
 export const ADMIN_GROUP_NAME_SEARCH_MAX_LENGTH = 120;
 export const ADMIN_GROUP_KIND_MAX_LENGTH = 64;
 export const ADMIN_GROUP_VISIBILITIES = ["public", "invite-only", "secret"] as const;
 export const ADMIN_GROUP_SORT_FIELDS = ["createdAt", "name", "memberCount"] as const;
 export const ADMIN_GROUP_SORT_ORDERS = ["asc", "desc"] as const;
-// Hard upper bound on the matching set when sort=memberCount. The handler
-// fetches every matching row, batches member counts, sorts in memory, and
-// slices to the requested page; pulling unbounded rows for an in-memory
-// sort would defeat the dashboard's bounded-work expectations. If a game
-// genuinely has more than this many groups, the operator must narrow with
-// the q / kind / visibility filters before sorting by memberCount; the
-// route returns 400 with that hint rather than silently truncating.
+// Cap the matching set when sort=memberCount: the handler fetches every
+// matching row, batches member counts, sorts in memory, and slices.
+// Past the cap the route 400s with a "narrow your filter" hint rather
+// than silently truncating.
 export const ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS = 500;
 
 export const listAdminGroupsQuery = z.object({
@@ -46,9 +41,6 @@ export const listAdminGroupsQuery = z.object({
   order: z.enum(ADMIN_GROUP_SORT_ORDERS).default("desc"),
 });
 
-// Phase 11.5a: cross-game group detail + member listing for the dashboard's
-// group detail page (members tab). The status filter mirrors the four
-// `GroupMember.status` values plus the "all" wildcard.
 export const ADMIN_MEMBER_STATUSES = ["active", "left", "kicked", "invited", "all"] as const;
 
 export const listAdminGroupMembersQuery = z.object({
@@ -58,10 +50,8 @@ export const listAdminGroupMembersQuery = z.object({
   q: z.string().min(1).max(255).optional(),
 });
 
-// Phase 11.5c-i: member row-action bodies. Re-exported from the per-game
-// schemas verbatim so the admin and per-game routes accept identical
-// payloads. The admin endpoints add the `gameId` path scope; everything
-// else is shared.
+// Mirrors the per-game member-action bodies so admin and per-game routes
+// accept identical payloads.
 export const ADMIN_MEMBER_NOTES_MAX_LENGTH = 5000;
 export const ADMIN_MEMBER_KICK_REASON_MAX_LENGTH = 500;
 export const ADMIN_PERMISSION_KEY_MAX_LENGTH = 128;
@@ -87,20 +77,14 @@ export const adminOverridePermissionBody = z.object({
   grant: z.boolean(),
 });
 
-// Phase 11.5d-i: cross-game invitation creation. Mirrors the per-game
-// `createInvitationBody` shape exactly so a dashboard caller can ship the
-// same JSON payload either through the admin endpoint or, eventually, a
-// per-game-key path. The expiresIn regex matches the per-game schema; the
-// route handler runs the same `parseDurationMs` post-validation arithmetic.
+// Mirrors the per-game `createInvitationBody`; same `expiresIn` regex,
+// same `parseDurationMs` post-validation arithmetic in the handler.
 const adminExpiresInPattern = /^\d+[smhd]$/;
 
 export const ADMIN_INVITATION_USER_ID_MAX_LENGTH = 255;
 export const ADMIN_INVITATION_ROLE_ID_MAX_LENGTH = 255;
 
-// The body is required (the route handler rejects a malformed/missing
-// JSON body with 400); inside the body every field is optional so an
-// empty `{}` produces an open-code invitation with no role and no
-// expiry. Same shape as the per-game `createInvitationBody`.
+// Empty `{}` produces an open-code invitation with no role and no expiry.
 export const adminCreateInvitationBody = z.object({
   targetUserId: z.string().min(1).max(ADMIN_INVITATION_USER_ID_MAX_LENGTH).optional(),
   roleId: z.string().min(1).max(ADMIN_INVITATION_ROLE_ID_MAX_LENGTH).optional(),
@@ -113,11 +97,9 @@ export const adminCreateInvitationBody = z.object({
     .optional(),
 });
 
-// Phase 11.6a-i: cross-game roles CRUD. Caps mirror the per-game `Role`
-// schema (`name` 1-64, hex color regex). Body shapes are structural
-// duplicates of `createRoleBody` / `updateRoleBody` from `routes/roles.schema.ts`
-// (per the iter-068 boundary stance: admin handlers don't import across the
-// cloud-only boundary; ~20 lines of duplicated schema is cheap).
+// Caps mirror the per-game `Role` schema. Structural duplicates of
+// `createRoleBody` / `updateRoleBody` so admin handlers do not import
+// across the cloud-only boundary.
 export const ADMIN_ROLE_NAME_MAX_LENGTH = 64;
 const ADMIN_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const ADMIN_HEX_COLOR_MESSAGE = "must be a 7-character hex color (e.g. #ff5050)";
@@ -140,21 +122,13 @@ export const adminUpdateRoleBody = z
     message: "at least one field is required",
   });
 
-// Phase 11.6a-ii: cross-game role-permission grant body. Mirrors the
-// per-game `grantPermissionBody` shape from `routes/roles.schema.ts`
-// byte-for-byte; reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (the same
-// 128-char cap shared with member overrides since iter-068).
+// Mirrors the per-game `grantPermissionBody`.
 export const adminGrantPermissionBody = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
 });
 
-// Phase 11.7b-i: cross-game group relationships. Body + query shapes mirror
-// the per-game `setRelationshipBody` / `clearRelationshipQuery` from
-// `routes/groups.schema.ts` byte-for-byte. The `type` cap (64) matches the
-// per-game `RELATIONSHIP_TYPE_MAX_LENGTH` (lifted to a const here so the
-// admin schema does not import across the cloud-only boundary). Mirrors
-// the iter-072 / iter-073 / iter-076 stance: structural duplication of
-// small body / query shapes is cheaper than coupling the modules.
+// Mirrors the per-game `setRelationshipBody` / `clearRelationshipQuery`;
+// `type` cap matches the per-game `RELATIONSHIP_TYPE_MAX_LENGTH`.
 export const ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH = 64;
 
 export const adminSetRelationshipBody = z.object({
@@ -162,46 +136,24 @@ export const adminSetRelationshipBody = z.object({
   mutual: z.boolean().optional(),
 });
 
-// Strict "true" / "false" matches the per-game route's precedent (which in
-// turn matches `listInvitationsQuery`'s `includeExpired` / `includeUsed`
-// flags). Anything else returns 400; the dashboard caller controls the URL
-// shape so a strict enum keeps it honest.
+// Strict "true" / "false" enum matches `listInvitationsQuery`'s
+// `includeExpired` / `includeUsed` flags; the dashboard controls the URL.
 export const adminClearRelationshipQuery = z.object({
   mutual: z.enum(["true", "false"]).optional(),
 });
 
-// Phase 11.7c-i: cross-game sub-group parent set / clear. Mirrors the
-// per-game `setParentBody` from `routes/groups.schema.ts` byte-for-byte:
-// the body must always carry the field (omitting it is rejected) so the
-// caller's intent is explicit; `parentGroupId: null` clears the parent.
-// Same structural-duplication stance as the relationship + role bodies.
+// `parentGroupId` is required (omitting is rejected) so caller intent
+// is explicit; `null` clears the parent.
 export const adminSetParentBody = z.object({
   parentGroupId: z.string().min(1).nullable(),
 });
 
-// Hard upper bound on how deep the cycle-detection walk goes when
-// resolving a candidate ancestor chain. Mirrors the per-game
-// `MAX_PARENT_DEPTH` (lifted to a const here so the admin schema does
-// not import across the cloud-only boundary).
+// Mirrors the per-game `MAX_PARENT_DEPTH`.
 export const ADMIN_MAX_PARENT_DEPTH = 100;
 
-// Phase 11.8a: cross-game per-game audit feed. Backs the dashboard's
-// game-wide audit log viewer (Phase 11.8b). Extends the per-group
-// `listAuditQuery` shape with three filters:
-//   - `since`: lower-bound (inclusive) timestamp; combined with `before`
-//     gives a date-range filter for the dashboard's date picker.
-//   - `actorUserId`: exact match on the stored `AuditEntry.actorUserId`
-//     (the internal `JunjoUser.id` for routes that resolved an actor;
-//     null for routes that wrote `actorUserId: null`). The filter is
-//     exact-match-only in V1; the dashboard surfaces the value from a
-//     prior row so operators don't need to know external/internal id
-//     mapping. Future iterations could add an external-id resolver.
-//   - `targetId`: exact match on the stored `AuditEntry.targetId`. The
-//     stored value depends on the route (some store external user id,
-//     some store member ids, some store role ids). Exact-match-only.
-// Caps mirror the existing `Invitation` user-id shape (255 chars). The
-// `actions[]` repeat semantics match the per-group route - it's
-// validated against the same `AUDIT_ACTIONS` const enum.
+// Extends the per-group `listAuditQuery` with `since` (lower bound),
+// `actorUserId` (exact match against the internal `JunjoUser.id`), and
+// `targetId` (exact match against whatever the writing route stored).
 export const ADMIN_AUDIT_ACTOR_ID_MAX_LENGTH = 255;
 export const ADMIN_AUDIT_TARGET_ID_MAX_LENGTH = 255;
 
@@ -222,26 +174,15 @@ export const listAdminGameAuditQuery = z.object({
   targetId: z.string().min(1).max(ADMIN_AUDIT_TARGET_ID_MAX_LENGTH).optional(),
 });
 
-// Phase 11.9a-i: cross-game permission check. Mirrors the per-game
-// `checkPermissionQuery` from `routes/permissions.schema.ts` byte-for-byte
-// (same `userId` / `groupId` / `permission` shape, same caps). Lifted to
-// the admin schema rather than imported across the cloud-only boundary;
-// matches the iter-072 / iter-073 / iter-076 / iter-078 / iter-080
-// structural-duplication stance for small body / query shapes. The
-// `permission` cap (128) reuses `ADMIN_PERMISSION_KEY_MAX_LENGTH` (the
-// shared cap used by member overrides + role permissions).
+// Mirrors the per-game `checkPermissionQuery`.
 export const adminCheckPermissionQuery = z.object({
   userId: z.string().min(1),
   groupId: z.string().min(1),
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
 });
 
-// Phase 12.2a: cross-game group churn analytics. Returns the binned tenure
-// histogram of departures (kicked + left members) for groups created
-// within `[from, to)`. Both bounds are optional ISO 8601 timestamps; the
-// dashboard always sends `from` (resolved from the date-range picker) and
-// sometimes sends `to` (custom ranges only). The handler treats omitted
-// fields as "no bound on that side".
+// Both `from` and `to` are optional; the handler treats omitted as
+// "no bound on that side".
 export const groupChurnQuery = z.object({
   from: z
     .string()
@@ -255,10 +196,8 @@ export const groupChurnQuery = z.object({
     .optional(),
 });
 
-// Tenure bin boundaries used by `getGroupChurnHandler`. The five bins are
-// half-open `[minMs, maxMs)`; `minMs: null` means "-infinity" (always
-// matches the first bin) and `maxMs: null` means "+infinity" (always the
-// last). The labels are the wire-stable copy the chart renders verbatim.
+// Half-open `[minMs, maxMs)` bins; `null` on either side means
+// unbounded. Labels are wire-stable copy the chart renders verbatim.
 export interface GroupChurnBinDef {
   label: string;
   minMs: number | null;
@@ -301,28 +240,15 @@ export type ListAdminGameAuditQuery = z.infer<typeof listAdminGameAuditQuery>;
 export type AdminCheckPermissionQuery = z.infer<typeof adminCheckPermissionQuery>;
 export type GroupChurnQuery = z.infer<typeof groupChurnQuery>;
 
-// Phase 12.3a: cross-game group-growth analytics. Returns time-bucketed
-// cumulative active member counts across the supplied window, with the
-// top-N groups by current active member count rendered as separate
-// series and the remaining groups aggregated into a single "All others"
-// series. The dashboard's `<GroupGrowthChart>` (Phase 12.3b) consumes
-// the series-of-series shape verbatim and feeds it into Tremor's
-// `<LineChart>`.
-//
-// `topN` is bounded at [1, 10] so the chart stays legible. The default
-// of 5 matches VISION's stated "top-5" for the chart.
+// `topN` is bounded at [1, 10] so the chart stays legible.
 export const ADMIN_GROUP_GROWTH_TOP_N_DEFAULT = 5;
 export const ADMIN_GROUP_GROWTH_TOP_N_MIN = 1;
 export const ADMIN_GROUP_GROWTH_TOP_N_MAX = 10;
 
-// Default window when neither `from` nor `to` is supplied: the last 30
-// days. Matches the dashboard's default range.
 export const ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Hard upper bound on the number of bucket boundaries the handler emits.
-// `pickGrowthBucketSizeMs` picks bucket sizes that target ~25 boundaries
-// for the dashboard's preset windows; the cap guards against pathological
-// custom windows (e.g. a 10-year `from` against an `hourly` bucket).
+// Guards against pathological custom windows (e.g. a 10-year `from` at
+// hourly bucketing).
 export const ADMIN_GROUP_GROWTH_MAX_BUCKETS = 100;
 
 export const groupGrowthQuery = z.object({
@@ -345,3 +271,28 @@ export const groupGrowthQuery = z.object({
 });
 
 export type GroupGrowthQuery = z.infer<typeof groupGrowthQuery>;
+
+// Same `[from, to)` shape as `groupChurnQuery`.
+export const memberActivityQuery = z.object({
+  from: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "from must be an ISO 8601 date" })
+    .optional(),
+  to: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "to must be an ISO 8601 date" })
+    .optional(),
+});
+
+export type MemberActivityQuery = z.infer<typeof memberActivityQuery>;
+
+// UTC-bucketed: matches Postgres `EXTRACT(DOW)` (0=Sunday) and
+// `EXTRACT(HOUR)` (0-23). The dashboard rotates the day axis client-side
+// for Mon-first vs Sun-first.
+export const ANALYTICS_MEMBER_ACTIVITY_DAYS = 7;
+export const ANALYTICS_MEMBER_ACTIVITY_HOURS = 24;
+
+export const ADMIN_ROLE_DISTRIBUTION_TOP_N = 10;
+export const ADMIN_PERMISSION_USAGE_TOP_N = 15;

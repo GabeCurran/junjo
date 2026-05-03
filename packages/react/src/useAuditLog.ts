@@ -91,11 +91,9 @@ export function useAuditLog(groupId: GroupId, opts?: UseAuditLogOptions): UseAud
 
   const buildListOpts = useCallback(
     (before?: Date): ListAuditOptions => {
-      // actionsKey is the sort-stable serialization that participates
-      // in this callback's identity; the actual array passes through
-      // actionsRef so content-equal-but-different-reference arrays
-      // (and reorderings, since action membership is the only thing
-      // the server cares about) do not trigger refetches.
+      // actionsKey detunes refetch on actions-array reference / reordering
+      // changes; the actual array passes through actionsRef so only membership
+      // changes propagate.
       void actionsKey;
       const out: ListAuditOptions = {};
       if (limit !== undefined) out.limit = limit;

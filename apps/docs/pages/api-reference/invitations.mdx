@@ -16,7 +16,7 @@ Endpoints for working with invitations by `code` (rather than by group). Invitat
 | `createdBy` | string \| null | Acting user id; `null` in V1 (no auth-adapter actor wired yet). |
 | `createdAt` | string | ISO 8601 timestamp. |
 | `expiresAt` | string \| null | When the code stops being redeemable; `null` if it never expires. |
-| `usedAt` | string \| null | Set when the invitation was redeemed (Phase 2.4). |
+| `usedAt` | string \| null | Set when the invitation was redeemed. |
 | `usedBy` | string \| null | The user who redeemed it. |
 
 ## `GET /v1/invitations/:code`
@@ -99,7 +99,7 @@ For direct invitations (`targetUserId` set on the row), the body's `userId` must
 | `groupId` | string | The group the user just joined. |
 | `userId` | string | The external user id supplied in the body. |
 | `status` | string | Always `"active"` for newly-redeemed invitations. |
-| `roles` | string[] | Always `[]` in V1 (Phase 3.2 wires role assignment from the invitation's `roleId`). |
+| `roles` | string[] | Always `[]` immediately after redemption. The invitation's `roleId` is not auto-applied today; use [`members.assignRole`](/sdk/members#assignrole) after acceptance if you need it. |
 | `metadata` | object | `{}` on creation. |
 | `notesPublic` | string \| null | `null` on creation. |
 | `notesPrivate` | string \| null | `null` on creation. |

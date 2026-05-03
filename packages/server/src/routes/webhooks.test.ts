@@ -61,7 +61,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       const res = await jsonRequest("POST", "/v1/webhooks", {
         url: "https://dev.example.com/hook",
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const body = (await res.json()) as WireWebhookEndpointWithSecret;
       expect(body.gameId).toBe(gameId);
       expect(body.url).toBe("https://dev.example.com/hook");
@@ -84,7 +84,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         url: "https://discord.com/api/webhooks/1/token",
         format: "discord",
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const body = (await res.json()) as WireWebhookEndpointWithSecret;
       expect(body.format).toBe("discord");
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
@@ -96,7 +96,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         url: "https://hooks.slack.com/services/T0/B0/abc",
         format: "slack",
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const body = (await res.json()) as WireWebhookEndpointWithSecret;
       expect(body.format).toBe("slack");
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
@@ -118,7 +118,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         url: "https://dev.example.com/hook",
         secret: supplied,
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const body = (await res.json()) as WireWebhookEndpointWithSecret;
       expect(body.secret).toBe(supplied);
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
@@ -130,7 +130,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         url: "https://dev.example.com/hook",
         events: ["member.joined", "group.deleted"],
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const body = (await res.json()) as WireWebhookEndpointWithSecret;
       expect(body.events).toEqual(["member.joined", "group.deleted"]);
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
@@ -166,6 +166,20 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(res.status).toBe(400);
     });
 
+    it("rejects a loopback / link-local / private URL by default (SSRF guard)", async () => {
+      for (const url of [
+        "http://localhost:8080/hook",
+        "http://127.0.0.1/hook",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/hook",
+        "http://192.168.1.10/hook",
+      ]) {
+        const res = await jsonRequest("POST", "/v1/webhooks", { url });
+        expect(res.status, `expected 400 for ${url}`).toBe(400);
+      }
+      expect(await prisma.webhookEndpoint.count()).toBe(0);
+    });
+
     it("rejects a secret that is too short", async () => {
       const res = await jsonRequest("POST", "/v1/webhooks", {
         url: "https://dev.example.com/hook",
@@ -197,8 +211,32 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
     it("returns an empty array when no endpoints are configured", async () => {
       const res = await jsonRequest("GET", "/v1/webhooks");
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { items: WireWebhookEndpoint[] };
+      const body = (await res.json()) as {
+        items: WireWebhookEndpoint[];
+        nextCursor: string | null;
+      };
       expect(body.items).toEqual([]);
+      expect(body.nextCursor).toBeNull();
+    });
+
+    it("conforms to the Page<T> envelope (items + nextCursor)", async () => {
+      await prisma.webhookEndpoint.create({
+        data: {
+          gameId,
+          url: "https://dev.example.com/hook",
+          secret: "envelope-secret-12345678",
+          events: [],
+        },
+      });
+      const res = await jsonRequest("GET", "/v1/webhooks");
+      const body = (await res.json()) as {
+        items: WireWebhookEndpoint[];
+        nextCursor: string | null;
+      };
+      expect(body).toHaveProperty("items");
+      expect(body).toHaveProperty("nextCursor");
+      expect(body.nextCursor).toBeNull();
+      expect(Array.isArray(body.items)).toBe(true);
     });
 
     it("returns endpoints newest-first and omits the secret", async () => {
@@ -221,7 +259,10 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         },
       });
       const res = await jsonRequest("GET", "/v1/webhooks");
-      const body = (await res.json()) as { items: WireWebhookEndpoint[] };
+      const body = (await res.json()) as {
+        items: WireWebhookEndpoint[];
+        nextCursor: string | null;
+      };
       expect(body.items.map((i) => i.id)).toEqual([newer.id, old.id]);
       for (const item of body.items) {
         expect(item).not.toHaveProperty("secret");
@@ -249,7 +290,10 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         },
       });
       const res = await jsonRequest("GET", "/v1/webhooks");
-      const body = (await res.json()) as { items: WireWebhookEndpoint[] };
+      const body = (await res.json()) as {
+        items: WireWebhookEndpoint[];
+        nextCursor: string | null;
+      };
       expect(body.items).toHaveLength(1);
       expect(body.items[0]?.url).toBe("https://mine.example.com/hook");
     });
@@ -266,7 +310,10 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         },
       });
       const res = await jsonRequest("GET", "/v1/webhooks");
-      const body = (await res.json()) as { items: WireWebhookEndpoint[] };
+      const body = (await res.json()) as {
+        items: WireWebhookEndpoint[];
+        nextCursor: string | null;
+      };
       expect(body.items[0]?.disabledAt).toBe(disabledAt.toISOString());
     });
 
@@ -309,6 +356,16 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(body).not.toHaveProperty("secret");
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
       expect(stored?.url).toBe("https://renamed.example.com/hook");
+    });
+
+    it("rejects a URL pivot to a private host (SSRF guard on PATCH)", async () => {
+      const ep = await seedEndpoint();
+      const res = await jsonRequest("PATCH", `/v1/webhooks/${ep.id}`, {
+        url: "http://169.254.169.254/latest/meta-data/",
+      });
+      expect(res.status).toBe(400);
+      const stored = await prisma.webhookEndpoint.findUnique({ where: { id: ep.id } });
+      expect(stored?.url).toBe("https://dev.example.com/hook");
     });
 
     it("updates the events filter", async () => {

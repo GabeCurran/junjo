@@ -2,7 +2,14 @@ import { randomBytes } from "node:crypto";
 import type { PrismaClient, WebhookEndpoint } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
+import { assertSafeWebhookUrl } from "../webhookUrlGuard.js";
 import { createWebhookEndpointBody, updateWebhookEndpointBody } from "./webhooks.schema.js";
+
+export interface WebhooksRouterOptions {
+  // Operator escape hatch for self-host development. Production cloud
+  // leaves this false and refuses to deliver to loopback / private hosts.
+  allowPrivateHosts?: boolean;
+}
 
 export interface WireWebhookEndpoint {
   id: string;
@@ -30,15 +37,15 @@ export function serializeWebhookEndpoint(endpoint: WebhookEndpoint): WireWebhook
   };
 }
 
-// 32 random bytes -> base64url. ~43 chars, URL-safe, well above the
-// `WEBHOOK_SECRET_MIN_LENGTH` floor. Used when the dev does not supply
-// their own secret on `endpoints.create`.
+// 32 random bytes -> base64url, ~43 chars; used when the dev does not
+// supply their own secret on `endpoints.create`.
 export function generateWebhookSecret(): string {
   return randomBytes(32).toString("base64url");
 }
 
-export function webhooksRouter(prisma: PrismaClient): Hono {
+export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions = {}): Hono {
   const r = new Hono();
+  const guardOpts = { allowPrivateHosts: opts.allowPrivateHosts ?? false };
 
   r.post("/", async (c) => {
     const gameId = c.var.gameId;
@@ -56,6 +63,7 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
       throw Errors.badRequest(issues || "invalid body");
     }
     const { url, events, secret, format } = parsed.data;
+    assertSafeWebhookUrl(url, guardOpts);
     const finalSecret = secret ?? generateWebhookSecret();
 
     const created = await prisma.webhookEndpoint.create({
@@ -72,7 +80,7 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
       ...serializeWebhookEndpoint(created),
       secret: finalSecret,
     };
-    return c.json(wire);
+    return c.json(wire, 201);
   });
 
   r.get("/", async (c) => {
@@ -81,7 +89,10 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
       where: { gameId },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
-    return c.json({ items: endpoints.map(serializeWebhookEndpoint) });
+    return c.json({
+      items: endpoints.map(serializeWebhookEndpoint),
+      nextCursor: null,
+    });
   });
 
   r.patch("/:id", async (c) => {
@@ -113,6 +124,7 @@ export function webhooksRouter(prisma: PrismaClient): Hono {
       format?: string;
     } = {};
     if (url !== undefined && url !== existing.url) {
+      assertSafeWebhookUrl(url, guardOpts);
       data.url = url;
     }
     if (events !== undefined && !arraysEqual(events, existing.events)) {

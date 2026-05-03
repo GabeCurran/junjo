@@ -1117,6 +1117,123 @@ export function fetchAdminGameGroupChurn(
   return adminFetch<AdminGroupChurn>(search ? `${path}?${search}` : path, opts);
 }
 
+// Phase 12.3a wire shape mirroring `WireAdminGroupGrowth` and
+// `WireAdminGroupGrowthSeries` from `packages/server/src/routes/admin.ts`.
+// The dashboard's `<GroupGrowthChart>` (Phase 12.3b) renders one line per
+// series at every bucket boundary; `key` is opaque (group id or
+// `all-others` aggregate) and `name` is the human label rendered in the
+// legend / tooltip.
+export interface AdminGroupGrowthSeries {
+  // `group:<id>` for per-group rows or `all-others` for the aggregated
+  // tail when the cohort exceeds `topN`. Stable across requests so the
+  // chart's legend keeps colors consistent across re-renders.
+  key: string;
+  // The group's name, or `"All others"` for the aggregate. Rendered as
+  // the line label in the legend and tooltip.
+  name: string;
+  // Set for per-group series; null for the aggregate row.
+  groupId: string | null;
+  // Cumulative active member counts aligned 1:1 with `buckets`.
+  data: number[];
+}
+
+export interface AdminGroupGrowth {
+  // Always populated (server applies the default 30-day window when the
+  // caller omits `from` / `to`). Echoed verbatim so the chart's card
+  // description can confirm the resolved window.
+  from: string;
+  to: string;
+  // Server-picked bucket size (auto-derived from window length); the
+  // chart surfaces it in the card description as a human-readable
+  // cadence ("hourly", "daily", "weekly").
+  bucketSizeMs: number;
+  // ISO 8601 timestamps for every bucket boundary, ordered chronologically.
+  // The chart uses these as the x-axis index column.
+  buckets: string[];
+  // One entry per top-N group plus an "All others" aggregate when more
+  // groups exist than the requested `topN`. Empty when the game has no
+  // groups in the window.
+  series: AdminGroupGrowthSeries[];
+}
+
+// Mirrors the server-side cap in `routes/admin.schema.ts:groupGrowthQuery`.
+// Surfaced here so the dashboard's preset selector can clamp without
+// bouncing off the server with a 400.
+export const ADMIN_GROUP_GROWTH_TOP_N_DEFAULT = 5;
+export const ADMIN_GROUP_GROWTH_TOP_N_MIN = 1;
+export const ADMIN_GROUP_GROWTH_TOP_N_MAX = 10;
+
+export interface FetchAdminGroupGrowthParams {
+  // ISO 8601 timestamps. Both bounds are optional; the server applies a
+  // default 30-day window when omitted. Empty strings are dropped so the
+  // server's `min(1)` Zod constraint does not 400 on a stale URL.
+  from?: string;
+  to?: string;
+  // 1-10; server defaults to 5 when omitted.
+  topN?: number;
+}
+
+export function fetchAdminGameGroupGrowth(
+  gameId: string,
+  params: FetchAdminGroupGrowthParams = {},
+  opts?: FetchOptions,
+): Promise<AdminGroupGrowth> {
+  const qs = new URLSearchParams();
+  if (params.from !== undefined && params.from.length > 0) qs.set("from", params.from);
+  if (params.to !== undefined && params.to.length > 0) qs.set("to", params.to);
+  if (params.topN !== undefined) qs.set("topN", String(params.topN));
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/group-growth`;
+  const search = qs.toString();
+  return adminFetch<AdminGroupGrowth>(search ? `${path}?${search}` : path, opts);
+}
+
+// Phase 12.4a wire shape mirroring `WireAdminMemberActivity` from
+// `packages/server/src/routes/admin.ts`. The dashboard's
+// `<MemberActivityHeatmap>` (Phase 12.4b) renders `cells` as a 7x24
+// Tailwind grid with opacity scaling. UTC bucketing is documented on the
+// server (the dashboard does not re-bucket client-side); the operator's
+// dashboard renders day-of-week and hour-of-day labels in UTC alongside
+// the values verbatim from the wire.
+export interface AdminMemberActivity {
+  // Echoes the supplied `from` / `to` query parameters verbatim, or
+  // `null` when the operator omitted them. Useful for the chart's card
+  // description so the operator can confirm the resolved window.
+  from: string | null;
+  to: string | null;
+  // Sum of every count in `cells`. Surfaced for the heatmap's empty-state
+  // branch (`totalEvents === 0` renders the "no activity yet" callout
+  // instead of a heatmap of zeros).
+  totalEvents: number;
+  // 7x24 grid of audit-entry counts. `cells[dow][hour]` where `dow=0` is
+  // Sunday (matches Postgres `EXTRACT(DOW)` and JS `Date.getUTCDay()`)
+  // and `hour` ranges 0-23. Always exactly 7 rows of 24 columns even
+  // when the window contains no activity (then every cell is 0).
+  cells: number[][];
+}
+
+export interface FetchAdminMemberActivityParams {
+  // ISO 8601 timestamps. Both bounds are optional; the dashboard always
+  // sends `from` (resolved from the date-range picker) and sometimes
+  // sends `to` (custom ranges only). Empty strings are dropped from the
+  // wire request so the server's `min(1)` Zod constraint does not 400
+  // on a stale URL.
+  from?: string;
+  to?: string;
+}
+
+export function fetchAdminGameMemberActivity(
+  gameId: string,
+  params: FetchAdminMemberActivityParams = {},
+  opts?: FetchOptions,
+): Promise<AdminMemberActivity> {
+  const qs = new URLSearchParams();
+  if (params.from !== undefined && params.from.length > 0) qs.set("from", params.from);
+  if (params.to !== undefined && params.to.length > 0) qs.set("to", params.to);
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/member-activity`;
+  const search = qs.toString();
+  return adminFetch<AdminMemberActivity>(search ? `${path}?${search}` : path, opts);
+}
+
 // Phase 11.9a-i wire shape mirroring `PermissionCheckResult` from
 // `@junjo/shared`. The admin endpoint reuses the per-game check route's
 // resolution logic byte-for-byte (same source taxonomy, same viaRoleId
@@ -1132,6 +1249,92 @@ export interface AdminPermissionCheckResult {
   // and the operator cross-references against the Roles tab to find
   // the named role.
   viaRoleId?: string;
+}
+
+// Phase 12.5a wire shapes mirroring `WireAdminRoleDistribution` /
+// `WireAdminRoleSlice` and `WireAdminPermissionUsage` /
+// `WireAdminPermissionUsageItem` from `packages/server/src/routes/admin.ts`.
+// Both endpoints are pure snapshot endpoints (no `from` / `to` query
+// parameters in V1); the dashboard's page-level date-range picker is
+// irrelevant here. The two charts (Phase 12.5b) render side-by-side: a
+// Tremor `<DonutChart>` for role distribution and a Tremor horizontal
+// `<BarChart>` for permission usage.
+
+export interface AdminRoleSlice {
+  name: string;
+  count: number;
+}
+
+export interface AdminRoleDistribution {
+  // Sum of every active-member role assignment in non-soft-deleted groups
+  // across this game. Equals the sum of every `topRoles[*].count` plus
+  // `otherCount`. Surfaced in the chart's card description.
+  totalAssignments: number;
+  // Count of distinct role names with at least one active assignment.
+  // Differs from `topRoles.length` when the cohort overflows the top-10
+  // cap; the chart shows it in the card description so the operator
+  // knows whether the "Other" slice represents 0 or many roles.
+  uniqueRoleNames: number;
+  // Top-10 role names ranked by count (desc) with name ascending as the
+  // tiebreaker. Always 10 entries or fewer; sorted server-side. Empty
+  // population returns `[]`.
+  topRoles: AdminRoleSlice[];
+  // Combined count for role names outside the top-10 (the donut's
+  // "Other" slice). Zero when the cohort fits in the top-10.
+  otherCount: number;
+}
+
+export interface AdminPermissionUsageItem {
+  permission: string;
+  // Number of `RolePermission` rows for this key across non-soft-deleted
+  // groups in this game. Each role grant counts once regardless of how
+  // many members the role has.
+  roleGrants: number;
+  // Number of `MemberPermissionOverride` rows for this key across
+  // non-soft-deleted groups in this game. All overrides count regardless
+  // of the underlying member's status (operator-authored config exists
+  // independently of member lifecycle).
+  memberOverrides: number;
+  // `roleGrants + memberOverrides`. The bar chart sorts by this column.
+  total: number;
+}
+
+export interface AdminPermissionUsage {
+  // Sum of every `total` across observed permission keys (top-15 plus
+  // other). Surfaced in the chart's card description.
+  totalCount: number;
+  // Count of distinct permission keys with at least one row counted.
+  // Differs from `items.length` when the cohort overflows the top-15
+  // cap; the chart shows it in the card description so the operator
+  // knows whether the "Other" tail represents 0 or many keys.
+  uniqueKeys: number;
+  // Top-15 permission keys ranked by `total` (desc) with permission
+  // ascending as the tiebreaker. Always 15 entries or fewer; sorted
+  // server-side. Empty population returns `[]`.
+  items: AdminPermissionUsageItem[];
+  // Combined count for permission keys outside the top-15 (the bar
+  // chart's footer aggregate). Zero when the cohort fits in the top-15.
+  otherCount: number;
+}
+
+export function fetchAdminGameRoleDistribution(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminRoleDistribution> {
+  return adminFetch<AdminRoleDistribution>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/role-distribution`,
+    opts,
+  );
+}
+
+export function fetchAdminGamePermissionUsage(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminPermissionUsage> {
+  return adminFetch<AdminPermissionUsage>(
+    `/v1/admin/games/${encodeURIComponent(gameId)}/analytics/permission-usage`,
+    opts,
+  );
 }
 
 // Mirrors the server-side caps in `routes/admin.schema.ts:adminCheckPermissionQuery`

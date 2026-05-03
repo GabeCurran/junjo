@@ -4,25 +4,25 @@
 
 The package is distributed as a Roblox model (`.rbxm`) on each GitHub release and (later) on the Roblox marketplace. It is not on npm.
 
-## What ships today
+## Surface area
 
-| Surface | Status |
-|---------|--------|
-| `Junjo.new(config)` factory | shipped (Phase 8.1). |
-| HTTP wrapper (`junjo.http:get / :post / :patch / :put / :delete`) | shipped (Phase 8.1). Auto-encodes JSON bodies, parses JSON responses, throws `JunjoError` on non-2xx. |
-| `Junjo.Null` sentinel for explicit JSON nulls in PATCH bodies | shipped (Phase 8.1). |
-| `HttpService:GetSecret(...)` lookup with `apiKey` fallback | shipped (Phase 8.1). |
-| `junjo.groups:create / get / list / update / delete / restore` | shipped (Phase 8.2). |
-| `junjo.groups` membership: `inviteByUserId / inviteByCode / inviteByLink / bulkInvite / acceptInvitation / declineInvitation / leave / kick` | shipped (Phase 8.2). |
-| `junjo.groups` relationships: `setRelationship / clearRelationship / getRelationship / listRelationships` | shipped (Phase 8.2). |
-| `junjo.groups` sub-groups: `setParent / listChildren` | shipped (Phase 8.2). |
-| `junjo.members:get / getById / list / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | shipped (Phase 8.2). |
-| `junjo.roles:create / get / list / update / delete / grantPermission / revokePermission` | shipped (Phase 8.2). |
-| `junjo.invitations:list / get / revoke` | shipped (Phase 8.2). |
-| `junjo.audit:list` | shipped (Phase 8.2). |
-| `junjo.webhooks.endpoints:create / list / update / delete` | shipped (Phase 8.2). |
-| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | shipped (Phase 8.2). |
-| `Junjo.RobloxUserIdAdapter(opts?)` | shipped (Phase 8.3). |
+| Surface | Notes |
+|---------|-------|
+| `Junjo.new(config)` factory | Constructs a Junjo client. |
+| HTTP wrapper (`junjo.http:get / :post / :patch / :put / :delete`) | Auto-encodes JSON bodies, parses JSON responses, throws `JunjoError` on non-2xx. |
+| `Junjo.Null` sentinel for explicit JSON nulls in PATCH bodies | See "Sending JSON null in PATCH bodies" below. |
+| `HttpService:GetSecret(...)` lookup with `apiKey` fallback | Pass `apiKeySecret` to read from the Roblox secret store, with `apiKey` as a literal fallback. |
+| `junjo.groups:create / get / list / update / delete / restore` | Group CRUD + soft-delete + restore. |
+| `junjo.groups` membership: `inviteByUserId / inviteByCode / inviteByLink / bulkInvite / acceptInvitation / declineInvitation / leave / kick` | Full membership lifecycle. |
+| `junjo.groups` relationships: `setRelationship / clearRelationship / getRelationship / listRelationships` | Directed and mutual relationships between groups. |
+| `junjo.groups` sub-groups: `setParent / listChildren` | Sub-group / alliance hierarchy. |
+| `junjo.members:get / getById / list / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | Member surface, parity with the TS SDK. |
+| `junjo.roles:create / get / list / update / delete / grantPermission / revokePermission` | Role CRUD + permission grants. |
+| `junjo.invitations:list / get / revoke` | Invitation listing and revocation. |
+| `junjo.audit:list` | Paginated audit feed for a group. |
+| `junjo.webhooks.endpoints:create / list / update / delete` | Webhook endpoint CRUD (no receiver-side helpers; see below). |
+| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | Permission check helpers. |
+| `Junjo.RobloxUserIdAdapter(opts?)` | Built-in user-id adapter for Roblox `Player` instances. |
 | `groups.subscribe` (SSE) and `webhooks:verify` / `:middleware` (receiver-side) | not planned for V1. Roblox `HttpService` does not stream, and a Roblox game server cannot expose an HTTP endpoint to receive webhooks. The `MessagingService`-backed replacement for real-time is deferred post-V1. |
 
 ## Construct a client
@@ -263,7 +263,7 @@ print(DateTime.fromIsoDate(group.createdAt):FormatLocalTime("LL", "en-us"))
 
 Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `members:get`, `members:getById`, `roles:get`, `invitations:get`) catch the `not_found` error inside the SDK and translate it to `nil`. Every other error code (`bad_request`, `permission_denied`, etc.) re-throws verbatim so callers can branch on it via `pcall`.
 
-## Manual verification (Phase 8.1 + 8.2 + 8.3)
+## Manual verification
 
 The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
 

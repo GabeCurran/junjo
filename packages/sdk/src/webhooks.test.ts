@@ -571,7 +571,7 @@ describe("WebhookEndpointsApi.list", () => {
       const url = new URL(req.url);
       expect(url.pathname).toBe("/v1/webhooks");
       expect(req.headers.get("authorization")).toBe("Bearer test_key");
-      return jsonResponse({ items: [wireEndpoint] });
+      return jsonResponse({ items: [wireEndpoint], nextCursor: null });
     });
     const junjo = new Junjo({
       apiKey: "test_key",
@@ -586,7 +586,7 @@ describe("WebhookEndpointsApi.list", () => {
   });
 
   it("returns an empty array when the server returns no items", async () => {
-    const fetchMock = endpointFetch(async () => jsonResponse({ items: [] }));
+    const fetchMock = endpointFetch(async () => jsonResponse({ items: [], nextCursor: null }));
     const junjo = new Junjo({
       apiKey: "test_key",
       baseUrl: "https://example.test",

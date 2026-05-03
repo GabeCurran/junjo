@@ -33,11 +33,10 @@ export function deserializeRole(w: WireRole): Role {
   };
 }
 
-// Builds the create-role request body. Drops `permissions`: Phase 3.1
-// ships role CRUD only. The grant / revoke routes that populate
-// `RolePermission` arrive in Phase 3.3; until then the SDK silently
-// strips the field rather than fail at the type layer (the shared
-// `CreateRoleInput` type still carries it for forward-compatibility).
+// Drops `permissions`: roles get permissions via the dedicated grant /
+// revoke routes, never at creation time. The shared `CreateRoleInput`
+// still carries the field for forward-compatibility, so silently
+// stripping is preferable to failing at the type layer.
 function buildCreateBody(input: CreateRoleInput): {
   name: string;
   priority: number;

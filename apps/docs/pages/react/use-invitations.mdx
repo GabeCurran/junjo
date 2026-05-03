@@ -201,7 +201,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Composing with `useGroup` and `useMembers`
 
-Each Phase 7 list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct in V1 (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. Phase 7.5 will introduce a shared subscription cache that deduplicates streams under one provider.
+Each list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct in V1 (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea.
 
 ## Testing
 

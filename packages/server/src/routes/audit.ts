@@ -25,12 +25,8 @@ export function serializeAuditEntry(entry: AuditEntry): WireAuditEntry {
   };
 }
 
-// `GET /v1/groups/:id/audit?limit&before&actions[]` returns a
-// timestamp-paginated `Page<AuditEntry>` for the group. `before` is an
-// ISO 8601 timestamp; entries with `createdAt < before` are returned.
-// `actions` repeats per filter value (`?actions=foo&actions=bar`). Caller
-// pages by passing `nextCursor` (the ISO timestamp of the last item) back
-// as `before` on the next call.
+// Caller pages by passing `nextCursor` (the ISO timestamp of the last
+// item) back as `before` on the next call.
 export async function listAuditForGroup(c: Context, prisma: PrismaClient, groupId: string) {
   const gameId = c.var.gameId as string;
 

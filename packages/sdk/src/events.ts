@@ -100,9 +100,6 @@ export type WireJunjoEvent =
   | WireGroupDeletedEvent
   | WireGroupRelationshipChangedEvent;
 
-// Wire -> public, including converting every nested ISO 8601 string back
-// into a `Date`. The discriminated union on `type` keeps each branch
-// minimal (only the fields that branch carries get touched).
 export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
   const base = {
     id: w.id,
@@ -192,11 +189,10 @@ export interface ParsedSSEFrame {
   id?: string;
 }
 
-// Parse one SSE event block (the bytes between two `\n\n` terminators).
-// Returns `null` for comment-only frames (lines starting with `:`); the
-// SSE spec uses these for keep-alive and they carry no event payload.
-// Multi-line `data:` is concatenated with `\n` per the spec, even though
-// the server only ever writes a single `data:` line per event today.
+// Returns `null` for comment-only frames (lines starting with `:`);
+// these are SSE keep-alives and carry no event payload. Multi-line
+// `data:` is joined with `\n` per the spec, even though the server only
+// ever emits a single `data:` line per event today.
 export function parseSSEFrame(block: string): ParsedSSEFrame | null {
   const result: ParsedSSEFrame = {};
   let sawNonComment = false;

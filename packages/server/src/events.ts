@@ -28,17 +28,13 @@ import type {
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { enqueueWebhookDeliveries } from "./webhooks.js";
 
-// 24 hex chars (96 bits of entropy). Random ids let any emitter mint one
-// without a database round-trip; the id surfaces on the SSE `id:` line so
-// future replay-on-reconnect support has a stable handle.
+// 24 hex chars (96 bits). Random so any emitter can mint one without a
+// DB round-trip; surfaces on the SSE `id:` line for future
+// replay-on-reconnect.
 export function newEventId(): string {
   return randomBytes(12).toString("hex");
 }
 
-// Brand-cast a Prisma `Group` row into the public `Group` shape with an
-// attached memberCount. Field types are structurally identical; only the
-// branded id types and the open-string-to-union casts change at the type
-// level.
 export function toPublicGroup(group: PrismaGroup, memberCount: number): PublicGroup {
   return {
     id: group.id as GroupId,
@@ -56,10 +52,8 @@ export function toPublicGroup(group: PrismaGroup, memberCount: number): PublicGr
   };
 }
 
-// Brand-cast a Prisma `GroupMember` row into the public `Member` shape.
-// The wire's `userId` is the dev's external user id (looked up via
-// ExternalIdentity by the route), not the internal `junjoUserId`; the
-// caller threads it in alongside the optional role-id list.
+// Wire `userId` is the dev's external id, NOT the internal `junjoUserId`;
+// the caller threads it in.
 export function toPublicMember(
   member: PrismaGroupMember,
   externalUserId: string,
@@ -116,10 +110,8 @@ export function toPublicGroupRelationship(rel: PrismaGroupRelationship): PublicG
   };
 }
 
-// Stamps a fresh `id` and `occurredAt` onto the supplied payload and pushes
-// the resulting event through the hub. The hub is injected per-router so
-// tests can swap a fresh `EventHub` instance via `createApp({ events: { hub } })`
-// (matches the SSE route's seam from Phase 5.1a).
+// Hub is injected per-router so tests can swap a fresh `EventHub` via
+// `createApp({ events: { hub } })`.
 export function publishEvent<E extends JunjoEvent>(
   hub: EventHub,
   payload: Omit<E, "id" | "occurredAt">,
@@ -133,12 +125,9 @@ export function publishEvent<E extends JunjoEvent>(
   return event;
 }
 
-// Publishes an event to the SSE hub and enqueues durable webhook
-// deliveries to every matching endpoint in the same call. Mutation
-// routes use this in place of `publishEvent` whenever they would have
-// fired an SSE event; transient subscribers and durable webhook
-// consumers stay in lockstep that way (one event -> one hub broadcast +
-// one delivery per matching endpoint).
+// Publishes to the SSE hub AND enqueues durable webhook deliveries in
+// the same call. Mutation routes use this rather than `publishEvent` so
+// transient subscribers and durable webhook consumers stay in lockstep.
 export async function dispatchEvent<E extends JunjoEvent>(
   prisma: PrismaClient,
   hub: EventHub,

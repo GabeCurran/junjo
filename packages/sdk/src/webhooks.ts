@@ -14,12 +14,11 @@ import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent } from "./events.js";
 import type { HttpClient } from "./http.js";
 
-// Must match `WEBHOOK_SIGNATURE_SCHEME` and the signing layout in the
-// server's `webhookWorker.ts`. Receivers recompute HMAC-SHA256 of
-// `<timestamp>.<body>` using the endpoint's secret and constant-time
-// compare against the prefixed header value. Web Crypto is used here
-// (rather than `node:crypto`) so the SDK stays runtime-portable across
-// Node 19+ and modern browsers without picking up `@types/node`.
+// Must stay in sync with the signing layout in the server's
+// `webhookWorker.ts`; bumping one without the other breaks every
+// receiver. Web Crypto is used here (rather than `node:crypto`) so the
+// SDK stays portable across Node 19+ and modern browsers without
+// pulling in `@types/node`.
 export const WEBHOOK_SIGNATURE_SCHEME = "v1";
 export const WEBHOOK_DEFAULT_TOLERANCE_MS = 5 * 60_000;
 
@@ -27,11 +26,10 @@ const SIGNATURE_HEADER = "x-junjo-signature";
 const TIMESTAMP_HEADER = "x-junjo-timestamp";
 
 export interface VerifyOptions {
-  // Maximum allowed clock skew between the signing timestamp and `now`,
-  // in milliseconds. Defaults to 5 minutes. Set higher only if your
-  // receiver and Junjo's clock are known to drift.
+  // Maximum allowed clock skew, in milliseconds. Set higher only if
+  // your receiver and Junjo's clock are known to drift.
   tolerance?: number;
-  // Override the wall clock for tests. Defaults to `() => new Date()`.
+  // Override the wall clock for tests.
   now?: () => Date;
 }
 
@@ -94,7 +92,7 @@ async function hmacSha256Hex(secret: string, message: string): Promise<string> {
 }
 
 // HMAC-SHA256 of `<timestamp>.<body>`, hex, prefixed with the scheme
-// version. Mirrors `signWebhookBody` in the server's `webhookWorker.ts`.
+// version. Mirrors the server's `signWebhookBody`.
 export async function signWebhookBody(
   secret: string,
   body: string,
@@ -115,9 +113,6 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-// Verifies the signature on a webhook delivery and returns the parsed
-// JunjoEvent. Throws JunjoError on missing headers, malformed timestamp,
-// out-of-tolerance timestamp, signature mismatch, or unparseable body.
 export async function verifyWebhook(
   rawBody: string | Uint8Array,
   headers: WebhookHeaders,
@@ -210,15 +205,11 @@ function deserializeEndpointWithSecret(
   return { ...deserializeEndpoint(w), secret: w.secret };
 }
 
-// CRUD for webhook endpoints. Reachable as `junjo.webhooks.endpoints`.
-// Endpoint configuration is per-game; all routes are scoped by the
-// calling API key.
 export class WebhookEndpointsApi {
   constructor(private readonly http: HttpClient) {}
 
-  // Creates an endpoint and returns it including the signing secret.
-  // The secret is returned exactly once; persist it server-side
-  // immediately. Subsequent `list` and `update` calls do not return it.
+  // The signing secret is returned exactly once on create; persist it
+  // immediately. `list` and `update` never surface it again.
   async create(input: CreateWebhookEndpointInput): Promise<WebhookEndpointWithSecret> {
     const body: Record<string, unknown> = { url: input.url };
     if (input.events !== undefined) body.events = input.events;
@@ -228,17 +219,19 @@ export class WebhookEndpointsApi {
     return deserializeEndpointWithSecret(wire);
   }
 
-  // Returns every endpoint configured for the calling game, newest first.
-  // No pagination (typical games have a handful; if needed later, this is
-  // an additive change to add `?limit&cursor`).
+  // No pagination by design: typical games have a handful of endpoints.
+  // Adding `?limit&cursor` later is an additive change; the server already
+  // returns the Page<T> envelope with nextCursor: null today.
   async list(): Promise<WebhookEndpoint[]> {
-    const wire = await this.http.get<{ items: WireWebhookEndpoint[] }>("/v1/webhooks");
+    const wire = await this.http.get<{
+      items: WireWebhookEndpoint[];
+      nextCursor: string | null;
+    }>("/v1/webhooks");
     return wire.items.map(deserializeEndpoint);
   }
 
-  // Partial update. At least one field is required. `disabled: true` mutes
-  // the endpoint (matching events stop enqueueing); `disabled: false`
-  // un-mutes. Returns the post-state endpoint without the secret.
+  // The secret is never surfaced by the response; it is only ever
+  // returned by `create`.
   async update(id: WebhookEndpointId, input: UpdateWebhookEndpointInput): Promise<WebhookEndpoint> {
     const body: Record<string, unknown> = {};
     if (input.url !== undefined) body.url = input.url;
@@ -252,9 +245,8 @@ export class WebhookEndpointsApi {
     return deserializeEndpoint(wire);
   }
 
-  // Hard-deletes the endpoint. Pending deliveries are cascaded by the
-  // database. Idempotency on a missing id throws `JunjoError` with
-  // `code: "not_found"`.
+  // Hard delete; pending deliveries are cascaded by the database.
+  // Calling on a missing id throws `JunjoError` with `code: "not_found"`.
   async delete(id: WebhookEndpointId): Promise<void> {
     await this.http.delete<void>(`/v1/webhooks/${encodeURIComponent(id)}`);
   }
@@ -267,9 +259,6 @@ export class WebhooksApi {
     this.endpoints = new WebhookEndpointsApi(http);
   }
 
-  // Validates the signature, parses the JunjoEvent, and returns it. Pass
-  // `req.body` (or `req.rawBody` if you have a JSON body parser ahead of
-  // this call) and `req.headers` from your Express handler.
   verify(
     rawBody: string | Uint8Array,
     headers: WebhookHeaders,

@@ -53,4 +53,102 @@ describe("loadEnv", () => {
       /JUNJO_ADMIN_TOKEN/,
     );
   });
+
+  it("defaults RATE_LIMIT_PER_MINUTE to 600 and RATE_LIMIT_BURST to 100", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(600);
+    expect(env.RATE_LIMIT_BURST).toBe(100);
+  });
+
+  it("treats empty RATE_LIMIT_* as the default", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "",
+      RATE_LIMIT_BURST: "",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(600);
+    expect(env.RATE_LIMIT_BURST).toBe(100);
+  });
+
+  it("coerces RATE_LIMIT_* strings to integers", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "1200",
+      RATE_LIMIT_BURST: "200",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(1200);
+    expect(env.RATE_LIMIT_BURST).toBe(200);
+  });
+
+  it("accepts zero as the disable signal for RATE_LIMIT_*", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      RATE_LIMIT_PER_MINUTE: "0",
+      RATE_LIMIT_BURST: "0",
+    });
+    expect(env.RATE_LIMIT_PER_MINUTE).toBe(0);
+    expect(env.RATE_LIMIT_BURST).toBe(0);
+  });
+
+  it("rejects a negative RATE_LIMIT_PER_MINUTE", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_PER_MINUTE: "-1" })).toThrow(
+      /RATE_LIMIT_PER_MINUTE/,
+    );
+  });
+
+  it("rejects a non-integer RATE_LIMIT_BURST", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_BURST: "1.5" })).toThrow(
+      /RATE_LIMIT_BURST/,
+    );
+  });
+
+  it("rejects a non-numeric RATE_LIMIT_PER_MINUTE", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", RATE_LIMIT_PER_MINUTE: "abc" })).toThrow();
+  });
+
+  it("defaults LOG_LEVEL to info", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.LOG_LEVEL).toBe("info");
+  });
+
+  it("treats empty LOG_LEVEL as the default", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: "" });
+    expect(env.LOG_LEVEL).toBe("info");
+  });
+
+  it("accepts every supported LOG_LEVEL value", () => {
+    for (const level of ["error", "warn", "info", "debug", "silent"] as const) {
+      const env = loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: level });
+      expect(env.LOG_LEVEL).toBe(level);
+    }
+  });
+
+  it("rejects an unknown LOG_LEVEL", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", LOG_LEVEL: "trace" })).toThrow(
+      /LOG_LEVEL/,
+    );
+  });
+
+  it("defaults WEBHOOK_ALLOW_PRIVATE_HOSTS to false", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.WEBHOOK_ALLOW_PRIVATE_HOSTS).toBe(false);
+  });
+
+  it("accepts 'true' / '1' as enabling WEBHOOK_ALLOW_PRIVATE_HOSTS", () => {
+    expect(
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: "true" })
+        .WEBHOOK_ALLOW_PRIVATE_HOSTS,
+    ).toBe(true);
+    expect(
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: "1" })
+        .WEBHOOK_ALLOW_PRIVATE_HOSTS,
+    ).toBe(true);
+  });
+
+  it("treats other WEBHOOK_ALLOW_PRIVATE_HOSTS values as false", () => {
+    for (const v of ["", "false", "0", "yes", "no"]) {
+      const env = loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_ALLOW_PRIVATE_HOSTS: v });
+      expect(env.WEBHOOK_ALLOW_PRIVATE_HOSTS).toBe(false);
+    }
+  });
 });

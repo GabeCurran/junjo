@@ -5,9 +5,9 @@ import { streamSSE } from "hono/streaming";
 import { Errors } from "../errors.js";
 import { type EventHub, eventHub as defaultHub } from "../eventHub.js";
 
-// Browsers and intermediaries time out idle SSE connections after a couple
-// of minutes. A heartbeat comment every 30s keeps the connection alive
-// without showing up as a real event to the consumer.
+// Browsers and intermediaries idle-time-out SSE after a couple of
+// minutes; the heartbeat comment keeps the connection alive without
+// showing up as a real event to the consumer.
 export const SSE_HEARTBEAT_INTERVAL_MS = 30_000;
 
 interface SubscribeEventsOptions {
@@ -15,12 +15,7 @@ interface SubscribeEventsOptions {
   heartbeatIntervalMs?: number;
 }
 
-// `GET /v1/events/:groupId` - opens a long-lived SSE stream that delivers
-// every `JunjoEvent` published for the named group. The SDK's
-// `groups.subscribe()` (Phase 5.1c) wraps this; for now any HTTP client
-// that speaks SSE can subscribe with the standard `Authorization` header.
-//
-// The route 404-collapses missing / cross-game / soft-deleted groups before
+// 404-collapses missing / cross-game / soft-deleted groups BEFORE
 // upgrading to a stream, so a bad request fails synchronously with the
 // usual JSON envelope rather than opening a stream that never delivers.
 export function subscribeEventsHandler(
@@ -72,7 +67,7 @@ export function subscribeEventsHandler(
           wakeup();
         });
       }, heartbeatMs);
-      // Never let the heartbeat keep a Node process alive on its own.
+      // Never let the heartbeat keep the Node process alive on its own.
       heartbeat.unref?.();
 
       try {

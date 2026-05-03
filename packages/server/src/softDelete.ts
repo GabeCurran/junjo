@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { logger } from "./logger.js";
 
 export const SOFT_DELETE_RETENTION_DAYS = 7;
 export const HARD_DELETE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -8,9 +9,7 @@ export interface SweepOptions {
   now?: Date;
 }
 
-// Hard-deletes every Group whose softDeletedAt is older than the
-// retention window. Cascade rules on the schema take care of related
-// rows. Returns the number of groups removed so the caller can log it.
+// Cascades on the schema take care of related rows.
 export async function sweepHardDeletes(
   prisma: PrismaClient,
   opts: SweepOptions = {},
@@ -28,11 +27,6 @@ export interface SweeperHandle {
   stop(): void;
 }
 
-// In-process scheduler. Production wires this from `index.ts` so the
-// sweep runs hourly inside the same Node process as the API. Importing
-// it does nothing on its own; call `startHardDeleteSweeper(prisma)` to
-// schedule. Tests do not start the timer; they call `sweepHardDeletes`
-// directly.
 export function startHardDeleteSweeper(
   prisma: PrismaClient,
   opts: { intervalMs?: number; retentionDays?: number } = {},
@@ -44,10 +38,10 @@ export function startHardDeleteSweeper(
     try {
       const removed = await sweepHardDeletes(prisma, { retentionDays });
       if (removed > 0) {
-        console.log(`[junjo-server] hard-deleted ${removed} expired soft-deleted group(s)`);
+        logger.info({ removed }, "hard-deleted expired soft-deleted groups");
       }
     } catch (err) {
-      console.error("[junjo-server] hard-delete sweep failed", err);
+      logger.error({ err }, "hard-delete sweep failed");
     }
   };
 

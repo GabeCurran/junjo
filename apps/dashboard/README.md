@@ -44,6 +44,50 @@ Cloudflare Access, a corporate SSO gateway) and either disable the Basic Auth ga
 setting credentials your proxy injects, or layer them. The Basic Auth check runs in
 Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
 
+## End-to-end tests (Playwright)
+
+V1 ships a small Playwright suite under `apps/dashboard/e2e/`. The bar is
+"present and passing locally"; CI integration is deferred to a separate
+workstream so an overnight loop iteration cannot regress on a missing
+browser binary.
+
+```sh
+# from the repo root, one-time per machine:
+npx playwright install chromium
+
+# bring up Postgres + the Junjo server in one terminal:
+npm run dev -w @junjo/server
+
+# bring up the Junjo server admin token + a seeded admin API key, then run
+# the suite (it boots `next dev` for you on port 13030):
+JUNJO_BASE_URL=http://127.0.0.1:8787 \
+  JUNJO_ADMIN_API_KEY=<seeded-key> \
+  JUNJO_ADMIN_TOKEN=<admin-token> \
+  DASHBOARD_ADMIN_USER=admin \
+  DASHBOARD_ADMIN_PASSWORD=admin-e2e-password \
+  npm run e2e -w @junjo/dashboard
+```
+
+Two specs ship today:
+
+- `e2e/smoke.spec.ts` confirms each top-level dashboard route renders
+  without a 5xx, has the correct `<title>`, and exposes the five-item
+  sidebar nav. Also asserts the Basic Auth gate denies missing
+  credentials. Runs without a Junjo server reachable.
+- `e2e/happy-path.spec.ts` walks the canonical operator flow: create a
+  game via the dashboard dialog, issue an API key (capturing the
+  one-shot secret from the dialog), seed a group via direct
+  `POST /v1/groups` against `JUNJO_BASE_URL` with that secret, then
+  navigate back into the groups table and the group detail page. The
+  spec auto-skips when the Junjo server at `JUNJO_BASE_URL` is not
+  reachable.
+
+The Playwright config lives at `apps/dashboard/playwright.config.ts`.
+The `e2e/` directory is excluded from the dashboard's `tsc --noEmit`
+typecheck because Playwright provides its own type-checking via the
+`playwright test` runner; this keeps the production typecheck cycle
+fast and free of test-only dependencies.
+
 ## Conventions
 
 - License header on every TypeScript file:
@@ -359,5 +403,86 @@ Next.js middleware (`middleware.ts`); bypassing it requires modifying that file.
   tutorial deep-link) only when the operator has set
   `JUNJO_DOCS_BASE_URL` AND both `totalGroupsInWindow` and
   `totalDeparturesInWindow` are zero (early-onboarding case).
-- 12.3 - 12.5: remaining Tremor charts (growth over time, member
-  activity heatmap, role / permission distribution).
+- 12.3a: cross-game admin group-growth analytics endpoint
+  `GET /v1/admin/games/:gameId/analytics/group-growth?from=&to=&topN=`
+  returns time-bucketed cumulative active member counts across the window
+  for the top-N groups (default 5; bounded 1-10) plus an "All others"
+  aggregated series when the game has more groups than `topN`. The
+  bucket size is auto-picked from the window length (`<=1d` -> hourly,
+  `<=7d` -> 6-hourly, `<=30d` -> daily, `<=90d` -> 3-day, longer ->
+  weekly).
+- 12.3b (this iteration): dashboard group growth chart consuming the
+  12.3a endpoint. New `<GroupGrowthChart>` Client Component
+  (`components/analytics/group-growth-chart.tsx`) renders a Tremor
+  `<LineChart>` with one line per top-N group plus an "All others" line
+  when the game has more groups than `topN`. The component pivots the
+  server's per-series `data` arrays into per-bucket records the chart
+  consumes, pre-formats bucket labels via `Intl.DateTimeFormat` (date
+  only for daily-or-coarser buckets, date + time for hourly), assigns
+  colors from an 11-entry palette in series order (Tremor pins line
+  colors to category position), and uses `startEndOnly` for windows
+  with more than 12 buckets so the x-axis stays readable. Three-tile
+  summary header (window / cadence / series count). Empty states
+  surface when the game has no groups (most common early-onboarding
+  case) or the window produced no buckets. New `lib/admin.ts` helpers
+  (`fetchAdminGameGroupGrowth`, `AdminGroupGrowth`,
+  `AdminGroupGrowthSeries`, `FetchAdminGroupGrowthParams`) mirror the
+  server's `WireAdminGroupGrowth` shape byte-for-byte. The analytics
+  page extends `<AnalyticsBody>` to fetch growth alongside game + churn
+  in a single `Promise.all`, render `<GroupGrowthChart>` directly below
+  `<GroupChurnChart>`, and fold growth's `series.length === 0` into the
+  three-way condition that gates the page-level
+  `<AnalyticsEmptyState>` (so a brand-new game truly with no data still
+  sees the tutorial deep-link).
+- 12.4a: cross-game admin member-activity analytics endpoint
+  `GET /v1/admin/games/:gameId/analytics/member-activity?from=&to=`
+  returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week
+  (0=Sunday) and hour-of-day (0-23). Aggregation runs at the Postgres
+  layer via `$queryRaw` with `EXTRACT(DOW)` + `EXTRACT(HOUR)`; the
+  response is bounded at 168 cells regardless of source data volume.
+  Soft-deleted-group entries are included so prior activity stays
+  visible after a group is removed.
+- 12.4b (this iteration, closes Phase 12.4): dashboard member activity
+  heatmap consuming the 12.4a endpoint. New `<MemberActivityHeatmap>`
+  Client Component (`components/analytics/member-activity-heatmap.tsx`)
+  renders a hand-rolled HTML `<table>` of 7 rows (days, Sun-first) x 24
+  columns (hours, UTC) with each cell's background opacity scaling on
+  the count / max ratio (sqrt-mapped to a [0.08, 1.0] range so
+  low-count cells stay distinguishable from empty cells). Hard-coded
+  blue-500 HSL keeps the heatmap visually paired with the other Tremor
+  charts on the analytics surface. Three-tile summary header (window /
+  total events / peak hour). Hover and screen-reader labels surface the
+  exact day + hour + count via `title` and `aria-label`. A "less - more"
+  legend with the cell-intensity ramp anchors the maximum value.
+  Tremor doesn't ship a heatmap primitive (per VISION's "use Tremor
+  only when a chart is needed" stance) so the component is built with
+  Tailwind utility classes and inline `style.backgroundColor`. New
+  `lib/admin.ts` helpers (`fetchAdminGameMemberActivity`,
+  `AdminMemberActivity`, `FetchAdminMemberActivityParams`) mirror the
+  server's `WireAdminMemberActivity` shape byte-for-byte. The analytics
+  page extends `<AnalyticsBody>` to fetch member-activity alongside
+  game + churn + growth in a single `Promise.all`, render
+  `<MemberActivityHeatmap>` directly below `<GroupGrowthChart>`, and
+  fold `memberActivity.totalEvents === 0` into the four-way condition
+  that gates the page-level `<AnalyticsEmptyState>`.
+- 12.5a: cross-game admin role-distribution + permission-usage analytics
+  endpoints. Snapshot endpoints with no `from` / `to` query parameters;
+  the dashboard's page-level date-range picker is irrelevant.
+- 12.5b (this iteration, closes Phase 12): dashboard role distribution
+  donut + permission usage horizontal bar chart consuming the 12.5a
+  endpoints. New `lib/admin.ts` exports (`AdminRoleDistribution`,
+  `AdminRoleSlice`, `AdminPermissionUsage`, `AdminPermissionUsageItem`,
+  plus `fetchAdminGameRoleDistribution` / `fetchAdminGamePermissionUsage`
+  helpers). Two new Client Components (`<RoleDistributionChart>` Tremor
+  `<DonutChart>` with 11-entry color palette including the "Other"
+  aggregate; `<PermissionUsageChart>` Tremor `<BarChart layout="vertical"
+  stack>` with stacked role-grants + member-overrides segments per bar
+  and a dynamic height class scaled by row count). The analytics page's
+  `Promise.all` extends from four legs to six (snapshot fetches ignore
+  the date range; chart card descriptions surface the snapshot semantics
+  inline so a date-range change does not confuse). Two charts render
+  side-by-side at the bottom in a `lg:grid-cols-2` responsive grid,
+  stacking on narrow viewports. The page-level `<AnalyticsEmptyState>`
+  gate widens to a six-way condition (adds
+  `roleDistribution.totalAssignments === 0` AND
+  `permissionUsage.totalCount === 0`).

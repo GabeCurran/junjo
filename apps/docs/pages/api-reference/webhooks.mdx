@@ -17,6 +17,69 @@ This page documents the wire format, retry semantics, signature scheme, and the 
    - Updates the delivery row based on the HTTP response.
 5. On success, the row transitions to `delivered`. On retriable failure, the row stays `pending` with `nextAttemptAt` advanced. On terminal failure, the row transitions to `failed`.
 
+## End-to-end flow
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Route as Mutation route
+  participant Hub as EventHub (in-process)
+  participant DB as Postgres (via Prisma)
+  participant Worker as Webhook worker (5s tick)
+  participant Receiver as Receiver URL
+
+  Note over Route,DB: Enqueue phase (in-band with the mutating request)
+  Route->>Hub: publishEvent(event)
+  Hub-->>Route: ok (live SSE subscribers receive immediately)
+  Route->>DB: WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
+  DB-->>Route: matching endpoints (may be empty)
+  alt one or more endpoints matched
+    Route->>DB: BEGIN<br/>INSERT WebhookDelivery per endpoint<br/>(status=pending, attemptCount=0, nextAttemptAt=now)<br/>COMMIT
+    DB-->>Route: delivery ids
+  end
+  Route-->>Route: respond to caller (HTTP 2xx)
+
+  Note over Route,Receiver: Drain phase (asynchronous, every 5s, single sequential worker)
+  loop every 5 seconds (setInterval, unref)
+    Worker->>DB: SELECT id FROM WebhookDelivery<br/>WHERE status=pending AND nextAttemptAt is due<br/>ORDER BY nextAttemptAt ASC LIMIT 50
+    DB-->>Worker: due ids (batch up to 50)
+    loop each id, sequential
+      opt SIGTERM received (shouldStop)
+        Worker->>Worker: break batch (stop scheduling new ticks)
+      end
+      Worker->>DB: SELECT WebhookDelivery + WebhookEndpoint
+      DB-->>Worker: row + endpoint
+      alt format is junjo
+        Worker->>Worker: HMAC-SHA256(secret, timestamp.body)<br/>headers: x-junjo-event, x-junjo-event-id,<br/>x-junjo-delivery-id, x-junjo-timestamp, x-junjo-signature
+      else format is discord
+        Worker->>Worker: render Discord embed payload (no HMAC headers)
+      else format is slack
+        Worker->>Worker: render Slack Block Kit message (no HMAC headers)
+      end
+      Worker->>Receiver: POST url (10s AbortSignal timeout)
+      alt 2xx response
+        Receiver-->>Worker: 200 OK
+        Worker->>DB: UPDATE status=delivered, attemptCount+=1,<br/>responseStatus, lastAttemptAt, nextAttemptAt=NULL
+      else 4xx other than 408 or 429
+        Receiver-->>Worker: 4xx
+        Worker->>DB: UPDATE status=failed (permanent)
+      else 5xx, 408, 429, network error, or abort
+        Receiver--xWorker: error or 5xx
+        alt attemptCount+1 reaches 6 (max attempts)
+          Worker->>DB: UPDATE status=failed (retries exhausted)
+        else more attempts remain
+          Worker->>DB: UPDATE status=pending,<br/>nextAttemptAt=now + backoff[attempt]<br/>(1m, 5m, 30m, 2h, 8h)
+        end
+      end
+    end
+  end
+
+  Note over Route,Receiver: At-least-once delivery. A worker crash between POST and UPDATE<br/>can re-deliver an event, so receivers must dedupe on x-junjo-event-id.<br/>SIGTERM stops scheduling new ticks. The in-flight deliverOne completes<br/>under a 30s drain ceiling before process exit.
+```
+
+The diagram source lives at `tools/diagrams/source/webhook-delivery.mmd` and is kept byte-identical to this embedded fence (Phase 16.6 wires that as an automated gate; until then the rule is on the author).
+
 ## Wire format
 
 Each delivery is one HTTP POST. Headers:
@@ -90,7 +153,7 @@ A response is retried when:
 - The request fails before a response arrives (network error, DNS failure, connection abort, request timeout > 10 seconds).
 
 A response is **not** retried (and the delivery is marked `failed` immediately) when:
-- The HTTP response is any other `4xx`. The receiver explicitly told us this request is malformed; retrying with the same body wastes both sides' time. Fix the receiver and request a manual replay (Phase 5.5 will expose this).
+- The HTTP response is any other `4xx`. The receiver explicitly told us this request is malformed; retrying with the same body wastes both sides' time. Fix the receiver; manual replay is a post-V1 idea.
 
 A 2xx response marks the delivery `delivered` and stops retrying.
 
@@ -124,11 +187,11 @@ Each endpoint carries:
 
 ### `POST /v1/webhooks`
 
-Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
+Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response is 201 Created and includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
 
 | Validation | Notes |
 |------------|-------|
-| `url` | Required. Must parse as `http://` or `https://`. Max 2000 chars. |
+| `url` | Required. Must parse as `http://` or `https://`. Max 2000 chars. By default the server also rejects URLs whose hostname is loopback (`localhost`, `127/8`, `::1`), link-local (`169.254/16`, `fe80::/10`, includes the cloud-metadata endpoint), RFC1918 (`10/8`, `172.16/12`, `192.168/16`), RFC6598 CGNAT, IPv6 ULA, or `0.0.0.0` (an SSRF guard). The check is lexical, so DNS rebinding still wins; operator network policy is the V1 backstop. Self-host development can flip the `WEBHOOK_ALLOW_PRIVATE_HOSTS=true` env var on the server to permit them. |
 | `events` | Optional. Each entry must be a valid `JunjoEventType`; unknown types return 400. |
 | `secret` | Optional. 16-256 chars. |
 | `format` | Optional. One of `"junjo"`, `"discord"`, or `"slack"`. Unknown values return 400. |
@@ -137,18 +200,18 @@ Errors:
 
 | Status | Code | When |
 |--------|------|------|
-| 400 | `bad_request` | Missing url, malformed URL, unknown event type, secret too short, malformed JSON. |
+| 400 | `bad_request` | Missing url, malformed URL, URL pointed at a private / loopback / link-local host, unknown event type, secret too short, malformed JSON. |
 | 401 | `invalid_api_key` | Missing or invalid Authorization header. |
 
 ### `GET /v1/webhooks`
 
-Returns `{ items: WebhookEndpoint[] }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included.
+Returns `{ items: WebhookEndpoint[], nextCursor: null }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included. The response conforms to the same `Page<T>` envelope as every other list endpoint; today there is no pagination (typical games have a handful of endpoints) so `nextCursor` is always `null`. Adding `?limit&cursor` later is a purely additive change.
 
 ### `PATCH /v1/webhooks/:id`
 
 Body: `{ url?, events?, disabled?, format? }`. At least one field is required.
 
-- `url` revalidated as on create.
+- `url` revalidated as on create, including the SSRF guard described above.
 - `events` replaces wholesale; `[]` clears the filter (match-all).
 - `disabled: true` stamps `disabledAt = now()`. `disabled: false` clears it. Idempotent on matching values.
 - `format` switches the wire format applied to future deliveries. Pending deliveries enqueued before the switch will be re-rendered using the new format when the worker reaches them, so a format flip mid-queue is safe.

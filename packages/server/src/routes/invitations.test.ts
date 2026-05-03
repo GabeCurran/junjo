@@ -6,13 +6,23 @@ import { createApiKey, createGame } from "../seed";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/invitations/:code", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -22,10 +32,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/invitations/:code", () => {
     );
     const game = await createGame("Test Game", prisma);
     gameId = game.id;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(softDeletedAt: Date | null = null) {
@@ -116,13 +122,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/invitations/:code", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/invitations/:code", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -134,10 +138,6 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/invitations/:code", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string }> = {}) {
@@ -253,13 +253,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/invitations/:code", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/accept", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -271,10 +269,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/accept", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -477,13 +471,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/accept", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/decline", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -495,10 +487,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/decline", () => 
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {

@@ -20,7 +20,6 @@ import {
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
-  toPublicMember,
   toPublicRole,
 } from "../events.js";
 import { findJunjoUserId } from "../identity.js";
@@ -53,10 +52,8 @@ import { serializeGroupRelationship } from "./relationships.js";
 import { batchLoadRolePermissionKeys, serializeRole } from "./roles.js";
 import { PERMISSION_KEY_MAX_LENGTH, createRoleBody } from "./roles.schema.js";
 
-// `groups.bulkInvite` request limits. Each non-empty line in the body is
-// one userId; lines beyond `BULK_INVITE_MAX_ROWS` (counting empty rows)
-// trigger a 400. `BULK_INVITE_USERID_MAX_LENGTH` matches a comfortable
-// upper bound for Clerk / Supabase / Roblox user-id-as-string formats.
+// `BULK_INVITE_USERID_MAX_LENGTH` is sized for Clerk / Supabase / Roblox
+// user-id-as-string formats.
 export const BULK_INVITE_MAX_ROWS = 1000;
 export const BULK_INVITE_USERID_MAX_LENGTH = 255;
 
@@ -75,11 +72,8 @@ interface ParsedBulkBody {
   errors: BulkInviteError[];
 }
 
-// Parses the raw text body. One trimmed userId per line; empty lines are
-// silently ignored. Lines whose trimmed userId exceeds the length cap are
-// emitted as errors. Row numbers are 1-indexed (matching how a dev's
-// spreadsheet view numbers them) and count every source line, including
-// empties, so the dev can map errors back to the original input.
+// Row numbers count every source line (including empties) and are
+// 1-indexed so the dev can map errors back to their original spreadsheet.
 function parseBulkInviteBody(text: string): ParsedBulkBody {
   const rows: BulkInviteRow[] = [];
   const errors: BulkInviteError[] = [];
@@ -591,10 +585,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
   });
 
-  // List the members of a group (paginated). Returns rows in every
-  // status; the caller filters client-side. Active-only is the common
-  // case but historical rows (`left`, `kicked`) carry the audit story
-  // and a future `?status=` filter can add it as an additive change.
+  // Returns rows in every status; the caller filters client-side. A
+  // future `?status=` filter is additive.
   r.get("/:id/members", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -669,10 +661,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json({ items, nextCursor });
   });
 
-  // Fetch a single member by the dev's external `userId`. Scoped to the
-  // calling game; missing group / cross-game / soft-deleted-group / no
-  // ExternalIdentity / no GroupMember all collapse to 404 (matches the
-  // collapsed-existence pattern used by leave / kick).
+  // Cross-game / soft-deleted / missing-identity / missing-member all
+  // collapse to 404 to avoid existence leak.
   r.get("/:id/members/:userId", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -695,12 +685,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(member, userId, roleIds));
   });
 
-  // The user identified by `userId` voluntarily leaves the group. Only
-  // transitions an active member to "left"; non-active rows are returned
-  // unchanged with no audit entry, so a leaver who is already-left or
-  // already-kicked sees an idempotent 200 with their current state. A
-  // user with no `ExternalIdentity` for this game collapses with the
-  // "member row missing" case to 404 (existence is not leaked).
+  // Idempotent on already-left / already-kicked (no audit, no event).
   r.post("/:id/leave", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -762,11 +747,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
-  // The dev's backend kicks a member out of the group. Only transitions
-  // an active member to "kicked"; non-active rows are returned unchanged
-  // with no audit entry. The optional `reason` lands on the audit
-  // `payload`. `actorUserId` is null in V1 (no auth-adapter actor wired);
-  // the kicker's identity is the dev's backend itself, which is the
+  // Idempotent on already-kicked / already-left. `actorUserId` is null
+  // in V1 (no auth-adapter actor wired); the dev's backend is the
   // trusted layer behind the API key.
   r.post("/:id/members/:userId/kick", async (c) => {
     const id = c.req.param("id");
@@ -830,20 +812,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
-  // Update member metadata and / or officer notes. Body is partial:
-  // `{ metadata?, notesPublic?, notesPrivate? }`. An empty body returns
-  // `400 bad_request`. Metadata replaces wholesale (no deep merge) and is
-  // always treated as a change when supplied (jsonb storage may not
-  // preserve key order, so a deep-equal check is unreliable; matches the
-  // `groups.update` precedent). Notes fields are diffed per-field against
-  // the stored row; a value equal to the stored one is a no-op for that
-  // field. The route writes up to two audit entries in the same
-  // transaction: `member.metadata.updated` when metadata is supplied, and
-  // `member.notes.updated` when at least one notes field actually changed.
-  // No audit entry is written for a fully no-op PATCH (notes-only PATCH
-  // where every supplied notes field equals the stored value).
-  // `actorUserId` is null in V1 (no auth-adapter actor wired); the dev's
-  // backend is the trusted layer behind the API key.
+  // Metadata replaces wholesale and is treated as a change whenever
+  // supplied (jsonb may not preserve key order, so a deep-equal check
+  // would be unreliable). Notes are diffed per-field; a notes-only PATCH
+  // that matches stored values writes no audit entries.
   r.patch("/:id/members/:userId", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -935,14 +907,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
-  // Bulk-invite a list of users by external user id. The body is plain
-  // text: one userId per trimmed, non-empty line. Empty lines are
-  // ignored; lines with userIds longer than the cap are reported in
-  // `errors`. Existence checks (already-active member, already-pending
-  // invitation) run as batched lookups; the resulting invitation creates
-  // and audit entries write inside one transaction so a partial-failure
-  // case rolls back cleanly. The optional `roleId` query param is
-  // forwarded to every created invitation.
+  // Existence checks (already-active, already-pending) batch in one
+  // pass; invitation creates and audit entries write inside one
+  // transaction so a partial-failure case rolls back cleanly.
   r.post("/:id/bulk-invite", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -1077,13 +1044,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json({ invited: toCreate.length, skipped, errors: errorList });
   });
 
-  // Assign a role to a member. Idempotent: assigning a role the member
-  // already has returns the unchanged member with no audit entry. The
-  // role must belong to the same group as the member (cross-group
-  // assignment returns `400 role_group_mismatch`); a role that does not
-  // exist at all returns `404`. Group / member existence collapses into
-  // a single 404 to match the leave / kick / patch-member precedent.
-  // `actorUserId` is null in V1 (no auth-adapter actor wired).
+  // Idempotent on already-assigned. Cross-group assignment returns 400
+  // `role_group_mismatch`; missing role returns 404.
   r.post("/:id/members/:userId/roles/:roleId", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -1149,11 +1111,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(member, userId, roleIds));
   });
 
-  // Remove a role from a member. Idempotent: if the member does not have
-  // the role assigned (whether the role exists in another group, exists
-  // but is unassigned, or does not exist at all) the route returns the
-  // unchanged member with no audit entry. Group / member existence
-  // collapses into a single 404 like the assign path.
+  // Idempotent on not-assigned, regardless of whether the role exists
+  // in another group, is unassigned, or does not exist at all.
   r.delete("/:id/members/:userId/roles/:roleId", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -1212,15 +1171,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(member, userId, roleIds));
   });
 
-  // Set or update a member-level permission override. Body: `{ grant }`.
-  // Override semantics: an override (in either direction) wins over any
-  // role-derived grant during permission resolution (Phase 3.5). Setting
-  // an override with the same `grant` value as the existing one is a
-  // no-op (no audit entry, no DB write); setting it with a different
-  // `grant` updates the row and writes one `permission.override.set`
-  // audit entry with `before/after`. The permission key is auto-
-  // registered into `PermissionDef` on first sight per game (matches the
-  // `roles.grantPermission` precedent). `actorUserId` is null in V1.
+  // An override (in either direction) wins over any role-derived grant.
+  // Idempotent on matching `grant`. First sight of a key auto-registers
+  // `PermissionDef`.
   r.post("/:id/members/:userId/permissions/:permission", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -1309,10 +1262,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMemberPermissionOverride(result, group.id, userId));
   });
 
-  // Clear a member-level permission override. Idempotent: if the member
-  // does not have an override for this key, returns `204 No Content` with
-  // no audit entry. The `PermissionDef` registry row is preserved across
-  // clears (matches the `roles.revokePermission` precedent: the catalog
+  // Idempotent on missing override. PermissionDef is preserved (catalog
   // is monotonic per game).
   r.delete("/:id/members/:userId/permissions/:permission", async (c) => {
     const id = c.req.param("id");
@@ -1372,10 +1322,6 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.body(null, 204);
   });
 
-  // List a member's permission overrides. Returns a bare array (no
-  // pagination wrapper); a member is conventionally going to have a
-  // small set of overrides (handful, not thousands). Sorted by
-  // `permissionKey` ascending for deterministic output.
   r.get("/:id/members/:userId/permissions", async (c) => {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
@@ -1401,13 +1347,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(overrides.map((o) => serializeMemberPermissionOverride(o, group.id, userId)));
   });
 
-  // Create a role inside the group. Body: `{ name, priority, color?,
-  // isDefault? }`. `name` is unique per group (the schema enforces it; a
-  // duplicate returns 409 via Prisma's unique-constraint failure handled
-  // by the error middleware). `color` must be a 7-character hex if present.
-  // `isDefault` is a per-role tag; multiple roles in a group can be tagged
-  // default. The single canonical default for a group lives on
-  // `Group.defaultRoleId` and is set via `groups.update`.
+  // `isDefault` is a per-role tag; multiple roles can carry it. The
+  // canonical default for a group lives on `Group.defaultRoleId`, set
+  // via `groups.update`.
   r.post("/:id/roles", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -1468,10 +1410,6 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeRole(role, []), 201);
   });
 
-  // List the roles in a group. Returns a bare `Role[]` (no pagination
-  // wrapper); roles are conventionally a small list (10s, not 1000s).
-  // Sorted by `priority desc, id desc` so the highest-authority roles
-  // appear first.
   r.get("/:id/roles", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -1494,19 +1432,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? [])));
   });
 
-  // Set or update a directed relationship from group A to group B.
-  // Body: `{ type, mutual? }`. When `mutual: true` the route writes both
-  // directions (A->B and B->A) with the same `type` in the same
-  // transaction; the response is always the A->B row (the "this group's
-  // stance" canonical view). Idempotent on each direction: if the row's
-  // existing `type` already equals the supplied value, that direction is
-  // a no-op (no DB write, no audit entry, no `since` bump). A direction
-  // that does change writes one `group.relationship.set` audit entry on
-  // the *origin* group's audit log; mutual writes therefore produce up
-  // to two audit entries (one per direction). Self-relationships
-  // (`groupAId == groupBId`) are rejected with `400 bad_request`.
-  // `actorUserId` is null in V1 (no auth-adapter actor wired); the dev's
-  // backend is the trusted layer behind the API key.
+  // `mutual: true` writes both directions in one transaction; the
+  // response is always the A->B row (canonical "this group's stance").
+  // Idempotent per direction. Audit entries land on the *origin* group's
+  // log (so mutual writes can produce up to two entries).
   r.put("/:a/relationships/:b", async (c) => {
     const a = c.req.param("a");
     const b = c.req.param("b");
@@ -1571,7 +1500,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         });
       }
       if (!primary) {
-        // Both directions were no-ops; reload the existing A->B row.
+        // Both directions no-op'd; reload the existing A->B row.
         const reloaded = await tx.groupRelationship.findUnique({
           where: { groupAId_groupBId: { groupAId: a, groupBId: b } },
         });
@@ -1594,12 +1523,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeGroupRelationship(result.primary));
   });
 
-  // Clear the directed relationship from group A to group B. Idempotent:
-  // a missing row is a no-op (no audit entry). When `?mutual=true` is
-  // supplied, both directions are cleared in the same transaction; each
-  // direction is independent (clearing A->B is independent of B->A even
-  // when both exist). Returns 204 in every case so callers do not need
-  // to branch on whether something was actually deleted.
+  // Idempotent on missing row. Returns 204 in every case so callers
+  // need not branch on whether something was actually deleted.
   r.delete("/:a/relationships/:b", async (c) => {
     const a = c.req.param("a");
     const b = c.req.param("b");
@@ -1668,9 +1593,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.body(null, 204);
   });
 
-  // Fetch the directed A->B relationship row, or 404 if no such row
-  // exists. Both groups must be in the calling game; cross-game lookups
-  // collapse to 404 to avoid leaking existence.
+  // Cross-game lookups collapse to 404 to avoid existence leak.
   r.get("/:a/relationships/:b", async (c) => {
     const a = c.req.param("a");
     const b = c.req.param("b");
@@ -1692,12 +1615,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeGroupRelationship(rel));
   });
 
-  // List every directed relationship where this group is the A-side
-  // (i.e. "this group's stance toward others"). Returns a bare array
-  // sorted by `groupBId` ascending for deterministic output. Symmetric
-  // pairs appear once per direction; the dev queries the other group to
-  // see the reverse row. The B-side ("incoming" relationships) is left
-  // for a future `?direction=incoming` filter as an additive change.
+  // Returns the A-side ("outgoing stance") only. The B-side ("incoming")
+  // would be a future `?direction=incoming` additive filter.
   r.get("/:a/relationships", async (c) => {
     const a = c.req.param("a");
     const gameId = c.var.gameId;
@@ -1715,19 +1634,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(rels.map(serializeGroupRelationship));
   });
 
-  // Set or clear the sub-group / alliance parent. Body:
-  // `{ parentGroupId: string | null }`. The parent must be in the same
-  // game and not soft-deleted; cross-game / missing / soft-deleted
-  // parents collapse to 404. Self-parent (`parentGroupId === id`) and
-  // any candidate that would create a cycle in the parent chain are
-  // rejected with `400 parent_cycle`. Idempotent: if the supplied
-  // `parentGroupId` already equals the stored value, the route returns
-  // the unchanged group with no audit entry. Otherwise one transaction
-  // updates the row and writes a single audit entry: `group.parent.set`
-  // when the new value is non-null; `group.parent.cleared` when it is
-  // null. The audit payload carries `{ before, after }` with the prior
-  // and new parent ids (either may be null). `actorUserId` is null in
-  // V1 (no auth-adapter actor wired).
+  // Cycle detection walks the candidate parent's ancestor chain bounded
+  // at `MAX_PARENT_DEPTH`; self-parent and any cycle 400 `parent_cycle`.
   r.put("/:id/parent", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -1807,11 +1715,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeGroup(updated, memberCount));
   });
 
-  // List the direct children of a group (groups whose `parentGroupId`
-  // points at this one). Returns a bare `Group[]` (no pagination
-  // wrapper); a group's direct child set is conventionally small.
-  // Soft-deleted children are excluded. Sorted by `createdAt desc, id
-  // desc` to match `groups.list`.
+  // Direct children only; grandchildren are NOT recursed.
   r.get("/:id/children", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;

@@ -39,7 +39,7 @@ docker run \
   ghcr.io/junjo/server:latest
 ```
 
-The container exits non-zero if `DATABASE_URL` is missing or unreachable on startup. Logs go to stdout in the standard Node format; route your container runtime's log collector at it (Docker's default driver, fluent-bit, datadog-agent, etc.).
+The container exits non-zero if `DATABASE_URL` is missing or unreachable on startup. Logs go to stdout as line-delimited JSON when `NODE_ENV=production` (pretty-printed in any other environment); route your container runtime's log collector at it (Docker's default driver, fluent-bit, datadog-agent, etc.). See [Observability](#observability) for the line shape.
 
 > The `ghcr.io/junjo/server:latest` image is the V1 release target. The Dockerfile in the repo at `packages/server/Dockerfile` is currently a placeholder; the production multi-stage build lands when V1 ships. Until then, run from source (see "Local from source" below).
 
@@ -123,6 +123,10 @@ node packages/server/dist/index.js
 | `PORT` | no | `8787` | HTTP listen port. Must be a positive integer. |
 | `NODE_ENV` | no | `development` | One of `development`, `test`, `production`. Outside production, the Prisma client is cached on `globalThis` so `tsx watch` does not leak connections on hot reload. |
 | `JUNJO_BASE_URL` | no | | Public base URL of this server. Used when the SDK's `inviteByLink` builds the share URL; if you do not set it, the SDK falls back to its own `inviteBaseUrl` config. Optional during local dev. |
+| `JUNJO_ADMIN_TOKEN` | no | | Server-wide bearer token gating the cross-game admin endpoints (`/v1/admin/*`, `/v1/users/:junjoUserId/games`). When unset every admin request returns `401 invalid_admin_token`. Self-hosters with one game per server can leave this unset; cloud / dashboard deployments set it to a long random string. Compared in constant time. |
+| `RATE_LIMIT_PER_MINUTE` | no | `600` | Sustained refill rate of the per-API-key token-bucket rate limit on `/v1/*` routes. Set to `0` to disable rate limiting (e.g., when running behind a gateway that handles it). Must be a non-negative integer. |
+| `RATE_LIMIT_BURST` | no | `100` | Maximum bucket capacity for the per-API-key rate limit. A saturated bucket lets up to `burst` requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active. |
+| `LOG_LEVEL` | no | `info` | Minimum level the structured logger emits. One of `error`, `warn`, `info`, `debug`, `silent`. Production (`NODE_ENV=production`) writes one JSON object per line on stdout; any other environment pretty-prints via `pino-pretty`. Pipe the production stream into your log aggregator (Datadog, Loki, CloudWatch, ELK) and filter on `level`, `service`, `msg`, plus per-line context fields like `deliveryId` (webhook worker), `path`/`method` (unhandled errors), `signal` (shutdown). |
 
 Validation lives in [`packages/server/src/env.ts`](https://github.com/GabeCurran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
 
@@ -212,15 +216,24 @@ The API-key middleware checks `revokedAt` on every request and returns `401 inva
 
 ## Health checks
 
-The server exposes a single health endpoint for load balancer probes:
+The server exposes two probes, intentionally split by depth:
 
-```
-GET /healthz
-```
+### `GET /` - liveness
 
-Returns `200 OK` with body `ok` when the process is running. The check is intentionally cheap: no database round-trip, no auth. It tells you "the Node process is up and listening," not "Postgres is reachable." For a deeper liveness probe, hit `GET /v1/whoami` with a valid API key; it returns `200 { gameId }` only if the API-key middleware can read from the `ApiKey` table.
+Returns `200 OK` with `{ "name": "junjo-server", "version": "<v>" }`. No database round-trip, no auth, no shared state read. Use this for Kubernetes `livenessProbe`, container-level health checks, and anything where "is the Node process accepting connections?" is the only question. The version string is also useful for confirming which build is running.
 
-The unversioned root `GET /` returns the server name and version, useful for confirming which build is running.
+### `GET /healthz` - readiness
+
+Returns `200 OK` with `{ "status": "ok", "db": { "ok": true }, "webhookWorker": { "ok": true }, "timestamp": "<ISO 8601>" }` when both components are healthy. Returns `503 Service Unavailable` with `"status": "degraded"` and per-component `reason` strings when any leg fails. Use this for Kubernetes `readinessProbe` and load balancer pool admission - a degraded server should stop receiving traffic but should not be killed and restarted (the underlying Postgres or worker may recover).
+
+Two checks are folded into one response:
+
+- **`db`** - issues `SELECT 1` against Postgres with a 2-second timeout. A timeout reports `{ "ok": false, "reason": "db ping timeout after 2000ms" }`. A connection-level error (DNS, TCP refused, auth failure) surfaces the underlying error message verbatim.
+- **`webhookWorker`** - reads the worker's last-tick timestamp from its in-process handle. The worker initializes the heartbeat to its own startup time and refreshes it on every tick completion (success or caught error). A heartbeat older than 60 seconds (12x the 5-second tick interval) reports `{ "ok": false, "reason": "worker heartbeat is <ms>ms old (threshold 60000ms)", "ageMs": <ms> }`. A heartbeat that is `null` (the worker handle is configured but no tick has finished) reports `{ "ok": false, "reason": "worker has not completed a tick yet" }`.
+
+When the deployment does not configure a worker handle (the `healthz.worker` option on `createApp` is omitted), the worker leg reports trivially ok - `/healthz` answers "is the worker doing its job?" and a deployment without a worker has no worker to check. The DB ping always runs.
+
+The deeper `/v1/whoami` route remains available behind a valid API key for callers that want to verify the API-key middleware path end-to-end; `/healthz` covers the same shape without requiring a key.
 
 ## Background workers
 
@@ -230,6 +243,73 @@ Two `setInterval` schedulers run inside the server process:
 - **Webhook delivery worker** (one tick per 5 seconds, batch=50): polls `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api-reference/webhooks.mdx`](/api-reference/webhooks).
 
 Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
+
+The webhook worker drains its in-flight delivery before the HTTP listener closes. On `SIGTERM` the worker stops scheduling new ticks and stops picking new rows from the current batch, but the `deliverOne` call already in flight is allowed to run to completion so the receiver gets a stable response and the row state is persisted (`delivered` / `pending` / `failed` per the usual transition rules). The drain is capped at 30 seconds so a hung receiver cannot block process exit beyond the `terminationGracePeriod` Kubernetes (and the `--time` flag on `docker stop`) ship with by default. Set `terminationGracePeriodSeconds: 35` (or higher) on the pod spec to leave a small margin above the 30s drain ceiling.
+
+### Webhook delivery flow
+
+The full enqueue-then-drain shape, end to end:
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Route as Mutation route
+  participant Hub as EventHub (in-process)
+  participant DB as Postgres (via Prisma)
+  participant Worker as Webhook worker (5s tick)
+  participant Receiver as Receiver URL
+
+  Note over Route,DB: Enqueue phase (in-band with the mutating request)
+  Route->>Hub: publishEvent(event)
+  Hub-->>Route: ok (live SSE subscribers receive immediately)
+  Route->>DB: WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
+  DB-->>Route: matching endpoints (may be empty)
+  alt one or more endpoints matched
+    Route->>DB: BEGIN<br/>INSERT WebhookDelivery per endpoint<br/>(status=pending, attemptCount=0, nextAttemptAt=now)<br/>COMMIT
+    DB-->>Route: delivery ids
+  end
+  Route-->>Route: respond to caller (HTTP 2xx)
+
+  Note over Route,Receiver: Drain phase (asynchronous, every 5s, single sequential worker)
+  loop every 5 seconds (setInterval, unref)
+    Worker->>DB: SELECT id FROM WebhookDelivery<br/>WHERE status=pending AND nextAttemptAt is due<br/>ORDER BY nextAttemptAt ASC LIMIT 50
+    DB-->>Worker: due ids (batch up to 50)
+    loop each id, sequential
+      opt SIGTERM received (shouldStop)
+        Worker->>Worker: break batch (stop scheduling new ticks)
+      end
+      Worker->>DB: SELECT WebhookDelivery + WebhookEndpoint
+      DB-->>Worker: row + endpoint
+      alt format is junjo
+        Worker->>Worker: HMAC-SHA256(secret, timestamp.body)<br/>headers: x-junjo-event, x-junjo-event-id,<br/>x-junjo-delivery-id, x-junjo-timestamp, x-junjo-signature
+      else format is discord
+        Worker->>Worker: render Discord embed payload (no HMAC headers)
+      else format is slack
+        Worker->>Worker: render Slack Block Kit message (no HMAC headers)
+      end
+      Worker->>Receiver: POST url (10s AbortSignal timeout)
+      alt 2xx response
+        Receiver-->>Worker: 200 OK
+        Worker->>DB: UPDATE status=delivered, attemptCount+=1,<br/>responseStatus, lastAttemptAt, nextAttemptAt=NULL
+      else 4xx other than 408 or 429
+        Receiver-->>Worker: 4xx
+        Worker->>DB: UPDATE status=failed (permanent)
+      else 5xx, 408, 429, network error, or abort
+        Receiver--xWorker: error or 5xx
+        alt attemptCount+1 reaches 6 (max attempts)
+          Worker->>DB: UPDATE status=failed (retries exhausted)
+        else more attempts remain
+          Worker->>DB: UPDATE status=pending,<br/>nextAttemptAt=now + backoff[attempt]<br/>(1m, 5m, 30m, 2h, 8h)
+        end
+      end
+    end
+  end
+
+  Note over Route,Receiver: At-least-once delivery. A worker crash between POST and UPDATE<br/>can re-deliver an event, so receivers must dedupe on x-junjo-event-id.<br/>SIGTERM stops scheduling new ticks. The in-flight deliverOne completes<br/>under a 30s drain ceiling before process exit.
+```
+
+Source: `tools/diagrams/source/webhook-delivery.mmd`. The same diagram is embedded in [`api-reference/webhooks`](/api-reference/webhooks); both fences and the source file stay byte-identical (Phase 16.6 wires the diff as a verify gate).
 
 ### Horizontal scaling
 
@@ -261,7 +341,11 @@ Caddy auto-detects SSE and disables buffering, so no additional config is needed
 
 ## Observability
 
-The server logs request lines and unhandled errors to stdout. Structured logging, metrics endpoints, and tracing hooks are not in V1; the runnable surface area is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses request lines, or an APM that wraps the Node process at boot.
+The server emits structured logs to stdout via [pino](https://github.com/pinojs/pino). When `NODE_ENV=production` each line is a JSON object (one per `\n`); in any other environment lines are pretty-printed via `pino-pretty` for readability. Each line carries `level`, `time` (ISO 8601), `service: "junjo-server"`, `msg`, plus per-line context fields like `deliveryId` and `endpointId` (webhook worker), `path` and `method` (unhandled errors caught by the Hono error middleware), `signal` (graceful shutdown), and `removed` (soft-delete sweeper summary). `LOG_LEVEL` (default `info`) sets the minimum level; valid values are `error`, `warn`, `info`, `debug`, `silent`.
+
+Pipe the production stream into your log aggregator. The shape is friendly to every common backend: Datadog parses pino out of the box, Loki / Grafana ingest line-delimited JSON via promtail, CloudWatch and ELK use a similar JSON parser. Filter on `level >= warn` for alerting, on `msg` for specific events ("webhook delivery failed (network/abort)"), and on context fields for per-resource investigation.
+
+Metrics endpoints and distributed tracing are not in V1. The runnable surface is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses these JSON lines, or an APM that wraps the Node process at boot.
 
 The two operationally interesting failure modes:
 

@@ -1,7 +1,3 @@
-// Server-side error type. Routes throw `JunjoError` and the error
-// middleware turns it into a JSON response with the same shape the SDK
-// expects: { code, status, message }.
-
 export class JunjoError extends Error {
   constructor(
     readonly code: string,
@@ -38,4 +34,6 @@ export const Errors = {
     new JunjoError("role_group_mismatch", 400, msg),
   parentCycle: (msg = "setting this parent would create a cycle") =>
     new JunjoError("parent_cycle", 400, msg),
+  rateLimitExceeded: (msg = "rate limit exceeded") =>
+    new JunjoError("rate_limit_exceeded", 429, msg),
 };

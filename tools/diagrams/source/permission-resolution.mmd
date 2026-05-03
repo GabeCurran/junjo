@@ -1,0 +1,60 @@
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Client as Client (SDK or HTTP)
+  participant Mw as apiKeyMiddleware
+  participant Route as permissions.check handler
+  participant Cache as permissionCache (60s TTL)
+  participant DB as Postgres (via Prisma)
+
+  Client->>Mw: GET /v1/permissions/check + Bearer jk_...<br/>?userId, groupId, permission
+  Mw->>DB: ApiKey by prefix
+  DB-->>Mw: gameId + hashedSecret
+  Mw->>Mw: scrypt verify, check revokedAt
+  Mw->>Route: c.var.gameId set, next()
+
+  Route->>DB: Group WHERE id AND gameId AND softDeletedAt IS NULL
+  DB-->>Route: group or null
+  opt group missing or cross-game
+    Route-->>Client: 404 not_found
+  end
+
+  Route->>Cache: get(gameId, groupId, userId, permission)
+  alt cache hit (within 60s, not invalidated)
+    Cache-->>Route: PermissionCheckResult
+    Route-->>Client: 200 OK (cached)
+  else cache miss
+    Cache-->>Route: null
+    Route->>DB: ExternalIdentity (gameId, externalUserId)
+    DB-->>Route: junjoUserId or null
+    alt no identity
+      Route->>Cache: set { source: "none" }
+      Route-->>Client: 200 { source: "none" }
+    else identity resolved
+      Route->>DB: GroupMember (groupId, junjoUserId)
+      DB-->>Route: { status } or null
+      alt no row, or status != active
+        Route->>Cache: set { source: "none" }
+        Route-->>Client: 200 { source: "none" }
+      else active member
+        Route->>DB: MemberPermissionOverride (memberId, key)
+        DB-->>Route: { grant } or null
+        alt override present
+          Route->>Cache: set { source: "override" }
+          Route-->>Client: 200 { source: "override", allowed: grant }
+        else no override
+          Route->>DB: MemberRole JOIN RolePermission<br/>ORDER BY priority DESC, roleId DESC
+          DB-->>Route: { roleId } or null
+          alt role grants the key
+            Route->>Cache: set { source: "role", viaRoleId }
+            Route-->>Client: 200 { source: "role", allowed: true }
+          else no role grants
+            Route->>Cache: set { source: "default" }
+            Route-->>Client: 200 { source: "default", allowed: false }
+          end
+        end
+      end
+    end
+  end
+
+  Note over Client,DB: Mutations (role assign/remove, role permission grant/revoke,<br/>member override set/clear, role delete) call cache.invalidateGroup(groupId)<br/>after commit, so a stale "false" can flip to "true" within one round-trip.

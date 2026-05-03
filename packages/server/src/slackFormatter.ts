@@ -1,20 +1,14 @@
-// Translates a stored `JunjoEvent` payload into a Slack incoming-webhook
-// payload (https://api.slack.com/messaging/webhooks). The function reads
-// from the wire-shaped payload that lives on `WebhookDelivery.payload`
-// after the JSON round-trip in `serializeEventForStorage` (Date fields
-// are ISO 8601 strings, branded ids are plain strings). That matches
-// what Slack wants on the wire, so the formatter never needs a `Date`
-// rehydration step.
+// Reads from the wire-shaped payload on `WebhookDelivery.payload` after
+// `serializeEventForStorage`'s JSON round-trip (Dates are ISO strings,
+// branded ids are plain strings); Slack wants the same wire shapes, so
+// no Date rehydration is needed.
 //
-// The output uses Block Kit (`blocks` array) plus a top-level `text`
-// fallback. The `text` field is what shows up in mobile push
-// notifications, in the channel sidebar preview, and in old Slack
-// clients that don't render blocks; without it Slack logs a warning.
+// The top-level `text` fallback is what shows up in mobile push
+// notifications, channel sidebar previews, and old Slack clients that
+// don't render Block Kit; without it Slack logs a warning.
+//
+// Slack docs: https://api.slack.com/messaging/webhooks
 
-// Slack's documented limits. Block Kit caps each `mrkdwn` text block at
-// 3000 chars; a section's individual `fields` array is capped at 10
-// entries with each field's text capped at 2000. The `text` fallback at
-// the top level is capped at 40_000 chars (we never get close).
 const TEXT_MAX_LENGTH = 3000;
 const FIELD_TEXT_MAX_LENGTH = 2000;
 const FIELDS_PER_SECTION_MAX = 10;
@@ -74,7 +68,7 @@ function mrkdwn(text: string): SlackTextBlock {
 }
 
 function header(text: string): SlackHeaderBlock {
-  // Slack header blocks must use plain_text and have a 150-char cap.
+  // Slack rejects mrkdwn in header blocks and caps text at 150 chars.
   return {
     type: "header",
     text: { type: "plain_text", text: truncate(text, 150), emoji: true },
@@ -98,21 +92,17 @@ function contextLine(eventId: string, occurredAt: string | undefined): SlackCont
 }
 
 function fieldsSection(fields: SlackTextBlock[]): SlackSectionBlock {
-  // Slack rejects > 10 fields per section. Truncating to the cap keeps
-  // the request shape valid; the docs page calls out the limit.
+  // Slack rejects sections with more than 10 fields.
   return {
     type: "section",
     fields: fields.slice(0, FIELDS_PER_SECTION_MAX),
   };
 }
 
-// Narrow the wire event by `type` and produce the Slack payload. Each
-// branch reads only the fields it needs from the loose payload shape, so
-// the formatter is tolerant of unknown event types: anything not in the
-// switch falls through to a generic "unknown event" message (the worker
-// will still POST it; the dev sees the raw type string in Slack). This
-// keeps the formatter forward-compatible against new event types added
-// to `JunjoEventType` after a rolling deploy.
+// Tolerant of unknown event types: each branch reads only the fields it
+// needs, and unknown `type` falls through to a generic message. Keeps the
+// formatter forward-compatible against new event types added to
+// `JunjoEventType` after a rolling deploy.
 export function formatJunjoEventForSlack(payload: Record<string, unknown>): SlackWebhookPayload {
   const base = payload as unknown as WireEventBase;
   const eventId = typeof base.id === "string" ? base.id : "unknown";

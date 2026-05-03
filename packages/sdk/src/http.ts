@@ -16,10 +16,6 @@ export interface RequestOptions {
   headers?: Record<string, string>;
 }
 
-// Shared HTTP helper used by every sub-namespace class. Sets the
-// Authorization header, JSON-encodes bodies, parses JSON responses, and
-// turns non-2xx responses into JunjoError instances that preserve the
-// server's code, status, and message.
 export class HttpClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -52,9 +48,7 @@ export class HttpClient {
     return this.parseResponse<T>(res);
   }
 
-  // POST a non-JSON body (e.g. text/csv for bulk-invite). The body is
-  // forwarded to fetch verbatim; pass a string for the simple case or a
-  // ReadableStream<Uint8Array> when the caller already has a stream.
+  // The body is forwarded to fetch unencoded; the caller owns serialization.
   async postRaw<T>(
     path: string,
     body: string | ReadableStream<Uint8Array>,
@@ -72,10 +66,8 @@ export class HttpClient {
     return this.parseResponse<T>(res);
   }
 
-  // GET a path expecting a streaming response (text/event-stream, etc.)
-  // and return the raw Response with its body still open. Non-2xx
-  // responses still throw the standard `JunjoError` envelope; the caller
-  // is responsible for reading the body via `res.body?.getReader()`.
+  // Returns the raw Response with the body still open. Non-2xx still
+  // throws `JunjoError`; the caller is responsible for draining the body.
   async openStream(path: string, opts?: { signal?: AbortSignal }): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const res = await this.fetchImpl(url, {

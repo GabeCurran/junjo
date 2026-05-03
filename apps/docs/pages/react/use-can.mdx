@@ -36,7 +36,7 @@ The hook reads from a shared cache scoped to the nearest `JunjoProvider`. Multip
 - **Errors are not cached.** A rejected `junjo.can(...)` leaves the slot empty, so the next mount of `useCan` retries. The current mount stays at `undefined` until something causes it to remount or until the cache is invalidated.
 - **Cache scope is per provider instance.** Two `<JunjoProvider client={A}>` and `<JunjoProvider client={B}>` trees do not share entries. Re-mounting the provider (or passing a different `client`) creates a fresh cache.
 
-The cache has no TTL and no event-driven invalidation in V1. The server's `permissions/check` endpoint runs its own 60-second per-process cache that invalidates on role / permission mutations, but that invalidation does not propagate to the React cache. If a permission can flip mid-session, you currently need to remount the consuming component or wait for the next provider mount. A reactive invalidation layer is on the Phase 7.5 roadmap and will be transparent when it lands.
+The cache has no TTL and no event-driven invalidation in V1. The server's `permissions/check` endpoint runs its own 60-second per-process cache that invalidates on role / permission mutations, but that invalidation does not propagate to the React cache. If a permission can flip mid-session, you currently need to remount the consuming component or wait for the next provider mount. A reactive invalidation layer is a post-V1 idea and would be transparent when it lands.
 
 ## Errors
 

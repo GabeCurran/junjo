@@ -1,19 +1,16 @@
-// Translates a stored `JunjoEvent` payload into the Discord webhook
-// payload shape (https://discord.com/developers/docs/resources/webhook#execute-webhook).
-// The function reads from the wire-shaped payload that lives on
-// `WebhookDelivery.payload` after the JSON round-trip in
-// `serializeEventForStorage` (Date fields are ISO 8601 strings, branded
-// ids are plain strings). That matches what Discord wants on the wire,
-// so the formatter never needs a `Date` rehydration step.
+// Reads from the wire-shaped payload on `WebhookDelivery.payload` after
+// `serializeEventForStorage`'s JSON round-trip (Dates are ISO strings,
+// branded ids are plain strings); Discord wants the same wire shapes, so
+// no Date rehydration is needed.
+//
+// Discord docs: https://discord.com/developers/docs/resources/webhook#execute-webhook
 
 const COLOR_GREEN = 0x4ade80;
 const COLOR_RED = 0xef4444;
 const COLOR_BLUE = 0x3b82f6;
 const COLOR_GREY = 0x6b7280;
 
-// Discord's documented field-value cap.
 const FIELD_VALUE_MAX_LENGTH = 1024;
-// Discord's documented embed-description cap.
 const DESCRIPTION_MAX_LENGTH = 4096;
 
 export interface DiscordEmbedField {
@@ -60,13 +57,10 @@ function footerFor(eventId: string): DiscordEmbedFooter {
   return { text: `Junjo - ${eventId}` };
 }
 
-// Narrow the wire event by `type` and produce the Discord payload. Each
-// branch reads only the fields it needs from the loose payload shape, so
-// the formatter is tolerant of unknown event types: anything not in the
-// switch falls through to a generic "unknown event" embed (the worker
-// will still POST it; the dev sees the raw type string in Discord). This
-// keeps the formatter forward-compatible against new event types added
-// to `JunjoEventType` after a rolling deploy.
+// Tolerant of unknown event types: each branch reads only the fields it
+// needs, and unknown `type` falls through to a generic "unknown event"
+// embed. Keeps the formatter forward-compatible against new event types
+// added to `JunjoEventType` after a rolling deploy.
 export function formatJunjoEventForDiscord(
   payload: Record<string, unknown>,
 ): DiscordWebhookPayload {

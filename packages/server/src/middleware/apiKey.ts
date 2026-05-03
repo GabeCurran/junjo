@@ -2,16 +2,13 @@ import type { MiddlewareHandler } from "hono";
 import { parseApiKey, verifySecret } from "../apiKey.js";
 import { Errors } from "../errors.js";
 
-// Subset of the Prisma client surface the middleware actually uses.
-// Routes import the real client; tests pass an in-memory fake.
+// Tests pass an in-memory fake; routes get the real Prisma client.
 export interface ApiKeyStore {
   findByPrefix(
     prefix: string,
   ): Promise<{ gameId: string; hashedSecret: string; revokedAt: Date | null } | null>;
 }
 
-// Hono context augmentation. After this middleware runs, `c.var.gameId`
-// is populated with the calling game's id.
 declare module "hono" {
   interface ContextVariableMap {
     gameId: string;

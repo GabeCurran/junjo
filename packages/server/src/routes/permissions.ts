@@ -8,29 +8,17 @@ import { checkPermissionQuery } from "./permissions.schema.js";
 
 type PermissionsClient = PrismaClient | Prisma.TransactionClient;
 
-// Resolves the canonical answer to "is this user allowed to do this thing
-// in this group?" The order of resolution is:
+// Resolution order: missing identity / membership / non-active status
+// returns `none`; an override (in either direction) wins; otherwise any
+// role with the permission grants it (highest-priority role wins, ties
+// broken by roleId desc for stability); finally `default`.
 //
-//   1. If the user has no `ExternalIdentity` for this game, or no
-//      `GroupMember` row in this group, the answer is `none` (not
-//      applicable; the user is not in the group).
-//   2. If the member is not `active` (i.e. `left`, `kicked`, or `invited`),
-//      the answer is `none`. A non-active member cannot exercise
-//      permissions even if their role assignments and overrides survive
-//      the transition. (Role rows are preserved on leave/kick to keep
-//      audit history; the permission resolver gates on status.)
-//   3. If a `MemberPermissionOverride` exists, it wins regardless of
-//      direction. Allowed = override.grant, source = "override".
-//   4. If any of the member's roles has the permission via
-//      `RolePermission`, allowed = true with source = "role" and
-//      `viaRoleId` set to the highest-priority granting role (priority
-//      desc, then roleId desc as a tiebreaker so the answer is stable).
-//   5. Otherwise the member is in-group with no override and no granting
-//      role: the answer is `default` (not allowed; this is the default
-//      state for any permission the dev has not explicitly configured).
+// Non-active members (`left` / `kicked` / `invited`) intentionally do
+// NOT exercise permissions, even though their role rows survive the
+// transition (rows are kept for audit history; the resolver gates on
+// status).
 //
-// The caller is responsible for checking that the group exists and is in
-// the calling game; this function trusts the supplied `groupId`.
+// Caller must enforce game scope on `groupId`; this function trusts it.
 export async function resolvePermission(
   prisma: PermissionsClient,
   gameId: string,
@@ -79,10 +67,8 @@ export interface CheckPermissionHandlerOptions {
   cache?: PermissionCache;
 }
 
-// `GET /v1/permissions/check?userId=&groupId=&permission=`. Reads through
-// the in-memory cache first; on miss runs `resolvePermission` and caches
-// the result. Mutations elsewhere call `cache.invalidateGroup(groupId)`
-// after committing so a stale cache flip waits at most one round-trip.
+// Mutations elsewhere call `cache.invalidateGroup(groupId)` after
+// committing so a stale cache flip waits at most one round-trip.
 export function checkPermissionHandler(
   prisma: PrismaClient,
   opts: CheckPermissionHandlerOptions = {},

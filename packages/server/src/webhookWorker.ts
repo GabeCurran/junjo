@@ -1,14 +1,13 @@
 import { createHmac } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { formatJunjoEventForDiscord } from "./discordFormatter.js";
+import { logger } from "./logger.js";
 import { formatJunjoEventForSlack } from "./slackFormatter.js";
 
-// Backoff schedule between attempts. After attempt N fails (and the
-// failure is retriable), wait `WEBHOOK_BACKOFF_MS[N - 1]` before
-// scheduling attempt N+1. With WEBHOOK_MAX_ATTEMPTS = 6, indices 0..4
-// are consumed (after attempts 1..5). The trailing 24h entry mirrors
-// the figure in the V1 roadmap but is never actually used: attempt 6
-// is terminal whether it succeeds or fails.
+// After a retriable attempt N fails, wait `WEBHOOK_BACKOFF_MS[N - 1]`
+// before scheduling attempt N+1. With MAX_ATTEMPTS = 6, indices 0..4 are
+// consumed (after attempts 1..5); the trailing 24h entry is unreachable
+// because attempt 6 is always terminal.
 export const WEBHOOK_BACKOFF_MS = [
   60_000,
   5 * 60_000,
@@ -23,6 +22,11 @@ export const WEBHOOK_REQUEST_TIMEOUT_MS = 10_000;
 export const WEBHOOK_WORKER_INTERVAL_MS = 5_000;
 export const WEBHOOK_WORKER_BATCH_SIZE = 50;
 export const WEBHOOK_SIGNATURE_SCHEME = "v1";
+
+// Matches a typical container orchestrator's terminationGracePeriod
+// (Docker / Kubernetes / Nomad SIGKILL 30s after SIGTERM); a higher
+// drain ceiling would just be killed mid-drain anyway.
+export const WEBHOOK_WORKER_DRAIN_MS = 30_000;
 
 export interface WebhookFetchInit {
   method: "POST";
@@ -43,6 +47,11 @@ export interface WorkerOptions {
   intervalMs?: number;
   batchSize?: number;
   now?: () => Date;
+  // Returning true breaks the batch loop early so graceful shutdown can
+  // drain the in-flight `deliverOne` without picking up the rest of the
+  // batch. Checked at the top of each iteration; a currently-executing
+  // `deliverOne` always finishes (Promises cannot be cancelled).
+  shouldStop?: () => boolean;
 }
 
 export type DeliveryOutcome =
@@ -51,10 +60,9 @@ export type DeliveryOutcome =
   | { status: "failed"; httpStatus: number | null }
   | { status: "missing" };
 
-// HMAC-SHA256 of `<timestamp>.<body>` using the endpoint's secret. The
+// HMAC-SHA256 of `<timestamp>.<body>` with the endpoint's secret. The
 // `v1=` scheme prefix lets future signing schemes coexist (Stripe-style).
-// Receivers (Phase 5.4 `webhooks.verify`) recompute this and compare in
-// constant time.
+// Receivers recompute and constant-time-compare; see `webhooks.verify`.
 export function signWebhookBody(secret: string, body: string, timestamp: string): string {
   const message = `${timestamp}.${body}`;
   const sig = createHmac("sha256", secret).update(message).digest("hex");
@@ -72,20 +80,16 @@ function backoffMs(nextAttempt: number): number {
   return WEBHOOK_BACKOFF_MS[idx] ?? WEBHOOK_BACKOFF_MS[WEBHOOK_BACKOFF_MS.length - 1] ?? 0;
 }
 
-// 4xx responses are non-retriable except for the small set of
-// transient codes (request timeout, too many requests). Anything 5xx
-// or non-HTTP (network error, abort) IS retriable up to MAX_ATTEMPTS.
+// 4xx is permanent except 408 / 429 (transient); 5xx and non-HTTP errors
+// (network, abort) retry up to MAX_ATTEMPTS.
 function isPermanentFailure(httpStatus: number | null): boolean {
   if (httpStatus === null) return false;
   if (httpStatus === 408 || httpStatus === 429) return false;
   return httpStatus >= 400 && httpStatus < 500;
 }
 
-// Loads one delivery row, signs + POSTs the payload, and transitions
-// the row's status based on the response. Idempotent at the row level:
-// a delivery whose status is already terminal (`delivered` or `failed`)
-// is left untouched. The poller filters to `pending` rows so this
-// guard is defensive.
+// Idempotent at the row level: a delivery already in a terminal state is
+// left untouched. The poller filters to `pending` rows so this is defensive.
 export async function deliverOne(
   prisma: PrismaClient,
   deliveryId: string,
@@ -108,13 +112,10 @@ export async function deliverOne(
   const eventId = typeof payload?.id === "string" ? payload.id : "";
   const eventType = typeof payload?.type === "string" ? payload.type : "";
 
-  // Format-specific wire shape. "discord" and "slack" produce
-  // target-shaped payloads and omit the HMAC headers (those targets
-  // authenticate via URL token, not signed headers - and they ignore
-  // unknown headers anyway, so sending the `x-junjo-*` set would be
-  // both useless and noisy). "junjo" stays on the raw JunjoEvent JSON
-  // with the canonical signed-header set; receivers running
-  // `junjo.webhooks.verify` need every header in this map.
+  // discord / slack target-shaped payloads omit the HMAC headers; those
+  // targets authenticate via URL token, not signed headers, and they
+  // ignore unknown headers. The "junjo" format keeps the canonical
+  // signed-header set that `webhooks.verify` requires.
   let body: string;
   let headers: Record<string, string>;
   if (delivery.endpoint.format === "discord") {
@@ -153,7 +154,10 @@ export async function deliverOne(
   } catch (err) {
     httpStatus = null;
     httpOk = false;
-    console.error(`[junjo-server] webhook delivery ${delivery.id} failed (network/abort)`, err);
+    logger.error(
+      { err, deliveryId: delivery.id, endpointId: delivery.endpoint.id },
+      "webhook delivery failed (network/abort)",
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -195,9 +199,7 @@ export async function deliverOne(
   return { status: "failed", httpStatus };
 }
 
-// Returns the ids of pending deliveries whose `nextAttemptAt` is at or
-// before `now`, ordered oldest-due first. Capped at `batchSize` so a
-// single tick cannot starve other server work.
+// Capped at `batchSize` so a single tick cannot starve other server work.
 export async function pollDueDeliveries(
   prisma: PrismaClient,
   now: Date,
@@ -218,12 +220,10 @@ export interface WorkerTickResult {
   failed: number;
 }
 
-// One full worker tick: poll due deliveries, then process each one
-// sequentially. Sequential processing is deliberate: a single worker
-// process gives us per-endpoint ordering for free without holding a
-// Postgres advisory lock across a slow HTTP call. When this worker
-// scales out to multiple processes, switch to `pg_try_advisory_lock`
-// keyed on `webhookEndpointId`.
+// Sequential processing is deliberate: a single worker process gives us
+// per-endpoint ordering for free without holding a Postgres advisory
+// lock across a slow HTTP call. Multi-process scale-out should switch to
+// `pg_try_advisory_lock` keyed on `webhookEndpointId`.
 export async function runWorkerOnce(
   prisma: PrismaClient,
   opts: WorkerOptions = {},
@@ -235,6 +235,7 @@ export async function runWorkerOnce(
   const ids = await pollDueDeliveries(prisma, now(), batchSize);
   const result: WorkerTickResult = { delivered: 0, pending: 0, failed: 0 };
   for (const id of ids) {
+    if (opts.shouldStop?.()) break;
     const outcome = await deliverOne(prisma, id, fetcher, now);
     if (outcome.status === "delivered") result.delivered++;
     else if (outcome.status === "failed") result.failed++;
@@ -244,25 +245,66 @@ export async function runWorkerOnce(
 }
 
 export interface WorkerHandle {
-  stop(): void;
+  // Idempotent. Capped at `drainMs` (default 30s) so a hung receiver
+  // cannot block process exit indefinitely.
+  stop(opts?: { drainMs?: number }): Promise<void>;
+  // Initialized to `now()` at construction so a freshly started worker
+  // reports healthy until the stale threshold elapses; a worker stuck on
+  // its first tick goes stale just like one that stopped firing later.
+  getLastHeartbeat(): Date;
 }
 
-// Schedules `runWorkerOnce` on a `setInterval`. The handle is `unref`'d
-// so the timer never keeps the process alive on its own. Production
-// boots one worker per server process from `index.ts`; tests call
-// `runWorkerOnce` directly with a fixed `now` and never start a timer.
+// Timer is `unref`'d so the worker never keeps the process alive on its
+// own; tests skip `startWebhookWorker` and call `runWorkerOnce` directly
+// with a fixed `now`.
 export function startWebhookWorker(prisma: PrismaClient, opts: WorkerOptions = {}): WorkerHandle {
   const intervalMs = opts.intervalMs ?? WEBHOOK_WORKER_INTERVAL_MS;
+  const now = opts.now ?? (() => new Date());
+  let lastHeartbeat = now();
+  let stopping = false;
+  // `setInterval` does not serialize callbacks, so a slow tick can overlap
+  // the next one. Tracking every in-flight tick lets `stop()` drain all of
+  // them rather than only the most recent.
+  const inFlight = new Set<Promise<void>>();
 
-  const tick = async () => {
-    try {
-      await runWorkerOnce(prisma, opts);
-    } catch (err) {
-      console.error("[junjo-server] webhook worker tick failed", err);
-    }
+  const tick = (): Promise<void> => {
+    if (stopping) return Promise.resolve();
+    const p = (async () => {
+      try {
+        await runWorkerOnce(prisma, { ...opts, shouldStop: () => stopping });
+      } catch (err) {
+        logger.error({ err }, "webhook worker tick failed");
+      } finally {
+        lastHeartbeat = now();
+      }
+    })();
+    inFlight.add(p);
+    p.finally(() => {
+      inFlight.delete(p);
+    }).catch(() => {});
+    return p;
   };
 
   const handle = setInterval(() => void tick(), intervalMs);
   if (typeof handle.unref === "function") handle.unref();
-  return { stop: () => clearInterval(handle) };
+
+  return {
+    stop: async ({ drainMs = WEBHOOK_WORKER_DRAIN_MS }: { drainMs?: number } = {}) => {
+      stopping = true;
+      clearInterval(handle);
+      if (inFlight.size === 0) return;
+      const drained = Promise.allSettled(inFlight).then(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ceiling = new Promise<void>((resolve) => {
+        timer = setTimeout(() => resolve(), drainMs);
+        if (typeof timer.unref === "function") timer.unref();
+      });
+      try {
+        await Promise.race([drained, ceiling]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
+    getLastHeartbeat: () => lastHeartbeat,
+  };
 }

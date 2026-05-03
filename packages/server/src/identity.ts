@@ -3,25 +3,17 @@ import type { PrismaClient } from "@prisma/client";
 
 type IdentityClient = PrismaClient | Prisma.TransactionClient;
 
-// Resolves a dev's external user id (Clerk sub, Supabase uuid, Roblox UserId
-// as string) to an internal JunjoUser id, creating both the user and the
-// ExternalIdentity row on first sight. The returned junjoUserId is the
-// stable cross-game identifier; downstream rows (GroupMember, AuditEntry)
-// reference it.
+// Race-safe via the `(gameId, externalUserId)` unique index. The loser of
+// a concurrent first-time create catches Prisma's P2002, lets its inner
+// transaction roll back (so its candidate JunjoUser never lands), and
+// re-selects the winner's mapping.
 //
-// Race-safe: the unique index on `(gameId, externalUserId)` serializes
-// concurrent first-time creates. The loser of the race catches Prisma's
-// P2002 unique-constraint violation, lets its inner transaction roll back
-// (so its candidate JunjoUser never lands), and re-selects the winner's
-// mapping.
-//
-// Must be called with a top-level PrismaClient, not a Prisma.TransactionClient.
-// Postgres marks a transaction as failed after a unique-constraint violation
-// and refuses subsequent statements until rollback, so the helper can only
-// recover when it owns the failing transaction. Callers that need atomicity
-// with downstream writes (GroupMember + AuditEntry + Invitation update)
-// should resolve the user first via this helper, then enter their main
-// transaction with the resolved junjoUserId.
+// MUST receive a top-level PrismaClient, not a TransactionClient: Postgres
+// marks a transaction as failed after a unique-constraint violation and
+// refuses subsequent statements until rollback, so the helper can only
+// recover when it owns the failing transaction. Callers that need
+// atomicity with downstream writes resolve the user first, then enter
+// their main transaction with the resolved junjoUserId.
 export async function findOrCreateJunjoUser(
   prisma: PrismaClient,
   gameId: string,
@@ -57,11 +49,9 @@ export async function findOrCreateJunjoUser(
   }
 }
 
-// Read-only counterpart for routes that operate on an existing user
-// (leave, kick, future member.get). Returns null when no ExternalIdentity
-// row exists for the (gameId, externalUserId) pair, which the caller
-// translates into a 404 on the consuming resource (e.g. "member" not
-// "user", since the user might exist for other purposes).
+// Returns null when no ExternalIdentity row exists. Callers translate
+// that into a 404 on the consuming resource (e.g. "member" not "user",
+// since the user might exist for other purposes).
 export async function findJunjoUserId(
   client: IdentityClient,
   gameId: string,

@@ -15,6 +15,10 @@ import {
   datetimeLocalToIso,
 } from "../../../../../components/analytics/date-range-picker";
 import { GroupChurnChart } from "../../../../../components/analytics/group-churn-chart";
+import { GroupGrowthChart } from "../../../../../components/analytics/group-growth-chart";
+import { MemberActivityHeatmap } from "../../../../../components/analytics/member-activity-heatmap";
+import { PermissionUsageChart } from "../../../../../components/analytics/permission-usage-chart";
+import { RoleDistributionChart } from "../../../../../components/analytics/role-distribution-chart";
 import { Topbar } from "../../../../../components/dashboard/topbar";
 import {
   Card,
@@ -27,8 +31,16 @@ import {
   AdminDisabledError,
   type AdminGame,
   type AdminGroupChurn,
+  type AdminGroupGrowth,
+  type AdminMemberActivity,
+  type AdminPermissionUsage,
+  type AdminRoleDistribution,
   fetchAdminGame,
   fetchAdminGameGroupChurn,
+  fetchAdminGameGroupGrowth,
+  fetchAdminGameMemberActivity,
+  fetchAdminGamePermissionUsage,
+  fetchAdminGameRoleDistribution,
 } from "../../../../../lib/admin";
 import { getDocsBaseUrl } from "../../../../../lib/junjo";
 
@@ -135,10 +147,27 @@ async function AnalyticsBody({
 
   let game: AdminGame;
   let churn: AdminGroupChurn;
+  let growth: AdminGroupGrowth;
+  let memberActivity: AdminMemberActivity;
+  let roleDistribution: AdminRoleDistribution;
+  let permissionUsage: AdminPermissionUsage;
   try {
-    [game, churn] = await Promise.all([
+    // Six independent fetches in parallel: the game lookup hits the same
+    // 60s revalidate cache the game detail page populates so it is
+    // effectively free; the five analytics fetches each hit their own
+    // revalidate slot. The 12.5 charts (role distribution + permission
+    // usage) ignore `fromIso` / `toIso` deliberately - they answer
+    // "what is currently deployed?" not "what changed in this window?"
+    // The chart card descriptions surface the snapshot semantics inline
+    // so an operator changing the date range above does not get
+    // confused about why the 12.5 charts do not move.
+    [game, churn, growth, memberActivity, roleDistribution, permissionUsage] = await Promise.all([
       fetchAdminGame(gameId),
       fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
+      fetchAdminGameGroupGrowth(gameId, { from: fromIso, to: toIso }),
+      fetchAdminGameMemberActivity(gameId, { from: fromIso, to: toIso }),
+      fetchAdminGameRoleDistribution(gameId),
+      fetchAdminGamePermissionUsage(gameId),
     ]);
   } catch (err) {
     if (err instanceof AdminDisabledError) {
@@ -160,16 +189,29 @@ async function AnalyticsBody({
     );
   }
 
-  // The chart renders unconditionally now (Phase 12.2b). The chart owns
-  // its own empty-state copy when the window has zero matching groups or
-  // zero departures; the page-level `<AnalyticsEmptyState>` only renders
-  // when the operator has not configured `JUNJO_DOCS_BASE_URL` AND the
-  // chart has nothing to show, which is the early-onboarding case where
-  // the tutorial deep-link is the most useful next step. Charts 12.3 -
-  // 12.5 will land alongside the churn chart in subsequent iterations.
+  // The charts each render their own per-state empty copy when the
+  // window has nothing to show. The page-level `<AnalyticsEmptyState>`
+  // only fires when the operator has configured `JUNJO_DOCS_BASE_URL`
+  // AND the dashboard truly has no data anywhere in the cohort - the
+  // first-time-user onboarding path where the tutorial deep-link is the
+  // most useful next step. All five chart datasets are checked because
+  // any one counts as "this game already has activity": a brand-new
+  // game has no groups (churn population zero), no growth series, no
+  // audit entries in the window, no role assignments, and no permission
+  // grants / overrides; the moment any one of those flips non-zero the
+  // operator is past onboarding and the tutorial deep-link becomes
+  // noise. Role distribution + permission usage are snapshot endpoints
+  // and ignore the date range, so they correctly track "is this game
+  // configured at all?" regardless of the picker.
   const docsBaseUrl = getDocsBaseUrl();
   const showOnboardingHint =
-    docsBaseUrl !== null && churn.totalDeparturesInWindow === 0 && churn.totalGroupsInWindow === 0;
+    docsBaseUrl !== null &&
+    churn.totalDeparturesInWindow === 0 &&
+    churn.totalGroupsInWindow === 0 &&
+    growth.series.length === 0 &&
+    memberActivity.totalEvents === 0 &&
+    roleDistribution.totalAssignments === 0 &&
+    permissionUsage.totalCount === 0;
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
@@ -177,6 +219,16 @@ async function AnalyticsBody({
         <span className="font-mono text-[11px]">{game.id}</span>
       </p>
       <GroupChurnChart data={churn} />
+      <GroupGrowthChart data={growth} />
+      <MemberActivityHeatmap data={memberActivity} />
+      {/* The two 12.5 charts sit side-by-side at the bottom of the
+          surface per VISION's "Two charts side by side" framing. On
+          narrow viewports they stack via the responsive grid (single
+          column below the `lg` breakpoint, two columns at lg+). */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <RoleDistributionChart data={roleDistribution} />
+        <PermissionUsageChart data={permissionUsage} />
+      </div>
       {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
     </div>
   );
