@@ -402,6 +402,40 @@ on desktop and mobile.
   V.9 follow-up territory; not fixed here because V.8b is the
   structural unblock, not the V.9 polish.
 
+## V.9 group detail - members tab
+
+**Before:** Two desktop-side wraps in the Members table. The Joined
+column rendered "May 3, 2026" across two lines because the cell text
+inherited the default `white-space: normal` and the column was just
+wide enough to break after the comma. The PUBLIC NOTE column header
+also wrapped (intentionally; "Public note" doesn't fit otherwise). On
+the action column, four buttons (Notes / Override / Overrides / Kick)
+spilled onto two rows because the `flex flex-wrap` container had no
+hint to keep them inline; this read as accidental rather than designed.
+
+**Fix:** Added `whitespace-nowrap` to the Joined date cell so the
+formatted date stays on one line at the column's natural width. Tried
+flipping the actions container to `flex-nowrap whitespace-nowrap` to
+match; the four buttons then overflowed past the right edge of the
+viewport (clipping "Overrides" and "Kick"). Reverted that change -
+the wrap is the lesser evil because all four actions remain visible
+and aligned. Net change: one cell gets nowrap, action buttons stay
+flex-wrap.
+
+**Acceptable as-is:**
+
+- Action buttons rendered on two rows (Notes / Override on top,
+  Overrides / Kick beneath). With `flex-wrap`, the content stays
+  inside the column. With `flex-nowrap`, the content overflows the
+  card. Two rows beats clipping. A future fix would be icon-only
+  buttons or a row-action dropdown; both are component reshapes,
+  not CSS fixes, so they belong below.
+- "PUBLIC NOTE" column header wrapping to two lines. The label is
+  literally "Public note"; uppercasing it via the table style adds
+  enough width that it has to break. Acceptable because the wrap is
+  in the header (not the data) and the values for the demo dataset
+  are all "-".
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
@@ -410,3 +444,18 @@ on desktop and mobile.
   default -> `ArrowRight`) would let the eye scan event types at a
   glance. Out of scope for visual polish; the row is functional and
   legible without it.
+
+- **Members table mobile clipping (V.9 follow-up).** At the 375px
+  mobile viewport the table renders only the User and Status columns;
+  Roles, Public note, Joined, and the action buttons are clipped to
+  the right with no horizontal scroll affordance shown in the
+  capture. The wrapper is `overflow-x-auto` and does scroll on a
+  touch device, but visually nothing hints that there is more to
+  see, and four row-action buttons are unusable inside a 375px
+  card. Real fix: collapse the row into a tap-to-expand member card
+  on mobile (per-row dropdown with the four actions, plus the
+  per-member metadata stacked vertically). That is a component
+  reshape, not a CSS tweak, and matches the structural posture
+  already taken for the recent-activity feed icons. Filed here so
+  the next pass picks it up alongside the same issue on the other
+  group-detail tabs (V.10-V.14).

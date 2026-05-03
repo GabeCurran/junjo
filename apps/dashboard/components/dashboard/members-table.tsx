@@ -241,7 +241,7 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         accessorKey: "joinedAt",
         header: "Joined",
         cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
             {dateFormatter.format(new Date(row.original.joinedAt))}
           </span>
         ),
