@@ -23,18 +23,33 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "size": "size-limit"
   },
   "dependencies": {
     "@junjo/shared": "*",
     "jose": "^6.2.3"
   },
   "devDependencies": {
+    "@size-limit/preset-small-lib": "^12.1.0",
+    "size-limit": "^12.1.0",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "size-limit": [
+    {
+      "name": "@junjo/sdk (main entry)",
+      "path": "dist/index.js",
+      "limit": "5 KB"
+    },
+    {
+      "name": "@junjo/sdk/adapters",
+      "path": "dist/adapters/index.js",
+      "limit": "8 KB"
+    }
+  ]
 }

@@ -5243,3 +5243,29 @@ The audit picked the top-5 query patterns from `routes/groups.ts`, `routes/membe
 **Trade:** integration tests duplicate some assertions already covered at the per-route level (e.g., bulk-invite's 100-row count is implicitly tested by the per-route 3-row test plus the underlying transaction code). That's intentional: the duplicated assertions are cheap, and the value is that a regression in any cross-layer concern surfaces here as a clear "the full journey broke" signal rather than a mosaic of unit-level failures that take 20 minutes to assemble into a story.
 
 **One finding worth recording:** the kick route at `routes/groups.ts:754-814` does NOT call `permissionCache.invalidateGroup(group.id)` after committing, even though the kick flips the member's status to `kicked` and the resolver reads status to gate `source: "none"`. Other status-changing mutations (assignRole, removeRole, grant/revoke, override set/clear) all invalidate. The kick path's omission means a stale `allowed: true` answer can survive in the per-process cache for up to 60s after a kick. The fix is one line; deferred to a follow-up iteration to keep this commit scoped to the integration sweep. Captured here so morning-Gabe can decide whether to file it as a fix or fold it into a Phase 14.13 (security audit) sweep that revisits cache invalidation contracts.
+
+### Phase 14.9 (SDK bundle-size baseline): `size-limit` with brotli, two entries, tight regression limits
+
+**Decision:** add `size-limit@^12.1.0` + `@size-limit/preset-small-lib@^12.1.0` as dev dependencies under `packages/sdk/`, define one entry per public export in the package's `"size-limit"` field (`./` -> `dist/index.js`, `./adapters` -> `dist/adapters/index.js`), and wire `npm run size` (no top-level alias). Limits are set just above the measured baseline so the next PR that grows the SDK trips the gate immediately.
+
+**Measured baseline (esbuild + minify + brotli, the preset's default):**
+
+- `@junjo/sdk` (main entry, `dist/index.js`): **4.12 kB**
+- `@junjo/sdk/adapters` (`dist/adapters/index.js`): **6.96 kB**
+
+**Limits committed:**
+
+- main entry: `5 kB` (~21% headroom over baseline)
+- adapters: `8 kB` (~15% headroom over baseline)
+
+**Why brotli (not gzip):** the preset's default is brotli for v11+. Brotli is what Cloudflare/Fastly/jsDelivr actually serve to browsers in 2026; gzip numbers are a 2015-era proxy for "real cost on the wire" and overstate the bytes users actually pay for. The VISION's "(~50KB gzip per export)" was a sizing hint for the initial limit (we landed an order of magnitude under that anyway), not a directive on the compression algorithm. Documenting the choice here so the next iteration that touches SDK size knows what the numbers represent.
+
+**Why limits are tight, not generous:** the explicit goal of this baseline is regression detection. A 50 kB bucket would only catch catastrophic growth (a 10x expansion); a tight bucket catches the next single-feature size creep. Headroom (15-21%) absorbs noise from esbuild non-determinism + dependency-graph reordering across version bumps.
+
+**What `size-limit`'s preset bundles:** the preset uses esbuild to follow the `dist/*.js` entry's transitive imports through `node_modules`, then minifies + compresses. For the main entry that's just internal modules + `@junjo/shared` (zero runtime deps; `jose` is unused in the main entry path). For `/adapters` it pulls `jose` (the JWT adapter's only runtime dep) plus the shared internals; clerk + supabase adapters are structurally typed so neither npm package gets bundled. This matches what npm consumers actually pay for: importing `@junjo/sdk/adapters` and using only the Clerk adapter still pulls in the bytes for jwt + supabase because all three sit behind one entry. The size includes that union.
+
+**Why no top-level `npm run size` alias:** `size-limit` is meaningful only for the publishable SDK package. Server, react, and shared either aren't published as standalone bundles or compose differently; auto-running `size` across all workspaces would either produce noise or surface false-positives. Workspace-scoped invocation (`npm run size -w @junjo/sdk`) is the right granularity.
+
+**Why not wired into `verify.ps1`:** the verify gate is the single quality gate (style + biome + typecheck + tests + prisma format); adding `size` would add ~2-3s per loop iteration to a check that only matters on SDK source changes. Future iteration that ships a release-prep workflow (npm publish + size + changeset publish) is where the size gate belongs.
+
+**Where to read the number after a regression fail:** the `size-limit` CLI reports both the measured size and the diff vs the limit. The committed limit doubles as the baseline number a future PR has to argue against (e.g. "this PR adds 1.4 kB to /adapters because we now bundle a built-in Auth0 adapter; here's why that's worth it"). Bumping the limit is a deliberate decision that future-Gabe takes only after weighing the size delta against feature value.
