@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "Game-domain primitives for groups, ranks, and permissions.",
   "type": "module",
-  "workspaces": ["packages/*", "apps/*", "examples/*"],
+  "workspaces": ["packages/*", "apps/*", "examples/*", "tools/*"],
   "scripts": {
     "build": "npm run build -w @junjo/shared && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
@@ -13,6 +13,9 @@
     "check": "biome check .",
     "check:style": "node scripts/check-style.mjs",
     "typecheck": "npm run build -w @junjo/shared && npm run build -w @junjo/sdk && npm run typecheck --workspaces --if-present",
+    "screenshots": "npm run screenshots -w @junjo/screenshots --",
+    "screenshots:dashboard": "npm run screenshots -w @junjo/screenshots -- --target=dashboard",
+    "screenshots:docs": "npm run screenshots -w @junjo/screenshots -- --target=docs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "npm run build && changeset publish"
