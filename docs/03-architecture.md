@@ -61,7 +61,7 @@ flowchart LR
   webhookWorker -- signed POST --> webhookSink
 ```
 
-The diagram above is committed at `tools/diagrams/source/system-architecture.mmd` and rendered to PNG via `npm run diagrams -- --file=system-architecture` for offline review. The committed `.mmd` source and the Mermaid fence above must stay byte-identical (Phase 16.6 wires a sync gate).
+The diagram above is committed at `tools/diagrams/source/system-architecture.mmd` and rendered to PNG via `npm run diagrams -- --file=system-architecture` for offline review. The committed `.mmd` source and the Mermaid fence above must stay byte-identical; `tools/diagrams/src/check-sync.ts` (also exercised by the workspace's vitest suite) enforces this at every test run.
 
 ## Pattern: API-first, thin native SDKs
 

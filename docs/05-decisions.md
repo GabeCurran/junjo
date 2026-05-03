@@ -5739,3 +5739,45 @@ Auth flow is a dev-onboarding concern, not an operator concern. The page `apps/d
 - The single MDX embed and the `.mmd` source must stay byte-identical. Verified at commit time with the `awk` extractor + `diff -u` pattern; Phase 16.6 wires this into `verify.ps1` as a gate. Until then any future edit to one copy must replicate the change in the other in the same commit.
 - The "throw JunjoError invalid_config" path (Phase 1, lane 2) shows the SDK-side throw that fires when `junjoConfig.authAdapter` is missing. This is a setup-time error, not a runtime auth failure, and is included specifically to head off the support question "what happens if I forget to wire up the adapter".
 
+## 2026-05-03 (Phase 16.6 - Mermaid source/embed sync gate)
+
+### What landed
+
+`tools/diagrams/src/check-sync.ts` (script + library) and `tools/diagrams/src/embed-map.ts` (slug-to-MDX-paths manifest). The script reads each `EMBED_MAP` entry, extracts the lone mermaid fence from each MDX path, normalises line endings + trailing whitespace on both sides, and asserts byte-identity. It emits one `OK:` line on success and a `FAIL:` line plus per-drift bullets on failure (exit code 1). The CLI is exposed as `npm run diagrams:check-sync`. The same `checkSync()` function is also exercised by `tools/diagrams/src/check-sync.test.ts`, which contains a "real repo" assertion that runs against the actual `source/` directory and `EMBED_MAP`. The synthetic tests in the same file cover the extractor (single fence, multiple fences, CRLF, no fence, non-mermaid fences) and the orchestrator (drift, missing target, zero fences, multiple fences, orphan source, ghost map entry).
+
+### Why bake the gate into vitest instead of editing `verify.ps1` directly
+
+VISION 16.6 says "wire it into `verify.ps1` as a new gate". Hard rule 9 of the loop's prompt template forbids modifying `verify.ps1` directly: "You MUST NOT modify `.loop/run.ps1`, `.loop/verify.ps1`, or `.loop/prompt-template.md`. The hard rules are explicit about overriding VISION when they conflict ("These override anything in VISION.md if they conflict"), so the agent cannot just edit `verify.ps1`.
+
+The bridge: `verify.ps1` already runs `npm test` at the repo root. Root `npm test` cascades into every workspace via `--workspaces --if-present`. The `@junjo/diagrams` workspace already has a vitest test script. Adding a vitest test that calls `checkSync()` against the real source directory and asserts no drift therefore means: every `verify.ps1` run executes the gate, with the same OK/FAIL behaviour VISION described, without touching any harness file. The script form (`npm run diagrams:check-sync`) remains available for direct invocation when iterating on a diagram.
+
+If hard rule 9 is ever relaxed, the `npx tsx tools/diagrams/src/check-sync.ts` invocation can be added to `verify.ps1` as its own labeled `Step` and the duplicate vitest path can be retired. Until then, the test-cascade form is the live gate.
+
+### Why the manifest is a TS module under `src/`, not a JSON file
+
+Three options were considered. (a) JSON manifest at `tools/diagrams/source/embed-map.json`: data-not-code, easy for humans to scan, but no type safety and one extra `JSON.parse` step at script start. (b) Per-file marker comment inside each `.mmd` (e.g., `%% embed: docs/03-architecture.md` as the first non-theme line): keeps the mapping next to the diagram, but breaks byte-identity unless every fence in every MDX page also includes the marker; the noise leaks into rendered docs. (c) TS module under `src/`: type-checked, lives next to the rest of the renderer logic, importable from both the CLI script and the vitest test without IO. Option (c) chosen for type safety and shared-import ergonomics. The cost (manifest is one more file to keep in sync when adding a diagram) is one line per new diagram and is mentioned in the README so future contributors know to update it.
+
+### Why the gate enforces "exactly one mermaid fence per embed target"
+
+The matching strategy could be (a) "any fence in the file matches the source" or (b) "exactly one fence and it must match". (a) is more permissive and would allow inline diagrams that intentionally have no `.mmd` source; (b) is unambiguous and catches the case where someone edits a fence without updating the source.
+
+(b) was chosen because every existing embed page has exactly one fence and the rule keeps the matching deterministic without needing in-fence markers or fence indexing in the manifest. If a future page legitimately needs multiple fences (e.g., a single page covering both webhook delivery and webhook formatting), the manifest can grow a `{ path, fenceIndex }` shape and the extractor can return per-index slices; the test for "more than one fence" already covers the failure case so the migration path is visible.
+
+### Why drift detection normalises line endings and trailing whitespace
+
+Git on Windows can apply autocrlf transformations on checkout; an MDX file edited from a Windows editor may end up with CRLF line endings while the `.mmd` source (often edited via the agent's Write tool, which always emits LF) stays at LF. Without normalisation, every Windows checkout would falsely report drift. The same logic applies to trailing newlines: editors may add or strip them. Both sides are normalised by collapsing CRLF -> LF and trimming trailing whitespace before comparison. Internal whitespace (the indentation that Mermaid syntax cares about) is preserved verbatim, which is the part that actually matters for diagram rendering.
+
+The normalisation also strips a leading UTF-8 BOM on either side. None of the current files have a BOM, but a Windows editor saving an MDX file with "UTF-8 with BOM" would otherwise trip the gate without any visible difference, which would be a confusing failure mode.
+
+### What was deliberately NOT done
+
+- The gate does NOT walk the docs tree looking for orphan mermaid fences (fences with no matching `.mmd` source). VISION 16.6 specifies source-to-embed checking, not embed-to-source. The current docs have zero orphan fences; adding orphan detection would be broader scope and would also forbid one-off inline diagrams. If a future cross-docs audit uncovers drift, that work is its own iteration.
+- The gate does NOT auto-fix drift by re-syncing the MDX from the source. The script intentionally exits non-zero and tells the human to fix it; auto-fixing would mask the case where the page was edited deliberately (the "I changed the embedded version because it should look different here" case is rare but not impossible to imagine, and silent overwrite is the wrong default).
+- The gate does NOT verify that PNGs under `tools/diagrams/output/` are up to date with the `.mmd` sources. Those PNGs are gitignored and exist only for the agent's iteration loop; verifying them at gate time would require running `mmdc` (multi-second per diagram) on every test run.
+
+### Caveats
+
+- The "real repo" vitest assertion lives in `check-sync.test.ts` alongside the synthetic tests. If a future diagram is added to `source/` but not to `EMBED_MAP`, the gate fails with "source has no entry in EMBED_MAP". If an `EMBED_MAP` entry points at a missing source, the gate fails with "EMBED_MAP entry has no matching .mmd source file". Both cases are explicitly covered by synthetic tests so the failure messages are stable.
+- The vitest assertion runs as part of every `npm test`, so it lengthens the diagrams workspace test runtime by a few hundred milliseconds (the file IO cost of reading 4 source files and 6 MDX files). This is well below the noise floor of the rest of the test suite.
+- The CLI script can also be wired into a pre-commit hook if Gabe ever adopts husky; it is currently invoked only via `npm test` (the verify gate path) and `npm run diagrams:check-sync` (the direct path).
+

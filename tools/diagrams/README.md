@@ -95,9 +95,25 @@ Each diagram has two homes:
 
 Nextra v3 renders Mermaid client-side from `mermaid` code fences. The
 two copies must stay byte-identical (same theme directive, same diagram
-body). Phase 16.6 ships a `tools/diagrams/check-sync.ts` script that
-diffs source vs embedded and exits non-zero on drift; that script runs
-inside `verify.ps1` once it lands.
+body).
+
+The mapping from a `.mmd` slug to its embed target(s) lives in
+`src/embed-map.ts`. Each entry pairs a slug (the `.mmd` filename without
+extension) with one or more repo-relative MDX paths. To add a new
+diagram: write the `.mmd` source under `source/`, embed it in the
+relevant MDX page as a `mermaid` fence, then add a row to `EMBED_MAP`.
+
+`src/check-sync.ts` reads each entry, extracts the lone mermaid fence
+from each embed target, and asserts byte-identity with the source after
+normalising line endings and trailing whitespace. The script exits non-
+zero on drift. Run directly with `npm run diagrams:check-sync`, or rely
+on the equivalent assertion baked into the workspace's vitest suite
+(`src/check-sync.test.ts`); the latter runs as part of the root
+`npm test` cascade and therefore inside the loop's `verify.ps1` gate.
+
+V1 enforces exactly one mermaid fence per embed target so the matching
+is unambiguous. Pages without a mapped diagram are not scanned; the
+gate is opt-in via `EMBED_MAP`.
 
 ## Agent visual iteration loop
 

@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "diagrams": "tsx src/render.ts",
+    "diagrams:check-sync": "tsx src/check-sync.ts",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
