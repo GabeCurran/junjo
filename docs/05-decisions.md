@@ -5611,3 +5611,41 @@ Nextra v3 renders Mermaid client-side from a `mermaid` code fence; there is no n
 - The Postgres cylinder is rendered with the `[(label)]` syntax, which is the standard Mermaid shape for a database. Some viewers may render this as a slightly-rounded rectangle if their Mermaid version predates `flowchart` cylinder support; the rendered PNG via `@mermaid-js/mermaid-cli` 11.x produces the cylinder as expected. Nextra's runtime Mermaid (`mermaid` npm package, the version it bundles) also supports this shape.
 - The diagram embeds verbatim the same Mermaid source in both MDX pages and the `.mmd` file. Phase 16.6 introduces `tools/diagrams/check-sync.ts` to make drift impossible; until that lands, the rule is enforced by hand. To verify the three copies match: `awk '/^```mermaid$/{flag=1; next} /^```$/{if(flag){exit}} flag' <mdx-file>` extracts the fence body, which should `diff -u` clean against `tools/diagrams/source/system-architecture.mmd`.
 
+## 2026-05-03 (Phase 16.3 - Permission resolution sequence diagram)
+
+### What landed
+
+`tools/diagrams/source/permission-resolution.mmd` is a Mermaid `sequenceDiagram` showing the full request-time path of `GET /v1/permissions/check`: client through `apiKeyMiddleware`, into the `permissions.check` handler, the in-process `permissionCache` lookup, and the conditional fall-through into Postgres for `ExternalIdentity` -> `GroupMember` -> `MemberPermissionOverride` -> `MemberRole`+`RolePermission`. The same Mermaid source is embedded byte-identically in `apps/docs/pages/api-reference/permissions.mdx` as a new "Resolution flow" section between the introduction prose and the existing "Wire format" section. A trailing note documents the cache invalidation contract (mutations call `cache.invalidateGroup(groupId)` after commit).
+
+### Why a sequence diagram (not a flowchart)
+
+The brief in VISION.md (Phase 16.3) explicitly calls for a sequence diagram: "sequence diagram showing client -> server -> apiKeyMiddleware -> permission cache check -> DB lookup (member overrides -> role-derived permissions) -> response, with cache-hit and cache-miss branches". The temporal ordering is the load-bearing information here: a reader needs to see that the cache is consulted before any DB query for the resolution itself, that the override query precedes the role-permission query (so override always wins), and that the cache write happens just before the response. A `flowchart` could express the decision tree but would obscure the per-participant timing (which actor is doing what at each step). The sequence-diagram form makes "the cache is in front of the DB, and the DB is queried in a specific short-circuit order" obvious without a paragraph of prose.
+
+### Why all five participants instead of merging Mw + Route into one "server" lane
+
+Splitting `apiKeyMiddleware` and the `permissions.check` handler into separate participants matches the Hono middleware chain: the middleware fully runs (including the scrypt-verify cost) before the route handler sees the request. Merging them would hide the gameId-scope enforcement that happens before the permission-resolution work begins, and would suggest the API-key check is part of permission resolution itself (it is not; it is upstream auth). The cost is one extra lane on the diagram; the benefit is that a reader who is debugging "why is my permission check returning 401" sees the API-key step is a separate failure mode from the resolver returning `none`.
+
+### Why deeply-nested `alt`/`else` rather than a single block per branch
+
+The resolver short-circuits in a strict order (no identity -> none, no member or non-active -> none, override present -> override, any role grants -> role, otherwise -> default). A flat list of `opt` blocks would lose the mutual exclusivity (each `opt` can fire independently in Mermaid's grammar), and a separate `alt` per branch would require duplicating the cache-write-and-respond pattern five times without showing that the cases are truly nested-conditional. The deep `alt`/`else` chain reflects the actual control flow in `packages/server/src/routes/permissions.ts:22-64` literally; the diagram height is the cost of that fidelity but the pattern is idiomatic Mermaid and renders cleanly at desktop widths.
+
+### Why labeled SQL-shape arrows over class-method-call labels
+
+Each DB arrow is labeled with the table name plus the relevant `WHERE` columns (e.g., `Group WHERE id AND gameId AND softDeletedAt IS NULL`, `MemberRole JOIN RolePermission ORDER BY priority DESC, roleId DESC`). This is closer to the SQL than the Prisma method names (`prisma.group.findFirst`, `prisma.memberRole.findFirst`) intentionally: a reader who needs to add an index to support a slow query (the Phase 14.5 work pattern) needs to see the predicates, not the ORM method. The `ORDER BY priority DESC, roleId DESC` on the role lookup is highlighted because that ordering is what makes the "highest-priority granting role" semantic deterministic; without that label a reader could miss that the resolver picks one specific role rather than returning an arbitrary match.
+
+### Why the trailing Note over the full participant span
+
+The cache-invalidation contract (mutations elsewhere in the codebase call `cache.invalidateGroup(groupId)` on commit) is not visible from the `permissions.check` flow alone, but it is the reason the 60-second TTL is acceptable. Putting it in a `Note over Client,DB` (full participant span) gives it the visual weight to read as a postscript rather than an aside, and the wide span lets the three lines of text wrap onto the diagram width without overflowing the rendered canvas (an earlier draft used `Note over Cache,DB`, which clipped the right edge of the longest line).
+
+### What was deliberately NOT done
+
+- The diagram does not show the rate-limit middleware that runs in front of `apiKeyMiddleware`. Rate limiting is a global concern, not specific to permission resolution; including it would push the diagram toward "annotated middleware chain" rather than "permission resolution flow".
+- The diagram does not enumerate the specific `JunjoError` codes for the failure cases other than `not_found`. The wire-format section below the diagram already documents the full error table; replicating it on the diagram would force a sync update on every error-code change.
+- The diagram does not show the SDK's `can()` boolean wrapper around `check()`. The wrapper is a one-line client-side helper; from the server's perspective the request and response are identical for `can()` and `check()`.
+- The diagram does not show the per-process scope of the cache (one cache per Node instance). The wire-format section's "Caching" subsection covers that, and the diagram is meant to answer "what happens for a single request" rather than "how does the cache behave across instances".
+
+### Caveats
+
+- The diagram is significantly taller than the system-architecture diagram from Phase 16.2 (30 numbered messages vs. ~15 nodes). It still renders cleanly via `@mermaid-js/mermaid-cli` 11.x, but Nextra's client-side renderer may apply different vertical scaling. If a reader on the docs site finds the diagram cramped, the source file is the canonical version (as committed at `tools/diagrams/source/permission-resolution.mmd`) and renders at full size when piped through `npm run diagrams -- --file=permission-resolution`.
+- The cache-invalidation note describes behavior that lives in mutation routes elsewhere (`packages/server/src/routes/{members,roles,permissions}.ts`), not in `permissions.ts` itself. The note is intentionally written as a contract statement rather than a reference to specific files because (a) the file list could grow and (b) a reader of the permission-resolution flow does not need to chase those files; they need to know that the contract holds.
+
