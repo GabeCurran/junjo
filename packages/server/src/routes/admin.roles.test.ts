@@ -9,6 +9,18 @@ import { createGame } from "../seed";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 // Wire shape mirrors `WireAdminRole` from `routes/admin.ts` (the admin
 // route returns the same shape; the dashboard's `lib/admin.ts` will mirror
 // it byte-for-byte in 11.6b). Tests assert against this shape so a drift on
@@ -44,11 +56,9 @@ async function seedGroup(
 }
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId/roles", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -56,10 +66,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "RolePermission", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(gameId: string, groupId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -144,12 +150,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/groups/:groupId/roles", () => {
-  let prisma: PrismaClient;
   let hub: EventHub;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     hub = new EventHub();
     app = createApp({ prisma, adminToken: ADMIN_TOKEN, events: { hub } });
   });
@@ -159,10 +163,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/groups/:groupI
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "RolePermission", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function createFetch(
@@ -347,11 +347,9 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/groups/:groupI
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/admin/games/:gameId/roles/:roleId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -359,10 +357,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/admin/games/:gameId/roles/:roleId
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "RolePermission", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function patchFetch(
@@ -551,12 +545,10 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/admin/games/:gameId/roles/:roleId
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/admin/games/:gameId/roles/:roleId", () => {
-  let prisma: PrismaClient;
   let hub: EventHub;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     hub = new EventHub();
     app = createApp({ prisma, adminToken: ADMIN_TOKEN, events: { hub } });
   });
@@ -566,10 +558,6 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/admin/games/:gameId/roles/:roleI
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "RolePermission", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function deleteFetch(gameId: string, roleId: string, header = `Bearer ${ADMIN_TOKEN}`) {

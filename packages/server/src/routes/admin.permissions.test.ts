@@ -9,6 +9,18 @@ import { createGame } from "../seed";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 // Wire shapes mirror `WireAdminRole` and `WireAdminPermissionDef` from
 // `routes/admin.ts`. Tests assert against these so a route-side drift
 // surfaces as a typed test failure.
@@ -57,12 +69,10 @@ const TRUNCATE =
 describe.skipIf(!TEST_DATABASE_URL)(
   "POST /v1/admin/games/:gameId/roles/:roleId/permissions",
   () => {
-    let prisma: PrismaClient;
     let hub: EventHub;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       hub = new EventHub();
       app = createApp({ prisma, adminToken: ADMIN_TOKEN, events: { hub } });
     });
@@ -70,10 +80,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
     beforeEach(async () => {
       hub.clear();
       await prisma.$executeRawUnsafe(TRUNCATE);
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function grantFetch(
@@ -321,12 +327,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "DELETE /v1/admin/games/:gameId/roles/:roleId/permissions/:permission",
   () => {
-    let prisma: PrismaClient;
     let hub: EventHub;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       hub = new EventHub();
       app = createApp({ prisma, adminToken: ADMIN_TOKEN, events: { hub } });
     });
@@ -334,10 +338,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
     beforeEach(async () => {
       hub.clear();
       await prisma.$executeRawUnsafe(TRUNCATE);
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     async function seedRoleWithPermissions(keys: string[]) {
@@ -552,20 +552,14 @@ describe.skipIf(!TEST_DATABASE_URL)(
 );
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/permissions", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
   beforeEach(async () => {
     await prisma.$executeRawUnsafe(TRUNCATE);
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {

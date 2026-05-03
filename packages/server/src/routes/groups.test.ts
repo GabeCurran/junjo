@@ -6,14 +6,24 @@ import { createApiKey, createGame } from "../seed";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -25,10 +35,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function postGroups(body: unknown, header: string = authHeader) {
@@ -139,13 +145,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -157,10 +161,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function getGroup(id: string, header: string = authHeader) {
@@ -254,13 +254,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -272,10 +270,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listGroups(query = "", header: string = authHeader) {
@@ -453,13 +447,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -471,10 +463,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function patchGroup(id: string, body: unknown, header: string = authHeader) {
@@ -683,13 +671,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -701,10 +687,6 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function deleteGroup(id: string, query = "", header: string = authHeader) {
@@ -819,13 +801,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/restore", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -837,10 +817,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/restore", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function restoreGroup(id: string, header: string = authHeader) {
@@ -933,13 +909,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/restore", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -951,10 +925,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function postInvite(groupId: string, body: unknown, header: string = authHeader) {
@@ -1208,13 +1178,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/invitations", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/invitations", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -1226,10 +1194,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/invitations", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(
@@ -1451,13 +1415,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/invitations", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/leave", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -1469,10 +1431,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/leave", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -1655,13 +1613,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/leave", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/kick", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -1673,10 +1629,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/kick", 
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -1885,13 +1837,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/kick", 
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -1903,10 +1853,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId", () => 
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -2048,13 +1994,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId", () => 
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -2066,10 +2010,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -2274,13 +2214,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id/members/:userId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -2292,10 +2230,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id/members/:userId", () =
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -2660,13 +2594,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PATCH /v1/groups/:id/members/:userId", () =
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -2678,10 +2610,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(
@@ -3006,13 +2934,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/roles/:roleId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -3024,10 +2950,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/roles/:
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -3268,13 +3190,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/members/:userId/roles/:
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id/members/:userId/roles/:roleId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -3286,10 +3206,6 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id/members/:userId/roles
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -3527,13 +3443,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id/members/:userId/roles
 describe.skipIf(!TEST_DATABASE_URL)(
   "POST /v1/groups/:id/members/:userId/permissions/:permission",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
     let authHeader: string;
     let gameId: string;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma });
     });
 
@@ -3545,10 +3459,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       gameId = game.id;
       const seeded = await createApiKey(game.id, prisma);
       authHeader = `Bearer ${seeded.raw.full}`;
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -3854,13 +3764,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "DELETE /v1/groups/:id/members/:userId/permissions/:permission",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
     let authHeader: string;
     let gameId: string;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma });
     });
 
@@ -3872,10 +3780,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       gameId = game.id;
       const seeded = await createApiKey(game.id, prisma);
       authHeader = `Bearer ${seeded.raw.full}`;
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -4088,13 +3992,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
 );
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId/permissions", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -4106,10 +4008,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId/permissi
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(overrides: Partial<{ gameId: string; softDeletedAt: Date }> = {}) {
@@ -4287,13 +4185,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/members/:userId/permissi
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("Group relationships", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -4305,10 +4201,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Group relationships", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(
@@ -4841,13 +4733,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Group relationships", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("Sub-group parent + children", () => {
-  let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;
   let gameId: string;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma });
   });
 
@@ -4859,10 +4749,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Sub-group parent + children", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   async function seedGroup(

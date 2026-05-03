@@ -7,12 +7,22 @@ import { createApiKey, createGame } from "../seed";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/users/:junjoUserId/games", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -20,10 +30,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/users/:junjoUserId/games", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function adminFetch(junjoUserId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -276,11 +282,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/users/:junjoUserId/games", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -288,10 +292,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function statsFetch(header = `Bearer ${ADMIN_TOKEN}`) {
@@ -495,11 +495,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -507,10 +505,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function auditFetch(query = "", header = `Bearer ${ADMIN_TOKEN}`) {
@@ -860,11 +854,9 @@ type WireAdminGroupMemberList = {
 };
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -872,10 +864,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(query = "", header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1054,11 +1042,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1066,10 +1052,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function postFetch(body: unknown, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1150,11 +1132,9 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1162,10 +1142,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId", () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function getFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1226,11 +1202,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId", () => {
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/api-keys", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1238,10 +1212,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/api-keys", () =
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1320,11 +1290,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/api-keys", () =
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1332,10 +1300,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys", () 
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function postFetch(gameId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1411,11 +1375,9 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys", () 
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys/:keyId/revoke", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1423,10 +1385,6 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys/:keyI
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function revokeFetch(gameId: string, keyId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1527,11 +1485,9 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys/:keyI
 // =====================================================================
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1539,10 +1495,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups", () => 
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(gameId: string, query = "", header = `Bearer ${ADMIN_TOKEN}`) {
@@ -1938,11 +1890,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups", () => 
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -1950,10 +1900,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function getFetch(gameId: string, groupId: string, header = `Bearer ${ADMIN_TOKEN}`) {
@@ -2111,11 +2057,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId/members", () => {
-  let prisma: PrismaClient;
   let app: Hono;
 
   beforeAll(() => {
-    prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
     app = createApp({ prisma, adminToken: ADMIN_TOKEN });
   });
 
@@ -2123,10 +2067,6 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
     );
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
   });
 
   function listFetch(

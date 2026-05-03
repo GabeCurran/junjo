@@ -7,6 +7,18 @@ import { createGame } from "../seed";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
+let prisma: PrismaClient;
+
+beforeAll(() => {
+  if (!TEST_DATABASE_URL) return;
+  prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
+});
+
+afterAll(async () => {
+  if (!TEST_DATABASE_URL) return;
+  await prisma.$disconnect();
+});
+
 // Wire types mirror `WireAdminGroupMember` and the new
 // `WireAdminMemberPermissionOverride` from `routes/admin.ts`. The dashboard
 // owns its own copy in `lib/admin.ts`; tests assert against this shape so a
@@ -96,11 +108,9 @@ async function seedGroupWithMember(
 describe.skipIf(!TEST_DATABASE_URL)(
   "POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/kick",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma, adminToken: ADMIN_TOKEN });
     });
 
@@ -108,10 +118,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await prisma.$executeRawUnsafe(
         'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
       );
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function kickFetch(
@@ -287,11 +293,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "PATCH /v1/admin/games/:gameId/groups/:groupId/members/:userId",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma, adminToken: ADMIN_TOKEN });
     });
 
@@ -299,10 +303,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await prisma.$executeRawUnsafe(
         'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
       );
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function patchFetch(
@@ -483,11 +483,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma, adminToken: ADMIN_TOKEN });
     });
 
@@ -495,10 +493,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await prisma.$executeRawUnsafe(
         'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
       );
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function setFetch(
@@ -734,11 +728,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma, adminToken: ADMIN_TOKEN });
     });
 
@@ -746,10 +738,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await prisma.$executeRawUnsafe(
         'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
       );
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function deleteFetch(
@@ -867,11 +855,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
 describe.skipIf(!TEST_DATABASE_URL)(
   "GET /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions",
   () => {
-    let prisma: PrismaClient;
     let app: Hono;
 
     beforeAll(() => {
-      prisma = new PrismaClient({ datasources: { db: { url: TEST_DATABASE_URL } } });
       app = createApp({ prisma, adminToken: ADMIN_TOKEN });
     });
 
@@ -879,10 +865,6 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await prisma.$executeRawUnsafe(
         'TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "PermissionDef", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
       );
-    });
-
-    afterAll(async () => {
-      await prisma.$disconnect();
     });
 
     function listFetch(
