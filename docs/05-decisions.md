@@ -5696,3 +5696,46 @@ Mermaid notes scale their rendered width to the participant span. The first `Not
 - The HMAC headers message body in the diagram (lane 13, Worker self-loop) is a long line that visually overlaps the message arrow itself in the rendered PNG. The text is still legible and Mermaid does this for any self-loop with a multi-line label; rephrasing to shorter wording would lose the explicit list of headers (which is the point). Acceptable trade-off.
 - The two MDX embeds and the `.mmd` source must stay byte-identical. They were verified at commit time with an `awk` extractor + `diff -u` (the same pattern documented for Phase 16.3). Phase 16.6 wires this into `verify.ps1` as a gate; until then any future edit to one of the three copies must replicate the change in the other two in the same commit.
 
+## 2026-05-03 (Phase 16.5 - Auth adapter sequence diagram)
+
+### What landed
+
+`tools/diagrams/source/auth-flow.mmd` is a Mermaid `sequenceDiagram` showing how a player session token becomes a `junjoUserId` inside the server. Five participants (Dev backend, AuthAdapter, Junjo SDK, junjo-server, Postgres) split across three labeled phases: (1) the SDK-side token verification via `junjo.whoami`, branching on whether an `authAdapter` is configured and whether the token verifies; (2) the SDK-to-server call carrying the external user id (using invitation acceptance as the canonical example), the API-key middleware that maps the bearer token to `c.var.gameId`, and the route handler's body parsing; (3) the `findOrCreateJunjoUser` mapping from `(gameId, externalUserId)` to `junjoUserId`, including the race-safe Prisma `$transaction` and the P2002-recovery branch. A trailing `Note over App,DB` clarifies the asymmetry between `findOrCreateJunjoUser` (only on invitation accept and decline) and `findJunjoUserId` (every other read-only route, returning 404 on no mapping). The same Mermaid source is embedded byte-identically in `apps/docs/pages/auth/index.mdx` between "Where it plugs in" and "The user id contract".
+
+### Why this diagram diverges from VISION 16.5's brief
+
+VISION 16.5 describes the flow as: "player session token -> `Authorization: Bearer` -> server middleware -> `AuthAdapter.verifyToken` -> `ExternalIdentity` lookup or create -> `JunjoUser` resolution -> request continues with `c.var.junjoUserId`". The actual V1 code is shaped differently. The `AuthAdapter` lives in the SDK (`packages/sdk/src/adapters/`) and runs on the dev's host, never on Junjo's server. The server-side `apiKeyMiddleware` (`packages/server/src/middleware/apiKey.ts`) only sets `c.var.gameId`; there is no `c.var.junjoUserId`. External-id-to-`junjoUserId` mapping happens inside route handlers, not middleware, and only `routes/invitations.ts` uses the find-or-create variant; everything else uses `findJunjoUserId` (read-only) and returns 404 on miss. The diagram reflects shipped code, matching the precedent set by Phase 16.4's decision to omit `pg_advisory_xact_lock` (VISION 5.3 mentioned it; V1 code does not take it).
+
+### Why three phases instead of one continuous sequence
+
+The token-verification phase and the API-call phase are causally separate. A dev who calls `junjo.whoami(token)` once at session start may then call `junjo.invitations.accept(...)` minutes later from a different request handler. Drawing them as a single uninterrupted sequence would imply a single round-trip; in reality they are two independent SDK calls that share an external user id only by virtue of the dev passing it along. Phase 3 (the external-id-to-junjoUserId mapping) is causally inside Phase 2 but visually distinct because the race-safety logic merits its own band: a reader asking "what does Junjo do the first time my user appears?" can navigate to that section directly. The two-band-plus-trailing-note structure follows the precedent set by Phase 16.4.
+
+### Why invitation accept is the canonical Phase 2 example
+
+`findOrCreateJunjoUser` is only called from `routes/invitations.ts` (accept and decline). Every other route uses `findJunjoUserId` and returns 404 on miss. That asymmetry is load-bearing: it is *the* moment at which a Junjo user identity is allocated, and the diagram needs to show it concretely. Picking invitation accept lets the diagram show the full create branch (P2002 conflict and recovery). The trailing note covers the read-only-routes asymmetry in prose so a reader does not assume every API call creates a user.
+
+### Why the AuthAdapter is drawn as a participant rather than embedded inside the SDK lane
+
+The adapter is configured by the dev and runs in their process, but it is structurally a separate dependency: built-in adapters (`jwtAdapter`, `clerkAdapter`, `supabaseAdapter`) wrap external libraries (`jose`, `@clerk/backend`, `@supabase/supabase-js`), and BYO adapters call into the dev's own session store. Drawing it as its own participant makes the throw-vs-null contract visible at the diagram level (a reader can see the failure arrows go `Adapter --> SDK --> App`, not `Adapter --x SDK`). It also clarifies that Junjo's server never talks to the adapter directly, which is the cross-cutting point of the auth/index.mdx page.
+
+### Why semicolons inside `Note over` text fail to parse and need to be rephrased
+
+A first draft used `(race-safe; create only on accept/decline)` and `findJunjoUserId only; they return 404 when no mapping exists`. Mermaid's sequence-parser interprets `;` as a statement separator inside `Note` text, which threw "Expecting 'participant', 'participant_actor', 'destroy', got 'ACTOR'" pointing at the segment after the semicolon. The fix is to rephrase with commas or sentence breaks: `(race-safe, created lazily on accept or decline)` and `call findJunjoUserId only, returning 404 when no mapping exists`. This is the second Mermaid sequence-parser quirk caught during Phase 16; Phase 16.4 hit the `<` and `>` operator misinterpretation. Both quirks are noted here so future diagram authors do not re-discover them.
+
+### Why a single embed site, unlike Phase 16.4
+
+Auth flow is a dev-onboarding concern, not an operator concern. The page `apps/docs/pages/auth/index.mdx` is the natural home: it sits at the top of the auth section and links out to per-adapter pages (jwt, clerk, supabase, byo). The per-adapter pages cover the specifics of *that* adapter, not the cross-cutting flow; embedding the same diagram on each would just be noise. Phase 16.4 had a special case (dev-facing `webhooks.mdx` and operator-facing `self-host.mdx`); Phase 16.5 does not.
+
+### What was deliberately NOT done
+
+- The diagram does not show the cross-game identity admin endpoint (`GET /v1/users/:junjoUserId/games`, Phase 10.2). That endpoint operates on already-resolved `junjoUserId` values; including it would conflate "how do user ids enter the system" with "how do they get queried by an admin tool".
+- The diagram does not enumerate the per-adapter quirks (Clerk's `verifyToken` vs Supabase's `getUser` vs JWT's `jose.jwtVerify`). Those belong on the per-adapter pages; the index-page diagram is intentionally adapter-agnostic.
+- The diagram does not show `c.var.junjoUserId` because no such Hono context var exists today. Adding it would be aspirational and would mislead a reader looking at `apiKey.ts`.
+- The diagram does not show the `cache.invalidateGroup` calls that mutating routes make after commit. Those are a permission-resolution concern (covered by Phase 16.3's diagram), not an auth concern.
+
+### Caveats
+
+- The diagram has 25 numbered messages and three `Note over` bands, comparable in size to Phase 16.4. It renders within a single PNG canvas; readers on narrow viewports may need to scroll vertically. Nextra's client-side renderer is the canonical surface; the PNG output is for the agent's iteration loop only.
+- The single MDX embed and the `.mmd` source must stay byte-identical. Verified at commit time with the `awk` extractor + `diff -u` pattern; Phase 16.6 wires this into `verify.ps1` as a gate. Until then any future edit to one copy must replicate the change in the other in the same commit.
+- The "throw JunjoError invalid_config" path (Phase 1, lane 2) shows the SDK-side throw that fires when `junjoConfig.authAdapter` is missing. This is a setup-time error, not a runtime auth failure, and is included specifically to head off the support question "what happens if I forget to wire up the adapter".
+
