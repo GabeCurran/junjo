@@ -1187,6 +1187,61 @@ viewports.
 V.27 (TOC slim + sidebar-collapse-at-top) cover the docs-site-wide
 theme overrides that would touch this page too; not re-filed here.
 
+## V.24 docs site api-reference index page
+
+**Before:** Fourth docs-site landing page in the V.21-V.25 sub-set.
+Source: `apps/docs/pages/api-reference/index.mdx` (~75 lines of
+MDX). Body sections in order: H1 "HTTP API overview", lead
+paragraph (REST + SSE + webhook dispatcher; cloud and self-host run
+the same binary), "Versioning" (single-paragraph note that all
+resource routes mount under `/v1`), "Authentication" (Bearer
+header code fence + prefix.secret prose + invalid_api_key error
+example fence + public-routes bullet list + admin-token call-out),
+"Error envelope" (JSON code fence + 7-row code/status/meaning
+table), "Rate limiting" (two prose paragraphs + a third on which
+routes are exempt), "Server bootstrap" (one paragraph + cross-link
+to the self-host page). Rendered desktop (1440x900) + mobile
+(375x812).
+
+**Fix:** None this iteration. The page renders cleanly on both
+viewports.
+
+**Acceptable as-is:**
+
+- Desktop (1440x900): standard three-column Nextra layout matches
+  V.21 / V.22 / V.23. Left sidebar carries the full top-level page
+  list with the API reference group expanded and "HTTP API
+  overview" highlighted active. Center prose column carries the
+  H1 + 6 H2 sections without horizontal overflow. Code fences
+  (`Authorization` header line, the `invalid_api_key` JSON, the
+  full error-envelope JSON) sit flush left in the prose column and
+  fit without scroll at the desktop measure. The 7-row error-codes
+  table fills the prose column width; the `meaning` column wraps
+  the longer entries (`rate_limit_exceeded` paragraph) across
+  several lines but the table is contained. Right TOC right-rail
+  enumerates every H2 with the active section highlighted on
+  scroll.
+- Mobile (375x812): single prose column, no horizontal page
+  scroll. The error-codes table compresses to a 3-column layout
+  with the `meaning` cell wrapping to multi-line per row; the
+  longest cell (`rate_limit_exceeded`) takes ~10 visual lines but
+  the row stays inside the viewport. Code fences scroll
+  horizontally inside their own container per the Nextra default
+  for `pre` overflow. The `Authorization: Bearer <prefix>.<secret>`
+  one-line fence does not wrap and scrolls on touch. No layout
+  break.
+- Light + dark mode parity: prose tokens, code-fence theme, table
+  borders, and active sidebar highlight all match the existing
+  Nextra defaults already accepted on V.21 / V.22 / V.23. No
+  contrast regressions.
+- Sticky nav: same Puppeteer fullPage rendering characteristic
+  noted on V.23 - on a long page the captured PNG re-includes the
+  Nextra sticky nav at multiple scroll positions. Not actionable.
+
+**Notes:** No new follow-ups discovered on this surface. V.26 /
+V.27 (TOC slim + sidebar-collapse-at-top) remain the docs-site-wide
+theme overrides that would touch this page too; not re-filed here.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
