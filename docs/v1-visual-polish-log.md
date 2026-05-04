@@ -1524,6 +1524,50 @@ gone.
 legend) and V.31 (permission-usage-chart legend) are unrelated
 chart treatments and will be picked up next.
 
+## V.30 group-growth-chart - move legend below chart
+
+**Before:** Tremor's `<LineChart showLegend>` rendered the
+series legend (Wolves of Ironvale / Storm Riders / Ironvale
+Alliance) inside the upper-right corner of the chart frame.
+The legend floated over the plot area, competing visually
+with the rendered lines and chopping the usable y-axis range
+at the right edge. The `role-distribution-chart.tsx` already
+sits two cards down on the same `game-analytics` page using
+`<Legend className="justify-center" />` below the donut, so
+the page had two different legend treatments for charts that
+sit in the same scroll viewport.
+
+**Fix:** Set `showLegend={false}` on the `<LineChart>` and
+appended Tremor's standalone `<Legend categories={...}
+colors={...} className="justify-center" />` below the chart
+inside a `flex flex-col gap-3` wrapper. Same component the
+role-distribution-chart already uses; same color array the
+chart receives, so legend swatches match line colors exactly.
+Hoisted `columns.map((c) => c.column)` into a memoised
+`categoryNames` so both `<LineChart>` and `<Legend>` read
+from one source.
+
+**Acceptable as-is:**
+
+- Tremor's `<Legend>` flex-wraps when narrow, so the mobile
+  viewport stacks the three series vertically below the chart
+  instead of horizontally. Same behaviour role-distribution-
+  chart exhibits at the same width; consistent across the
+  page.
+- Up to 11 series can render (top-N max 10 + "All others"
+  aggregate). On wide series counts the legend will wrap to
+  two or three rows below the chart; that is fine - the cost
+  of avoiding overlap with the plot dominates the cost of an
+  extra legend row.
+- The chart's plot area now owns the full card width without
+  the floating legend stealing the upper-right corner; the
+  three lines render with full y-axis bleed at the right edge.
+
+**Notes:** V.31 (permission-usage-chart) is the same pattern
+applied to a horizontal-bar chart; the legend placement may
+be above OR below depending on what looks better with the
+horizontal-bar layout - that's a separate iteration.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row

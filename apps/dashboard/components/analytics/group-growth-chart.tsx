@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { LineChart } from "@tremor/react";
+import { Legend, LineChart } from "@tremor/react";
 import { TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 
@@ -159,6 +159,7 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
     () => columns.map((_, i) => SERIES_COLORS[i % SERIES_COLORS.length] ?? "blue"),
     [columns],
   );
+  const categoryNames = useMemo(() => columns.map((c) => c.column), [columns]);
   const hasSeries = columns.length > 0;
   const hasBuckets = data.buckets.length > 0;
   const cadence = describeBucketSize(data.bucketSizeMs);
@@ -197,22 +198,25 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
         </div>
 
         {hasSeries && hasBuckets ? (
-          <LineChart
-            data={rows}
-            index="bucket"
-            categories={columns.map((c) => c.column)}
-            colors={colors}
-            valueFormatter={formatCount}
-            yAxisWidth={48}
-            showLegend
-            allowDecimals={false}
-            connectNulls
-            // Wide windows produce 50+ buckets; show only the first and
-            // last x-axis ticks to avoid crowding. Narrow windows keep
-            // every label.
-            startEndOnly={data.buckets.length > 12}
-            className="h-80"
-          />
+          <div className="flex flex-col gap-3">
+            <LineChart
+              data={rows}
+              index="bucket"
+              categories={categoryNames}
+              colors={colors}
+              valueFormatter={formatCount}
+              yAxisWidth={48}
+              showLegend={false}
+              allowDecimals={false}
+              connectNulls
+              // Wide windows produce 50+ buckets; show only the first and
+              // last x-axis ticks to avoid crowding. Narrow windows keep
+              // every label.
+              startEndOnly={data.buckets.length > 12}
+              className="h-80"
+            />
+            <Legend categories={categoryNames} colors={colors} className="justify-center" />
+          </div>
         ) : (
           <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
             {data.buckets.length === 0
