@@ -26,7 +26,11 @@ const CATEGORIES = [ROLE_GRANTS_KEY, MEMBER_OVERRIDES_KEY];
 // Coral leads (the dominant driver in most setups: role grants), with
 // amber as the secondary stack segment for member overrides. Same
 // warm-leaning palette as the rest of the analytics charts.
-const COLORS = ["coral", "amber"];
+// Coral leads (the dominant driver in most setups: role grants), with
+// amber as the secondary stack segment for member overrides. "red" is
+// used in place of "coral" because Tremor v3's color resolver only
+// honors Tailwind default-palette names; see lib/chart-colors.tsx.
+const COLORS = ["red", "amber"];
 
 interface BarRow {
   permission: string;

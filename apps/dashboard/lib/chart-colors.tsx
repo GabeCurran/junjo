@@ -56,18 +56,31 @@ export function ChartTooltip({ active, payload, label }: CustomTooltipProps) {
         {payload.map((entry, idx) => {
           const name = entry.name === undefined ? `series ${idx + 1}` : String(entry.name);
           const rawValue = entry.value;
-          const display = typeof rawValue === "number" ? rawValue.toLocaleString() : String(rawValue ?? "");
+          const display =
+            typeof rawValue === "number" ? rawValue.toLocaleString() : String(rawValue ?? "");
+          // Recharts populates different fields per chart type:
+          // - LineChart: stroke (line color)
+          // - BarChart / DonutChart: fill (bar / arc color)
+          // - Some Tremor variants forward `color` directly
+          // Without the fallbacks the dot is missing for entire chart
+          // types, breaking the legend-tooltip mapping.
+          const swatch =
+            (entry as { color?: string }).color ??
+            (entry as { stroke?: string }).stroke ??
+            (entry as { fill?: string }).fill;
           return (
             <div key={`${name}-${idx}`} className="flex items-center gap-2 whitespace-nowrap">
-              {entry.color ? (
+              {swatch ? (
                 <span
                   className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: entry.color }}
+                  style={{ backgroundColor: swatch }}
                   aria-hidden
                 />
               ) : null}
               <span className="text-muted-foreground">{name}</span>
-              <span className="ml-auto pl-3 font-medium tabular-nums text-foreground">{display}</span>
+              <span className="ml-auto pl-3 font-medium tabular-nums text-foreground">
+                {display}
+              </span>
             </div>
           );
         })}
