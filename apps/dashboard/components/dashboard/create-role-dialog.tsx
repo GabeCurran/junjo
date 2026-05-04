@@ -9,7 +9,7 @@ import {
   type CreateRoleResult,
   createRoleAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_ROLE_NAME_MAX_LENGTH } from "../../lib/admin";
+import { ADMIN_ROLE_NAME_MAX_LENGTH } from "../../lib/admin-shared";
 import { Button } from "../ui/button";
 import {
   Dialog,

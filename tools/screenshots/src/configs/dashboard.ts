@@ -3,10 +3,21 @@ import { fileURLToPath } from "node:url";
 import { buildDashboardRoutes, seedScreenshotFixtures } from "../seed-fixtures.ts";
 import type { CrawlConfig, PrepareResult } from "../types.ts";
 
-const DEFAULT_PORT = 13130;
+// Defaults to 3000 to match the user's standard `npm run dev:dashboard`
+// port. Combined with isAlreadyServing() in dev-server.ts, the crawler
+// reuses the running dashboard from the dev workflow rather than
+// spawning a parallel instance. Override via SCREENSHOTS_DASHBOARD_PORT
+// for unusual setups.
+const DEFAULT_PORT = 3000;
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
+// Defaults match the dashboard's standard local-dev `.env.local` values
+// (DASHBOARD_ADMIN_USER=admin / DASHBOARD_ADMIN_PASSWORD=admin). The
+// previous "admin-screenshots" default caused 401s during crawls because
+// the crawler runs in a separate process and doesn't load the dashboard
+// app's .env.local. Override via DASHBOARD_ADMIN_USER / _PASSWORD env
+// vars when running against a non-default credential set.
 const DEFAULT_ADMIN_USER = "admin";
-const DEFAULT_ADMIN_PASSWORD = "admin-screenshots";
+const DEFAULT_ADMIN_PASSWORD = "admin";
 
 const port = readNumberEnv("SCREENSHOTS_DASHBOARD_PORT", DEFAULT_PORT);
 const adminUser = process.env.DASHBOARD_ADMIN_USER ?? DEFAULT_ADMIN_USER;

@@ -71,7 +71,7 @@ Used by the dashboard to render a "this player is in N games on the platform" vi
 - A `junjoUserId` with no `ExternalIdentity` rows returns `200` with `games: []`. The route does not `404` because it cannot distinguish "user we have never seen" from "user known but no cross-game footprint yet" without leaking whether a given internal id has been recorded.
 - Games where the user has an identity but no active memberships are still listed (with `joinedGroupCount: 0`). The endpoint reports presence in the game's user pool, not just in its groups.
 - `joinedGroupCount` matches the rule used by the permission resolver and `Group.memberCount`: only `status: "active"` members in non-soft-deleted groups count. A user who left every group in a game still appears in `games[]` with `joinedGroupCount: 0` as long as their identity row exists.
-- Pagination is intentionally absent. A single Junjo user across more than a few hundred games is not a V1 concern; if it ever surfaces, this endpoint will gain pagination as an additive change (the response shape preserves the `games` array name).
+- Pagination is intentionally absent. The response shape (a `games` array) is designed to allow pagination as an additive change later if needed.
 
 ### Errors
 
@@ -113,7 +113,7 @@ Returns aggregate counts across every game on the deployment. Used by the dashbo
 ### Behavior
 
 - Implemented as four parallel `prisma.count` queries via `Promise.all`. Cheap to recompute; the dashboard caches the response for 60s via Next.js `revalidate`.
-- No query parameters. The 24h window is fixed; a future iteration may make it configurable.
+- No query parameters. The 24h window is fixed.
 
 ### Errors
 
@@ -231,7 +231,7 @@ Lists every game on the deployment with batched per-game stats. Used by the dash
 | `items[].id` | string | The `Game.id`. |
 | `items[].name` | string | The dev-supplied game name. Names are not unique on the server side. |
 | `items[].createdAt` | string | ISO 8601 timestamp. |
-| `items[].updatedAt` | string | ISO 8601 timestamp. Bumps when a game is renamed (no rename endpoint in V1). |
+| `items[].updatedAt` | string | ISO 8601 timestamp. Bumps when a game is renamed (no rename endpoint). |
 | `items[].groupCount` | number | Groups where `softDeletedAt: null`. Soft-deleted-but-undeleted-soon groups are excluded. |
 | `items[].activeMemberCount` | number | `GroupMember` rows in `status: "active"` whose group is not soft-deleted. Matches the `Group.memberCount` precedent. |
 | `items[].apiKeyCount` | number | API keys with `revokedAt: null`. Reflects "currently usable keys", not lifetime issuance. |
@@ -678,7 +678,7 @@ interface WireAdminMemberPermissionOverride {
   permission: string;
   grant: boolean;
   setAt: string;                 // ISO 8601
-  setBy: string | null;          // null in V1 (no auth-adapter actor wired)
+  setBy: string | null;          // null (no auth-adapter actor wired)
 }
 ```
 
@@ -1012,7 +1012,7 @@ Response: `200 OK` with a bare `WireAdminPermissionDef[]` (no pagination wrapper
 ```ts
 interface WireAdminPermissionDef {
   key: string;             // The permission key
-  description: string | null; // Optional human-readable description (null in V1)
+  description: string | null; // Optional human-readable description (null)
   createdAt: string;       // ISO 8601 timestamp of first registration
 }
 ```
@@ -1232,7 +1232,7 @@ Behavior:
 
 - **Idempotent on matching value.** If the supplied `parentGroupId` already equals the stored value, the route returns the unchanged group with no DB write, no audit entry, and no `updatedAt` bump. No `JunjoEvent` is dispatched.
 - **Cycle detection.** Self-parent (`parentGroupId === groupId`) returns `400 parent_cycle`. The route also walks the candidate parent's ancestor chain (one Prisma round-trip per ancestor, bounded at 100 levels) and rejects with `400 parent_cycle` if the child group itself appears in the chain.
-- **Audit entry.** On a value change, one transaction updates the row and writes a single audit entry: `group.parent.set` when the new value is non-null; `group.parent.cleared` when it is null. The audit `payload` is `{ before, after }` (each may be null); the audit row's `targetId` is the new parent id (null when cleared); `actorUserId` is null in V1.
+- **Audit entry.** On a value change, one transaction updates the row and writes a single audit entry: `group.parent.set` when the new value is non-null; `group.parent.cleared` when it is null. The audit `payload` is `{ before, after }` (each may be null); the audit row's `targetId` is the new parent id (null when cleared); `actorUserId` is null.
 - **Event dispatch.** A `group.updated` `JunjoEvent` is dispatched after the transaction commits (no dedicated `GroupParentChangedEvent` in the union, mirroring the per-game route's choice).
 
 Errors:
@@ -1622,7 +1622,7 @@ Path parameters:
 |------|----------|-------------|
 | `gameId` | yes | The game id. URL-decoded. |
 
-No query parameters in V1: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker is irrelevant to this endpoint.
+No query parameters: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker is irrelevant to this endpoint.
 
 Response:
 
@@ -1689,7 +1689,7 @@ Path parameters:
 |------|----------|-------------|
 | `gameId` | yes | The game id. URL-decoded. |
 
-No query parameters in V1: the chart is a snapshot, not a time-windowed analytic.
+No query parameters: the chart is a snapshot, not a time-windowed analytic.
 
 Response:
 

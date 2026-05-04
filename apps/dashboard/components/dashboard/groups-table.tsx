@@ -8,7 +8,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowRight, ArrowUp, ArrowUpDown, Layers, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Layers, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -20,7 +20,7 @@ import {
   type AdminGroupOrder,
   type AdminGroupSort,
   type AdminGroupVisibility,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -204,7 +204,13 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
         ),
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="text-sm font-medium">{row.original.name}</span>
+            <Link
+              href={`/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(row.original.id)}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              {row.original.name}
+            </Link>
             <span className="font-mono text-xs text-muted-foreground">{row.original.id}</span>
           </div>
         ),
@@ -254,7 +260,7 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
         ),
       },
     ],
-    [pushQuery, query],
+    [gameId, pushQuery, query],
   );
 
   const table = useReactTable<AdminGroup>({
@@ -396,7 +402,6 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
                           : flexRender(header.column.columnDef.header, header.getContext())}
                       </th>
                     ))}
-                    <th className="py-2 font-medium" aria-label="Open group" />
                   </tr>
                 ))}
               </thead>
@@ -419,16 +424,6 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
-                    <td className="py-3 text-right">
-                      <Link
-                        href={`/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(row.original.id)}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                      >
-                        Open
-                        <ArrowRight className="h-3 w-3" aria-hidden />
-                      </Link>
-                    </td>
                   </tr>
                 ))}
               </tbody>

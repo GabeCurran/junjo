@@ -78,7 +78,7 @@ The server emits an event after every mutation that changes a group's externally
 | `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
 | `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. |
 
-The following mutations do **not** publish events in V1:
+The following mutations do **not** publish events:
 
 - `POST /v1/groups` (group creation) - no `group.created` event in the V1 union.
 - `PATCH /v1/groups/:id/members/:userId` (`setMetadata` / `setNotes`) - no `member.metadata.updated` / `member.notes.updated` events in the V1 union.

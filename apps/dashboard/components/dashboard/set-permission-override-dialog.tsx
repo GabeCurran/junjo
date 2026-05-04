@@ -9,7 +9,7 @@ import {
   type SetPermissionOverrideResult,
   setPermissionOverrideAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_PERMISSION_KEY_MAX_LENGTH } from "../../lib/admin";
+import { ADMIN_PERMISSION_KEY_MAX_LENGTH } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import {

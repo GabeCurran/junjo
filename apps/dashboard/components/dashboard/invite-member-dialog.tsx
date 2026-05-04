@@ -14,7 +14,7 @@ import {
 import {
   ADMIN_INVITATION_ROLE_ID_MAX_LENGTH,
   ADMIN_INVITATION_USER_ID_MAX_LENGTH,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import {

@@ -62,7 +62,7 @@ The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `
 |-------|------|-------|
 | `id` | string | Stable cuid for the entry. |
 | `groupId` | string | The group the entry belongs to. |
-| `actorUserId` | string \| null | The Junjo user id that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired in V1 for most mutations). |
+| `actorUserId` | string \| null | The Junjo user id that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired for most mutations). |
 | `action` | [`AuditAction`](../../sdk/index) | One of the strings in the union. |
 | `targetId` | string \| null | Free-form pointer to whatever the action targeted: a user id, role id, permission key, group id. Type depends on action. |
 | `payload` | object | Action-specific details. The `before` / `after` fields on update actions only contain the keys that actually changed. |

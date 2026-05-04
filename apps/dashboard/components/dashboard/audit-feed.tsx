@@ -11,7 +11,7 @@ import {
   ADMIN_AUDIT_PAGE_SIZE_OPTIONS,
   type AdminGroupAuditEntry,
   type AdminGroupAuditPage,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
@@ -84,7 +84,7 @@ function AuditRow({ entry }: AuditRowProps) {
             {relativeTime(entry.createdAt)}
           </time>
         </div>
-        <p className="mt-0.5 text-xs text-muted-foreground">
+        <p className="mt-0.5 break-all text-xs text-muted-foreground">
           {entry.actorUserId ? (
             <>
               actor <span className="font-mono">{entry.actorUserId}</span>

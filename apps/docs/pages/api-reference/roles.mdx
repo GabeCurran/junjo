@@ -163,7 +163,7 @@ One `role.updated` entry per non-noop PATCH, with `payload: { before, after }` c
 
 ## `DELETE /v1/roles/:id`
 
-Hard-deletes a role. Roles do not have a soft-delete window in V1.
+Hard-deletes a role. Roles do not have a soft-delete window.
 
 If any `MemberRole` rows reference the role, the request returns `409 role_has_members` and the role is preserved. The caller must reassign affected members (or remove the assignment) before deleting.
 

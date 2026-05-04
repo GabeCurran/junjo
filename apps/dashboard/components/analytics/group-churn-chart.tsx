@@ -4,7 +4,8 @@
 import { BarChart } from "@tremor/react";
 import { ActivitySquare } from "lucide-react";
 
-import type { AdminGroupChurn } from "../../lib/admin";
+import type { AdminGroupChurn } from "../../lib/admin-shared";
+import { CHART_BRAND_COLOR, ChartTooltip } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface GroupChurnChartProps {
@@ -104,7 +105,8 @@ export function GroupChurnChart({ data }: GroupChurnChartProps) {
             data={rows}
             index="bin"
             categories={[VALUE_KEY]}
-            colors={["blue"]}
+            colors={[CHART_BRAND_COLOR]}
+            customTooltip={ChartTooltip}
             valueFormatter={formatCount}
             yAxisWidth={48}
             showLegend={false}

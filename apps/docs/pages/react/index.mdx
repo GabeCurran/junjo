@@ -20,7 +20,7 @@ npm install @junjo/sdk @junjo/react
 | [`useCan`](/react/use-can) | Boolean permission check with a per-provider shared cache. |
 | [`useMembers`](/react/use-members) | Paginated roster with status filter and live event updates. |
 | [`useInvitations`](/react/use-invitations) | Paginated invitation list with status filter and live event updates. |
-| [`useAuditLog`](/react/use-audit-log) | Paginated audit log with action filter; refetch-driven (no SSE subscription in V1). |
+| [`useAuditLog`](/react/use-audit-log) | Paginated audit log with action filter; refetch-driven (no SSE subscription). |
 | [`useMutation`](/react/use-mutation) | Generic mutation primitive with `onMutate -> context -> onError` rollback hooks for optimistic updates. |
 | `applyOptimistic` on `useMembers` / `useInvitations` / `useGroup` | Each hook's result returns a snapshot + rollback helper that pairs with [`useMutation`](/react/use-mutation). |
 

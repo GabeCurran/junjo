@@ -30,7 +30,7 @@ Optional but recommended:
 
 ## Docker
 
-The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container in V1; both background tasks are in-process `setInterval` schedulers (the rationale for that choice is in [`docs/03-architecture.md`](https://github.com/GabeCurran/junjo/blob/main/docs/03-architecture.md) under Background sweeps).
+The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container; both background tasks are in-process `setInterval` schedulers (the rationale for that choice is in [`docs/03-architecture.md`](https://github.com/GabeCurran/junjo/blob/main/docs/03-architecture.md) under Background sweeps).
 
 ```sh
 docker run \
@@ -202,7 +202,7 @@ docker compose exec junjo-server node -e \
 
 Or build a small admin script that imports `createGame` and `createApiKey` from `@junjo/server`'s `src/seed.ts`. Both helpers accept an optional `PrismaClient` so they work in any context that imports the package.
 
-A future release will ship a richer admin CLI; the seed helpers are the V1 surface.
+The seed helpers are the documented admin surface.
 
 ### Revoking a key
 
@@ -263,7 +263,7 @@ sequenceDiagram
   Note over Route,DB: Enqueue phase (in-band with the mutating request)
   Route->>Hub: publishEvent(event)
   Hub-->>Route: ok (live SSE subscribers receive immediately)
-  Route->>DB: WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
+  Route->>DB: SELECT WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
   DB-->>Route: matching endpoints (may be empty)
   alt one or more endpoints matched
     Route->>DB: BEGIN<br/>INSERT WebhookDelivery per endpoint<br/>(status=pending, attemptCount=0, nextAttemptAt=now)<br/>COMMIT
@@ -279,7 +279,7 @@ sequenceDiagram
       opt SIGTERM received (shouldStop)
         Worker->>Worker: break batch (stop scheduling new ticks)
       end
-      Worker->>DB: SELECT WebhookDelivery + WebhookEndpoint
+      Worker->>DB: SELECT WebhookDelivery JOIN WebhookEndpoint
       DB-->>Worker: row + endpoint
       alt format is junjo
         Worker->>Worker: HMAC-SHA256(secret, timestamp.body)<br/>headers: x-junjo-event, x-junjo-event-id,<br/>x-junjo-delivery-id, x-junjo-timestamp, x-junjo-signature
@@ -309,7 +309,7 @@ sequenceDiagram
   Note over Route,Receiver: At-least-once delivery. A worker crash between POST and UPDATE<br/>can re-deliver an event, so receivers must dedupe on x-junjo-event-id.<br/>SIGTERM stops scheduling new ticks. The in-flight deliverOne completes<br/>under a 30s drain ceiling before process exit.
 ```
 
-Source: `tools/diagrams/source/webhook-delivery.mmd`. The same diagram is embedded in [`api-reference/webhooks`](/api-reference/webhooks); both fences and the source file stay byte-identical (Phase 16.6 wires the diff as a verify gate).
+Source: `tools/diagrams/source/webhook-delivery.mmd`. The same diagram is embedded in [`api-reference/webhooks`](/api-reference/webhooks); both fences and the source file stay byte-identical.
 
 ### Horizontal scaling
 
@@ -345,7 +345,7 @@ The server emits structured logs to stdout via [pino](https://github.com/pinojs/
 
 Pipe the production stream into your log aggregator. The shape is friendly to every common backend: Datadog parses pino out of the box, Loki / Grafana ingest line-delimited JSON via promtail, CloudWatch and ELK use a similar JSON parser. Filter on `level >= warn` for alerting, on `msg` for specific events ("webhook delivery failed (network/abort)"), and on context fields for per-resource investigation.
 
-Metrics endpoints and distributed tracing are not in V1. The runnable surface is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses these JSON lines, or an APM that wraps the Node process at boot.
+Metrics endpoints and distributed tracing are not. The runnable surface is small enough that container-runtime logs plus Postgres slow-query logs cover most operational questions. If you need richer signals, instrument from the outside: a sidecar that scrapes `/healthz`, a log shipper that parses these JSON lines, or an APM that wraps the Node process at boot.
 
 The two operationally interesting failure modes:
 

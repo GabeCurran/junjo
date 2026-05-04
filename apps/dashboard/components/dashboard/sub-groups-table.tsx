@@ -21,7 +21,7 @@ import {
   clearParentAction,
   setParentAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import type { AdminGroup } from "../../lib/admin";
+import type { AdminGroup } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -346,7 +346,7 @@ function ParentCard({ group, gameId }: { group: AdminGroup; gameId: string }) {
   const hasParent = group.parentGroupId !== null;
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Parent group</CardTitle>
           <CardDescription>
@@ -401,21 +401,21 @@ function ParentCard({ group, gameId }: { group: AdminGroup; gameId: string }) {
       </CardHeader>
       <CardContent>
         {hasParent ? (
-          <div className="flex items-center justify-between rounded-md border border-border bg-card/50 p-3">
+          <div className="flex flex-col gap-3 rounded-md border border-border bg-card/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-primary">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-card text-primary">
                 <Layers className="h-4 w-4" aria-hidden />
               </div>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-xs uppercase tracking-wide text-muted-foreground">
                   Parent
                 </span>
-                <span className="font-mono text-sm">{group.parentGroupId}</span>
+                <span className="break-all font-mono text-sm">{group.parentGroupId}</span>
               </div>
             </div>
             <Link
               href={`/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(group.parentGroupId ?? "")}`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex items-center gap-1 self-start rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:self-auto"
             >
               <ExternalLink className="h-3 w-3" aria-hidden />
               Open parent
@@ -447,7 +447,7 @@ function ChildrenCard({
 }) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Direct children</CardTitle>
           <CardDescription>

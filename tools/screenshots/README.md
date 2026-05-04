@@ -174,7 +174,7 @@ match the dashboard env var convention. The full env-var matrix for
 | `JUNJO_ADMIN_API_KEY` | for the dashboard | empty string | Per-game key the dashboard reads at boot for env validation; any valid key works (the seeder issues its own ephemeral key for writes) |
 | `DASHBOARD_ADMIN_USER` | no | `admin` | Basic-auth user the crawler authenticates as |
 | `DASHBOARD_ADMIN_PASSWORD` | no | `admin-screenshots` | Basic-auth password (must match what the dashboard expects) |
-| `SCREENSHOTS_DASHBOARD_PORT` | no | `13130` | Port `next dev` is bound to during the crawl |
+| `SCREENSHOTS_DASHBOARD_PORT` | no | `3000` | Port `next dev` is bound to during the crawl. Defaults match the standard dev workflow (`npm run dev:dashboard`) so the crawler reuses an already-running dashboard. |
 
 Bring up the Junjo server (`npm run dev -w @junjo/server`) with the
 admin token configured, then:

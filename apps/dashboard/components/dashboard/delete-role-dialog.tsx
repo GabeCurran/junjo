@@ -9,7 +9,7 @@ import {
   type DeleteRoleResult,
   deleteRoleAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import type { AdminRole } from "../../lib/admin";
+import type { AdminRole } from "../../lib/admin-shared";
 import { Button } from "../ui/button";
 import {
   Dialog,

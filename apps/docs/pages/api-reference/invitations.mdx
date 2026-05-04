@@ -13,7 +13,7 @@ Endpoints for working with invitations by `code` (rather than by group). Invitat
 | `code` | string | 16-character hex (8 random bytes). Server-generated, never caller-supplied. |
 | `roleId` | string \| null | Role to grant on accept; `null` if no role was specified. |
 | `targetUserId` | string \| null | External user id from the dev's auth provider, or `null` for an open-code invitation. |
-| `createdBy` | string \| null | Acting user id; `null` in V1 (no auth-adapter actor wired yet). |
+| `createdBy` | string \| null | Acting user id; `null` (no auth-adapter actor wired yet). |
 | `createdAt` | string | ISO 8601 timestamp. |
 | `expiresAt` | string \| null | When the code stops being redeemable; `null` if it never expires. |
 | `usedAt` | string \| null | Set when the invitation was redeemed. |
@@ -67,7 +67,7 @@ Revokes an invitation. Requires an API key (the calling game must own the invita
 
 ## `POST /v1/invitations/:code/accept`
 
-Redeems an invitation: creates a `GroupMember` for the supplied user, marks the invitation used, and writes a `member.joined` audit entry. Requires an API key. The dev's backend is the trusted layer in V1: it authenticates the player itself and tells Junjo "this user is accepting", so the body carries the external user id rather than a player session token.
+Redeems an invitation: creates a `GroupMember` for the supplied user, marks the invitation used, and writes a `member.joined` audit entry. Requires an API key. The dev's backend is the trusted layer: it authenticates the player itself and tells Junjo "this user is accepting", so the body carries the external user id rather than a player session token.
 
 The supplied `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). The server resolves it to an internal `JunjoUser` via `ExternalIdentity (gameId, externalUserId)`; if no row exists yet, both the `JunjoUser` and the `ExternalIdentity` are created on first sight.
 

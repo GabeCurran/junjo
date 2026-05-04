@@ -13,7 +13,7 @@ import {
   ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH,
   type AdminAuditEntry,
   type AdminGameAuditPage,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
@@ -159,17 +159,6 @@ function FeedShell({ total, children }: FeedShellProps) {
       <CardContent>{children}</CardContent>
     </Card>
   );
-}
-
-// Convert a `datetime-local` input value (e.g. "2026-04-01T12:30") to the
-// ISO 8601 form the server expects. The browser parses datetime-local in
-// the user's local timezone; rendering through `new Date()` then calling
-// `.toISOString()` produces the canonical UTC form.
-function datetimeLocalToIso(value: string): string | undefined {
-  if (value.length === 0) return undefined;
-  const ms = new Date(value).getTime();
-  if (Number.isNaN(ms)) return undefined;
-  return new Date(ms).toISOString();
 }
 
 // RFC 4180 escape: wrap fields containing commas, quotes, or newlines in
@@ -581,16 +570,4 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
       </div>
     </FeedShell>
   );
-}
-
-// Exported so the page-level Server Component can call the same function
-// to derive the wire `before` value from the user's `endDate` filter and
-// pagination `cursor`. Keeps the conflict-resolution rule in one place.
-export function resolveBefore(cursor: string | undefined, endDate: string): string | undefined {
-  if (cursor !== undefined && cursor.length > 0) return cursor;
-  return datetimeLocalToIso(endDate);
-}
-
-export function resolveSince(since: string): string | undefined {
-  return datetimeLocalToIso(since);
 }

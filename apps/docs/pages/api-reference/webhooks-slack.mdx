@@ -92,7 +92,7 @@ Slack's typical 2xx response is `200 ok`; the worker treats that as `delivered`.
 
 ## Field truncation
 
-Slack caps individual `mrkdwn` text blocks at 3000 chars and individual section fields at 2000 chars. The formatter truncates anything longer with a single `…` suffix. This only kicks in for `role.changed` events with very large `added` / `removed` arrays; the typical event flows through verbatim. A Slack section also caps at 10 fields per block; the formatter never produces more than 4 fields per event in V1 so the cap is documentary.
+Slack caps individual `mrkdwn` text blocks at 3000 chars and individual section fields at 2000 chars. The formatter truncates anything longer with a single `…` suffix. This only kicks in for `role.changed` events with very large `added` / `removed` arrays; the typical event flows through verbatim. A Slack section also caps at 10 fields per block; the formatter never produces more than 4 fields per event so the cap is documentary.
 
 ## Limitations
 

@@ -25,32 +25,63 @@ const config: Config = {
   // (hover only where Tremor uses it) to avoid bloating the production
   // CSS with unused state combinations.
   safelist: [
+    // Tremor uses these tokenized classes for chart chrome (axis text,
+    // gridlines, tooltip backdrop, etc.). Tailwind's content scan
+    // sometimes misses them inside Tremor's compiled JS (template
+    // literals, conditional concat), so they're force-listed here to
+    // guarantee the utility CSS rule exists in the compiled bundle.
+    "text-tremor-content",
+    "text-tremor-content-subtle",
+    "text-tremor-content-emphasis",
+    "text-tremor-content-strong",
+    "text-tremor-content-inverted",
+    "text-dark-tremor-content",
+    "text-dark-tremor-content-subtle",
+    "text-dark-tremor-content-emphasis",
+    "text-dark-tremor-content-strong",
+    "text-dark-tremor-content-inverted",
+    "fill-tremor-content",
+    "fill-tremor-content-subtle",
+    "fill-tremor-content-emphasis",
+    "fill-tremor-content-strong",
+    "fill-dark-tremor-content",
+    "fill-dark-tremor-content-subtle",
+    "fill-dark-tremor-content-emphasis",
+    "fill-dark-tremor-content-strong",
+    "stroke-tremor-border",
+    "stroke-dark-tremor-border",
+    "bg-tremor-background",
+    "bg-tremor-background-subtle",
+    "bg-tremor-background-muted",
+    "bg-dark-tremor-background",
+    "bg-dark-tremor-background-subtle",
+    "bg-dark-tremor-background-muted",
     {
       pattern:
-        /^(bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ["hover", "ui-selected"],
     },
     {
       pattern:
-        /^(text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ["hover", "ui-selected"],
     },
     {
       pattern:
-        /^(border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ["hover", "ui-selected"],
     },
     {
       pattern:
-        /^(ring-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(ring-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
     {
       pattern:
-        /^(stroke-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(stroke-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
     {
       pattern:
-        /^(fill-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(fill-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
   ],
   theme: {
@@ -63,6 +94,26 @@ const config: Config = {
     },
     extend: {
       colors: {
+        // Brand coral palette anchored on `--primary` (#f76a6a at 500).
+        // Tremor v3 charts accept a "coral" color name and resolve it to
+        // `fill-coral-500` / `stroke-coral-500` etc., which is why every
+        // shade is enumerated here AND the safelist above includes
+        // `coral` in its patterns. Shades 50/100/200 cover the heatmap
+        // + tooltip surfaces; 500 is the brand; 700/800/900/950 cover
+        // hover states and dark-mode emphasis.
+        coral: {
+          50: "#fff5f5",
+          100: "#ffe5e5",
+          200: "#ffcccc",
+          300: "#ffa3a3",
+          400: "#fc8a8a",
+          500: "#f76a6a",
+          600: "#e04848",
+          700: "#bd3838",
+          800: "#9a2d2d",
+          900: "#7d2828",
+          950: "#430f0f",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",

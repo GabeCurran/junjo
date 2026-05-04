@@ -13,7 +13,7 @@ import {
   type AdminGroupMemberList,
   type AdminMemberRole,
   type AdminMemberStatusFilter,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -241,7 +241,7 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         accessorKey: "joinedAt",
         header: "Joined",
         cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
             {dateFormatter.format(new Date(row.original.joinedAt))}
           </span>
         ),

@@ -12,7 +12,7 @@ import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   type AdminPermissionDef,
   type AdminRole,
-} from "../../lib/admin";
+} from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";

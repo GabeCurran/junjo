@@ -93,7 +93,7 @@ The hook never throws; errors land in `result.error`. Three sources:
 
 - **Initial fetch error**: a `JunjoError` (or other) from the first `members.list` call. The hook stays at `loading: false` with `members: []`.
 - **`fetchMore` error**: appended to `error` while `members` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
-- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect in V1; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
 
 If `useMembers` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
 
@@ -171,7 +171,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Composing with `useGroup`
 
-The two hooks each open their own SSE subscription. If a screen renders both, two parallel streams open against the server. This is correct in V1 (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea; until then, prefer one of the hooks per screen unless you specifically need both result shapes.
+The two hooks each open their own SSE subscription. If a screen renders both, two parallel streams open against the server. This is correct (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea; until then, prefer one of the hooks per screen unless you specifically need both result shapes.
 
 ## Testing
 

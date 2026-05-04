@@ -45,7 +45,7 @@ function ActivityRow({ entry }: ActivityRowProps) {
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-mono text-xs text-muted-foreground">{entry.action}</span>
           <span className="text-xs text-muted-foreground">in</span>
-          <span className="truncate text-sm font-medium">
+          <span className="text-sm font-medium">
             {entry.gameName}
             <span className="text-muted-foreground"> / </span>
             <span className={entry.groupSoftDeleted ? "line-through" : undefined}>

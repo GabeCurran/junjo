@@ -14,7 +14,7 @@ if (await junjo.can(userId, groupId, "guild.kick")) {
 
 The check is a single GET request to `/v1/permissions/check`. The server caches each `(game, group, user, permission)` answer for 60 seconds and invalidates on relevant mutations, so repeated calls inside the cache window are effectively free.
 
-## `can(userId, groupId, permission)` - shipped
+## `can(userId, groupId, permission)`
 
 Returns `Promise<boolean>` - the `allowed` field of the underlying `PermissionCheckResult`. Use this when you only need the yes/no.
 
@@ -32,7 +32,7 @@ if (!(await junjo.can(userId, groupId, "guild.invite_member"))) {
 | `not_found` | 404 | Group missing, soft-deleted, or owned by a different game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
-## `check(userId, groupId, permission)` - shipped
+## `check(userId, groupId, permission)`
 
 Returns `Promise<PermissionCheckResult>` - the richer answer that includes *why* a check passed or failed. Use this when you want to render "you can't do this because your role X is missing key Y" UX, or when an admin tool needs to display the resolution path.
 

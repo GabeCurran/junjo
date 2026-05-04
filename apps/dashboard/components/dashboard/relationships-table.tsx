@@ -11,7 +11,10 @@ import {
   clearRelationshipAction,
   setRelationshipAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH, type AdminGroupRelationship } from "../../lib/admin";
+import {
+  ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH,
+  type AdminGroupRelationship,
+} from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -297,7 +300,7 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
 export function RelationshipsTable({ relationships, gameId, groupId }: RelationshipsTableProps) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
         <div className="space-y-1.5">
           <CardTitle className="text-base">Relationships</CardTitle>
           <CardDescription>

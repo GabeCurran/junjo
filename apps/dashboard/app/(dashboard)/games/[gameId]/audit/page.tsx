@@ -7,9 +7,11 @@ import { Suspense } from "react";
 import {
   GameAuditFeed,
   type GameAuditQueryState,
+} from "../../../../../components/dashboard/game-audit-feed";
+import {
   resolveBefore,
   resolveSince,
-} from "../../../../../components/dashboard/game-audit-feed";
+} from "../../../../../components/dashboard/game-audit-feed-helpers";
 import { Topbar } from "../../../../../components/dashboard/topbar";
 import {
   Card,

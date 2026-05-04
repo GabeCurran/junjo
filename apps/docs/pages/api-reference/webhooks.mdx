@@ -32,7 +32,7 @@ sequenceDiagram
   Note over Route,DB: Enqueue phase (in-band with the mutating request)
   Route->>Hub: publishEvent(event)
   Hub-->>Route: ok (live SSE subscribers receive immediately)
-  Route->>DB: WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
+  Route->>DB: SELECT WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
   DB-->>Route: matching endpoints (may be empty)
   alt one or more endpoints matched
     Route->>DB: BEGIN<br/>INSERT WebhookDelivery per endpoint<br/>(status=pending, attemptCount=0, nextAttemptAt=now)<br/>COMMIT
@@ -48,7 +48,7 @@ sequenceDiagram
       opt SIGTERM received (shouldStop)
         Worker->>Worker: break batch (stop scheduling new ticks)
       end
-      Worker->>DB: SELECT WebhookDelivery + WebhookEndpoint
+      Worker->>DB: SELECT WebhookDelivery JOIN WebhookEndpoint
       DB-->>Worker: row + endpoint
       alt format is junjo
         Worker->>Worker: HMAC-SHA256(secret, timestamp.body)<br/>headers: x-junjo-event, x-junjo-event-id,<br/>x-junjo-delivery-id, x-junjo-timestamp, x-junjo-signature
@@ -78,7 +78,7 @@ sequenceDiagram
   Note over Route,Receiver: At-least-once delivery. A worker crash between POST and UPDATE<br/>can re-deliver an event, so receivers must dedupe on x-junjo-event-id.<br/>SIGTERM stops scheduling new ticks. The in-flight deliverOne completes<br/>under a 30s drain ceiling before process exit.
 ```
 
-The diagram source lives at `tools/diagrams/source/webhook-delivery.mmd` and is kept byte-identical to this embedded fence (Phase 16.6 wires that as an automated gate; until then the rule is on the author).
+The diagram source lives at `tools/diagrams/source/webhook-delivery.mmd` and is kept byte-identical to this embedded fence.
 
 ## Wire format
 
@@ -236,6 +236,6 @@ The V1 worker is single-process, single-instance:
 
 - **No cross-process coordination.** Two server processes running the worker would both pick up the same due deliveries. The `WEBHOOK_BACKOFF_MS` interval and the `WebhookDelivery` row state are the only coordination. When this scales out, the right move is `pg_try_advisory_lock(webhookEndpointId)` keyed per-endpoint so the same endpoint cannot be hit by two workers concurrently. The function signatures in `webhookWorker.ts` are stable across that change.
 - **At-least-once delivery.** A worker crash between POST and row update can re-deliver an event. Receivers MUST be idempotent on `x-junjo-event-id`.
-- **No replay UI.** Manual replay of `failed` deliveries is not exposed through the V1 API; replays require direct database access. A future release will add a manual replay endpoint.
-- **No dead-letter queue.** Permanently failed deliveries stay in the `WebhookDelivery` table; they're not deleted automatically. A future retention sweeper can age them out alongside the soft-delete sweeper pattern.
-- **No body capture for debug.** The worker records the response status but does not capture the response body. A future iteration can add this for support tickets if needed.
+- **No replay UI.** Manual replay of `failed` deliveries is not exposed through the API; replays require direct database access.
+- **No dead-letter queue.** Permanently failed deliveries stay in the `WebhookDelivery` table; they're not deleted automatically.
+- **No body capture for debug.** The worker records the response status but does not capture the response body.

@@ -1,0 +1,57 @@
+/* Junjo docs site overrides on top of nextra-theme-docs.
+   Keep this file small: only deltas the Nextra theme cannot express
+   via theme.config.tsx. */
+
+/* TOC right-rail: slimmer scrollbar.
+   Nextra's `nextra-scrollbar` defaults to a 0.75rem (12px) wide
+   webkit scrollbar inside the TOC's overflow container. That reads
+   as a heavy vertical bar next to the prose. Trim it to 4px and
+   keep the same translucent thumb so it stays visible on hover. */
+.nextra-toc .nextra-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.nextra-toc .nextra-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(115, 115, 115, 0.25);
+  border: 0;
+  background-clip: padding-box;
+}
+.nextra-toc .nextra-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(115, 115, 115, 0.55);
+}
+
+/* TOC right-rail: method-header hierarchy.
+   Nextra renders H2 anchors with `_font-semibold` and H3 anchors
+   with `_ms-4` (margin-start indent). Both share the same
+   `text-gray-500` color, which makes a method like `create(input)`
+   visually indistinguishable from its sub-items (Input / Errors /
+   See also). Boost the contrast and add breathing room above each
+   H2 so each method block reads as a group. */
+.nextra-toc nav a:not([class*="_ms-4"]) {
+  color: rgb(17 24 39); /* gray-900: stronger than the theme default gray-500 */
+  font-weight: 600;
+}
+.dark .nextra-toc nav a:not([class*="_ms-4"]) {
+  color: rgb(243 244 246); /* gray-100 in dark mode */
+}
+.nextra-toc nav li:has(> a:not([class*="_ms-4"])) + li:has(> a:not([class*="_ms-4"])) {
+  margin-top: 0.75rem;
+}
+.nextra-toc nav li:has(> a[class*="_ms-4"]) + li:has(> a:not([class*="_ms-4"])) {
+  margin-top: 0.75rem;
+}
+
+/* Sidebar footer (theme switch + sidebar collapse button) at the TOP.
+   Nextra renders the controls in a `nextra-sidebar-footer _sticky _bottom-0`
+   div as the LAST child of `aside.nextra-sidebar-container` (a flex-col).
+   We want them at the top instead so the dark-mode toggle and the
+   sidebar-collapse button are immediately reachable without scrolling
+   the long nav. Re-order via flex `order` and re-anchor sticky from
+   bottom to top. The aside itself does not scroll (the inner nav
+   container does), so the sticky anchor mostly affects the visual
+   in-flow position rather than scroll-pinning behavior. */
+.nextra-sidebar-container .nextra-sidebar-footer {
+  order: -1;
+  top: 0;
+  bottom: auto;
+}

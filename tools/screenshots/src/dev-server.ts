@@ -8,6 +8,21 @@ export type RunningServer = {
 
 export async function startDevServer(spec: DevServer): Promise<RunningServer> {
   const baseUrl = `http://127.0.0.1:${spec.port}`;
+  const readyUrl = `${baseUrl}${spec.readyPath ?? "/"}`;
+
+  // If a dev server is already serving this port (e.g., started by the
+  // orchestrator or by the dev workflow), reuse it and return a no-op
+  // stop. Eliminates the per-iteration cold-start cost when iterating
+  // visually inside the agent loop.
+  if (await isAlreadyServing(readyUrl)) {
+    return {
+      baseUrl,
+      stop: async () => {
+        // intentional no-op: we did not start it, we do not stop it
+      },
+    };
+  }
+
   const child = spawn(spec.command, [], {
     cwd: spec.cwd,
     shell: true,
@@ -15,7 +30,6 @@ export async function startDevServer(spec: DevServer): Promise<RunningServer> {
     stdio: ["ignore", "inherit", "inherit"],
   });
   const startupTimeout = spec.startupTimeoutMs ?? 60_000;
-  const readyUrl = `${baseUrl}${spec.readyPath ?? "/"}`;
   const exited = waitForExit(child);
   try {
     await Promise.race([
@@ -32,6 +46,15 @@ export async function startDevServer(spec: DevServer): Promise<RunningServer> {
     baseUrl,
     stop: () => stopChild(child),
   };
+}
+
+async function isAlreadyServing(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(2_000) });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForReady(url: string, timeoutMs: number): Promise<void> {

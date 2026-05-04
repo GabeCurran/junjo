@@ -312,7 +312,7 @@ Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Id
 
 ### Background sweeper
 
-Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron in V1; see `docs/03-architecture.md` (Background sweeps) for the rationale.
+Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron; see `docs/03-architecture.md` (Background sweeps) for the rationale.
 
 ## `POST /v1/groups/:id/invitations`
 
@@ -370,7 +370,7 @@ An empty `targetUserId`, a malformed `expiresIn`, an `expiresIn` with a non-posi
 
 For an open-code invitation the response is the same shape with `"targetUserId": null`.
 
-`createdBy` is `null` in V1 because no auth-adapter actor is wired through this code path. The field parallels `AuditEntry.actorUserId` and is reserved for a future iteration that threads the resolved end-user identity through invitation creation.
+`createdBy` is `null` because no auth-adapter actor is wired through this code path. The field parallels `AuditEntry.actorUserId`.
 
 ### Audit log
 
@@ -828,7 +828,7 @@ Sets or updates a member-level permission override. The override wins over any r
 }
 ```
 
-`setBy` is the dev's external id of the actor that set the override; it is `null` in V1 (no auth-adapter actor wired yet).
+`setBy` is the dev's external id of the actor that set the override; it is `null` (no auth-adapter actor wired yet).
 
 ### Audit log
 
@@ -1089,7 +1089,7 @@ Set or clear the sub-group / alliance parent. The parent must be in the same gam
 - On a value change, one audit entry is written on the *child* group's audit log:
   - `group.parent.set` when the new value is non-null.
   - `group.parent.cleared` when the new value is null.
-- The audit `payload` is `{ before, after }` carrying the prior and new parent ids (either may be null). The audit row's `targetId` is the new parent id (null when cleared). `actorUserId` is null in V1 (no auth-adapter actor wired).
+- The audit `payload` is `{ before, after }` carrying the prior and new parent ids (either may be null). The audit row's `targetId` is the new parent id (null when cleared). `actorUserId` is null (no auth-adapter actor wired).
 
 ### Errors
 

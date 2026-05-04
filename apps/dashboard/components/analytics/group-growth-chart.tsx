@@ -1,11 +1,12 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { LineChart } from "@tremor/react";
+import { Legend, LineChart } from "@tremor/react";
 import { TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin";
+import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin-shared";
+import { CHART_MULTI_PALETTE, ChartTooltip } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface GroupGrowthChartProps {
@@ -39,22 +40,11 @@ interface SeriesColumn {
   source: AdminGroupGrowthSeries;
 }
 
-// Top-N max is 10; one extra slot covers the "All others" aggregate. The
-// safelist regex in `tailwind.config.ts` keeps every Tailwind color
-// utility, so any palette-color name resolves at build time.
-const SERIES_COLORS = [
-  "blue",
-  "violet",
-  "emerald",
-  "amber",
-  "rose",
-  "cyan",
-  "indigo",
-  "lime",
-  "fuchsia",
-  "orange",
-  "slate",
-] as const;
+// Top-N max is 10; one extra slot covers the "All others" aggregate.
+// The palette comes from the shared chart-colors module so coral
+// branding stays consistent across charts. CHART_MULTI_PALETTE has 6
+// entries; if a game has more series than that the rotation repeats.
+const SERIES_COLORS = CHART_MULTI_PALETTE;
 
 function deriveSeriesColumns(series: AdminGroupGrowthSeries[]): SeriesColumn[] {
   const used = new Set<string>();
@@ -156,9 +146,10 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
     [data.buckets, columns, formatBucket],
   );
   const colors = useMemo(
-    () => columns.map((_, i) => SERIES_COLORS[i % SERIES_COLORS.length] ?? "blue"),
+    () => columns.map((_, i) => SERIES_COLORS[i % SERIES_COLORS.length] ?? "coral"),
     [columns],
   );
+  const categoryNames = useMemo(() => columns.map((c) => c.column), [columns]);
   const hasSeries = columns.length > 0;
   const hasBuckets = data.buckets.length > 0;
   const cadence = describeBucketSize(data.bucketSizeMs);
@@ -197,22 +188,26 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
         </div>
 
         {hasSeries && hasBuckets ? (
-          <LineChart
-            data={rows}
-            index="bucket"
-            categories={columns.map((c) => c.column)}
-            colors={colors}
-            valueFormatter={formatCount}
-            yAxisWidth={48}
-            showLegend
-            allowDecimals={false}
-            connectNulls
-            // Wide windows produce 50+ buckets; show only the first and
-            // last x-axis ticks to avoid crowding. Narrow windows keep
-            // every label.
-            startEndOnly={data.buckets.length > 12}
-            className="h-80"
-          />
+          <div className="flex flex-col gap-3">
+            <LineChart
+              data={rows}
+              index="bucket"
+              categories={categoryNames}
+              colors={colors}
+              valueFormatter={formatCount}
+              yAxisWidth={48}
+              showLegend={false}
+              customTooltip={ChartTooltip}
+              allowDecimals={false}
+              connectNulls
+              // Wide windows produce 50+ buckets; show only the first and
+              // last x-axis ticks to avoid crowding. Narrow windows keep
+              // every label.
+              startEndOnly={data.buckets.length > 12}
+              className="h-80"
+            />
+            <Legend categories={categoryNames} colors={colors} className="justify-center" />
+          </div>
         ) : (
           <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
             {data.buckets.length === 0

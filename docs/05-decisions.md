@@ -5846,3 +5846,198 @@ When `--viewport=mobile` is passed, the runner overwrites `INDEX.md` to list onl
 - The audit ritual itself is human-driven and not enforced by `verify.ps1`. The README documents when to run one; whoever owns a release is expected to run it before publishing. There is no automation that pages someone if an audit is overdue.
 - `--viewport=mobile` does not change the viewport definitions in the config - it only filters which viewports the runner iterates over. If a future contributor needs to override the mobile dimensions (e.g., audit at 414x896 for an iPhone 11 Pro Max simulation), they must edit the config's `viewports` array directly. A `--viewport-width` / `--viewport-height` override pair was considered and rejected as gold-plating; the catalog standardises on 375x812 and audit findings should reference that baseline.
 
+
+## 2026-05-03 (V.8b - dashboard admin client/server split)
+
+### What landed
+
+`apps/dashboard/lib/admin-shared.ts` (new) holds every runtime-free
+type / interface / type-alias / constant from the previous monolithic
+`lib/admin.ts` - the wire-shape interfaces (AdminStats, AdminAuditEntry,
+AdminGame, AdminGroup, AdminRole, etc.), the discriminated string-union
+types (AdminGroupVisibility, AdminMemberStatus, AdminPermissionSource,
+etc.), and every ADMIN_* constant the form components rely on for
+maxLength / pattern / page-size validation. `lib/admin.ts` keeps its
+`import "server-only"` directive and every helper function (adminFetch /
+adminMutate / adminDelete plus every fetch* / create* / update* /
+revoke* / etc. helper) plus the `AdminDisabledError` sentinel; it now
+imports the types it needs from `./admin-shared` and re-exports the
+shared module via `export * from "./admin-shared"` so server-side
+callers continue to import from `./admin` with no changes. The 22
+`"use client"` components under `components/dashboard/` and
+`components/analytics/` flipped their `from "../../lib/admin"` imports
+to `from "../../lib/admin-shared"`.
+
+### Why a split, not a server-only directive removal
+
+`lib/admin.ts` imports `getAdminToken` and `getJunjoBaseUrl` from
+`./junjo`, which itself begins with `import "server-only"` (the
+`@junjo/sdk` singleton constructs the client at module load when env
+vars are present). Removing only the `lib/admin.ts` server-only
+directive would not break the chain - `./junjo` still drags the SDK +
+env loader through any module that transitively imports `lib/admin.ts`
+into a client bundle. The split moves the type / constant declarations
+into a fresh module that imports neither `./junjo` nor anything that
+imports `./junjo`; that module is safe to import from a Client
+Component, and the runtime helpers stay in the server-only module
+where the `getAdminToken` chain belongs.
+
+### Why every type / constant moves, not just the ones a client
+component touches today
+
+The audit was that 22 client components consume an irregular subset of
+the wire-shape types and ADMIN_* constants. Splitting only the
+currently-consumed names would create a precedent for "if a client
+component needs another type, move that one type next iteration"
+churn. The cost of moving every runtime-free declaration once is one
+~400-line file; the alternative is N future iterations each touching
+both modules. Wire-shape types are stable (they mirror the server's
+WireAdmin* shapes byte-for-byte) so the split file does not need to
+change as the dashboard adds new client features unless the wire shape
+itself changes - in which case both files would have changed under the
+old scheme too.
+
+### What was deliberately NOT done
+
+- Did NOT rename `lib/admin.ts` to `lib/admin-server.ts`. The existing
+  import path is stable for ~20 server-side callers (pages, Server
+  Components, Server Actions). Adding a new sibling module
+  (`admin-shared.ts`) that the runtime module imports is one new file
+  and zero churn for existing imports; renaming would touch every
+  caller for no functional gain.
+- Did NOT introduce a tsconfig path alias (`@/lib/admin-shared`). The
+  components were already on the relative-path convention (`../../lib/...`)
+  because `apps/dashboard/tsconfig.json` does not declare a `@/`
+  baseUrl. Touching tsconfig + every component's import would expand
+  the scope without enabling anything. A future iteration that
+  introduces aliases globally would update `lib/admin.ts` and
+  `lib/admin-shared.ts` together.
+- Did NOT collapse `AdminDisabledError` into the shared module. Only
+  server-side callers throw it, and only server-side callers branch on
+  `instanceof AdminDisabledError`; moving the class to the shared
+  module would put a runtime construct alongside the type-only
+  declarations. The class stays in `lib/admin.ts`.
+- Did NOT extract individual phase-grouped sub-modules (e.g.,
+  `admin-groups-shared.ts`, `admin-roles-shared.ts`,
+  `admin-analytics-shared.ts`). One file is easier to grep than seven;
+  the wire-shape mirror is per-server-route, not per-dashboard-tab, so
+  any sub-grouping would be arbitrary. Future iterations can split
+  if the file grows past readable bounds (still well under 500 lines
+  today).
+
+### Caveats
+
+- The polish-iter-010 attempt at this split called the new file
+  `admin-groups-shared.ts` and only relocated the V.8 (groups list)
+  consumers' types. That attempt never committed (rolled back after
+  the iter-011 timeout); the file does not exist on disk. This
+  iteration supersedes that name and lands the broader split.
+- Server-side callers still get every shared symbol via
+  `export * from "./admin-shared"`. A future ESLint pass could enforce
+  "client components must import from `lib/admin-shared`, not
+  `lib/admin`" via a custom rule, but a plain code-review check
+  catches it today and the split's value is the runtime separation,
+  not the import-path enforcement.
+
+## 2026-05-04 (V.32 - sidebar Current-game section gates on real games)
+
+### Decision
+
+Gate the dashboard sidebar's per-game section on a server-side
+`fetchAdminGame(gameId)` lookup AND replace the literal "CURRENT
+GAME" header with the actual game name. Implementation:
+
+1. New server-side route layout `apps/dashboard/app/(dashboard)/games/[gameId]/layout.tsx`
+   resolves the game once per request. On `/v1/admin/games/{id}`
+   not-found it calls Next.js's `notFound()` (cascades to the
+   default 404 page outside the dashboard chrome). On
+   `AdminDisabledError` or other transient errors it renders
+   `children` unchanged so the page surfaces its own friendlier
+   error card. On success it renders a sibling
+   `<CurrentGameWriter gameName={game.name} />` client component.
+2. New client module `apps/dashboard/components/dashboard/current-game-context.tsx`
+   exports `CurrentGameProvider` (mounted at the top of
+   `(dashboard)/layout.tsx` so both the sidebar and the writer
+   share state), `useCurrentGameName()` consumed by `SidebarNav`,
+   and `CurrentGameWriter` whose `useEffect` writes the resolved
+   name on mount and clears on unmount.
+3. `SidebarNav` renders the per-game section only when both
+   `gameId !== null` AND `gameName !== null`. Header text is
+   the resolved name (`text-sm font-semibold text-foreground`,
+   `truncate` + hover `title=`) instead of the prior uppercase
+   tracking-wider "CURRENT GAME" placeholder.
+
+### Why
+
+Two related defects on stale `/games/<id>/...` URLs:
+
+- The chrome looked normal (sidebar populated with the per-game
+  nav: Game overview / Groups / Audit log / Analytics /
+  Permission check / All games), reading as "the page loaded
+  fine" even when the page body had errored. Made it hard to
+  tell whether a 404 had occurred.
+- The header text was the literal placeholder "CURRENT GAME"
+  rather than the actual game name, so the per-game section
+  never told you WHICH game you were inside.
+
+A server-side gate (the new layout) addresses (a) by forcing a
+real 404 on stale ids; the context bridge addresses (b) by
+piping the resolved name from the route subtree into the
+parent-layout sidebar.
+
+### Considered alternatives
+
+- **Pure client-side fetch in SidebarNav.** Would have meant a
+  separate fetch on every route change and would not have
+  triggered a Next.js 404 on stale ids (the page body alone
+  decides 404). Rejected: doubles the network cost and does not
+  fix (a).
+- **`useSearchParams` / Next.js cookies plumbing.** Could
+  technically pass server-resolved data without a context bridge.
+  Rejected: cookies / headers are mutating-the-globals approach
+  for a per-request value; the context bridge is the React-idiomatic
+  pattern.
+- **Custom `(dashboard)/games/[gameId]/not-found.tsx`.** Would
+  let the 404 keep the dashboard chrome. Rejected: the spec's
+  whole point is that the chrome should NOT appear on a 404
+  ("404 becomes obvious instead of a fake-populated sidebar").
+- **Fix only (b), keep "CURRENT GAME" placeholder for stale ids.**
+  Rejected: the placeholder text is mostly a symptom of (a). Two
+  problems collapse into one V.32 because the same wiring solves
+  both.
+
+### What was deliberately NOT done
+
+- Did NOT remove the existing `notFound()` call inside
+  `[gameId]/page.tsx`. Defensive depth - if a future routing
+  change reaches the page without going through the layout, the
+  page still 404s correctly.
+- Did NOT add a custom not-found page under `(dashboard)`. Would
+  re-introduce the sidebar chrome on 404 and undo the spec's
+  intent.
+- Did NOT wire the writer through React's `use()` hook to skip
+  the `useEffect` indirection. `use()` of a server-built promise
+  in a client component would let SSR HTML show the resolved
+  name without a flash, but it adds complexity and stable Next 15
+  patterns expect a client provider for this kind of bridge.
+  The brief flash is acceptable.
+- Did NOT pre-load the game-detail page's `fetchAdminGame` call
+  into the layout. Both layout and page already hit the same
+  Next.js fetch cache (`revalidate: 60s`); the second call is a
+  cache hit. Optimizing this further would mean explicit
+  `cache()`-wrapping a helper, which is out of scope for V.32.
+
+### Caveats
+
+- Brief flash on initial SSR of a real game: server-rendered HTML
+  has the per-game section hidden (writer's `useEffect` has not
+  yet run). After hydration the effect fires and the section
+  appears. Fast machines won't notice; the alternative (`use()`
+  + RSC promise) is more invasive.
+- Navigating between games briefly clears the section: layout
+  remount on dynamic-segment change fires the writer's cleanup
+  (`setName(null)`), then the new effect sets the new name. One
+  render cycle.
+- Hard rule 7 authorizes editing under `apps/dashboard/**` for
+  Phase 11/12 dashboard polish; same authorization that V.5-V.20,
+  V.28-V.31 used.
