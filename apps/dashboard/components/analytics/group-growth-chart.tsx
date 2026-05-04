@@ -6,6 +6,7 @@ import { TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin-shared";
+import { CHART_MULTI_PALETTE, ChartTooltip } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface GroupGrowthChartProps {
@@ -39,22 +40,11 @@ interface SeriesColumn {
   source: AdminGroupGrowthSeries;
 }
 
-// Top-N max is 10; one extra slot covers the "All others" aggregate. The
-// safelist regex in `tailwind.config.ts` keeps every Tailwind color
-// utility, so any palette-color name resolves at build time.
-const SERIES_COLORS = [
-  "blue",
-  "violet",
-  "emerald",
-  "amber",
-  "rose",
-  "cyan",
-  "indigo",
-  "lime",
-  "fuchsia",
-  "orange",
-  "slate",
-] as const;
+// Top-N max is 10; one extra slot covers the "All others" aggregate.
+// The palette comes from the shared chart-colors module so coral
+// branding stays consistent across charts. CHART_MULTI_PALETTE has 6
+// entries; if a game has more series than that the rotation repeats.
+const SERIES_COLORS = CHART_MULTI_PALETTE;
 
 function deriveSeriesColumns(series: AdminGroupGrowthSeries[]): SeriesColumn[] {
   const used = new Set<string>();
@@ -156,7 +146,7 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
     [data.buckets, columns, formatBucket],
   );
   const colors = useMemo(
-    () => columns.map((_, i) => SERIES_COLORS[i % SERIES_COLORS.length] ?? "blue"),
+    () => columns.map((_, i) => SERIES_COLORS[i % SERIES_COLORS.length] ?? "coral"),
     [columns],
   );
   const categoryNames = useMemo(() => columns.map((c) => c.column), [columns]);
@@ -207,6 +197,7 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
               valueFormatter={formatCount}
               yAxisWidth={48}
               showLegend={false}
+              customTooltip={ChartTooltip}
               allowDecimals={false}
               connectNulls
               // Wide windows produce 50+ buckets; show only the first and

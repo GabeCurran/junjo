@@ -6,6 +6,7 @@ import { PieChart } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminRoleDistribution, AdminRoleSlice } from "../../lib/admin-shared";
+import { CHART_MULTI_PALETTE, ChartTooltip } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface RoleDistributionChartProps {
@@ -26,25 +27,11 @@ interface DonutRow {
   count: number;
 }
 
-// Eleven-entry palette: top-10 slices + one "Other" aggregate. Tremor pins
-// slice colors to category position, so the donut's #1 slice always gets
-// the first entry. The Tailwind safelist (set up in 12.2b) keeps every
-// color name buildable in production. The mapping mirrors the line chart's
-// `SERIES_COLORS` palette in `group-growth-chart.tsx` so charts on the
-// same page do not clash.
-const SLICE_COLORS = [
-  "blue",
-  "violet",
-  "emerald",
-  "amber",
-  "rose",
-  "cyan",
-  "indigo",
-  "lime",
-  "fuchsia",
-  "orange",
-  "slate",
-] as const;
+// Slice palette comes from the shared chart-colors module so the donut
+// shares the coral-anchored warm palette with every other Tremor chart
+// on the analytics page. Tremor pins slice colors to category position;
+// rotation kicks in if the game has more than 6 distinct roles.
+const SLICE_COLORS = CHART_MULTI_PALETTE;
 
 function buildRows(topRoles: AdminRoleSlice[], otherCount: number): DonutRow[] {
   const rows: DonutRow[] = topRoles.map((s) => ({ name: s.name, count: s.count }));
@@ -59,7 +46,7 @@ function formatCount(value: number): string {
 export function RoleDistributionChart({ data }: RoleDistributionChartProps) {
   const rows = useMemo(() => buildRows(data.topRoles, data.otherCount), [data]);
   const colors = useMemo(
-    () => rows.map((_, i) => SLICE_COLORS[i % SLICE_COLORS.length] ?? "blue"),
+    () => rows.map((_, i) => SLICE_COLORS[i % SLICE_COLORS.length] ?? "coral"),
     [rows],
   );
   const sliceNames = useMemo(() => rows.map((r) => r.name), [rows]);
@@ -106,6 +93,7 @@ export function RoleDistributionChart({ data }: RoleDistributionChartProps) {
               valueFormatter={formatCount}
               variant="donut"
               showAnimation={false}
+              customTooltip={ChartTooltip}
               className="h-60 w-60"
             />
             <Legend categories={sliceNames} colors={colors} className="justify-center" />

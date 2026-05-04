@@ -5,6 +5,7 @@ import { Activity } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminMemberActivity } from "../../lib/admin-shared";
+import { CHART_BRAND_HSL } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface MemberActivityHeatmapProps {
@@ -97,13 +98,11 @@ function intensity(count: number, max: number): number {
   return 0.08 + 0.92 * Math.sqrt(ratio);
 }
 
-// Tailwind's `blue-500` rendered in HSL space. Hard-coded rather than
-// pulled from `--tremor-brand` so the heatmap visually pairs with the
-// other Tremor charts on the analytics surface (the Phase 12.3b growth
-// chart uses `colors={["blue", ...]}` with blue-500 first), and so a
-// theme tweak that re-tints `--tremor-brand` does not drift the heatmap
-// away from the chart palette.
-const HEATMAP_HSL = "217 91% 60%";
+// Coral brand HSL (mirrors `--primary` in `app/globals.css`). The
+// heatmap interpolates opacity on this hue / saturation / lightness
+// anchor to produce its intensity ramp; sourcing from chart-colors
+// means a brand re-tint flows through every chart at once.
+const HEATMAP_HSL = CHART_BRAND_HSL;
 
 function cellStyle(opacity: number): React.CSSProperties {
   if (opacity <= 0) return {};

@@ -6,6 +6,7 @@ import { ShieldCheck } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminPermissionUsage, AdminPermissionUsageItem } from "../../lib/admin-shared";
+import { ChartTooltip } from "../../lib/chart-colors";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface PermissionUsageChartProps {
@@ -22,7 +23,10 @@ interface PermissionUsageChartProps {
 const ROLE_GRANTS_KEY = "Role grants";
 const MEMBER_OVERRIDES_KEY = "Member overrides";
 const CATEGORIES = [ROLE_GRANTS_KEY, MEMBER_OVERRIDES_KEY];
-const COLORS = ["blue", "violet"];
+// Coral leads (the dominant driver in most setups: role grants), with
+// amber as the secondary stack segment for member overrides. Same
+// warm-leaning palette as the rest of the analytics charts.
+const COLORS = ["coral", "amber"];
 
 interface BarRow {
   permission: string;
@@ -106,6 +110,7 @@ export function PermissionUsageChart({ data }: PermissionUsageChartProps) {
               yAxisWidth={140}
               showLegend={false}
               allowDecimals={false}
+              customTooltip={ChartTooltip}
               className={chartHeightClass}
             />
           </div>
