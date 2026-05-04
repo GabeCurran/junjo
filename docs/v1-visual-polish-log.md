@@ -1242,6 +1242,59 @@ viewports.
 V.27 (TOC slim + sidebar-collapse-at-top) remain the docs-site-wide
 theme overrides that would touch this page too; not re-filed here.
 
+## V.25 docs site auth index page
+
+**Before:** Fifth and final docs-site landing page in the V.21-V.25
+sub-set. Source: `apps/docs/pages/auth/index.mdx`. Body sections in
+order: H1 "Auth adapters", lead paragraph (Junjo verifies session
+tokens via pluggable auth adapter; Clerk / Supabase / generic JWT
+ship in `@junjo/sdk` with build-your-own escape hatch), "The
+interface" (TS code fence showing `AuthAdapter.verifyToken` shape),
+"When to use which" (4-row adapter table: Clerk / Supabase / JWT /
+custom), "Where it plugs in" (server config code fence with
+`createServer({ authAdapter })`), "End-to-end flow" (prose summary
+of the request -> verifyToken -> permission-check path), "The user
+id contract" (bullet list on what `userId` MUST be), "Failure-mode
+parity" (single-paragraph note on the 401 envelope all adapters
+return), "See also" (link list to per-adapter pages). Rendered
+desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The page renders cleanly on both
+viewports.
+
+**Acceptable as-is:**
+
+- Desktop (1440x900): standard three-column Nextra layout matches
+  V.21 / V.22 / V.23 / V.24. Left sidebar carries the full top-level
+  page list with the Auth group expanded and "Overview" highlighted
+  active. Center prose column carries the H1 + 7 H2 sections without
+  horizontal overflow. Two code fences (the `AuthAdapter` TS
+  interface + `createServer({ authAdapter })` config) sit flush left
+  in the prose column and fit without scroll at the desktop measure.
+  The 4-row adapter table fills the prose column width; the "Use
+  case" column wraps the longer entries (e.g. the JWT row's
+  description) across two or three lines but the table is contained.
+  Right TOC right-rail enumerates every H2 with the active section
+  highlighted on scroll.
+- Mobile (375x812): single prose column, no horizontal page scroll.
+  The adapter table compresses to fit the prose-column width; cells
+  wrap to multiple lines per row but the rows stay inside the
+  viewport. Code fences scroll horizontally inside their own
+  container per the Nextra default for `pre` overflow. The "See
+  also" link list stacks vertically with each entry on its own row,
+  matching the prose-list rendering on V.21 / V.22.
+- Light + dark mode parity: prose tokens, code-fence theme, table
+  borders, inline `code` background, and active sidebar highlight
+  all match the existing Nextra defaults already accepted on V.21 /
+  V.22 / V.23 / V.24. No contrast regressions.
+
+**Notes:** Closes the V.21-V.25 docs-site sub-set. All five docs
+landing pages (home, sdk, self-host, api-reference, auth) accepted
+with no code change - the Nextra theme is doing the right thing on
+its own at both desktop and mobile measures. V.26 / V.27 (TOC slim
++ sidebar-collapse-at-top) remain the docs-site-wide theme
+overrides that would touch this page too; not re-filed here.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
