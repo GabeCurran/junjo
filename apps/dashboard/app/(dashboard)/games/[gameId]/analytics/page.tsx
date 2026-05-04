@@ -283,7 +283,11 @@ export function resolveRangeFrom(query: AnalyticsRangeQueryState): string | unde
       ? (datetimeLocalToIso(query.from) ?? query.from)
       : undefined;
   }
-  return new Date(Date.now() - ANALYTICS_RANGE_PRESET_MS[query.range]).toISOString();
+  // Defensive: an unknown preset (e.g., a stale URL bookmark across a
+  // schema change) would yield undefined here and crash toISOString with
+  // "Invalid time value". Fall back to the 7d default.
+  const presetMs = ANALYTICS_RANGE_PRESET_MS[query.range] ?? ANALYTICS_RANGE_PRESET_MS["7d"];
+  return new Date(Date.now() - presetMs).toISOString();
 }
 
 // Resolve the `to` end. Custom ranges may carry a `to`; presets always

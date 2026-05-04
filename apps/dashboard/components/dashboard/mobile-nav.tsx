@@ -5,6 +5,7 @@ import { Activity } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { ThemeToggle } from "../theme-toggle";
 import { SidebarNav } from "./sidebar-nav";
 
 // Mobile-only top bar + drop-down nav. Renders nothing on >=md screens.
@@ -50,6 +51,8 @@ export function MobileNav() {
           </div>
           <span className="text-base font-semibold tracking-tight">Junjo</span>
         </div>
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
         <button
           type="button"
           onClick={() => setOpen(!open)}
@@ -84,6 +87,7 @@ export function MobileNav() {
             )}
           </svg>
         </button>
+        </div>
       </div>
 
       {/* Backdrop. Click anywhere on the dimmed page below the menu closes
