@@ -74,7 +74,7 @@ sequenceDiagram
   Note over Client,DB: Mutations (role assign/remove, role permission grant/revoke,<br/>member override set/clear, role delete) call cache.invalidateGroup(groupId)<br/>after commit, so a stale "false" can flip to "true" within one round-trip.
 ```
 
-The diagram above is committed at `tools/diagrams/source/permission-resolution.mmd`. The committed `.mmd` source and the Mermaid fence above must stay byte-identical (Phase 16.6 wires a sync gate).
+The diagram above is committed at `tools/diagrams/source/permission-resolution.mmd`. The committed `.mmd` source and the Mermaid fence above must stay byte-identical.
 
 ## Wire format
 

@@ -28,7 +28,7 @@ app.post(
 );
 ```
 
-## `verify(rawBody, headers, secret, opts?)` - shipped
+## `verify(rawBody, headers, secret, opts?)`
 
 Returns `Promise<JunjoEvent>`. Throws [`JunjoError`](../api-reference/index#errors) on any verification failure.
 
@@ -97,7 +97,7 @@ async function handle(rawBody: Uint8Array, headers: Record<string, string>) {
 }
 ```
 
-## `middleware(secret, opts?)` - shipped
+## `middleware(secret, opts?)`
 
 Returns an Express-compatible middleware that verifies, parses, and replaces `req.body` with the typed `JunjoEvent` before calling `next()`. Mount it AFTER `express.raw({ type: "application/json" })` so the raw bytes are on `req.body`.
 
@@ -137,7 +137,7 @@ export const WEBHOOK_DEFAULT_TOLERANCE_MS = 5 * 60_000;
 
 `WEBHOOK_SIGNATURE_SCHEME` is the prefix Junjo writes ahead of the hex digest. Future schemes (e.g., `v2=...`) will coexist and the verifier will route on this prefix. `WEBHOOK_DEFAULT_TOLERANCE_MS` is the default replay-protection window; override per call via `opts.tolerance`.
 
-## `endpoints` - shipped
+## `endpoints`
 
 CRUD for the webhook endpoints Junjo POSTs to. Endpoints are scoped per game; the calling API key determines which game the endpoint belongs to. Mirror counterpart of the [`/v1/webhooks` API routes](../api-reference/webhooks#endpoint-configuration).
 

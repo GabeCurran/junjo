@@ -91,7 +91,7 @@ Pagination is timestamp-based, not opaque-cursor-based. The server returns `Page
 
 `fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `id` when appending, so an entry returned in two overlapping pages (rare, but possible if entries share `createdAt` to millisecond precision) is not duplicated in the visible list.
 
-## No live updates in V1
+## No live updates
 
 Unlike `useGroup` / `useMembers` / `useInvitations`, this hook does NOT subscribe to the SSE event stream. Audit entries do not have a corresponding `JunjoEvent` payload that carries the audit-entry id, so the hook cannot synthesize new entries from `member.joined` / `role.changed` / etc. without diverging from what the server actually recorded. The right long-term fix is a dedicated `audit.created` event that carries the full server-shape entry; that lands post-V1.
 

@@ -1,8 +1,8 @@
 # groups
 
-Methods on `junjo.groups`. Every method below is shipped as of V1.
+Methods on `junjo.groups`.
 
-## `create(input)` - shipped
+## `create(input)`
 
 Creates a new group scoped to the calling game. Returns the persisted `Group` with timestamps already deserialized to `Date` instances.
 
@@ -43,7 +43,7 @@ group.softDeletedAt; // null
 
 - [`POST /v1/groups`](/api-reference/groups) - the underlying HTTP route.
 
-## `get(id)` - shipped
+## `get(id)`
 
 Fetches a single group by id. Returns `Group | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (group)` without a try/catch. Other errors (invalid API key, network failure, etc.) throw `JunjoError`.
 
@@ -68,7 +68,7 @@ group.memberCount; // active member count, computed server-side
 
 - [`GET /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
-## `list(opts?)` - shipped
+## `list(opts?)`
 
 Returns a single page of groups for the calling game, sorted newest-first. Pagination is cursor-based: pass the `nextCursor` from the previous response to fetch the next page. When `nextCursor` is `null`, the page is the last one.
 
@@ -113,7 +113,7 @@ do {
 
 - [`GET /v1/groups`](/api-reference/groups) - the underlying HTTP route.
 
-## `update(id, input)` - shipped
+## `update(id, input)`
 
 Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
 
@@ -153,7 +153,7 @@ updated.updatedAt;  // Date - bumped only when something actually changed
 
 - [`PATCH /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
-## `delete(id, opts?)` - shipped
+## `delete(id, opts?)`
 
 Soft-deletes a group. The group disappears from `get` / `list` immediately but the row stays in Postgres for 7 days; call `restore(id)` within the window to undo. Pass `{ hard: true }` to skip the grace period and remove the row immediately (this also removes the group's audit history via cascade).
 
@@ -184,7 +184,7 @@ await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
 
 - [`DELETE /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
 
-## `restore(id)` - shipped
+## `restore(id)`
 
 Restores a soft-deleted group within the 7-day undo window. Returns the restored `Group`. Idempotent on a live group (returns the unchanged group, no audit entry). Throws `restore_window_expired` (HTTP 410) if the group was soft-deleted more than 7 days ago and is on its way out.
 
@@ -209,7 +209,7 @@ group.softDeletedAt; // null
 
 - [`POST /v1/groups/:id/restore`](/api-reference/groups) - the underlying HTTP route.
 
-## `inviteByUserId(groupId, userId, opts?)` - shipped
+## `inviteByUserId(groupId, userId, opts?)`
 
 Creates a direct-user invitation. The recipient is identified by the external user id from the dev's auth provider (the same id `whoami` will return). The server generates a unique 16-character hex code; subsequent endpoints (accept, decline, get-by-code) read invitations by the code.
 
@@ -223,7 +223,7 @@ const invitation = await junjo.groups.inviteByUserId(
 invitation.code;          // "abcd1234abcd1234"
 invitation.targetUserId;  // "user_alice"
 invitation.roleId;        // "role_officer"
-invitation.createdBy;     // null in V1 (no auth-adapter actor wired)
+invitation.createdBy;     // null (no auth-adapter actor wired)
 invitation.createdAt;     // Date
 ```
 
@@ -235,7 +235,7 @@ invitation.createdAt;     // Date
 
 ### Returns
 
-`Invitation` with timestamps deserialized to `Date`. `createdBy` is `null` in V1 because no acting user is resolved on this path yet; the field will populate once auth adapters and the `acceptInvitation` flow land.
+`Invitation` with timestamps deserialized to `Date`. `createdBy` is `null` because no acting user is resolved on this path.
 
 ### Errors
 
@@ -249,7 +249,7 @@ invitation.createdAt;     // Date
 
 - [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
-## `inviteByCode(groupId, input?)` - shipped
+## `inviteByCode(groupId, input?)`
 
 Creates an open-code invitation (no targeted user). Anyone with the returned `code` can accept. Pair with `expiresIn` to make it a short-lived link.
 
@@ -268,13 +268,13 @@ invitation.expiresAt;     // Date | null
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `roleId` | `RoleId` | none | The role to grant on accept. Not validated against the group's roles in V1. |
+| `roleId` | `RoleId` | none | The role to grant on accept. Not validated against the group's roles. |
 | `expiresIn` | string | none | Duration string. `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`. Examples: `30s`, `15m`, `2h`, `7d`. The server stamps `expiresAt = now() + expiresIn`. |
 | `targetUserId` | `UserId` | ignored | Silently dropped from the request body. Use `inviteByUserId` for direct invitations. |
 
 ### Returns
 
-`Invitation` with timestamps deserialized to `Date`. `targetUserId` is `null`. `createdBy` is `null` in V1.
+`Invitation` with timestamps deserialized to `Date`. `targetUserId` is `null`. `createdBy` is `null`.
 
 ### Errors
 
@@ -288,7 +288,7 @@ invitation.expiresAt;     // Date | null
 
 - [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
-## `inviteByLink(groupId, input?)` - shipped
+## `inviteByLink(groupId, input?)`
 
 Convenience wrapper around `inviteByCode` that also returns a URL the dev's frontend can hand to players. The URL is built locally in the SDK from the configured `inviteBaseUrl` (or `baseUrl` if `inviteBaseUrl` is unset) and the server-generated invitation `code`:
 
@@ -338,7 +338,7 @@ Same as `inviteByCode`. `inviteByLink` does not add any error cases of its own; 
 
 - [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
-## `acceptInvitation(code, userId)` - shipped
+## `acceptInvitation(code, userId)`
 
 Redeems an invitation: creates a `GroupMember` for the supplied user and marks the invitation used. Returns the new `Member` with `joinedAt` deserialized to a `Date`.
 
@@ -384,7 +384,7 @@ The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox Use
 
 - [`POST /v1/invitations/:code/accept`](/api-reference/invitations) - the underlying HTTP route.
 
-## `declineInvitation(code, opts?)` - shipped
+## `declineInvitation(code, opts?)`
 
 Burns an invitation without joining the group. The row is marked used (so it can never be redeemed) and no member is created. Returns `void`.
 
@@ -424,7 +424,7 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 - [`POST /v1/invitations/:code/decline`](/api-reference/invitations) - the underlying HTTP route.
 
-## `leave(groupId, userId)` - shipped
+## `leave(groupId, userId)`
 
 Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
 
@@ -444,7 +444,7 @@ The `userId` is the dev's external user id. As with `acceptInvitation`, V1's tru
 
 ### Returns
 
-`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows (empty in V1).
+`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows (empty).
 
 ### Errors
 
@@ -458,7 +458,7 @@ The `userId` is the dev's external user id. As with `acceptInvitation`, V1's tru
 
 - [`POST /v1/groups/:id/leave`](/api-reference/groups) - the underlying HTTP route.
 
-## `kick(groupId, userId, opts?)` - shipped
+## `kick(groupId, userId, opts?)`
 
 Removes a member from the group on the dev backend's behalf. Returns the post-state `Member` (status `"kicked"`). Idempotent on already-kicked members; non-active states (`left`, `invited`) are returned unchanged with no audit entry.
 
@@ -495,7 +495,7 @@ member.status; // "kicked"
 
 - [`POST /v1/groups/:id/members/:userId/kick`](/api-reference/groups) - the underlying HTTP route.
 
-## `bulkInvite(groupId, csv, opts?)` - shipped
+## `bulkInvite(groupId, csv, opts?)`
 
 Creates many open-code invitations in one request. The body is plain text, one external user id per line; the SDK accepts either a `string` or a `ReadableStream<Uint8Array>` so callers can stream a large file without first reading it into memory.
 
@@ -549,7 +549,7 @@ result.errors;  // []
 
 - [`POST /v1/groups/:id/bulk-invite`](/api-reference/groups) - the underlying HTTP route.
 
-## `setRelationship(groupAId, groupBId, type, opts?)` - shipped
+## `setRelationship(groupAId, groupBId, type, opts?)`
 
 ```ts
 async setRelationship(
@@ -565,7 +565,7 @@ Set or update the directed A->B relationship. Pass `mutual: true` to write both 
 ### Behavior
 
 - Each direction is independent. If A->B already has the supplied `type` it is a no-op for that direction (no audit, no `since` bump). The other direction (B->A) still goes through its own check when `mutual: true`.
-- `actorUserId` is null in V1 (the dev's backend is the trusted layer behind the API key); `setBy` reads as `null` on the wire and on the deserialized SDK type.
+- `actorUserId` is null (the dev's backend is the trusted layer behind the API key); `setBy` reads as `null` on the wire and on the deserialized SDK type.
 - Self-relationships (`groupAId === groupBId`) throw `bad_request`.
 
 ### Returns
@@ -591,7 +591,7 @@ interface GroupRelationship {
 
 - [`PUT /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
-## `clearRelationship(groupAId, groupBId, opts?)` - shipped
+## `clearRelationship(groupAId, groupBId, opts?)`
 
 ```ts
 async clearRelationship(
@@ -614,7 +614,7 @@ Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missin
 
 - [`DELETE /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
-## `getRelationship(groupAId, groupBId)` - shipped
+## `getRelationship(groupAId, groupBId)`
 
 ```ts
 async getRelationship(
@@ -629,7 +629,7 @@ Fetch the directed A->B row, or `null` when no row exists for that direction. To
 
 - [`GET /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
 
-## `listRelationships(groupId)` - shipped
+## `listRelationships(groupId)`
 
 ```ts
 async listRelationships(groupId: GroupId): Promise<GroupRelationship[]>
@@ -647,7 +647,7 @@ Return every directed row where this group is the A-side ("this group's stance t
 
 - [`GET /v1/groups/:a/relationships`](/api-reference/groups) - the underlying HTTP route.
 
-## `setParent(groupId, parentGroupId)` - shipped
+## `setParent(groupId, parentGroupId)`
 
 ```ts
 async setParent(groupId: GroupId, parentGroupId: GroupId | null): Promise<Group>
@@ -677,7 +677,7 @@ The updated `Group` (including the new `parentGroupId`).
 
 - [`PUT /v1/groups/:id/parent`](/api-reference/groups) - the underlying HTTP route.
 
-## `listChildren(groupId)` - shipped
+## `listChildren(groupId)`
 
 ```ts
 async listChildren(groupId: GroupId): Promise<Group[]>
@@ -697,7 +697,7 @@ A group with no live children returns `[]`.
 
 - [`GET /v1/groups/:id/children`](/api-reference/groups) - the underlying HTTP route.
 
-## `subscribe(groupId, handler, opts?)` - shipped
+## `subscribe(groupId, handler, opts?)`
 
 Open a Server-Sent Events stream against `GET /v1/events/:groupId` and invoke `handler` once per delivered event, with `Date` fields rehydrated. Returns a `Subscription` whose `close()` aborts the underlying fetch and stops further handler invocations.
 

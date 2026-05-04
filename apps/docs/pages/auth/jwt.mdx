@@ -27,7 +27,7 @@ const junjo = new Junjo({
 
 | Option | Required | Notes |
 |--------|----------|-------|
-| `key` | yes | For `HS256`, the UTF-8 shared secret. For `RS256` and `ES256`, a PEM-encoded SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs are not supported in V1; rotate keys by deploying a new adapter. |
+| `key` | yes | For `HS256`, the UTF-8 shared secret. For `RS256` and `ES256`, a PEM-encoded SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs are not supported; rotate keys by deploying a new adapter. |
 | `algorithm` | yes | One of `"HS256"`, `"RS256"`, `"ES256"`. The adapter rejects tokens signed with any other algorithm, including the (insecure) `none` algorithm. |
 | `userIdClaim` | no | The JWT claim to read the user id from. Defaults to `"sub"`. Set this to `"user_id"`, `"uid"`, or whatever your provider uses if it is not the standard `sub`. |
 | `issuer` | no | When set, the JWT's `iss` claim must equal this value. When omitted, `iss` is not checked. |
@@ -102,5 +102,5 @@ The default is strict (`0`). Tighten this only if you control both clocks; widen
 ## Security notes
 
 - **The adapter pins the algorithm.** A token signed with a different algorithm than the configured one is rejected, even if the signing key would technically validate it. This avoids the well-known "alg=none" and "RS256-as-HS256" attacks.
-- **JWKS endpoints are not supported in V1.** Rotate keys by deploying a new adapter with the new public key. If you need JWKS support, build a small wrapper that fetches the JWKS, picks the matching key by `kid`, and constructs a `jwtAdapter` per-request - or wait for the V2 helper.
+- **JWKS endpoints are not supported.** Rotate keys by deploying a new adapter with the new public key. If you need JWKS support, build a small wrapper that fetches the JWKS, picks the matching key by `kid`, and constructs a `jwtAdapter` per-request - or wait for the V2 helper.
 - **`HS256` shares the signing key with verifiers.** Anyone holding the secret can issue valid tokens. Prefer `RS256` or `ES256` for any deployment where the secret would have to live in multiple machines.

@@ -1,10 +1,10 @@
 # invitations
 
-Methods on `junjo.invitations`. Every method below is shipped as of V1.
+Methods on `junjo.invitations`.
 
 For the create-side methods, see [`junjo.groups.inviteByUserId`](/sdk/groups), [`junjo.groups.inviteByCode`](/sdk/groups), and [`junjo.groups.inviteByLink`](/sdk/groups). The methods below operate on existing invitations.
 
-## `list(groupId, opts?)` - shipped
+## `list(groupId, opts?)`
 
 Lists invitations for a group, sorted newest-first. Cursor-based pagination via the `Page<T>` envelope. By default the response excludes used and expired invitations; pass `includeUsed: true` and/or `includeExpired: true` to include them.
 
@@ -47,7 +47,7 @@ do {
 
 - [`GET /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
 
-## `get(code)` - shipped
+## `get(code)`
 
 Fetches an invitation by code. The underlying server route does not require an API key (anyone with the code can fetch the preview), but the SDK still sends the configured `apiKey` header on every request.
 
@@ -79,7 +79,7 @@ if (invitation.usedAt) {
 
 - [`GET /v1/invitations/:code`](/api-reference/invitations) - the underlying HTTP route.
 
-## `revoke(code)` - shipped
+## `revoke(code)`
 
 Revokes (deletes) an invitation by code. Returns `void` on success.
 

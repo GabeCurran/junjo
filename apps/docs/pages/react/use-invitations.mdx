@@ -113,7 +113,7 @@ The hook never throws; errors land in `result.error`. Three sources:
 
 - **Initial fetch error**: a `JunjoError` (or other) from the first `invitations.list` call. The hook stays at `loading: false` with `invitations: []`.
 - **`fetchMore` error**: appended to `error` while `invitations` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
-- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect in V1; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
 
 If `useInvitations` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
 
@@ -185,7 +185,7 @@ After a successful invite, the `member.invited` event arrives over SSE and repla
 
 ### How the snapshot interacts with SSE events
 
-After `applyOptimistic` runs, the hook keeps applying SSE events (`member.invited`, `member.joined`) on top of the optimistic state. A successful `revoke` does not emit an event in V1, so the optimistic removal stays applied indefinitely; if the mutation fails and you roll back, the row reappears in the list, ready to retry.
+After `applyOptimistic` runs, the hook keeps applying SSE events (`member.invited`, `member.joined`) on top of the optimistic state. A successful `revoke` does not emit an event, so the optimistic removal stays applied indefinitely; if the mutation fails and you roll back, the row reappears in the list, ready to retry.
 
 ### Rollback restores the pre-update snapshot exactly
 
@@ -201,7 +201,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Composing with `useGroup` and `useMembers`
 
-Each list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct in V1 (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea.
+Each list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea.
 
 ## Testing
 

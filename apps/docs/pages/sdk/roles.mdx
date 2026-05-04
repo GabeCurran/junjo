@@ -4,7 +4,7 @@ The roles namespace operates on `Role` rows: a role is one named bundle of autho
 
 All methods on this page are shipped real implementations.
 
-## `create(groupId, input)` - shipped
+## `create(groupId, input)`
 
 Creates a new role inside a group. Returns the created `Role`.
 
@@ -44,7 +44,7 @@ const officer = await junjo.roles.create("grp_xyz" as GroupId, {
 
 - [`POST /v1/groups/:id/roles`](/api-reference/roles) - the underlying HTTP route.
 
-## `get(id)` - shipped
+## `get(id)`
 
 Fetches a single role by `Role.id`. Returns `Role | null`: the SDK turns the server's `404 not_found` response into `null`. Other errors throw `JunjoError`.
 
@@ -67,7 +67,7 @@ role.color;
 
 - [`GET /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
-## `list(groupId)` - shipped
+## `list(groupId)`
 
 Returns every role in the group as a bare `Role[]`, ordered by `priority` desc with `id` desc as a tiebreaker.
 
@@ -78,7 +78,7 @@ for (const role of roles) {
 }
 ```
 
-Roles in V1 are a small list per group (10s, not 1000s); pagination is not provided. If the dev's role count grows past that, this method will gain pagination as an additive change.
+Roles are a small list per group (10s, not 1000s); pagination is not provided.
 
 ### Errors
 
@@ -91,7 +91,7 @@ Roles in V1 are a small list per group (10s, not 1000s); pagination is not provi
 
 - [`GET /v1/groups/:id/roles`](/api-reference/roles) - the underlying HTTP route.
 
-## `update(id, input)` - shipped
+## `update(id, input)`
 
 Updates one or more fields on a role. The input is partial: pass only the fields you want to change. An empty input returns `400` from the server.
 
@@ -126,7 +126,7 @@ Each field is diffed per-field against the stored row; supplying the same value 
 
 - [`PATCH /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
-## `delete(id)` - shipped
+## `delete(id)`
 
 Hard-deletes a role. Roles do not have a soft-delete window. Resolves to `void` on success.
 
@@ -148,7 +148,7 @@ If the role has any member assignments, the call throws `JunjoError` with `code:
 
 - [`DELETE /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
-## `grantPermission(roleId, permission)` - shipped
+## `grantPermission(roleId, permission)`
 
 Grants a permission key to a role. Returns the updated `Role` (with the new key in `permissions`). The first time a permission key appears on a given game, it is auto-registered into the `PermissionDef` catalog so the dashboard and SDK validators can list it; subsequent grants of the same key reuse the existing registry row.
 
@@ -171,7 +171,7 @@ The call is idempotent: granting a permission the role already has returns the u
 
 - [`POST /v1/roles/:id/permissions`](/api-reference/roles) - the underlying HTTP route.
 
-## `revokePermission(roleId, permission)` - shipped
+## `revokePermission(roleId, permission)`
 
 Revokes a permission key from a role. Returns the updated `Role`. The call is idempotent: revoking a permission the role does not have returns the unchanged role with no audit entry. Revoking a key does not remove its `PermissionDef` registry entry.
 

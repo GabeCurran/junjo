@@ -4,7 +4,7 @@ The members namespace operates on `Member` rows: a member is one user's relation
 
 Every method in this namespace is shipped.
 
-## `get(groupId, userId)` - shipped
+## `get(groupId, userId)`
 
 Fetches a single member by the dev's external user id within a group. Returns `Member | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (member)` without a try/catch. Other errors throw `JunjoError`.
 
@@ -31,7 +31,7 @@ The response includes members in any status; historical rows (`left`, `kicked`) 
 
 - [`GET /v1/groups/:id/members/:userId`](/api-reference/groups) - the underlying HTTP route.
 
-## `getById(id)` - shipped
+## `getById(id)`
 
 Fetches a single member by the `Member.id` directly. Returns `Member | null` (404 -> null, other errors throw).
 
@@ -51,7 +51,7 @@ Useful when you have already cached a member id (e.g. from a webhook event paylo
 
 - [`GET /v1/members/:id`](/api-reference/members) - the underlying HTTP route.
 
-## `list(groupId, opts?)` - shipped
+## `list(groupId, opts?)`
 
 Returns a single page of members in a group, sorted by `joinedAt` descending. Pagination is cursor-based; pass the `nextCursor` from the previous page to fetch the next.
 
@@ -99,7 +99,7 @@ V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the 
 
 - [`GET /v1/groups/:id/members`](/api-reference/groups) - the underlying HTTP route.
 
-## `listForUser(userId, opts?)` - shipped
+## `listForUser(userId, opts?)`
 
 Returns every membership a user has within the calling game. Returns a bare `Member[]` (no pagination wrapper) capped at 1000 rows. A user with no `ExternalIdentity` for this game returns `[]`.
 
@@ -131,7 +131,7 @@ for (const m of memberships) {
 
 - [`GET /v1/users/:userId/members`](/api-reference/members) - the underlying HTTP route.
 
-## `setMetadata(groupId, userId, metadata)` - shipped
+## `setMetadata(groupId, userId, metadata)`
 
 Replaces a member's metadata wholesale. The supplied object replaces whatever was stored; there is no deep merge. Returns the updated `Member`.
 
@@ -156,7 +156,7 @@ The server treats every supplied metadata as a change (it does not deep-equal ag
 
 - [`PATCH /v1/groups/:id/members/:userId`](/api-reference/groups) - the underlying HTTP route.
 
-## `overridePermission(groupId, userId, permission, grant)` - shipped
+## `overridePermission(groupId, userId, permission, grant)`
 
 Sets or updates a member-level permission override. Returns the `MemberPermissionOverride` row.
 
@@ -194,7 +194,7 @@ The permission key is auto-registered into the per-game catalog on first sight (
 
 - [`POST /v1/groups/:id/members/:userId/permissions/:permission`](/api-reference/groups) - the underlying HTTP route.
 
-## `clearPermissionOverride(groupId, userId, permission)` - shipped
+## `clearPermissionOverride(groupId, userId, permission)`
 
 Clears a member-level permission override. Returns `void`. Idempotent: clearing a permission the member has no override for is a no-op.
 
@@ -219,7 +219,7 @@ After clearing, the member's effective permission for this key falls back to wha
 
 - [`DELETE /v1/groups/:id/members/:userId/permissions/:permission`](/api-reference/groups) - the underlying HTTP route.
 
-## `listPermissionOverrides(groupId, userId)` - shipped
+## `listPermissionOverrides(groupId, userId)`
 
 Returns every permission override on a member. Bare array (no pagination wrapper), sorted by `permission` ascending.
 
@@ -237,7 +237,7 @@ A member with no overrides returns `[]`.
 
 ### Returns
 
-`MemberPermissionOverride[]`. Each entry carries `groupId`, `userId`, `permission`, `grant`, `setAt`, and `setBy` (always `null` in V1).
+`MemberPermissionOverride[]`. Each entry carries `groupId`, `userId`, `permission`, `grant`, `setAt`, and `setBy` (always `null`).
 
 ### Errors
 
@@ -250,7 +250,7 @@ A member with no overrides returns `[]`.
 
 - [`GET /v1/groups/:id/members/:userId/permissions`](/api-reference/groups) - the underlying HTTP route.
 
-## `assignRole(groupId, userId, roleId)` - shipped
+## `assignRole(groupId, userId, roleId)`
 
 Assigns a role to a member. Returns the updated `Member`. Idempotent: assigning a role the member already has returns the unchanged member.
 
@@ -279,7 +279,7 @@ A member in any status (`active`, `left`, `kicked`, `invited`) can have roles as
 
 - [`POST /v1/groups/:id/members/:userId/roles/:roleId`](/api-reference/groups) - the underlying HTTP route.
 
-## `removeRole(groupId, userId, roleId)` - shipped
+## `removeRole(groupId, userId, roleId)`
 
 Removes a role from a member. Returns the updated `Member`. Idempotent: if the member does not have the role assigned (whether the role exists in another group, exists but is unassigned, or does not exist at all) returns the unchanged member.
 
@@ -305,7 +305,7 @@ Other role assignments on the same member are preserved.
 
 - [`DELETE /v1/groups/:id/members/:userId/roles/:roleId`](/api-reference/groups) - the underlying HTTP route.
 
-## `setNotes(groupId, userId, input)` - shipped
+## `setNotes(groupId, userId, input)`
 
 Updates the officer notes attached to a member. Both fields are diffed per-field against the stored row: supplying the same value as stored is a no-op for that field (no DB write, no audit entry, member returned unchanged).
 

@@ -43,7 +43,7 @@ Fetches a single member by their `GroupMember.id`. Scoped to the calling game (a
 
 ## `GET /v1/users/:userId/members`
 
-Lists every group a user is a member of within the calling game. Returns a bare array (no pagination wrapper) capped at `1000` rows. A user with more than that many memberships in a single game is unsupported in V1; if it ever surfaces, this endpoint will gain pagination as an additive change.
+Lists every group a user is a member of within the calling game. Returns a bare array (no pagination wrapper) capped at `1000` rows. A user with more than that many memberships in a single game is unsupported.
 
 A user with no `ExternalIdentity` row for the calling game returns `[]` rather than `404`. The route deliberately does not distinguish "user we have never seen" from "user known but not in any groups": both answers are the same for the consumer (zero memberships) and collapsing the cases avoids leaking whether a given external user id has ever been recorded.
 
