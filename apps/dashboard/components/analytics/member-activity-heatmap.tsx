@@ -195,12 +195,7 @@ function HeatmapTable({ cells, max }: HeatmapTableProps) {
           <tr className="text-[10px] tabular-nums text-muted-foreground">
             <th className="w-12" scope="col" aria-hidden />
             {HOURS.map((h) => (
-              <th
-                key={h}
-                scope="col"
-                className="w-6 px-0.5 text-center font-normal"
-                aria-hidden
-              >
+              <th key={h} scope="col" className="w-6 px-0.5 text-center font-normal" aria-hidden>
                 {h % HOUR_LABEL_STRIDE === 0 ? formatHour(h) : ""}
               </th>
             ))}

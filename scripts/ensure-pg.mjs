@@ -57,13 +57,7 @@ function dockerExists() {
 }
 
 function dockerRunning() {
-  const r = run("docker", [
-    "ps",
-    "--format",
-    "{{.Names}}",
-    "--filter",
-    `name=^${CONTAINER}$`,
-  ]);
+  const r = run("docker", ["ps", "--format", "{{.Names}}", "--filter", `name=^${CONTAINER}$`]);
   return r.status === 0 && r.stdout.trim() === CONTAINER;
 }
 

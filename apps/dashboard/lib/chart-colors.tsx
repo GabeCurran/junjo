@@ -25,14 +25,7 @@ export const CHART_BRAND_HSL = "0 88% 65%" as const;
 // instead of Tremor's default rainbow (blue/violet/teal/emerald/pink).
 // Order matters: the first series gets the brand color (red), which
 // is typically the most-prominent / largest-by-default series.
-export const CHART_MULTI_PALETTE = [
-  "red",
-  "amber",
-  "rose",
-  "orange",
-  "yellow",
-  "stone",
-] as const;
+export const CHART_MULTI_PALETTE = ["red", "amber", "rose", "orange", "yellow", "stone"] as const;
 
 // Shared tooltip used by every Tremor chart in the dashboard. The key
 // fixes vs Tremor's default tooltip:
@@ -69,7 +62,7 @@ export function ChartTooltip({ active, payload, label }: CustomTooltipProps) {
             (entry as { stroke?: string }).stroke ??
             (entry as { fill?: string }).fill;
           return (
-            <div key={`${name}-${idx}`} className="flex items-center gap-2 whitespace-nowrap">
+            <div key={name} className="flex items-center gap-2 whitespace-nowrap">
               {swatch ? (
                 <span
                   className="h-2 w-2 shrink-0 rounded-full"

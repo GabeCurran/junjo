@@ -98,10 +98,32 @@ async function main(): Promise<void> {
   // 3. JunjoUsers + ExternalIdentities (the dev's "users")
   console.log("[seed:demo] users + external identities...");
   const USER_NAMES = [
-    "azura", "boran", "cyrus", "dax", "elara", "fenris", "garan", "hilde",
-    "io", "jorah", "kira", "lyric", "mira", "nyx", "orin", "petra",
-    "quill", "raven", "syrah", "thane", "umi", "vale", "wren", "xan",
-    "yara", "zev",
+    "azura",
+    "boran",
+    "cyrus",
+    "dax",
+    "elara",
+    "fenris",
+    "garan",
+    "hilde",
+    "io",
+    "jorah",
+    "kira",
+    "lyric",
+    "mira",
+    "nyx",
+    "orin",
+    "petra",
+    "quill",
+    "raven",
+    "syrah",
+    "thane",
+    "umi",
+    "vale",
+    "wren",
+    "xan",
+    "yara",
+    "zev",
   ] as const;
   const users = await Promise.all(
     USER_NAMES.map(async (name) => {
@@ -137,8 +159,20 @@ async function main(): Promise<void> {
   // 5. Roles + permissions per group
   console.log("[seed:demo] roles + role-permissions...");
   const ROLE_SPECS = [
-    { name: "Owner", priority: 100, color: "#ef4444", isDefault: false, perms: PERM_KEYS.map((p) => p.key) },
-    { name: "Officer", priority: 75, color: "#f59e0b", isDefault: false, perms: ["members.kick", "members.invite", "members.assign-role", "audit.view"] },
+    {
+      name: "Owner",
+      priority: 100,
+      color: "#ef4444",
+      isDefault: false,
+      perms: PERM_KEYS.map((p) => p.key),
+    },
+    {
+      name: "Officer",
+      priority: 75,
+      color: "#f59e0b",
+      isDefault: false,
+      perms: ["members.kick", "members.invite", "members.assign-role", "audit.view"],
+    },
     { name: "Member", priority: 25, color: "#3b82f6", isDefault: true, perms: ["members.invite"] },
     { name: "Recruit", priority: 10, color: "#6b7280", isDefault: false, perms: [] },
   ] as const;
@@ -167,7 +201,10 @@ async function main(): Promise<void> {
     // Set defaultRoleId on the group (Member is default)
     const memberRole = map.get("Member");
     if (memberRole) {
-      await prisma.group.update({ where: { id: group.id }, data: { defaultRoleId: memberRole.id } });
+      await prisma.group.update({
+        where: { id: group.id },
+        data: { defaultRoleId: memberRole.id },
+      });
     }
   }
 
@@ -183,11 +220,18 @@ async function main(): Promise<void> {
     if (!groupRoles) continue;
     // Owner first (always active)
     const ownerMember = await prisma.groupMember.create({
-      data: { groupId: group.id, junjoUserId: ownerUser.id, status: "active", joinedAt: daysAgo(180) },
+      data: {
+        groupId: group.id,
+        junjoUserId: ownerUser.id,
+        status: "active",
+        joinedAt: daysAgo(180),
+      },
     });
     const ownerRole = groupRoles.get("Owner");
     if (ownerRole) {
-      await prisma.memberRole.create({ data: { groupMemberId: ownerMember.id, roleId: ownerRole.id } });
+      await prisma.memberRole.create({
+        data: { groupMemberId: ownerMember.id, roleId: ownerRole.id },
+      });
     }
     // Then 6-8 other members per group with varied status / roles / dates
     const memberCount = 6 + (groupIdx % 3);
@@ -203,7 +247,10 @@ async function main(): Promise<void> {
           status,
           joinedAt: joined,
           leftAt: left,
-          notesPublic: i % 4 === 0 ? `Joined during the ${["spring", "summer", "fall", "winter"][groupIdx % 4]} push` : null,
+          notesPublic:
+            i % 4 === 0
+              ? `Joined during the ${["spring", "summer", "fall", "winter"][groupIdx % 4]} push`
+              : null,
         },
       });
       // Assign a role only to active members
@@ -337,8 +384,16 @@ async function main(): Promise<void> {
   console.log("[seed:demo] webhooks...");
   const WH_SPECS = [
     { url: "https://hooks.example/junjo", format: "junjo", events: [] },
-    { url: "https://discord.com/api/webhooks/demo", format: "discord", events: ["member.joined", "member.kicked"] },
-    { url: "https://hooks.slack.com/services/demo", format: "slack", events: ["group.created", "role.created"] },
+    {
+      url: "https://discord.com/api/webhooks/demo",
+      format: "discord",
+      events: ["member.joined", "member.kicked"],
+    },
+    {
+      url: "https://hooks.slack.com/services/demo",
+      format: "slack",
+      events: ["group.created", "role.created"],
+    },
   ] as const;
   const endpoints = await Promise.all(
     WH_SPECS.map((spec) =>
