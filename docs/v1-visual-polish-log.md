@@ -648,19 +648,63 @@ layout.
 - The captured mobile PNG is still wider than 375px because the
   `GroupDetailTabs` strip overflows (V.14b shared follow-up under
   "Structural issues to revisit later"). Out of V.14's scope.
-- After the CardHeader fix, the parent breadcrumb's inner row
-  (`<Layers>` icon + PARENT label + 25-char mono CUID + "Open parent"
-  link) still clips the "Open parent" link off the right edge on a
-  375px capture. The row uses
-  `flex items-center justify-between` and the long mono CUID + button
-  side-by-side just don't fit at mobile width. Different problem class
-  and different fix shape from the CardHeader stack (probably stacked
-  inner row or `break-all` + `flex-wrap`). Filed as V.14c follow-up
-  rather than fixed this iteration per protocol-17a.
+- The parent breadcrumb inner row (`<Layers>` icon + PARENT label +
+  25-char mono CUID + "Open parent" link) was a separate mobile-clip
+  follow-up filed as V.14c and resolved in a sibling iteration; see
+  the V.14c entry below.
 - Empty-state for "Direct children" - dashed-border card with `GitBranch`
   icon, "No children yet" headline, and helper copy with inline
   `<code>parentGroupId</code>` token - reads cleanly on desktop and
   mobile post-fix. Acceptable as-is.
+
+## V.14c group-sub-groups parent breadcrumb inner row
+
+**Before:** Inside the `ParentCard` content, the parent breadcrumb panel
+used `flex items-center justify-between rounded-md border border-border
+bg-card/50 p-3` with two children: a left group (h-9 w-9 Layers icon +
+"PARENT" label + 25-char mono CUID) and a right "Open parent" link
+(`ExternalLink` icon + label, ~110px wide). At 375px mobile viewport the
+combined row width (icon ~36px + gap-3 + 25-char mono CUID at ~14px each
++ link ~110px + horizontal padding ~24px) exceeded the card's content
+width. The "Open parent" link was clipped off the right edge in the
+mobile capture, and because of the table's posture the whole panel
+contributed to the page-width overflow that V.14b fixed at the tab strip
+level. After V.14b, the tab strip stopped forcing the page wider, but
+this inner row still pushed past the 375px content column and rendered
+the link partially behind the card border.
+
+**Fix:** Two-axis fix in
+`apps/dashboard/components/dashboard/sub-groups-table.tsx`. (1) Outer
+panel switches from `flex items-center justify-between` to
+`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between` so
+the icon-and-id block stacks above the "Open parent" link on mobile and
+returns to the prior side-by-side posture from `sm:` up. (2) The mono
+CUID gets `break-all` and its parent column gets `min-w-0` so the
+25-char id wraps onto a second line inside the column instead of forcing
+the row wider; the icon's wrapper gets `shrink-0` so it doesn't squash
+when the column wraps. (3) The "Open parent" link gets `self-start` on
+mobile (and `sm:self-auto` on desktop) so after stacking it left-aligns
+naturally rather than stretching to full card width via the parent's
+default `align-items: stretch`. Desktop posture is byte-equivalent to
+prior because every change is gated on `sm:` or scoped to a no-op width
+constraint.
+
+**Acceptable as-is:**
+
+- The CUID wraps to two lines on mobile (`cmoq1qmuc02lxjaadumx` /
+  `lyjrz`) because the inner column is narrower than the full id. This
+  matches how the V.7 game-detail API key column already handles long
+  monospace tokens at mobile width; consistent posture across
+  group-detail surfaces. A future iteration could shorten the displayed
+  id (first 8 + ellipsis + last 4) and copy the full id on click, but
+  that is a UX change not a polish edit.
+- After the stack, the "Open parent" link sits below and slightly
+  indented from the icon-and-label block (matches the column's left
+  edge, not the card's left padding edge). Visually clear that it is
+  part of the parent panel and not a separate action; acceptable.
+- Pre-existing tab-strip horizontal scroll (V.14b) and per-row mobile
+  table reshape (V.9 follow-up) remain unrelated problem classes; this
+  entry only concerns the parent breadcrumb inner row.
 
 ## V.14b group-detail tab strip mobile overflow
 
