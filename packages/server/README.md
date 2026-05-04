@@ -50,7 +50,7 @@ The `postinstall` script runs `prisma generate` automatically after every `npm i
 
 ## Running tests
 
-Server tests use a real Postgres connection rather than mocking Prisma. We picked a `TEST_DATABASE_URL` env-var fixture over `testcontainers` so the test runner has no Docker dependency. See `docs/05-decisions.md` (2026-04-28: Server test fixture).
+Server tests use a real Postgres connection rather than mocking Prisma. We picked a `TEST_DATABASE_URL` env-var fixture over `testcontainers` so the test runner has no Docker dependency.
 
 The simplest local setup is a Postgres container that you bring up once and reuse:
 
@@ -97,4 +97,4 @@ The first invocation seeds the database with the targets in `src/bench/setup.ts`
 npm run bench -- --compare=bench-results/baseline.json
 ```
 
-The committed V1 baseline numbers (p50 / p95 / p99 per operation) live in `docs/05-decisions.md` under the Phase 14.11 entry. They were captured on Gabe's local hardware (Windows 11, local Docker Postgres on port 5433) and are an order-of-magnitude reference rather than a contractual SLO; rerun on your own hardware before comparing.
+Bench results are an order-of-magnitude reference, not a contractual SLO; rerun on your own hardware before comparing. The harness writes a JSON report under `bench-results/` that you can diff across runs.

@@ -312,7 +312,7 @@ Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Id
 
 ### Background sweeper
 
-Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron; see `docs/03-architecture.md` (Background sweeps) for the rationale.
+Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron — keeping background work in-process avoids an operational dependency for self-hosters.
 
 ## `POST /v1/groups/:id/invitations`
 

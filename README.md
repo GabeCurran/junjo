@@ -1,29 +1,57 @@
 # Junjo
 
-Game-domain primitives for groups, ranks, and permissions. A drop-in social-organization layer for any multiplayer game (browser, Unity, Roblox, etc.) that handles guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth - does not replace it.
+A drop-in social-organization layer for multiplayer games — guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth; never replaces it.
 
-## Status
+```ts
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY });
+const guild = await junjo.groups.create({ kind: "guild", name: "Crimson Dawn" });
+await junjo.groups.inviteByUserId(guild.id, "user_123");
+```
 
-**2026-04-19** - project just initialized. No code yet. Currently scoping the monorepo + SDK API surface.
+## What's in the box
 
-## Read first
+- **`@junjo/sdk`** — typed TypeScript client for any Node or browser app
+- **`@junjo/react`** — React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates
+- **`junjo-roblox`** — Luau client for Roblox experiences
+- **Cross-game admin dashboard** — Next.js app for inspecting + managing groups across games
+- **Server** — Hono on Node + Postgres via Prisma; self-hostable (MIT) or use the cloud
+- **Auth adapters** — Clerk, Supabase, JWT, BYO
 
-The `docs/` directory captures every decision made during scoping so far. Read in order:
+## Documentation
 
-1. `docs/01-product.md` - what Junjo is, who it's for, the market gap
-2. `docs/02-scope.md` - V1 feature list, out of scope, game inspirations
-3. `docs/03-architecture.md` - tech stack, API-first pattern, SDK design, auth adapter
-4. `docs/04-monetization.md` - open-core model, pricing tiers, cost math
-5. `docs/05-decisions.md` - running log of decisions and rationale
+User and developer docs live at **`apps/docs`** (Nextra). Run `npm run dev` and open `http://localhost:3001`, or browse the source under `apps/docs/pages/`.
 
-## Next steps
+## Local development
 
-- Scaffold monorepo (npm workspaces): `packages/server`, `packages/sdk`, `packages/react`, `packages/sdk-roblox`, `packages/shared`, `apps/dashboard`, `apps/docs`, plus shared TS configs
-- Draft the SDK API surface (TypeScript types, public methods, error shapes)
-- Draft the Postgres schema (Prisma)
-- Decide on licensing (MIT vs BSL vs source-available)
-- Register `junjo.io` domain + npm `@junjo` org + GitHub repo
+```sh
+git clone https://github.com/GabeCurran/junjo
+cd junjo
+npm install
 
-## Owner
+# Boots Postgres (Docker), runs migrations, seeds a demo dataset,
+# then runs server (:8787) + dashboard (:3000) + docs (:3001) in parallel:
+npm run dev
+```
 
-Gabe Curran. Side passion project. ~10-month time-to-launch (all-at-once release model). See [the parent job-search plan](C:\Users\Gabe\.claude\plans\i-really-want-to-drifting-chipmunk.md) for how this fits the broader career trajectory.
+Pre-flight: Docker Desktop must be running. The dev script auto-creates a Postgres container (`junjo-test-pg` on port 5433) and seeds it with demo data — see the printed game ID + API key in the bootstrap output.
+
+## Repository layout
+
+```
+packages/
+  server/       Hono HTTP API + Prisma schema + webhook worker
+  sdk/          @junjo/sdk - typed TypeScript client
+  react/        @junjo/react - React hooks
+  sdk-roblox/   junjo-roblox - Luau client
+  shared/       @junjo/shared - shared types
+apps/
+  dashboard/    Next.js admin dashboard (proprietary)
+  docs/         Nextra documentation site
+tools/
+  screenshots/  Puppeteer screenshot crawler for visual QA
+  diagrams/     Mermaid renderer
+```
+
+## License
+
+MIT for the OSS packages (`packages/*`). The dashboard at `apps/dashboard` is proprietary (see `apps/dashboard/LICENSE`).

@@ -68,6 +68,6 @@ The public invitation route (`GET /v1/invitations/:code`) and the admin endpoint
 
 ## Server bootstrap
 
-The runnable entry point is `packages/server/src/index.ts`. It loads env via `loadEnv()`, builds the Hono app via `createApp()`, and registers SIGINT/SIGTERM handlers that disconnect Prisma cleanly. Tests boot the same `createApp()` factory with injected fakes so each test file owns an isolated app instance. See `docs/03-architecture.md` for the full file-layout rationale.
+The runnable entry point is `packages/server/src/index.ts`. It loads env via `loadEnv()`, builds the Hono app via `createApp()`, and registers SIGINT/SIGTERM handlers that disconnect Prisma cleanly. Tests boot the same `createApp()` factory with injected fakes so each test file owns an isolated app instance.
 
 If you are running the server yourself (not calling the cloud), the [Self-hosting](/self-host) page is the operational reference: Docker / Compose recipes, the env-var table, the migration lifecycle across upgrades, API-key issuance, and the reverse-proxy notes for the SSE path.

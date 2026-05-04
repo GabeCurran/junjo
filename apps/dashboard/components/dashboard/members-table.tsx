@@ -250,10 +250,9 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         id: "actions",
         header: () => <span className="sr-only">Actions</span>,
         // Each action is its own dialog. Rendered inline rather than behind
-        // a dropdown menu to keep this iteration's surface area focused;
-        // four buttons fit on a desktop row and the dashboard already
-        // assumes desk-bound operators (per the Phase 11.1b mobile-defer
-        // decision in docs/05-decisions.md).
+        // a dropdown menu to keep the row's surface area focused; four
+        // buttons fit on a desktop row and the dashboard assumes
+        // desk-bound operators.
         cell: ({ row }) => {
           const m = row.original;
           return (

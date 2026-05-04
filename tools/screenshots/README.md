@@ -280,7 +280,7 @@ beyond a working repo install.
 
 Hard rule 9 of `.loop/prompt-template.md` forbids the agent from
 editing the harness directly. The snippet below is the canonical
-prompt-template addition; Gabe pastes it manually into the
+prompt-template addition; paste it manually into the
 "Architectural conventions" area of `.loop/prompt-template.md` (above
 "Hard rules - non-negotiable") to wire the workflow into every loop
 iteration. Until that paste lands, the agent uses the workflow on its
@@ -397,9 +397,8 @@ whoever owns the release.
 
 ## Why Puppeteer and not Playwright
 
-Playwright is already wired in for the dashboard E2E suite (Phase 14.12)
-and that's the right tool for behavioral end-to-end tests. Screenshot
-capture for a static catalog is a different mental model (visual
-snapshot, not a behavioral assertion), and Puppeteer is the lighter
-weight choice for that one job. See `docs/05-decisions.md` for the
-full rationale.
+Playwright is already wired in for the dashboard E2E suite — that's the
+right tool for behavioral end-to-end tests. Screenshot capture for a
+static catalog is a different mental model (visual snapshot, not a
+behavioral assertion), and Puppeteer is the lighter-weight choice for
+that one job.
