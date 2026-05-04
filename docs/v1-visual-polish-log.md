@@ -1114,6 +1114,79 @@ V.27 (TOC slim + sidebar-collapse-at-top) already cover the
 docs-site-wide theme overrides that would touch this page too;
 not re-filed here.
 
+## V.23 docs site self-host page
+
+**Before:** Third docs-site landing page in the V.21-V.25 sub-set.
+Source: `apps/docs/pages/self-host.mdx`. Comprehensive ops
+reference (~370 lines of MDX). Body sections in order: H1
+"Self-hosting Junjo", lead paragraph, "What you get on self-host",
+"Required pieces", "Docker", "Docker Compose", "Local from source",
+"Environment variables" (8-row table with a wide Notes column),
+"Database lifecycle" (First migration / Upgrading / Schema reset /
+Backups), "Issuing and rotating API keys" (First key / Additional
+keys / Revoking a key), "Health checks" (`GET /` liveness +
+`GET /healthz` readiness), "Background workers" (sweeper + webhook
+worker prose + embedded webhook-delivery sequenceDiagram fence +
+Horizontal scaling), "Reverse proxy", "Observability", "Upgrades
+and breaking changes", "Where to next". Multiple sh / yaml / sql
+code fences and one Mermaid sequence-diagram embed inside prose.
+Rendered desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The page renders cleanly on both
+viewports.
+
+**Acceptable as-is:**
+
+- Desktop (1440x900): standard three-column Nextra layout matches
+  V.21 / V.22. Left sidebar shows the top-level page list with the
+  Self-hosting entry highlighted active. Center prose column carries
+  the H1 + lead + 14+ H2 sections + nested H3s without horizontal
+  overflow. Code fences (sh / yaml / sql) sit flush left in the
+  prose column and wrap their long literals (the `docker run -e
+  DATABASE_URL=...` invocation, the `docker-compose.yml` block, the
+  `UPDATE "ApiKey" SET ...` SQL) without horizontal scroll at the
+  desktop measure. Right TOC right-rail enumerates every H2 / H3
+  with the active section highlighted on scroll. Embedded
+  webhook-delivery sequenceDiagram inside the Background workers
+  section renders at full prose-column width with all autonumbered
+  steps and the explanatory note legible.
+- Mobile (375x812): the page is genuinely long (this is the
+  comprehensive operator reference) but composes cleanly with the
+  same Nextra prose component already accepted on V.21 / V.22. No
+  horizontal page scroll. Environment variables 4-column table
+  (Name / Required / Default / Notes) compresses to multi-line
+  cells; the Notes column wraps to 6-10 visual lines per row for
+  the longer entries (`JUNJO_ADMIN_TOKEN`, `LOG_LEVEL`) but the
+  table stays inside the viewport. Code fences scroll horizontally
+  inside their own container per the Nextra default for `pre`
+  overflow. Embedded webhook-delivery mermaid compresses on mobile
+  the same way the V.1 system-architecture diagram does (LR
+  sequence with many participants in a narrow viewport); the
+  diagram does not horizontally overflow the page itself.
+- Light + dark mode parity: prose tokens, code-fence theme, table
+  border + zebra stripes, blockquote callout (the `> The
+  ghcr.io/junjo/server:latest image is the V1 release target...`
+  note), and inline `code` background all use the Nextra default
+  tokens, which already render well on both modes (validated on
+  V.21 / V.22 with the same prose component). No custom CSS
+  overlay needed for the self-host page.
+- The "Last updated on ..., 2026" footer + pagination row sits at
+  the bottom of the prose column flush with the page bottom, same
+  shape as V.21 / V.22.
+- Mobile fullPage screenshot artifact: at 375px width the resulting
+  PNG is ~38k pixels tall and Puppeteer's fullPage capture
+  re-includes the Nextra sticky mobile nav at multiple scroll
+  positions, which makes the captured PNG appear to "repeat" the
+  page header several times. This is a Puppeteer rendering
+  characteristic for sticky-positioned elements during fullPage
+  capture, not a real layout regression - in a live mobile
+  browser the sticky nav stays at the top of the viewport as you
+  scroll and the page below it renders once. Not actionable.
+
+**Notes:** No new follow-ups discovered on this surface. V.26 /
+V.27 (TOC slim + sidebar-collapse-at-top) cover the docs-site-wide
+theme overrides that would touch this page too; not re-filed here.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
