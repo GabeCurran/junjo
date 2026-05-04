@@ -917,6 +917,38 @@ acceptable on both viewports.
   render at consistent contrast against the `bg-card/50` background;
   no contrast or readability issue on either viewport.
 
+## V.19 game-level audit page
+
+**Before:** The top-level `/audit` route is the same stub-redirect
+shape as `/analytics` (V.18): a centered dashed-border card titled
+"Audit logs are game-scoped" with a paragraph explaining that every
+mutation writes to its game's audit table and a `Games list` link to
+pick a game. Rendered desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The empty-state landing surface is
+acceptable on both viewports.
+
+**Acceptable as-is:**
+
+- Desktop: dashed-border card centered in `mx-auto max-w-screen-xl`
+  with `p-10 text-center`. Title `Audit logs are game-scoped` and the
+  one-line paragraph fit comfortably on a single line each (paragraph
+  wraps to a second line at the 1440 viewport, which reads cleanly).
+  No inline desktop H1 - same pattern as V.5 / V.6 / V.18; the
+  topbar is `md:hidden` by design from commit 49e9cb2.
+- Mobile: topbar provides page identity ("Audit" + description
+  "Audit logs are scoped per game.") above the card. Card title wraps
+  to two lines as "Audit logs are game-/scoped" with a clean break
+  after the hyphen on `game-scoped`; the paragraph wraps with the
+  `Games list` link landing inline mid-line, no orphans, no clipping.
+  No horizontal scrollbar.
+- Vertical void below the card on desktop: same as V.18 - inherent to
+  a stub-redirect empty-state landing page; the card is the only
+  content. Not flagged as a layout failure.
+- Contrast and link styling identical to V.18: `Games list` link
+  `font-medium text-foreground underline` reads cleanly against
+  `bg-card/50` in dark mode.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
