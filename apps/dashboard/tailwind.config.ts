@@ -25,6 +25,37 @@ const config: Config = {
   // (hover only where Tremor uses it) to avoid bloating the production
   // CSS with unused state combinations.
   safelist: [
+    // Tremor uses these tokenized classes for chart chrome (axis text,
+    // gridlines, tooltip backdrop, etc.). Tailwind's content scan
+    // sometimes misses them inside Tremor's compiled JS (template
+    // literals, conditional concat), so they're force-listed here to
+    // guarantee the utility CSS rule exists in the compiled bundle.
+    "text-tremor-content",
+    "text-tremor-content-subtle",
+    "text-tremor-content-emphasis",
+    "text-tremor-content-strong",
+    "text-tremor-content-inverted",
+    "text-dark-tremor-content",
+    "text-dark-tremor-content-subtle",
+    "text-dark-tremor-content-emphasis",
+    "text-dark-tremor-content-strong",
+    "text-dark-tremor-content-inverted",
+    "fill-tremor-content",
+    "fill-tremor-content-subtle",
+    "fill-tremor-content-emphasis",
+    "fill-tremor-content-strong",
+    "fill-dark-tremor-content",
+    "fill-dark-tremor-content-subtle",
+    "fill-dark-tremor-content-emphasis",
+    "fill-dark-tremor-content-strong",
+    "stroke-tremor-border",
+    "stroke-dark-tremor-border",
+    "bg-tremor-background",
+    "bg-tremor-background-subtle",
+    "bg-tremor-background-muted",
+    "bg-dark-tremor-background",
+    "bg-dark-tremor-background-subtle",
+    "bg-dark-tremor-background-muted",
     {
       pattern:
         /^(bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|coral)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
