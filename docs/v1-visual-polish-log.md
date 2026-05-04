@@ -785,6 +785,42 @@ outside `"use client"` boundaries so server code can call them.
   Layout is the existing flex-wrap grid from V.12-style polish; no
   visible cropping or overlap in the captures.
 
+## V.16 permission check tester
+
+**Before:** Rendered cleanly out of the box. Form card with title
+"Resolve a (user, group, permission) triple", two-line description,
+three-column form (External user id / Group id / Permission key),
+right-aligned "Run check" button. No result panel because the
+fixture lands on the page in its empty state (the result panel only
+renders after the form action returns).
+
+**Fix:** None. Surface accepted as-is on the first render -> read
+cycle.
+
+**Acceptable as-is:**
+
+- Desktop has a large empty area below the form card. Inherent to a
+  single-form admin tool with no above-the-fold result panel until
+  the user submits; truncating the page or padding it with chrome
+  would not improve the affordance.
+- Mobile card title wraps as "Resolve a (user, group," / "permission)
+  triple" - the parenthetical list breaks mid-list at the 375px
+  viewport. The title is a long phrase; without shrinking the font
+  or rewording the title the wrap point is what it is, and mid-list
+  break is still readable. Acceptable.
+- Form labels stack above inputs on mobile, side-by-side on desktop
+  via `md:grid-cols-3`. Standard pattern, matches the rest of the
+  dashboard.
+- Run check button is right-aligned via `flex justify-end`; on mobile
+  this puts the button on its own line at the right edge of the
+  card, which reads as the primary action without crowding the input
+  group above it.
+- Result panel layout was not exercised by this capture (fixture
+  lands on the empty form). The component shape (badges + dl grid)
+  matches the same patterns used on the analytics summary cards
+  already polished under V.5; no separate polish iteration is
+  needed for it on the basis of code review alone.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
