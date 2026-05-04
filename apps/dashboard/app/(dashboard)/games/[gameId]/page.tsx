@@ -117,10 +117,7 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
   const params = await props.params;
   return (
     <>
-      <Topbar
-        title="Game detail"
-        description="Issue and revoke API keys for this game."
-      />
+      <Topbar title="Game detail" description="Issue and revoke API keys for this game." />
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-screen-2xl">
           <GameBody gameId={params.gameId} />

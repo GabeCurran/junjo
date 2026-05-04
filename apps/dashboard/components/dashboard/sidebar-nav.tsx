@@ -103,10 +103,7 @@ export function SidebarNav() {
                 : pathname === item.href || pathname.startsWith(`${item.href}/`);
             return <NavLink key={item.href} item={item} active={active} />;
           })}
-          <NavLink
-            item={{ href: "/games", label: "All games", icon: ArrowLeft }}
-            active={false}
-          />
+          <NavLink item={{ href: "/games", label: "All games", icon: ArrowLeft }} active={false} />
         </>
       ) : null}
     </nav>
