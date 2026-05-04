@@ -6,7 +6,8 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*", "examples/*", "tools/*"],
   "scripts": {
-    "dev": "concurrently --names server,dashboard,docs --prefix-colors blue,green,yellow --kill-others-on-fail \"npm:dev:server\" \"npm:dev:dashboard\" \"npm:dev:docs\"",
+    "dev": "node scripts/ensure-pg.mjs && concurrently --names pg,server,dashboard,docs --prefix-colors magenta,blue,green,yellow --kill-others-on-fail \"npm:dev:pg\" \"npm:dev:server\" \"npm:dev:dashboard\" \"npm:dev:docs\"",
+    "dev:pg": "docker logs -f --tail 20 junjo-test-pg",
     "dev:server": "npm run dev -w @junjo/server",
     "dev:dashboard": "npm run dev -w @junjo/dashboard -- -p 3000",
     "dev:docs": "npm run dev -w @junjo/docs -- -p 3001",
