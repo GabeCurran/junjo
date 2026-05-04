@@ -40,3 +40,18 @@
 .nextra-toc nav li:has(> a[class*="_ms-4"]) + li:has(> a:not([class*="_ms-4"])) {
   margin-top: 0.75rem;
 }
+
+/* Sidebar footer (theme switch + sidebar collapse button) at the TOP.
+   Nextra renders the controls in a `nextra-sidebar-footer _sticky _bottom-0`
+   div as the LAST child of `aside.nextra-sidebar-container` (a flex-col).
+   We want them at the top instead so the dark-mode toggle and the
+   sidebar-collapse button are immediately reachable without scrolling
+   the long nav. Re-order via flex `order` and re-anchor sticky from
+   bottom to top. The aside itself does not scroll (the inner nav
+   container does), so the sticky anchor mostly affects the visual
+   in-flow position rather than scroll-pinning behavior. */
+.nextra-sidebar-container .nextra-sidebar-footer {
+  order: -1;
+  top: 0;
+  bottom: auto;
+}

@@ -1369,6 +1369,68 @@ file for `apps/docs`. Keep it small - any future delta should ask
 import path is `../styles/globals.css` (Next.js pages-router
 convention).
 
+## V.27 docs sidebar footer moved to TOP
+
+**Before:** The `nextra-sidebar-footer` div (theme switch + sidebar
+collapse button) renders as the last child of the
+`aside.nextra-sidebar-container` flex-col, with `_sticky _bottom-0`.
+Both controls sit pinned at the bottom-left of the viewport. Two
+problems:
+
+1. The dark/light/system theme toggle is one of the most-clicked
+   surfaces a docs reader hits, and putting it under a long nav
+   (Introduction / Getting started / Tutorial / Self-hosting / SDK
+   with 8 sub-items / React with 7 sub-items / etc.) means it
+   competes with Vercel's dev-mode floating "N" badge for screen
+   real-estate at the bottom-left corner and is easy to miss.
+2. The sidebar-collapse rectangle button (`max-md:_hidden`) sits
+   next to the theme toggle at the bottom; users who want to give
+   the prose more horizontal room have to scroll-hunt for it.
+
+**Fix:** Added a single CSS rule to `apps/docs/styles/globals.css`:
+
+```css
+.nextra-sidebar-container .nextra-sidebar-footer {
+  order: -1;
+  top: 0;
+  bottom: auto;
+}
+```
+
+`order: -1` makes the footer sort before the menu container in the
+flex-col (the menu has implicit `order: 0`). `top: 0; bottom: auto`
+re-anchors the sticky-positioned footer so it pins to the top of
+the aside instead of the bottom. The aside itself does not scroll
+(the inner menu container does), so sticky here mostly affects the
+in-flow visual position rather than scroll-pinning behavior.
+
+**Acceptable as-is:**
+
+- Re-rendered `/sdk` desktop and cropped a 320x900 sidebar strip:
+  "System" theme switch with moon icon now sits immediately under
+  the "Junjo" logo at the top of the aside, with the rectangle
+  sidebar-collapse button to its right. Below that, the nav list
+  starts with "Introduction / Getting started / Tutorial /
+  Self-hosting / SDK (expanded with Overview / groups / invitations
+  / members / roles / permissions / audit / webhooks)" exactly as
+  before. No other layout shift.
+- Mobile parity: the sidebar is `max-md:[transform:translate3d(0,-100%,0)]`
+  hidden by default and only opens via the navbar hamburger as a
+  popover. The footer's collapse button has `max-md:_hidden`
+  (collapsing makes no sense on mobile where the sidebar is full-
+  screen), but the theme switch still renders inside the open
+  mobile sidebar; with the new rule it would also appear at top of
+  the open mobile menu, which is consistent with the desktop
+  treatment.
+- Light + dark mode parity: pure layout rule, no color values to
+  drift.
+
+**Notes:** No new selectors against unstable Nextra internals - the
+selector is `.nextra-sidebar-container .nextra-sidebar-footer`,
+both classes are part of Nextra's documented theme structure
+(see `nextra-theme-docs/dist/index.js` lines 1789-1835). Same
+defensive scoping as the V.26 TOC rules.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
