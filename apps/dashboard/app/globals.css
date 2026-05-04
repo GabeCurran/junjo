@@ -60,6 +60,36 @@
   }
 }
 
+/* Native form-control accents. Browsers tint native checkboxes / radios /
+ * date pickers with their own brand color (Chrome blue, etc.) by default;
+ * `accent-color` overrides that to our coral, and `caret-color` keeps the
+ * text caret consistent in inputs. Date / datetime-local inputs also get
+ * a pointer cursor on the calendar indicator so users see they're
+ * clickable. */
+@layer base {
+  :root,
+  .dark {
+    accent-color: hsl(var(--primary));
+    caret-color: hsl(var(--primary));
+  }
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="month"],
+  input[type="time"],
+  input[type="week"],
+  input[type="checkbox"],
+  input[type="radio"] {
+    cursor: pointer;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+  input[type="month"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator,
+  input[type="week"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+  }
+}
+
 /* Tremor chart tokens. Coral-accent brand in both modes; surface + content
  * tokens track the shadcn primitives above so charts inherit the same warm
  * neutral palette as the rest of the dashboard. */
