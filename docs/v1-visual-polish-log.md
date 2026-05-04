@@ -821,6 +821,63 @@ cycle.
   already polished under V.5; no separate polish iteration is
   needed for it on the basis of code review alone.
 
+## V.17 game-analytics page
+
+**Before:** Five analytics cards stack on the page (Group churn
+distribution, Group growth over time, Member activity heatmap,
+then a 2-col bottom row of Role distribution + Most-used permission
+keys). Rendered desktop (1440x900) + mobile (375x812). The page-level
+shell is sound: page header with back-to-game-detail link, date-range
+preset tabs (Last 24 hours / 7 days / 30 days / 90 days / Custom),
+the small `Game <name> - <id>` caption, then the five cards in a
+single 4-spacing-unit `space-y-4` column.
+
+**Fix:** None this iteration. The page-level layout is acceptable on
+both viewports.
+
+**Acceptable as-is:**
+
+- Desktop bottom row: `grid-cols-1 gap-4 lg:grid-cols-2` puts Role
+  distribution (donut) and Most-used permission keys (horizontal bar
+  chart) side by side at lg+. At 1440 viewport with the dashboard
+  sidebar (~240px) the two cards each clear ~530px and the bar chart
+  has plenty of room behind its `yAxisWidth={140}` reservation. The
+  paired layout is documented in code as "the two 12.5 charts sit
+  side-by-side per VISION's 'Two charts side by side' framing."
+- Empty / partial states: Group churn distribution renders a "No
+  kicked or left members yet" message when the window has zero
+  departures - intentional, the card still shows the two metric
+  callouts (Window, Total departures) above the message so the empty
+  state has structural context.
+- Member activity heatmap shows pagination dots `* * * * *` bottom
+  right when the data spans more buckets than fit in one screen of
+  bars. The dots are small but visible and serve as the only
+  affordance to swipe; that is consistent with the rest of the
+  dashboard's Tremor charts.
+- Mobile (375px): every card stacks vertically. Card titles, stat
+  callouts, descriptions, and embedded charts all fit within the card
+  border with no horizontal scrollbars or off-screen content. The
+  mobile heatmap card preserves the same pagination dot affordance
+  used on desktop.
+- Date range picker tabs reuse the standard `tabs` styling that the
+  rest of the dashboard uses; the active "Last 7 days" tab is
+  highlighted, the rest are muted.
+- Page header back-to-game-detail link is a small, right-aligned
+  `border + bg-background` button with an arrow-left glyph - matches
+  the chrome on every other game-scoped page (V.7, V.15, V.16).
+
+**Follow-up filed in PROGRESS:**
+
+- V.31 permission-usage-chart legend placement. The "Most-used
+  permission keys" card has `showLegend` enabled on its Tremor
+  `BarChart`, which floats the "Role grants / Member overrides"
+  legend at the chart's top-right corner. Same problem class as the
+  V.30 follow-up filed for the group-growth-chart legend; not fixing
+  in V.17 because the user listed V.30 as a separate item, and V.17
+  is a page-level surface check rather than a chart-component
+  rework. The chart still renders correctly with its legend in place;
+  the polish is a layout preference, not a broken state.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
