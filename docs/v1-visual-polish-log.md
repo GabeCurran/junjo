@@ -1478,6 +1478,52 @@ references it.
 clickable) carries forward to V.29 (games-list) which has the
 same shape. V.30 / V.31 are unrelated chart-legend follow-ups.
 
+## V.29 dashboard games-list - drop "Open ->" column, make name clickable
+
+**Before:** Every row in the All games table had a trailing
+"Open ->" link in its own (unlabeled) rightmost column. The
+game name in the first cell wrapped a `Link` whose only hover
+affordance was `group-hover:underline` on a plain
+`text-sm font-medium` span - the link existed but nothing in
+the rendered cell suggested it was clickable until the operator
+hovered. Same two-competing-affordances problem as V.28: a
+low-contrast Open link on the right and a not-obviously-clickable
+name on the left.
+
+**Fix:** Removed the entire trailing column (the placeholder
+`<th aria-label="Open game" />` in the header row and the
+`<td>` containing the `<Link>Open <ArrowRight/></Link>` in each
+body row). Recoloured the existing name link to
+`text-primary hover:underline` so the name itself is the obvious
+clickable target. Dropped the `group` / `group-hover:underline`
+wrapper since the hover affordance is now on the name span
+directly. Dropped the now-unused `ArrowRight` import. Moved the
+`md:table-cell` Created header / cell padding from `pr-4` to
+trim the rightmost-column whitespace once the Open column was
+gone.
+
+**Acceptable as-is:**
+
+- Unlike V.28's groups-table this is a server component without
+  a row-level `onClick`; the name link is the only click target.
+  No double-fire concern, no `stopPropagation` plumbing.
+- `text-primary` resolves to coral on light and dark mode (same
+  brand accent as V.28 and the dashboard logo); contrast against
+  `bg-card` checks out at both themes.
+- Mobile viewport (`max-sm`) hides Groups / API keys / Created
+  via `hidden ... sm:table-cell` and `hidden ... md:table-cell`,
+  so on mobile the rendered columns are now just Name and
+  Members. Names render in coral on the mobile capture as
+  expected.
+- Desktop capture shows Created (May 4, 2026) as the rightmost
+  natural column with no decorative trailing column. Two-row
+  fixture (Screenshot Demo / Sweep Game) renders cleanly with
+  consistent column alignment.
+
+**Notes:** Closes the V.28 / V.29 pair. V.30 (group-growth-chart
+legend) and V.31 (permission-usage-chart legend) are unrelated
+chart treatments and will be picked up next.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row

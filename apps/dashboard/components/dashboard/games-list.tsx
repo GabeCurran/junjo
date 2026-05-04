@@ -1,5 +1,5 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowRight, Gamepad2 } from "lucide-react";
+import { Gamepad2 } from "lucide-react";
 import Link from "next/link";
 
 import { AdminDisabledError, type AdminGame, fetchAdminGames } from "../../lib/admin";
@@ -51,11 +51,8 @@ function GameRow({ game }: GameRowProps) {
   return (
     <tr className="border-b border-border last:border-0">
       <td className="py-3 pr-4">
-        <Link
-          href={`/games/${encodeURIComponent(game.id)}`}
-          className="group flex items-baseline gap-2"
-        >
-          <span className="text-sm font-medium group-hover:underline">{game.name}</span>
+        <Link href={`/games/${encodeURIComponent(game.id)}`} className="flex items-baseline gap-2">
+          <span className="text-sm font-medium text-primary hover:underline">{game.name}</span>
           <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
             {game.id}
           </span>
@@ -70,17 +67,8 @@ function GameRow({ game }: GameRowProps) {
       <td className="hidden py-3 pr-4 text-right text-sm tabular-nums md:table-cell">
         {numberFormatter.format(game.apiKeyCount)}
       </td>
-      <td className="hidden py-3 pr-4 text-right text-xs text-muted-foreground md:table-cell">
+      <td className="hidden py-3 text-right text-xs text-muted-foreground md:table-cell">
         {dateFormatter.format(new Date(game.createdAt))}
-      </td>
-      <td className="py-3 text-right">
-        <Link
-          href={`/games/${encodeURIComponent(game.id)}`}
-          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-        >
-          Open
-          <ArrowRight className="h-3 w-3" aria-hidden />
-        </Link>
       </td>
     </tr>
   );
@@ -124,8 +112,7 @@ export async function GamesList() {
                 <span className="hidden sm:inline">Active members</span>
               </th>
               <th className="hidden py-2 pr-4 text-right font-medium md:table-cell">API keys</th>
-              <th className="hidden py-2 pr-4 text-right font-medium md:table-cell">Created</th>
-              <th className="py-2 font-medium" aria-label="Open game" />
+              <th className="hidden py-2 text-right font-medium md:table-cell">Created</th>
             </tr>
           </thead>
           <tbody>
