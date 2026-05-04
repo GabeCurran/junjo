@@ -107,7 +107,7 @@ export function PermissionUsageChart({ data }: PermissionUsageChartProps) {
               // segments encode the role / override split per bar.
               layout="vertical"
               stack
-              yAxisWidth={140}
+              yAxisWidth={180}
               showLegend={false}
               allowDecimals={false}
               customTooltip={ChartTooltip}

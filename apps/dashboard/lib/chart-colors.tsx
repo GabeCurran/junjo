@@ -6,25 +6,27 @@
 
 import type { CustomTooltipProps } from "@tremor/react";
 
-// Single-series charts (group churn bar, heatmap intensity ramp).
-// `coral` is a Tailwind color we register in `tailwind.config.ts`;
-// Tremor v3 maps this to `fill-coral-500` / `stroke-coral-500` etc.
-// at render time, which is also why `coral` is in the safelist patterns.
-export const CHART_BRAND_COLOR = "coral" as const;
+// Single-series Tremor charts (group churn bar, donut "primary" slice).
+// Tremor v3's color resolver only accepts the Tailwind default-palette
+// color names (blue, red, rose, etc.) - custom Tailwind colors like
+// our brand "coral" silently render as black/transparent SVG fills
+// because Tremor's internal class-name map doesn't recognize them.
+// "red" is the closest warm Tailwind default to our coral brand
+// (#ef4444 vs #f76a6a); the slight tonal mismatch is an acceptable
+// tradeoff vs forking Tremor or dropping to Recharts directly.
+export const CHART_BRAND_COLOR = "red" as const;
 
-// Coral-equivalent HSL for the heatmap component which interpolates
-// opacity on a hand-rolled `hsl(<H S L> / <alpha>)` string. Mirrors
-// `--primary` from `app/globals.css`.
+// The heatmap is hand-rolled Tailwind, NOT Tremor. It builds its
+// cell color via `hsl(<H S L> / <alpha>)` so it CAN use the exact
+// brand coral. Mirrors `--primary` from `app/globals.css`.
 export const CHART_BRAND_HSL = "0 88% 65%" as const;
 
-// Multi-series palette: coral-anchored, warm-leaning. Avoids the
-// rainbow look of Tremor's defaults (blue/violet/teal/emerald/pink)
-// so the dashboard's coral brand stays dominant.
-//
-// Order matters: the first series in any chart's data gets `coral`,
-// which lines up with the most-prominent / largest-by-default series.
+// Multi-series palette: warm-leaning so charts read as one family
+// instead of Tremor's default rainbow (blue/violet/teal/emerald/pink).
+// Order matters: the first series gets the brand color (red), which
+// is typically the most-prominent / largest-by-default series.
 export const CHART_MULTI_PALETTE = [
-  "coral",
+  "red",
   "amber",
   "rose",
   "orange",
