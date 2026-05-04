@@ -741,6 +741,50 @@ simultaneously.
   scroll). A wholesale mobile redesign (e.g., tab dropdown, swipe
   carousel) is out of polish-pass scope.
 
+## V.15 game-wide audit log
+
+**Before:** The page errored out entirely. The card body rendered
+"Could not load audit log" with the runtime error "Attempted to call
+resolveBefore() from the server but resolveBefore is on the client.
+It's not possible to invoke a client function from the server, it can
+only be rendered as a Component or passed to props of a Client
+Component." Cause: `apps/dashboard/components/dashboard/game-audit-feed.tsx`
+is a `"use client"` module, and the page-level Server Component
+imported `resolveBefore` / `resolveSince` from it to derive the wire
+`before` / `since` values from the URL state. Next.js refuses to
+invoke a client export from server code at runtime; the page caught
+the resulting error in its `AdminBody` try/catch and rendered the
+generic error card. No actual audit data was visible.
+
+**Fix:** Extracted `resolveBefore`, `resolveSince`, and the
+underlying `datetimeLocalToIso` helper into a sibling non-client
+module `apps/dashboard/components/dashboard/game-audit-feed-helpers.ts`.
+The page imports them from there; the client component drops the
+`"use client"`-bound copies. No behavior delta - the helpers are
+pure, the conflict-resolution rule (cursor wins over endDate while
+paging) still lives in one place. Same problem class as the V.8b
+admin-shared split: shared non-component utilities have to live
+outside `"use client"` boundaries so server code can call them.
+
+**Acceptable as-is:**
+
+- The audit feed is dense at mobile width (per-row stacks the action
+  badge, actor / target IDs, and timestamp into a tall card; ~50
+  seeded entries make the page very long). Same problem class as
+  V.9's per-row mobile reshape follow-up - filed under "Members
+  table mobile clipping" already covers the broader shape concern.
+  Each row is individually legible; only the page total length is
+  long, which is inherent to a paginated audit log on a narrow
+  viewport.
+- The desktop page is also long (1440x6260 capture) because the
+  default page size is 50 and the seed feed is full. That is the
+  intended density for a power-operator audit table; truncating
+  client-side would obscure the pagination affordance. Acceptable.
+- Both desktop and mobile show the filter row (action / actor /
+  target / since / end / page-size) inline at the top of the card.
+  Layout is the existing flex-wrap grid from V.12-style polish; no
+  visible cropping or overlap in the captures.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
