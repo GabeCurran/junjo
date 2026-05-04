@@ -878,6 +878,45 @@ both viewports.
   rework. The chart still renders correctly with its legend in place;
   the polish is a layout preference, not a broken state.
 
+## V.18 game-level analytics page
+
+**Before:** The top-level `/analytics` route is a stub-redirect
+landing page: when the operator hits Analytics from a non-game-scoped
+context, the page renders a centered dashed-border card titled
+"Analytics surfaces are game-scoped" with a `Games list` link and a
+short paragraph explaining that charts populate per-game. Rendered
+desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The empty-state landing surface is
+acceptable on both viewports.
+
+**Acceptable as-is:**
+
+- Desktop: dashed-border card sits centered in a `mx-auto
+  max-w-screen-xl` container, `p-10 text-center`. The card title acts
+  as the de-facto page identity since the dashboard's design pattern
+  is "content cards carry identity on desktop, no separate H1 strip"
+  (consistent with the dashboard home page polished under V.5 and
+  the games list under V.6 - neither has an inline desktop H1
+  either; the topbar is `md:hidden` by deliberate design from commit
+  49e9cb2).
+- Mobile: the topbar header ("Analytics" + description "Group churn,
+  growth, member activity, and permission distributions.") provides
+  page identity above the dashed-border card. The card itself stays
+  inside the 375px viewport with no horizontal scroll, and the inline
+  `Games list` link (`font-medium text-foreground underline`) breaks
+  cleanly across lines without orphaning.
+- Vertical void below the card on desktop: this is inherent to a
+  stub-redirect empty-state landing page; the card is the only
+  content because the route's whole job is to redirect the operator
+  to a game-scoped analytics surface. Mobile gets the same void below
+  the card but reads as natural at narrow viewport. Not flagged as a
+  layout failure - the surface communicates "you are on the
+  Analytics page; pick a game to see real charts" cleanly.
+- The card's `Analytics` mono-font span and `Games list` link both
+  render at consistent contrast against the `bg-card/50` background;
+  no contrast or readability issue on either viewport.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
