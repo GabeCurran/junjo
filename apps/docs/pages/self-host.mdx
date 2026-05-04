@@ -30,7 +30,7 @@ Optional but recommended:
 
 ## Docker
 
-The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container; both background tasks are in-process `setInterval` schedulers — that keeps the operational footprint to a single container without an external cron dependency.
+The published image runs the API, the soft-delete sweeper, and the webhook delivery worker as one process. There is no separate worker container; both background tasks are in-process `setInterval` schedulers. That keeps the operational footprint to a single container without an external cron dependency.
 
 ```sh
 docker run \

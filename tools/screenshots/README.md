@@ -397,7 +397,7 @@ whoever owns the release.
 
 ## Why Puppeteer and not Playwright
 
-Playwright is already wired in for the dashboard E2E suite — that's the
+Playwright is already wired in for the dashboard E2E suite. That's the
 right tool for behavioral end-to-end tests. Screenshot capture for a
 static catalog is a different mental model (visual snapshot, not a
 behavioral assertion), and Puppeteer is the lighter-weight choice for
