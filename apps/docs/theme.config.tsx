@@ -9,6 +9,16 @@ const config: DocsThemeConfig = {
   footer: {
     content: "Junjo",
   },
+  // Collapse every sidebar section by default on first load. Users see
+  // a clean top-level list (SDK, React, Roblox, API, Auth, etc.) and
+  // click in to expand. defaultMenuCollapseLevel: 1 means only depth-1
+  // top-level sections render expanded; everything below is collapsed
+  // until clicked. autoCollapse re-collapses sibling sections when the
+  // user navigates into a different one.
+  sidebar: {
+    defaultMenuCollapseLevel: 1,
+    autoCollapse: true,
+  },
 };
 
 export default config;
