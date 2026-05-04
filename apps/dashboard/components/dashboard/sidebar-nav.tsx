@@ -16,6 +16,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { cn } from "../../lib/utils";
+import { useCurrentGameName } from "./current-game-context";
 
 interface NavItem {
   href: string;
@@ -73,6 +74,11 @@ function NavLink({ item, active }: NavLinkProps) {
 export function SidebarNav() {
   const pathname = usePathname();
   const gameId = gameIdFromPath(pathname);
+  // Resolved server-side by [gameId]/layout.tsx via <CurrentGameWriter>.
+  // Stays null when the URL is outside a game OR when the gameId 404s
+  // (the layout's notFound() blocks the writer from mounting), so the
+  // game-scoped section below only renders for real games.
+  const gameName = useCurrentGameName();
 
   return (
     <nav className="flex flex-col gap-1 p-3">
@@ -81,17 +87,21 @@ export function SidebarNav() {
           item.href === "/"
             ? pathname === "/"
             : pathname === item.href || pathname.startsWith(`${item.href}/`);
-        // Suppress the Games top-level highlight when inside a specific
-        // game - the per-game section below carries the active context
-        // and a doubly-highlighted sidebar reads as broken.
-        const suppressed = item.href === "/games" && gameId !== null;
+        // Suppress the Games top-level highlight when inside a real game -
+        // the per-game section below carries the active context and a
+        // doubly-highlighted sidebar reads as broken. On a 404 game URL
+        // the section is hidden, so leave the Games highlight on.
+        const suppressed = item.href === "/games" && gameId !== null && gameName !== null;
         return <NavLink key={item.href} item={item} active={active && !suppressed} />;
       })}
 
-      {gameId !== null ? (
+      {gameId !== null && gameName !== null ? (
         <>
-          <div className="mt-4 mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-            Current game
+          <div
+            className="mt-4 mb-1 truncate px-3 text-sm font-semibold text-foreground"
+            title={gameName}
+          >
+            {gameName}
           </div>
           {buildGameNavItems(gameId).map((item) => {
             // Exact-match active for game overview to avoid highlighting

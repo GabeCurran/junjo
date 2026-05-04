@@ -5938,3 +5938,106 @@ old scheme too.
   `lib/admin`" via a custom rule, but a plain code-review check
   catches it today and the split's value is the runtime separation,
   not the import-path enforcement.
+
+## 2026-05-04 (V.32 - sidebar Current-game section gates on real games)
+
+### Decision
+
+Gate the dashboard sidebar's per-game section on a server-side
+`fetchAdminGame(gameId)` lookup AND replace the literal "CURRENT
+GAME" header with the actual game name. Implementation:
+
+1. New server-side route layout `apps/dashboard/app/(dashboard)/games/[gameId]/layout.tsx`
+   resolves the game once per request. On `/v1/admin/games/{id}`
+   not-found it calls Next.js's `notFound()` (cascades to the
+   default 404 page outside the dashboard chrome). On
+   `AdminDisabledError` or other transient errors it renders
+   `children` unchanged so the page surfaces its own friendlier
+   error card. On success it renders a sibling
+   `<CurrentGameWriter gameName={game.name} />` client component.
+2. New client module `apps/dashboard/components/dashboard/current-game-context.tsx`
+   exports `CurrentGameProvider` (mounted at the top of
+   `(dashboard)/layout.tsx` so both the sidebar and the writer
+   share state), `useCurrentGameName()` consumed by `SidebarNav`,
+   and `CurrentGameWriter` whose `useEffect` writes the resolved
+   name on mount and clears on unmount.
+3. `SidebarNav` renders the per-game section only when both
+   `gameId !== null` AND `gameName !== null`. Header text is
+   the resolved name (`text-sm font-semibold text-foreground`,
+   `truncate` + hover `title=`) instead of the prior uppercase
+   tracking-wider "CURRENT GAME" placeholder.
+
+### Why
+
+Two related defects on stale `/games/<id>/...` URLs:
+
+- The chrome looked normal (sidebar populated with the per-game
+  nav: Game overview / Groups / Audit log / Analytics /
+  Permission check / All games), reading as "the page loaded
+  fine" even when the page body had errored. Made it hard to
+  tell whether a 404 had occurred.
+- The header text was the literal placeholder "CURRENT GAME"
+  rather than the actual game name, so the per-game section
+  never told you WHICH game you were inside.
+
+A server-side gate (the new layout) addresses (a) by forcing a
+real 404 on stale ids; the context bridge addresses (b) by
+piping the resolved name from the route subtree into the
+parent-layout sidebar.
+
+### Considered alternatives
+
+- **Pure client-side fetch in SidebarNav.** Would have meant a
+  separate fetch on every route change and would not have
+  triggered a Next.js 404 on stale ids (the page body alone
+  decides 404). Rejected: doubles the network cost and does not
+  fix (a).
+- **`useSearchParams` / Next.js cookies plumbing.** Could
+  technically pass server-resolved data without a context bridge.
+  Rejected: cookies / headers are mutating-the-globals approach
+  for a per-request value; the context bridge is the React-idiomatic
+  pattern.
+- **Custom `(dashboard)/games/[gameId]/not-found.tsx`.** Would
+  let the 404 keep the dashboard chrome. Rejected: the spec's
+  whole point is that the chrome should NOT appear on a 404
+  ("404 becomes obvious instead of a fake-populated sidebar").
+- **Fix only (b), keep "CURRENT GAME" placeholder for stale ids.**
+  Rejected: the placeholder text is mostly a symptom of (a). Two
+  problems collapse into one V.32 because the same wiring solves
+  both.
+
+### What was deliberately NOT done
+
+- Did NOT remove the existing `notFound()` call inside
+  `[gameId]/page.tsx`. Defensive depth - if a future routing
+  change reaches the page without going through the layout, the
+  page still 404s correctly.
+- Did NOT add a custom not-found page under `(dashboard)`. Would
+  re-introduce the sidebar chrome on 404 and undo the spec's
+  intent.
+- Did NOT wire the writer through React's `use()` hook to skip
+  the `useEffect` indirection. `use()` of a server-built promise
+  in a client component would let SSR HTML show the resolved
+  name without a flash, but it adds complexity and stable Next 15
+  patterns expect a client provider for this kind of bridge.
+  The brief flash is acceptable.
+- Did NOT pre-load the game-detail page's `fetchAdminGame` call
+  into the layout. Both layout and page already hit the same
+  Next.js fetch cache (`revalidate: 60s`); the second call is a
+  cache hit. Optimizing this further would mean explicit
+  `cache()`-wrapping a helper, which is out of scope for V.32.
+
+### Caveats
+
+- Brief flash on initial SSR of a real game: server-rendered HTML
+  has the per-game section hidden (writer's `useEffect` has not
+  yet run). After hydration the effect fires and the section
+  appears. Fast machines won't notice; the alternative (`use()`
+  + RSC promise) is more invasive.
+- Navigating between games briefly clears the section: layout
+  remount on dynamic-segment change fires the writer's cleanup
+  (`setName(null)`), then the new effect sets the new name. One
+  render cycle.
+- Hard rule 7 authorizes editing under `apps/dashboard/**` for
+  Phase 11/12 dashboard polish; same authorization that V.5-V.20,
+  V.28-V.31 used.

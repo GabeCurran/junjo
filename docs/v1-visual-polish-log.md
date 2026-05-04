@@ -1623,6 +1623,69 @@ balances; the horizontal-bar chart grows tall, so legend
 above stays visible). All three use the same Tremor
 `<Legend>` component with `justify-center`.
 
+## V.32 sidebar Current-game section
+
+**Before:** The sidebar's per-game section rendered its
+header as the literal text "CURRENT GAME" (uppercase
+tracking-wider) on every `/games/<anything>/...` URL, with
+no fetch validating that the gameId actually mapped to a
+real game. Stale or deleted gameIds produced a fake-populated
+sidebar (Game overview / Groups / Audit log / Analytics /
+Permission check / All games), which read as "the page
+loaded fine" even when the page body had errored. Two
+problems collapsed into one V.32: (a) the chrome lied about
+404 state, and (b) the header text was a placeholder, not
+the actual game name.
+
+**Fix:** Two-part wiring.
+
+1. New server-side `app/(dashboard)/games/[gameId]/layout.tsx`
+   calls `fetchAdminGame(gameId)` once per request. On
+   `not-found` it calls `notFound()` (Next.js renders the
+   default 404 page outside the dashboard chrome - the
+   sidebar stops rendering entirely on a stale URL). On
+   AdminDisabledError or other transient errors it renders
+   `children` unchanged so the page surfaces its own error
+   card. On success it renders a `<CurrentGameWriter
+   gameName={...} />` client component alongside `children`.
+2. New `components/dashboard/current-game-context.tsx`
+   exposes `CurrentGameProvider`, `useCurrentGameName()`,
+   and `CurrentGameWriter`. The provider wraps everything
+   in `(dashboard)/layout.tsx` so the sidebar (sibling of
+   the route subtree) and the writer (inside the route
+   subtree) share state. The writer's `useEffect` writes
+   `gameName` on mount and clears it on unmount.
+   `SidebarNav` reads `useCurrentGameName()` and renders
+   the per-game section ONLY when both `gameId !== null`
+   AND `gameName !== null`. The header text is now the
+   game name itself (`text-sm font-semibold text-foreground`,
+   `truncate` with `title=` for hover) instead of "CURRENT
+   GAME".
+
+**Acceptable as-is:**
+
+- Brief flash on initial SSR of a real game: server-rendered
+  HTML has the per-game section hidden because the writer's
+  effect has not yet run. After hydration the effect fires
+  and the section appears. In practice this is imperceptible
+  on the dev server; the cost of avoiding it would be a
+  React server context (not stable in Next 15) or piping
+  the name through a different mechanism. Accepted.
+- Navigating between games (`/games/A` -> `/games/B`)
+  briefly clears the section: the layout remounts when the
+  dynamic segment changes, the writer's cleanup fires
+  (`setName(null)`), then the new effect sets the new name.
+  One render cycle. Same flash as the initial-load case.
+- The 404 path uses Next.js's default not-found page (no
+  dashboard chrome). Adding a custom `not-found.tsx` under
+  `(dashboard)` would re-introduce the sidebar; intentionally
+  not done because the spec asks for "404 becomes obvious".
+
+**Notes:** The existing `notFound()` call inside
+`[gameId]/page.tsx` is now redundant with the layout's guard
+but kept for defensive depth and to avoid an out-of-scope
+refactor.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
