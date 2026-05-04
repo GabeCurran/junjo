@@ -120,10 +120,22 @@ function applyMigrations() {
     shell: process.platform === "win32",
   });
   if (r.status !== 0) fail(`prisma migrate deploy failed (exit ${r.status})`);
-  log("migrations applied; spawning dev servers...");
+  log("migrations applied");
+}
+
+function seedDemo() {
+  log("seeding demo dataset (wipes DB; ~5s)...");
+  const r = run("npm", ["run", "db:seed:demo", "-w", "@junjo/server"], {
+    env: { ...process.env, DATABASE_URL },
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (r.status !== 0) fail(`db:seed:demo failed (exit ${r.status})`);
+  log("seed complete; spawning dev servers...");
 }
 
 ensureDocker();
 bootContainer();
 waitReady();
 applyMigrations();
+seedDemo();
