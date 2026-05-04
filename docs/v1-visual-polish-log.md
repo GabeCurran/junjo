@@ -991,6 +991,66 @@ acceptable on both viewports.
   the default `font-mono` size and does not undersize against the
   paragraph body.
 
+## V.21 docs site home
+
+**Before:** First docs-site landing page in the V.21-V.25 sub-set
+(VISION.visual-review.md). Standard Nextra v3 docs theme with the
+`apps/docs/theme.config.tsx` defaults: top nav (Junjo wordmark + search
++ GitHub link), left sidebar (Introduction / Getting started / Tutorial
+/ Self-hosting / SDK + per-namespace children / React + hooks / Roblox /
+API / Auth), MDX body from `apps/docs/pages/index.mdx`, right TOC
+right-rail. Body sections in order: H1 Junjo, lead paragraph, "What it
+is, in one sentence", "How it fits together" (mermaid system-architecture
+embed), "What it gives you" (eight bullet items), "What it is not" (four
+bullet items + scope link), "Get going" (three bullets), "Reference"
+(four bullets). Rendered desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The page renders cleanly on both
+viewports.
+
+**Acceptable as-is:**
+
+- Desktop (1440x900): three-column Nextra layout (sidebar / prose / TOC
+  rail) renders without overflow. H1 "Junjo" sits flush at the top of
+  the prose column with the lead paragraph reading at a comfortable
+  measure (~70 chars per line). Section H2s have generous top margin
+  and a clear visual separator from the preceding paragraph. Bulleted
+  lists in "What it gives you" / "What it is not" / "Get going" /
+  "Reference" wrap cleanly with bold lead-ins (`**Groups**`,
+  `**Members**`) reading first. Inline code spans
+  (`"guild"` / `"party"` / `junjo.can(...)` / package names) render with
+  the Nextra default mono + tinted background. Footer pagination
+  ("Getting started >") sits at the bottom-right of the prose column.
+  The right-rail TOC mirrors the section headings cleanly.
+- Mobile (375x812): topbar collapses to wordmark + GitHub icon;
+  sidebar moves under the hamburger. H1 + lead paragraph wrap to two
+  / four lines respectively with no orphan words. Section H2s break
+  cleanly ("What it is, in one / sentence" wraps after `in one`,
+  acceptable). Bulleted lists wrap with bold lead-ins on their own
+  visual line followed by the description prose, no list-marker
+  alignment problems. No horizontal scrollbar.
+- Mermaid "How it fits together" embed at desktop renders the LR
+  flowchart at the prose-column width. Boxes and labels are small
+  but legible because the prose column is ~700px wide; the layout
+  matches the V.1 canonical render of the same diagram. On mobile
+  the same diagram compresses heavily (LR with subgraphs at ~340px
+  is tight) but does not overflow horizontally and remains a useful
+  visual cue for "the page is about an architecture". Same
+  structural constraint already accepted for V.1 (filed in the
+  V.1 polish-log entry as a dagre-LR side effect).
+- Junjo brand wordmark and the inline `**Junjo**` first-paragraph use
+  reads cleanly against both light and dark backgrounds (Nextra
+  default tokens; no custom CSS overlay).
+- The page's "Last updated on May ..., 2026" footer line sits flush
+  with the pagination row and uses the muted-foreground token
+  consistent with the rest of the docs site.
+
+**Notes:** V.26 / V.27 (TOC slim + sidebar-collapse-at-top) are
+already filed as separate Nextra-theme overrides in PROGRESS; not
+re-filed here. The home page is the same prose-column shape as every
+other docs page, so the polish call here doubles as a baseline read for
+the docs-site theme as a whole.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
