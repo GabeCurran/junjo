@@ -1295,6 +1295,80 @@ its own at both desktop and mobile measures. V.26 / V.27 (TOC slim
 + sidebar-collapse-at-top) remain the docs-site-wide theme
 overrides that would touch this page too; not re-filed here.
 
+## V.26 docs TOC right-rail polish
+
+**Before:** Two complaints surfaced on user inspection of the docs
+TOC right-rail:
+
+1. The webkit scrollbar inside the TOC overflow container
+   (`.nextra-toc .nextra-scrollbar`) defaulted to 0.75rem (12px)
+   wide, which read as a heavy bar next to the prose column on
+   pages whose TOC exceeds the viewport (e.g. `/sdk/groups` lists
+   six methods x four sub-items = 24+ entries). Slim it down.
+2. H2 method names (e.g. `create(input)`, `update(id, input)`)
+   share the same `text-gray-500` color as their H3 sub-items
+   (Input / Errors / See also). Nextra's only differentiation is
+   `_font-semibold` on the H2 anchor + `_ms-4` indent on the H3
+   anchor, which is too subtle - the eye reads the whole TOC as
+   a flat list rather than a method-grouped index.
+
+**Fix:** Introduced `apps/docs/styles/globals.css` (new file,
+~40 LOC) and added a single CSS import to `apps/docs/pages/_app.tsx`.
+Three deltas:
+
+- Trim the TOC webkit scrollbar from 0.75rem to 4px, keep the
+  same translucent thumb color (`rgba(115,115,115,0.25)`,
+  `0.55` on hover). Page-level browser scrollbar is unaffected
+  because the rule is scoped to `.nextra-toc .nextra-scrollbar`.
+- Bump `.nextra-toc nav a:not([class*="_ms-4"])` (Nextra's H2
+  anchor selector by exclusion of the H3 indent class) to
+  `gray-900` in light mode and `gray-100` in dark mode. The H3
+  sub-items keep the theme default `gray-500`, which now reads
+  as a distinct lower tier.
+- Add `margin-top: 0.75rem` between consecutive H2 entries (and
+  between the last H3 of a method and the next H2) via
+  `.nextra-toc nav li:has(> a:not([class*="_ms-4"])) + li:has(>
+  a:not([class*="_ms-4"]))` and the H3->H2 transition variant.
+  This gives each method block visible breathing room without
+  inserting separator lines.
+
+**Acceptable as-is:**
+
+- Re-rendered `/sdk/groups` desktop (1440x24283, fullPage), then
+  cropped a 340x900 strip of the TOC right-rail for inspection.
+  The TOC reads as: bold white code-pill method names
+  (`create(input)`, `get(id)`, `list(opts?)`, `update(id, input)`,
+  `delete(id, opts?)`, `restore(id)`) with muted gray sub-items
+  (Input / Errors / Returns / Options / See also) under each. The
+  active method (`create(input)` at top scroll position)
+  highlights cyan via Nextra's existing active-state rule. Each
+  method group separates from the next by ~12px of vertical
+  space, much easier to scan than the previous flat run-on list.
+- Slim scrollbar verified by inspecting the cropped TOC strip:
+  no visible scrollbar at the top scroll position because the
+  TOC content fits within its container at the desktop measure;
+  the rule will engage on smaller viewports / longer TOCs.
+- Re-rendered `/` (home) desktop and confirmed the H2-only TOC
+  ("What it is, in one sentence" / "How it fits together" /
+  "What it gives you" / etc.) renders the H2 entries in the new
+  brighter color without any spurious top margin between them
+  (the +-li :has() selector requires both prev AND next to be
+  H2, so the active section highlight + uniform spacing both
+  apply correctly).
+- Mobile parity: the TOC is `max-xl:_hidden` in Nextra's default
+  layout, so the mobile screenshot for `/sdk/groups` shows no
+  TOC at all (correct). The CSS overrides have no effect on
+  mobile.
+- Light + dark mode parity: the bump-color rule is split into
+  base (light: gray-900) and `.dark` (dark: gray-100). Both
+  modes get the same hierarchy treatment.
+
+**Notes:** Architectural change: this is the first dedicated CSS
+file for `apps/docs`. Keep it small - any future delta should ask
+"can this be done via `theme.config.tsx`?" first. The `_app.tsx`
+import path is `../styles/globals.css` (Next.js pages-router
+convention).
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
