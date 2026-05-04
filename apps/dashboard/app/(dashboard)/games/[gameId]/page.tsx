@@ -1,6 +1,4 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft, BarChart3, ScrollText, ShieldCheck } from "lucide-react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
@@ -122,38 +120,6 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
       <Topbar
         title="Game detail"
         description="Issue and revoke API keys for this game."
-        actions={
-          <div className="flex items-center gap-2">
-            <Link
-              href={`/games/${encodeURIComponent(params.gameId)}/analytics`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
-            >
-              <BarChart3 className="h-3 w-3" aria-hidden />
-              <span className="hidden sm:inline">Analytics</span>
-            </Link>
-            <Link
-              href={`/games/${encodeURIComponent(params.gameId)}/permissions/check`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
-            >
-              <ShieldCheck className="h-3 w-3" aria-hidden />
-              <span className="hidden sm:inline">Permission check</span>
-            </Link>
-            <Link
-              href={`/games/${encodeURIComponent(params.gameId)}/audit`}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
-            >
-              <ScrollText className="h-3 w-3" aria-hidden />
-              <span className="hidden sm:inline">Audit log</span>
-            </Link>
-            <Link
-              href="/games"
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground sm:px-3"
-            >
-              <ArrowLeft className="h-3 w-3" aria-hidden />
-              <span className="hidden sm:inline">All games</span>
-            </Link>
-          </div>
-        }
       />
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-screen-2xl">
