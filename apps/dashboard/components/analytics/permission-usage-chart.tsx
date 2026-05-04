@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { BarChart } from "@tremor/react";
+import { BarChart, Legend } from "@tremor/react";
 import { ShieldCheck } from "lucide-react";
 import { useMemo } from "react";
 
@@ -21,6 +21,8 @@ interface PermissionUsageChartProps {
 // tooltip.
 const ROLE_GRANTS_KEY = "Role grants";
 const MEMBER_OVERRIDES_KEY = "Member overrides";
+const CATEGORIES = [ROLE_GRANTS_KEY, MEMBER_OVERRIDES_KEY];
+const COLORS = ["blue", "violet"];
 
 interface BarRow {
   permission: string;
@@ -87,23 +89,26 @@ export function PermissionUsageChart({ data }: PermissionUsageChartProps) {
         </div>
 
         {hasData ? (
-          <BarChart
-            data={rows}
-            index="permission"
-            categories={[ROLE_GRANTS_KEY, MEMBER_OVERRIDES_KEY]}
-            colors={["blue", "violet"]}
-            valueFormatter={formatCount}
-            // `layout="vertical"` flips Tremor's BarChart into a
-            // horizontal-bar layout (long permission keys would be
-            // unreadable rotated 90 degrees on a normal axis). Stacked
-            // segments encode the role / override split per bar.
-            layout="vertical"
-            stack
-            yAxisWidth={140}
-            showLegend
-            allowDecimals={false}
-            className={chartHeightClass}
-          />
+          <div className="flex flex-col gap-3">
+            <Legend categories={CATEGORIES} colors={COLORS} className="justify-center" />
+            <BarChart
+              data={rows}
+              index="permission"
+              categories={CATEGORIES}
+              colors={COLORS}
+              valueFormatter={formatCount}
+              // `layout="vertical"` flips Tremor's BarChart into a
+              // horizontal-bar layout (long permission keys would be
+              // unreadable rotated 90 degrees on a normal axis). Stacked
+              // segments encode the role / override split per bar.
+              layout="vertical"
+              stack
+              yAxisWidth={140}
+              showLegend={false}
+              allowDecimals={false}
+              className={chartHeightClass}
+            />
+          </div>
         ) : (
           <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
             No permission keys are in use yet. Grant a permission to a role from the group detail

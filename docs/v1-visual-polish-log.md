@@ -1568,6 +1568,61 @@ applied to a horizontal-bar chart; the legend placement may
 be above OR below depending on what looks better with the
 horizontal-bar layout - that's a separate iteration.
 
+## V.31 permission-usage-chart - move legend above bars
+
+**Before:** Tremor's `<BarChart showLegend>` (with
+`layout="vertical"`, i.e. horizontal bars) rendered the two
+stacked-segment categories ("Role grants" / "Member
+overrides") as a small floating legend in the upper-right
+corner of the chart frame, cutting into the chart's plot
+area where the longest bars extend. With V.30 already
+having moved the `group-growth-chart` legend below the
+chart, the page was halfway between two patterns: donut +
+line chart legend below, bar chart legend floating
+top-right.
+
+**Fix:** Set `showLegend={false}` on the `<BarChart>` and
+prepended Tremor's standalone `<Legend categories={...}
+colors={...} className="justify-center" />` ABOVE the chart
+inside a `flex flex-col gap-3` wrapper. Same component
+role-distribution-chart and group-growth-chart already use;
+same color array the bars receive, so legend swatches match
+bar segment colors exactly. Extracted the previously inline
+`[ROLE_GRANTS_KEY, MEMBER_OVERRIDES_KEY]` and
+`["blue", "violet"]` arrays into module-level `CATEGORIES`
+and `COLORS` constants so both `<BarChart>` and `<Legend>`
+read from one source. Above-bars placement (rather than V.30's
+below-chart) chosen because the chart can grow to ~32rem tall
+when the cohort hits 15 permission keys; placing the legend
+above keeps it visible without scrolling and matches the
+intuition of "color key, then chart" for a horizontally-laid-
+out bar chart where reading direction sweeps left-to-right
+across each row.
+
+**Acceptable as-is:**
+
+- Tremor's `<Legend>` flex-wraps when narrow, so the mobile
+  viewport may stack the two series vertically (in practice
+  the two short labels fit on one line at 375px). Same
+  behaviour the other two charts on the page exhibit.
+- Two stacked segments per bar means the legend has only two
+  entries, so above-bars placement is visually compact even
+  at narrow widths.
+- The chart's plot area now owns the full card width without
+  the floating legend stealing the upper-right corner; the
+  longest bars render with full x-axis bleed at the right
+  edge.
+
+**Notes:** Closes the V.30 / V.31 chart-legend pair. The
+`game-analytics` page now has two consistent legend placements:
+group-growth-chart and role-distribution-chart legends sit
+BELOW their charts; permission-usage-chart sits ABOVE.
+Different placements are intentional (the donut and line
+chart are square-ish or wide-and-short, so legend below
+balances; the horizontal-bar chart grows tall, so legend
+above stays visible). All three use the same Tremor
+`<Legend>` component with `justify-center`.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
