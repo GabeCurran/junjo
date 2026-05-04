@@ -127,10 +127,15 @@
     --tremor-background-emphasis: 0 0% 65%;
     --tremor-border: 0 0% 25%;
     --tremor-ring: 0 0% 65%;
-    --tremor-content-subtle: 0 0% 40%;
-    --tremor-content: 0 0% 65%;
-    --tremor-content-emphasis: 0 0% 80%;
-    --tremor-content-strong: 0 0% 93%;
+    /* Default Tremor content tokens were 40/65/80/93 (subtle through
+     * strong). The 65% middle (`text-tremor-content`, used for axis
+     * labels) reads as muted gray on the dark surface; bumped to
+     * match `--foreground` (93%) so axis ticks and tooltip prose are
+     * the same near-white as the rest of the page. */
+    --tremor-content-subtle: 0 0% 60%;
+    --tremor-content: 0 0% 93%;
+    --tremor-content-emphasis: 0 0% 93%;
+    --tremor-content-strong: 0 0% 100%;
     --tremor-content-inverted: 0 0% 17%;
   }
 }
