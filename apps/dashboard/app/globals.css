@@ -185,4 +185,16 @@
       transition-duration: 0ms !important;
     }
   }
+
+  /* Recharts (used internally by Tremor) sets an empty `fill=""`
+   * attribute on every <text> element, which overrides the parent
+   * <g class="fill-tremor-content">'s inherited fill and SVG falls
+   * back to default black. Force every Recharts text to use our
+   * tremor content color, with !important to beat the attribute. */
+  .recharts-text {
+    fill: hsl(var(--tremor-content)) !important;
+  }
+  .recharts-cartesian-axis-tick-value {
+    fill: hsl(var(--tremor-content)) !important;
+  }
 }
