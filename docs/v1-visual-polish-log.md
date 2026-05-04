@@ -1051,6 +1051,69 @@ re-filed here. The home page is the same prose-column shape as every
 other docs page, so the polish call here doubles as a baseline read for
 the docs-site theme as a whole.
 
+## V.22 docs site sdk index
+
+**Before:** Second docs-site landing page in the V.21-V.25 sub-set.
+Source: `apps/docs/pages/sdk/index.mdx`. Body sections in order: H1
+"SDK overview", lead paragraph (`@junjo/sdk` description), "Construct
+a client" (code fence + 4-row option table: `apiKey` / `baseUrl` /
+`authAdapter` / `fetch`), "Errors" (try/catch code fence + branch-on-
+code prose), "Sub-namespaces" (6-row table linking to per-namespace
+pages: groups / roles / members / invitations / audit / webhooks),
+"Top-level methods" (3-row table: `junjo.can` / `junjo.check` /
+`junjo.whoami`). Rendered desktop (1440x900) + mobile (375x812).
+
+**Fix:** None this iteration. The page renders cleanly on both
+viewports.
+
+**Acceptable as-is:**
+
+- Desktop (1440x900): standard three-column Nextra layout. Left
+  sidebar shows SDK section expanded (Overview highlighted active
+  + groups / roles / invitations / members / audit / permissions /
+  webhooks children). Center prose column carries the H1 + lead +
+  three tables and two code fences without horizontal overflow. Code
+  fences (Construct a client + Errors) use the Nextra dark code theme
+  on both light and dark mode, sit flush left in the prose column,
+  and wrap their long string literals (`process.env.JUNJO_API_KEY!`,
+  `JunjoError({ code: "invalid_config" })`) without horizontal scroll
+  at the desktop measure. Right TOC right-rail enumerates the four
+  H2s (Construct a client / Errors / Sub-namespaces / Top-level
+  methods) with the active section highlighted on scroll.
+- Mobile (375x812): topbar shows H1 + hamburger + search + GitHub.
+  Tables compress to the prose-column width: each row's first cell
+  (the `Option` / `Namespace` / `Method` mono identifier) wraps to
+  multiple lines for the longer entries (e.g.
+  `junjo.can(userId, groupId, permission)` breaks across three
+  visual lines inside a single cell), and the second cell carries
+  the description text wrapping below. No horizontal scroll on the
+  page itself; the tables stay inside the viewport. The two code
+  fences scroll horizontally inside their own container (Nextra
+  default for `pre` overflow) which is the conventional behaviour
+  for code on mobile and matches the V.21 home-page rendering of
+  the same prose component.
+- Sub-namespaces table cell formatting on mobile: the Methods column
+  carries multi-method enumerations (e.g. groups: "CRUD, invites,
+  membership lifecycle, group relationships, sub-group `setParent`
+  / `listChildren`, `subscribe` (SSE).") which wrap to 5-6 visual
+  lines per row. Tight but legible at the 375px measure; comma-list
+  format means the wrap points are natural and no word is broken
+  across lines.
+- Light + dark mode parity: prose tokens (foreground / muted-
+  foreground), code-fence theme, table border + zebra stripes, and
+  inline `code` background all use the Nextra default tokens which
+  already render well on both modes (validated previously on V.21
+  with the same prose component). No custom CSS overlay needed for
+  the SDK index.
+- The "Last updated on May ..., 2026" footer + pagination row
+  ("Self-hosting <" / "groups >") sits at the bottom of the prose
+  column flush with the page bottom, same shape as V.21.
+
+**Notes:** No new follow-ups discovered on this surface. V.26 /
+V.27 (TOC slim + sidebar-collapse-at-top) already cover the
+docs-site-wide theme overrides that would touch this page too;
+not re-filed here.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
