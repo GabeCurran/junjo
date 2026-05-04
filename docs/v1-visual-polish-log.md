@@ -1431,6 +1431,53 @@ both classes are part of Nextra's documented theme structure
 (see `nextra-theme-docs/dist/index.js` lines 1789-1835). Same
 defensive scoping as the V.26 TOC rules.
 
+## V.28 dashboard groups-table - drop "Open ->" column, make name clickable
+
+**Before:** Every row in the All groups table had a trailing
+"Open ->" link in its own (unlabeled) rightmost column. The group
+name in the first cell rendered as plain `text-sm font-medium`
+white-on-dark text - the row itself was clickable (cursor-pointer
++ keyboard handler) but nothing in the rendered cell hinted that
+it was. Operators got two competing affordances for the same
+action: a low-contrast Open link far to the right, and an
+invisible row click in the middle.
+
+**Fix:** Removed the entire trailing column (the placeholder
+`<th aria-label="Open group" />` in the header row and the
+`<td>` containing the `<Link>Open <ArrowRight/></Link>` in each
+body row). Wrapped the group name in a `<Link>` styled
+`text-primary hover:underline` so the name itself is the obvious
+clickable target. Kept the row-level `onClick` and `onKeyDown`
+so clicking anywhere on the row still navigates (with
+`stopPropagation()` on the name link to avoid double-firing).
+Dropped the now-unused `ArrowRight` import. Added `gameId` to
+the `columns` `useMemo` dependency array since the cell now
+references it.
+
+**Acceptable as-is:**
+
+- Clicking the row (anywhere except the name link) and clicking
+  the name both go to the same destination, but the row click is
+  retained as a usability fallback - the entire row is still a
+  hit target, the name is just the visually-discoverable one.
+- `text-primary` resolves to coral on light and dark mode (the
+  V1 brand accent already applied to the dashboard logo and
+  other primary CTAs); contrast against `bg-card` checks out at
+  both themes.
+- Mobile viewport renders the names in coral inside the
+  horizontally-scrolling `overflow-x-auto` table. The card is
+  the same width as before (the dropped column trimmed ~80px
+  from the natural table width), so on mobile the table simply
+  scrolls one fewer column to the right.
+- The rightmost natural column is now Created (May 4, 2026 etc.)
+  with no decorative trailing column. Header and body widths
+  match without the placeholder `<th>`, so column alignment is
+  preserved.
+
+**Notes:** This pattern (drop dedicated "Open" column + make name
+clickable) carries forward to V.29 (games-list) which has the
+same shape. V.30 / V.31 are unrelated chart-legend follow-ups.
+
 ## Structural issues to revisit later
 
 - **Per-action icons in the recent-activity feed.** Today every row
