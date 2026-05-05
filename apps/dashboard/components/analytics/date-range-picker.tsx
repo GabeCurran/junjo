@@ -7,12 +7,11 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
 
-// Closed enum of preset windows plus the open-ended "custom" sentinel. Custom
-// windows are expressed as a `from` / `to` ISO 8601 pair pushed to the URL
-// alongside `range=custom`; presets compute their `from` from `now()` at
-// render time on the page server. Mirrors the iter-082 audit feed's split
-// between cursor and end-date URL params: `range` always lives in the URL,
-// `from` / `to` only when `range === "custom"`.
+// Closed enum of preset windows plus the open-ended "custom" sentinel.
+// Custom windows are expressed as a `from` / `to` ISO 8601 pair pushed
+// to the URL alongside `range=custom`; presets compute their `from`
+// from `now()` at render time on the page server. `range` always lives
+// in the URL, `from` / `to` only when `range === "custom"`.
 export const ANALYTICS_RANGE_PRESETS = ["24h", "7d", "30d", "90d", "custom"] as const;
 export type AnalyticsRange = (typeof ANALYTICS_RANGE_PRESETS)[number];
 
@@ -38,8 +37,8 @@ const PRESET_LABELS: Record<AnalyticsRange, string> = {
 };
 
 // URL-friendly, lenient picker over the closed enum. Unknown values fall
-// through to the default rather than 400'ing - matches the iter-067 / 082
-// stance for stale URL bookmarks across deploys that change the enum.
+// through to the default rather than 400'ing, so stale URL bookmarks
+// keep working across deploys that change the enum.
 export function parseAnalyticsRange(value: string | null | undefined): AnalyticsRange {
   if (typeof value !== "string") return ANALYTICS_DEFAULT_RANGE;
   return (ANALYTICS_RANGE_PRESETS as readonly string[]).includes(value)
@@ -47,10 +46,10 @@ export function parseAnalyticsRange(value: string | null | undefined): Analytics
     : ANALYTICS_DEFAULT_RANGE;
 }
 
-// Convert a `<input type="datetime-local">` value (`YYYY-MM-DDTHH:MM` in the
-// browser's local timezone) to UTC ISO 8601. Empty input or unparseable
-// strings return undefined so the page server omits the wire field. The
-// audit-feed precedent in iter-083 uses the same boundary normalization.
+// Convert a `<input type="datetime-local">` value (`YYYY-MM-DDTHH:MM` in
+// the browser's local timezone) to UTC ISO 8601. Empty input or
+// unparseable strings return undefined so the page server omits the
+// wire field. The audit feed uses the same boundary normalization.
 export function datetimeLocalToIso(value: string): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const stamp = Date.parse(value);
@@ -111,12 +110,11 @@ export function DateRangePicker({ query }: DateRangePickerProps) {
     setCustomTo(isoToDatetimeLocal(query.to));
   }, [query]);
 
-  // Push a new URL with the supplied param overrides preserving every other
-  // existing search param (e.g. a future `chart=` filter). Empty / undefined
-  // values clear the param. `router.replace` over `push` because changing
-  // the time window shouldn't pollute the back-stack with intermediate
-  // states; matches the iter-065 / iter-077 / iter-083 URL-replace
-  // convention.
+  // Push a new URL with the supplied param overrides preserving every
+  // other existing search param (e.g. a future `chart=` filter). Empty
+  // / undefined values clear the param. `router.replace` over `push`
+  // because changing the time window shouldn't pollute the back-stack
+  // with intermediate states.
   const pushQuery = useCallback(
     (overrides: Record<string, string | undefined>) => {
       const next = new URLSearchParams(searchParams.toString());

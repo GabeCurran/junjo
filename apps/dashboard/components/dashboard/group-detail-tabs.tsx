@@ -3,9 +3,8 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Phase 11.6b + 11.6c + 11.7a-ii + 11.7b-ii + 11.7c-ii: tab navigation
-// for the group detail page. Six tabs ship today (Members + Roles +
-// Permissions + Audit + Relationships + Sub-groups). The active tab is
+// Tab navigation for the group detail page. Six tabs (Members, Roles,
+// Permissions, Audit, Relationships, Sub-groups). The active tab is
 // selected via a URL `?tab=` parameter that the page lenient-parses;
 // switching is just an anchor `<Link>` so the browser's Back button
 // restores prior tab state without per-tab JS state.
@@ -83,9 +82,7 @@ interface GroupDetailTabsProps {
 }
 
 // The `Members` tab uses the canonical URL (`?tab=` omitted) so the
-// existing bookmarks from Phase 11.5b still resolve to the same view.
-// Other tabs append `?tab=<value>`; the URL stays clean for the default
-// case.
+// default view stays clean. Other tabs append `?tab=<value>`.
 function buildTabHref(gameId: string, groupId: string, tab: GroupDetailTab): string {
   const base = `/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}`;
   if (tab === GROUP_DETAIL_DEFAULT_TAB) return base;

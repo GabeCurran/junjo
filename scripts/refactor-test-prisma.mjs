@@ -1,5 +1,5 @@
 // One-shot refactor: hoist per-describe `PrismaClient` instantiation to a
-// single module-level instance per test file (Phase 14.0).
+// single module-level instance per test file.
 //
 // For each input file:
 //   1. Insert `let prisma: PrismaClient;` after the `const TEST_DATABASE_URL = ...` line.

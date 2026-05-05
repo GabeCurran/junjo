@@ -1,9 +1,8 @@
 -- Junjo Luau client. Mirrors the TypeScript SDK's `JunjoConfig` shape and
--- wraps Roblox's HttpService for outbound REST calls. Phase 8.1 shipped
--- the HTTP wrapper and `Junjo.new` factory; Phase 8.2 layered per-namespace
--- methods on top (groups / members / roles / invitations / audit /
--- webhooks) plus the top-level `:can` and `:check` permission checks;
--- Phase 8.3 adds `Junjo.RobloxUserIdAdapter`.
+-- wraps Roblox's HttpService for outbound REST calls. Provides the
+-- `Junjo.new` factory, per-namespace methods (groups / members / roles /
+-- invitations / audit / webhooks), the top-level `:can` and `:check`
+-- permission helpers, and `Junjo.RobloxUserIdAdapter`.
 --
 -- File layout under `packages/sdk-roblox/src/`:
 --   - init.lua             - this file (composes the namespaces)
@@ -17,7 +16,7 @@
 --   - audit.lua            - audit namespace (list)
 --   - webhooks.lua         - webhooks.endpoints sub-namespace (CRUD)
 --   - adapters/
---     - RobloxUserId.lua   - the RobloxUserIdAdapter factory (Phase 8.3)
+--     - RobloxUserId.lua   - the RobloxUserIdAdapter factory
 
 local HttpService = game:GetService("HttpService")
 

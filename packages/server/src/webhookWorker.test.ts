@@ -630,7 +630,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
   });
 });
 
-describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
+describe("startWebhookWorker heartbeat", () => {
   it("initializes lastHeartbeat to the worker's startup time", async () => {
     const t0 = new Date("2026-05-02T17:00:00.000Z");
     const fakePrisma = {} as unknown as PrismaClient;
@@ -669,13 +669,13 @@ describe("startWebhookWorker heartbeat (Phase 14.3)", () => {
   });
 });
 
-describe("WEBHOOK_WORKER_DRAIN_MS constant (Phase 14.4)", () => {
+describe("WEBHOOK_WORKER_DRAIN_MS constant", () => {
   it("exports a 30s ceiling matching typical orchestrator terminationGracePeriod", () => {
     expect(WEBHOOK_WORKER_DRAIN_MS).toBe(30_000);
   });
 });
 
-describe("runWorkerOnce shouldStop (Phase 14.4)", () => {
+describe("runWorkerOnce shouldStop", () => {
   it("breaks the batch loop early when shouldStop returns true", async () => {
     const calls: string[] = [];
     let stop = false;
@@ -743,7 +743,7 @@ describe("runWorkerOnce shouldStop (Phase 14.4)", () => {
   });
 });
 
-describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain (Phase 14.4)", () => {
+describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain", () => {
   let prisma: PrismaClient;
   let gameId: string;
   let groupId: string;

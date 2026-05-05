@@ -4,9 +4,8 @@
 -- and surfaces non-2xx responses as JunjoError-shaped Lua errors.
 --
 -- Exposed on the Junjo instance as `junjo.http` so consumers can call
--- arbitrary routes (or routes that pre-date a Phase 8.x release) via
--- `junjo.http:get(path)` / `:post(path, body)` / etc. without waiting
--- for a typed namespace method.
+-- arbitrary routes (or routes that the typed namespaces haven't wrapped
+-- yet) via `junjo.http:get(path)` / `:post(path, body)` / etc.
 
 local JunjoError = require(script.Parent.JunjoError)
 local Null = require(script.Parent.Null)

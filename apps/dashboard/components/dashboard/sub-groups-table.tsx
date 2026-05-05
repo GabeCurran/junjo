@@ -56,8 +56,8 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 // children list. Both ultimately call the same `setAdminGroupParent`
 // endpoint - "Set parent" mutates this group, "Add child" mutates the
 // child group with this group as the new parent. Hand-rolled HTML
-// tables (no TanStack) match the iter-079 relationships-table precedent;
-// neither section needs client-side filter / pagination / sort.
+// tables (no TanStack); neither section needs client-side filter /
+// pagination / sort.
 //
 // V1 limitations:
 // - Children list is direct-only (grandchildren NOT recursed). Click into
@@ -275,10 +275,9 @@ interface ClearParentDialogProps {
 }
 
 // Destructive-confirmation modal calling `clearParentAction` imperatively.
-// Mirrors the iter-079 `<ClearRelationshipDialog>` shape: plain async
-// action invoked from `onClick` via `useTransition`, no `useActionState`
-// because there's no form data to validate beyond the implicit
-// `targetGroupId` already known to the dialog.
+// Plain async action invoked from `onClick` via `useTransition`, no
+// `useActionState` because there's no form data to validate beyond the
+// implicit `targetGroupId` already known to the dialog.
 function ClearParentDialog({
   gameId,
   groupId,

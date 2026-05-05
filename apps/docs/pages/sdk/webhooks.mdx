@@ -3,7 +3,7 @@
 Two responsibilities live under this namespace:
 
 1. **`endpoints`** - CRUD for the webhook endpoints Junjo POSTs to.
-2. **`verify` / `middleware`** - receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts---shipped) values. Pair with the [HTTP wire format](../api-reference/webhooks) docs for the corresponding server side.
+2. **`verify` / `middleware`** - receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts) values. Pair with the [HTTP wire format](../api-reference/webhooks) docs for the corresponding server side.
 
 `webhooks.verify` and `webhooks.middleware` are server-only helpers (they run on the dev's backend that receives webhooks). The signing math is HMAC-SHA256 via the Web Crypto API, so the same code runs on Node 19+ and modern browsers without `node:crypto` or `@types/node`.
 

@@ -7,7 +7,7 @@ sequenceDiagram
   participant Server as junjo-server (Hono)
   participant DB as Postgres (via Prisma)
 
-  Note over App,DB: Phase 1 - resolve session token to external user id (dev's host, never on Junjo's server)
+  Note over App,DB: Step 1 - resolve session token to external user id (dev's host, never on Junjo's server)
   App->>SDK: junjo.whoami(sessionToken)
   alt no authAdapter configured
     SDK--xApp: throw JunjoError invalid_config (setup-time mistake)
@@ -22,7 +22,7 @@ sequenceDiagram
     end
   end
 
-  Note over App,DB: Phase 2 - SDK call carrying the external user id (e.g. accept invitation)
+  Note over App,DB: Step 2 - SDK call carrying the external user id (e.g. accept invitation)
   App->>SDK: junjo.invitations.accept(code, { userId: externalUserId })
   SDK->>Server: POST /v1/invitations/{code}/accept<br/>Authorization Bearer jk_...<br/>body { userId: externalUserId }
   Server->>DB: SELECT ApiKey WHERE prefix
@@ -30,7 +30,7 @@ sequenceDiagram
   Server->>Server: scrypt verify, check revokedAt<br/>set c.var.gameId
   Server->>Server: zod-parse body, load invitation by code
 
-  Note over App,DB: Phase 3 - external id resolved to junjoUserId (race-safe, created lazily on accept or decline)
+  Note over App,DB: Step 3 - external id resolved to junjoUserId (race-safe, created lazily on accept or decline)
   Server->>DB: SELECT ExternalIdentity WHERE gameId, externalUserId
   alt mapping exists
     DB-->>Server: junjoUserId

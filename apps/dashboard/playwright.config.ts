@@ -30,10 +30,9 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  // Local-only: the bar for V1 is "the script being present and passing
-  // locally" (VISION Phase 14.12). Operators bring up Postgres + the Junjo
-  // server on JUNJO_BASE_URL out of band; the webServer block boots only
-  // the dashboard itself so the test cycle is one command.
+  // Local-only: contributors bring up Postgres + the Junjo server on
+  // JUNJO_BASE_URL out of band; the webServer block boots only the
+  // dashboard itself so the test cycle is one command.
   webServer: {
     command: `npm run dev -- --port ${PORT.toString()} --hostname 127.0.0.1`,
     url: BASE_URL,

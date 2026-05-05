@@ -221,10 +221,9 @@ async function AnalyticsBody({
       <GroupChurnChart data={churn} />
       <GroupGrowthChart data={growth} />
       <MemberActivityHeatmap data={memberActivity} />
-      {/* The two 12.5 charts sit side-by-side at the bottom of the
-          surface per VISION's "Two charts side by side" framing. On
-          narrow viewports they stack via the responsive grid (single
-          column below the `lg` breakpoint, two columns at lg+). */}
+      {/* Role distribution + permission usage sit side-by-side at the
+          bottom of the surface. On narrow viewports they stack via the
+          responsive grid (single column below `lg`, two columns at lg+). */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <RoleDistributionChart data={roleDistribution} />
         <PermissionUsageChart data={permissionUsage} />
@@ -275,8 +274,7 @@ export default async function GameAnalyticsPage(props: AnalyticsPageProps) {
 // Resolve the `from` end of the date window for fetch helpers. For preset
 // ranges, this is `now() - ANALYTICS_RANGE_PRESET_MS[range]`; for custom,
 // it is `query.from` parsed back to ISO 8601. Returns undefined when the
-// input is unparseable (only possible for custom). Phase 12.2 will
-// consume this for per-chart fetches.
+// input is unparseable (only possible for custom).
 export function resolveRangeFrom(query: AnalyticsRangeQueryState): string | undefined {
   if (query.range === "custom") {
     return query.from && query.from.length > 0

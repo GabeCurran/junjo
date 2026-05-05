@@ -19,9 +19,9 @@ const dashboardEnvSchema = z.object({
   // frontend; document this in the README).
   JUNJO_INVITE_BASE_URL: z.string().url().optional(),
   // Optional. The base URL for the Junjo docs site. Used by the analytics
-  // empty state (Phase 12.1) to deep-link operators at the 5-minute
-  // tutorial. When unset, the analytics shell still renders but omits the
-  // tutorial link rather than producing a broken URL.
+  // empty state to deep-link operators at the 5-minute tutorial. When
+  // unset, the analytics shell still renders but omits the tutorial
+  // link rather than producing a broken URL.
   JUNJO_DOCS_BASE_URL: z.string().url().optional(),
 });
 

@@ -9,11 +9,7 @@ const config: Config = {
     "./components/**/*.{ts,tsx}",
     "./lib/**/*.{ts,tsx}",
     // Tremor primitives ship their own Tailwind classes; if Tremor classes
-    // are not in the content list Tailwind purges them in production. The
-    // chart-tinting color tokens (`tremor-brand`, `dark-tremor-content`,
-    // etc.) are added in Phase 12.2 when the first chart actually renders;
-    // until then Tremor falls back to its built-in Tailwind palette which
-    // is sufficient for the empty shell shipped in 12.1.
+    // are not in the content list Tailwind purges them in production.
     "./node_modules/@tremor/**/*.{js,ts,jsx,tsx}",
   ],
   // Tremor v3 chart components compute color classnames at render time

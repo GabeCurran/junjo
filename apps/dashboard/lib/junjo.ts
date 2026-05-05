@@ -21,10 +21,10 @@ export function getJunjo(): Junjo {
   return cached;
 }
 
-// The cross-game admin token (Phase 10.2). Used directly via fetch from
-// Server Components for endpoints that the per-game SDK does not expose,
-// e.g. GET /v1/users/:junjoUserId/games. Returns null when the env var
-// is absent so callers can render a "not enabled" empty state instead of
+// The cross-game admin token. Used directly via fetch from Server
+// Components for endpoints the per-game SDK does not expose, e.g.
+// GET /v1/users/:junjoUserId/games. Returns null when the env var is
+// absent so callers can render a "not enabled" empty state instead of
 // crashing the request.
 export function getAdminToken(): string | null {
   const env = loadDashboardEnv();
@@ -37,10 +37,10 @@ export function getJunjoBaseUrl(): string {
   return loadDashboardEnv().JUNJO_BASE_URL;
 }
 
-// The URL prefix used when the invite-member dialog (Phase 11.5d-ii)
-// constructs invite-link URLs. Falls back to JUNJO_BASE_URL when the
-// dedicated env var is unset; trailing slashes are trimmed so the resulting
-// URL has a single `/invite/<code>` segment regardless of whether the
+// The URL prefix used when the invite-member dialog constructs
+// invite-link URLs. Falls back to JUNJO_BASE_URL when the dedicated
+// env var is unset; trailing slashes are trimmed so the resulting URL
+// has a single `/invite/<code>` segment regardless of whether the
 // operator wrote `https://app.example.com` or `https://app.example.com/`.
 export function getInviteBaseUrl(): string {
   const env = loadDashboardEnv();
@@ -48,9 +48,9 @@ export function getInviteBaseUrl(): string {
   return raw.replace(/\/+$/, "");
 }
 
-// The Junjo docs base URL. Used by the analytics empty state (Phase 12.1)
-// to link operators at the 5-minute tutorial. Returns null when the env
-// var is absent so callers can render a "no link" empty state instead of
+// The Junjo docs base URL. Used by the analytics empty state to link
+// operators at the 5-minute tutorial. Returns null when the env var
+// is absent so callers can render a "no link" empty state instead of
 // a broken URL. Trailing slashes are trimmed.
 export function getDocsBaseUrl(): string | null {
   const env = loadDashboardEnv();

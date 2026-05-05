@@ -66,10 +66,11 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
   }, [roles, pending]);
 
   // Locally-registered permission keys not yet in the server catalog. The
-  // catalog endpoint is read-only by design (per iter-073's "register
-  // without grant deferred" decision), so the "Register key" inline input
-  // adds a transient column locally; the first cell check persists it via
-  // the grant endpoint's auto-register-on-first-grant rule.
+  // catalog endpoint is read-only by design (registering a key without
+  // also granting it is intentionally not supported), so the "Register
+  // key" inline input adds a transient column locally; the first cell
+  // check persists it via the grant endpoint's auto-register-on-first-
+  // grant rule.
   const [localKeys, setLocalKeys] = useState<string[]>([]);
   const [newKey, setNewKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);

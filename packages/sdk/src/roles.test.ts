@@ -105,7 +105,7 @@ describe("roles.create", () => {
     expect(role.color).toBe("#aabbcc");
   });
 
-  it("strips permissions from the request body (Phase 3.3 will populate them)", async () => {
+  it("strips permissions from the request body (use grantPermission to populate them)", async () => {
     const fetchMock = makeFetch(async (req) => {
       const payload = (await req.json()) as Record<string, unknown>;
       expect(payload).toEqual({ name: "Officer", priority: 80 });

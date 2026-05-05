@@ -782,7 +782,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
 });
 
 // =====================================================================
-// Phase 11.3a: cross-game games + API key management
+// Cross-game games + API key management
 // =====================================================================
 
 type WireGame = {
@@ -1481,7 +1481,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/admin/games/:gameId/api-keys/:keyI
 });
 
 // =====================================================================
-// Phase 11.4a: cross-game group browser
+// Cross-game group browser
 // =====================================================================
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups", () => {

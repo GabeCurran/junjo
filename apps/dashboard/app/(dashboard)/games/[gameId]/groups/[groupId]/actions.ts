@@ -37,10 +37,10 @@ import {
 } from "../../../../../../lib/admin";
 import { getInviteBaseUrl } from "../../../../../../lib/junjo";
 
-// Phase 11.5c-ii Server Actions wired to the iter-068 cross-game admin
-// row-action endpoints. The four `useActionState`-shaped actions back the
-// dialogs (kick, edit notes, set override). The two plain-function
-// actions (`listMemberPermissionOverridesAction`,
+// Server Actions backing the MembersTable row actions. The four
+// `useActionState`-shaped actions back the dialogs (kick, edit notes,
+// set override). The two plain-function actions
+// (`listMemberPermissionOverridesAction`,
 // `clearMemberPermissionOverrideAction`) are called from inside the
 // view-overrides dialog where the data flows through React state, not a
 // form submission.
@@ -261,13 +261,12 @@ export async function clearMemberPermissionOverrideAction(
   }
 }
 
-// Phase 11.5d-ii invite-member action backing the three-tab dialog
-// (by-userId / by-code / by-link). The form's hidden `mode` field selects
-// the variant; the same Server Action handles all three because the
-// underlying server endpoint takes the same body shape regardless. The
-// only mode-specific behavior is whether `targetUserId` is required (mode
-// = "userId") and whether the result includes a constructed
-// `inviteUrl` (mode = "link").
+// Invite-member action backing the three-tab dialog (by-userId / by-code
+// / by-link). The form's hidden `mode` field selects the variant; the
+// same Server Action handles all three because the underlying server
+// endpoint takes the same body shape regardless. The only mode-specific
+// behavior is whether `targetUserId` is required (mode = "userId") and
+// whether the result includes a constructed `inviteUrl` (mode = "link").
 export const INVITE_MODES = ["userId", "code", "link"] as const;
 export type InviteMode = (typeof INVITE_MODES)[number];
 
@@ -352,11 +351,10 @@ export async function inviteMemberAction(
   }
 }
 
-// Phase 11.6b Server Actions backing the Roles tab dialogs (Create / Edit
-// / Delete). Wired to the iter-072 cross-game roles CRUD endpoints. The
-// Permissions matrix tab in 11.6c will get its own actions; the role-
-// permission grant / revoke endpoints are exposed via `lib/admin.ts`
-// already so 11.6c can land additively without touching this file.
+// Server Actions backing the Roles tab dialogs (Create / Edit / Delete).
+// Wired to the cross-game roles CRUD endpoints. The Permissions matrix
+// tab has its own actions below; the role-permission grant / revoke
+// endpoints are exposed via `lib/admin.ts`.
 
 function readBoolField(formData: FormData, key: string): boolean | undefined {
   const raw = formData.get(key);
@@ -536,13 +534,12 @@ export async function deleteRoleAction(
   }
 }
 
-// Phase 11.6c Server Actions backing the Permissions matrix tab. Plain
-// async functions (not `useActionState`-shaped) because the matrix calls
-// them imperatively from per-cell `onClick` handlers and tracks per-cell
-// pending state in React, mirroring `clearMemberPermissionOverrideAction`
-// and `listMemberPermissionOverridesAction`. Both return the post-state
-// `AdminRole` so the matrix can sync its optimistic state to authoritative
-// server state without waiting for `revalidatePath` to propagate.
+// Server Actions backing the Permissions matrix tab. Plain async
+// functions (not `useActionState`-shaped) because the matrix calls them
+// imperatively from per-cell `onClick` handlers and tracks per-cell
+// pending state in React. Both return the post-state `AdminRole` so the
+// matrix can sync its optimistic state to authoritative server state
+// without waiting for `revalidatePath` to propagate.
 
 export interface ToggleRolePermissionResult {
   ok: boolean;
@@ -604,10 +601,9 @@ export async function revokeRolePermissionAction(
   }
 }
 
-// Phase 11.7b-ii Server Actions backing the Relationships tab. Wired to
-// the iter-078 cross-game admin relationship endpoints. The set action
-// covers both create-new and edit-type-of-existing because the underlying
-// PUT is upsert-shaped (idempotent on type-equal, bumps `since` on type
+// Server Actions backing the Relationships tab. The set action covers
+// both create-new and edit-type-of-existing because the underlying PUT
+// is upsert-shaped (idempotent on type-equal, bumps `since` on type
 // change). The clear action takes a `mutual` flag matching the wire
 // query so a single call can remove both directions when the operator
 // chooses.
@@ -698,16 +694,16 @@ export async function clearRelationshipAction(
   }
 }
 
-// Phase 11.7c-ii Server Actions backing the Sub-groups tab. The set
-// action serves both the "Set parent of this group" dialog (mutating
-// `groupId` with a new `parentGroupId`) and the "Add child" dialog
-// (mutating a child group's `parentGroupId` to point at this group).
-// Both flows call the same `setAdminGroupParent` wire helper with
-// different `targetGroupId` and `parentGroupId` arguments; the form's
-// hidden `targetGroupId` field disambiguates which group is being
-// mutated. The clear action is plain-async (not `useActionState`-shaped)
-// because the per-row "Remove child" buttons and the standalone "Clear
-// parent" button both call it imperatively from `onClick`.
+// Server Actions backing the Sub-groups tab. The set action serves both
+// the "Set parent of this group" dialog (mutating `groupId` with a new
+// `parentGroupId`) and the "Add child" dialog (mutating a child group's
+// `parentGroupId` to point at this group). Both flows call the same
+// `setAdminGroupParent` wire helper with different `targetGroupId` and
+// `parentGroupId` arguments; the form's hidden `targetGroupId` field
+// disambiguates which group is being mutated. The clear action is
+// plain-async (not `useActionState`-shaped) because the per-row "Remove
+// child" buttons and the standalone "Clear parent" button both call it
+// imperatively from `onClick`.
 
 export interface SetParentResult {
   ok: boolean;
@@ -759,9 +755,8 @@ export interface ClearParentResult {
 }
 
 // Plain-call action invoked from per-row "Remove child" buttons and the
-// standalone "Clear parent" button on the parent breadcrumb. Mirrors the
-// `clearRelationshipAction` shape from iter-079: takes the `gameId` /
-// `groupId` (current group context for revalidate) plus the
+// standalone "Clear parent" button on the parent breadcrumb. Takes the
+// `gameId` / `groupId` (current group context for revalidate) plus the
 // `targetGroupId` (which group's parent to clear). Implemented as a
 // `setAdminGroupParent` call with `parentGroupId: null` rather than a
 // dedicated DELETE endpoint - the underlying PUT is idempotent on

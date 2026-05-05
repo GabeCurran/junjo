@@ -179,12 +179,11 @@ function sourceIcon(source: AdminPermissionSource) {
   }
 }
 
-// Plain-English explanation matching VISION 11.9's spec wording. The
-// `role` and `override` branches additionally surface the `allowed`
-// flag because both can resolve in either direction (a role grant is
-// always positive in V1, but an override can be either grant or
-// revoke; "Revoked by member-level override" needs to be distinct from
-// "Granted by member-level override").
+// Plain-English explanation rendered next to the result badge. The
+// `role` and `override` branches surface the `allowed` flag because
+// overrides can resolve in either direction ("Revoked by member-level
+// override" needs to be distinct from "Granted by member-level
+// override"); role grants are always positive in V1.
 function explainResult(result: AdminPermissionCheckResult): string {
   switch (result.source) {
     case "role":

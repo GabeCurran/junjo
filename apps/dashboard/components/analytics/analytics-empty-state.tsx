@@ -10,13 +10,11 @@ interface AnalyticsEmptyStateProps {
   docsBaseUrl: string | null;
 }
 
-// "No data yet" shell shown by the analytics surface in Phase 12.1 before any
-// chart components land in 12.2 - 12.5. The shell is intentionally
-// chart-shaped (header + body + tutorial CTA) so that swapping in a real
-// chart in a later iteration only requires replacing the body, not the
-// surrounding card. The page server decides which empty state to render
+// "No data yet" shell shown by the analytics surface when a game has
+// zero audit entries. Intentionally chart-shaped (header + body +
+// tutorial CTA). The page server decides which empty state to render
 // (this generic one when the game has zero audit entries; chart-specific
-// empty states later when individual queries return zero rows).
+// empty states when individual queries return zero rows).
 export function AnalyticsEmptyState({ docsBaseUrl }: AnalyticsEmptyStateProps) {
   return (
     <Card className="border-dashed">

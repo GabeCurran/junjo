@@ -45,10 +45,9 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 
 // Hand-rolled HTML table (no TanStack) because the relationships list is
 // server-sorted by `groupBId` ascending and has no client-side filter /
-// pagination / column-toggle requirements. Mirrors the Phase 11.6b
-// `<RolesTable>` precedent: small lists with a simple shape get plain
-// `<table>` markup; the members table reaches for TanStack only because
-// it needs debounced search + URL-state pagination.
+// pagination / column-toggle requirements. Small lists with a simple
+// shape get plain `<table>` markup; the members table reaches for
+// TanStack only because it needs debounced search + URL-state pagination.
 //
 // V1 limitation: the table renders one row per outgoing direction
 // (A->B). The server's `GET .../relationships` endpoint returns the

@@ -2,8 +2,6 @@
 
 The roles namespace operates on `Role` rows: a role is one named bundle of authority within a single group. The same role name (e.g. "Officer") is unique within a group, but the same name can exist across different groups.
 
-All methods on this page are shipped real implementations.
-
 ## `create(groupId, input)`
 
 Creates a new role inside a group. Returns the created `Role`.
@@ -25,7 +23,7 @@ const officer = await junjo.roles.create("grp_xyz" as GroupId, {
 | `priority` | number | yes | Integer; higher = more authority. |
 | `color` | string | no | 7-char hex (`#rrggbb`). |
 | `isDefault` | boolean | no | Per-role tag; defaults to `false`. |
-| `permissions` | string[] | no | **Silently dropped on create**: use [`grantPermission`](#grantpermissionroleid-permission---shipped) to add permission keys after the role exists. The field stays on `CreateRoleInput` so a typed object literal compiles either way; the SDK strips it before sending. |
+| `permissions` | string[] | no | **Silently dropped on create**: use [`grantPermission`](#grantpermissionroleid-permission) to add permission keys after the role exists. The field stays on `CreateRoleInput` so a typed object literal compiles either way; the SDK strips it before sending. |
 
 ### Returns
 

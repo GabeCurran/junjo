@@ -22,10 +22,7 @@ const numberFormatter = new Intl.NumberFormat("en-US");
 // sorted by priority desc + has no client-side filter / pagination /
 // column-toggle requirements. The members table needs TanStack for the
 // 350ms-debounced search + URL-state-driven pagination; the roles table
-// has neither, so the simpler primitive wins. Phase 11.6c (Permissions
-// matrix) will reach for a 2D grid that is a different shape entirely
-// (rows = roles, cols = permission keys) so introducing TanStack here for
-// the sake of consistency would not pay off.
+// has neither, so the simpler primitive wins.
 
 export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
   return (

@@ -25,7 +25,7 @@ type WireAdminGroup = {
   updatedAt: string;
 };
 
-describe.skipIf(!TEST_DATABASE_URL)("admin sub-group endpoints (Phase 11.7c-i)", () => {
+describe.skipIf(!TEST_DATABASE_URL)("admin sub-group endpoints", () => {
   let prisma: PrismaClient;
   let app: Hono;
 

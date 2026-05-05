@@ -3,23 +3,18 @@
 Mermaid diagram source files plus a thin renderer that produces PNG or SVG
 previews. The committed artifact is the `.mmd` source under `source/` plus
 the Mermaid code fence embedded in the relevant Nextra MDX page; the rendered
-images under `output/` are gitignored and exist only for the loop agent's
-visual iteration cycle (write `.mmd` source, render, read PNG, judge layout,
-iterate).
+images under `output/` are gitignored and exist for visual iteration on the
+diagrams (write `.mmd` source, render, view PNG, iterate).
 
-This workspace is part of Phase 16 of the V1 roadmap. Phase 16.1 ships the
-renderer + tests with no diagrams yet. Phases 16.2 through 16.5 add the
-actual `.mmd` files (system architecture, permission resolution, webhook
-delivery, auth flow). Phase 16.6 wires a sync gate that asserts every
-committed `.mmd` source matches the version embedded in the corresponding
-MDX page.
+A sync gate asserts every committed `.mmd` source matches the version
+embedded in its corresponding MDX page; see "Embedding in the docs site"
+below.
 
 ## Layout
 
 ```
 tools/diagrams/
   source/
-    .gitkeep              placeholder; replaced by .mmd files in 16.2+
     *.mmd                 committed Mermaid source (one diagram per file)
   output/                 rendered PNG / SVG previews (gitignored)
   src/
@@ -115,14 +110,14 @@ V1 enforces exactly one mermaid fence per embed target so the matching
 is unambiguous. Pages without a mapped diagram are not scanned; the
 gate is opt-in via `EMBED_MAP`.
 
-## Agent visual iteration loop
+## Visual iteration loop
 
-When the loop agent edits a diagram in Phase 16.2 through 16.5:
+When editing a diagram:
 
 1. Edit `tools/diagrams/source/<slug>.mmd`.
 2. Run `npm run diagrams -- --file=<slug>` to render just the changed diagram.
-3. Read the resulting PNG via the Read tool to validate layout, label
-   placement, edge crossings, and overall clarity.
+3. View the resulting PNG to validate layout, label placement, edge
+   crossings, and overall clarity.
 4. Iterate until the diagram is readable at the desktop default zoom.
 5. Sync the updated source into the relevant MDX page in the same commit.
 
@@ -132,7 +127,6 @@ a few seconds versus rendering every diagram in `source/`).
 ## Why mermaid-cli instead of rendering at docs build time only
 
 Nextra renders Mermaid in the browser, so production docs do not need
-`mmdc`. The agent does, because it needs PNG output to feed back through
-the Read tool for visual review. Without `mmdc` the agent would have to
-trust that the Mermaid syntax is correct without seeing the rendered
-diagram, which defeats the purpose of an agent-driven diagram workflow.
+`mmdc`. Contributors do, because PNG output is the fastest way to
+validate that the Mermaid syntax produces a readable diagram before
+committing.

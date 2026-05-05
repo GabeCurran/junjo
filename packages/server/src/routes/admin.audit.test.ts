@@ -7,10 +7,9 @@ import { createGame } from "../seed";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
-// Wire shape mirrors `WireAuditEntry` from `routes/audit.ts` (which the
-// admin handler reuses verbatim per the iter-070 invitation precedent).
-// Tests assert against this shape so a route-side drift surfaces as a
-// typed test failure.
+// Wire shape mirrors `WireAuditEntry` from `routes/audit.ts` (the admin
+// handler reuses it verbatim). Tests assert against this shape so a
+// route-side drift surfaces as a typed test failure.
 type WireAuditEntry = {
   id: string;
   groupId: string;

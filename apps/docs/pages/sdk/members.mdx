@@ -2,8 +2,6 @@
 
 The members namespace operates on `Member` rows: a member is one user's relationship to one group. The same external user id can be a member of many groups within the same game; each membership is a separate `Member` row.
 
-Every method in this namespace is shipped.
-
 ## `get(groupId, userId)`
 
 Fetches a single member by the dev's external user id within a group. Returns `Member | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (member)` without a try/catch. Other errors throw `JunjoError`.

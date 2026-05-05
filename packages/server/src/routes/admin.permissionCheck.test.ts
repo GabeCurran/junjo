@@ -423,8 +423,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/permissions/che
   it("shares the cache with the per-game route (mutation through the per-game admin path invalidates this read)", async () => {
     // Verifies the singleton `permissionCache` is the same object across
     // both surfaces. A mutation through the per-game admin override
-    // endpoint (Phase 11.5c-i) invalidates the entry the admin check
-    // route just populated.
+    // endpoint invalidates the entry the admin check route just
+    // populated.
     const group = await seedGroup();
     await seedActiveMember(group.id, "user_alice");
 

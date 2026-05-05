@@ -1,6 +1,6 @@
 // Style lint: forbid em-dashes, en-dashes, and emoji characters in tracked
-// source files. Two reasons: (1) em-dash mojibake in PowerShell 5.1 has
-// already burned us once; (2) Gabe's preference is plain ASCII in code/docs.
+// source files. Em-dash mojibake breaks under PowerShell 5.1 console
+// encoding, and the project standard is plain ASCII in code and docs.
 //
 // Run: node scripts/check-style.mjs
 // Exits 0 on clean, 1 on any violation.

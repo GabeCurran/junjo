@@ -1,8 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 
-// Targets match VISION Phase 14.11. Bumping any value invalidates the
-// committed baseline; bump `BENCH_MARKER_NAME` together so a stale seed
-// is detected and rebuilt on the next run.
+// Bumping any target invalidates the committed baseline; bump
+// `BENCH_MARKER_NAME` together so a stale seed is detected and rebuilt
+// on the next run.
 export const BENCH_TARGETS = {
   groups: 10000,
   members: 100000,

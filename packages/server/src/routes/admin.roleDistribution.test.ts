@@ -20,7 +20,7 @@ const TRUNCATE =
   'TRUNCATE TABLE "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE';
 
 describe.skipIf(!TEST_DATABASE_URL)(
-  "GET /v1/admin/games/:gameId/analytics/role-distribution (Phase 12.5a)",
+  "GET /v1/admin/games/:gameId/analytics/role-distribution",
   () => {
     let prisma: PrismaClient;
     let app: Hono;

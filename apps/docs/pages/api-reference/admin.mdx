@@ -638,7 +638,7 @@ At least one field must be present; an empty body returns `400 bad_request`.
 - `metadata` is treated as a change whenever supplied (jsonb storage may not preserve key order, so a deep-equal check is unreliable; matches the `groups.update` precedent). When `metadata` is supplied a `member.metadata.updated` audit entry fires with `payload: { before: { metadata }, after: { metadata } }`.
 - Notes fields are diffed per-field against the stored row; a notes-only PATCH where every supplied field equals the stored value is a no-op (no DB write, no audit entry). When at least one notes field changed, a `member.notes.updated` audit entry fires with `payload: { before, after }` containing only the changed fields.
 - A PATCH that changes both metadata and notes writes two distinct audit entries inside one transaction.
-- No `JunjoEvent` fires for either action (per VISION 5.1b: notes / metadata mutations have no event-union counterpart).
+- No `JunjoEvent` fires for either action: notes / metadata mutations have no event-union counterpart by design.
 - Members in any status (`active`, `left`, `kicked`, `invited`) can be updated; the lifecycle gate is enforced by leave / kick, not by metadata / notes edits.
 
 ### Errors
@@ -898,7 +898,7 @@ Behavior:
 
 - Per-field diff against the stored row. Only fields whose new value differs land in both the update and the audit `payload.before` / `payload.after`. A fully no-op PATCH (every supplied field equals the stored value) writes no audit entry, no DB row, returns the unchanged role, and does not bump `updatedAt`.
 - Audit action is `role.updated` with `payload: { before, after }` containing only the changed fields. `actorUserId` is `null`.
-- Does **not** dispatch a `JunjoEvent`. There is no `RoleUpdatedEvent` in the union (per VISION 5.1b: rename / priority / color edits are audit-only; only role assignment changes fire `role.changed`).
+- Does **not** dispatch a `JunjoEvent`. There is no `RoleUpdatedEvent` in the union: rename / priority / color edits are audit-only; only role assignment changes fire `role.changed`.
 
 Errors:
 
@@ -1431,7 +1431,7 @@ The five bins are wire-stable: `< 1h`, `1h - 1d`, `1d - 1w`, `1w - 1mo`, `1mo+`.
 
 Behavior:
 
-- **The window applies to `Group.createdAt`**, NOT to the departure timestamps. A group born today with a year-old departure counts; a year-old group with a today departure does not. This answers VISION's question literally: "for groups created in the date range, plot the distribution of tenure for kicked + left members".
+- **The window applies to `Group.createdAt`**, NOT to the departure timestamps. A group born today with a year-old departure counts; a year-old group with a today departure does not. The semantic is "for groups created in the date range, plot the distribution of tenure for kicked + left members".
 - **Departure** = `GroupMember` with `status` in `("left", "kicked")` AND `leftAt` non-null. Tenure is `leftAt - joinedAt` in milliseconds, computed in JS rather than SQL so the bin boundaries stay readable. Active and invited members are excluded.
 - **Soft-deleted groups are excluded** from the population (matches the rest of the admin read surface). The audit log preserves history but the analytics view ignores it.
 - **Empty population** (no groups match the window) returns `0` in every bin and the response is otherwise still well-formed.

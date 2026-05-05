@@ -8,10 +8,8 @@ const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
 // Wire shape mirrors `WireAdminAuditEntry` from `routes/admin.ts` (the
-// per-game audit handler reuses the cross-game shape verbatim per the
-// iter-059 / iter-076 boundary stance: small structural duplication is
-// cheaper than coupling, and reusing the shape keeps both feeds parsable
-// by the same dashboard helper).
+// per-game audit handler reuses the cross-game shape verbatim). Reusing
+// the shape keeps both feeds parsable by the same dashboard helper.
 type WireAdminAuditEntry = {
   id: string;
   action: string;

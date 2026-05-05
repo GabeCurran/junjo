@@ -19,7 +19,7 @@ type WireGroupRelationship = {
   setBy: string | null;
 };
 
-describe.skipIf(!TEST_DATABASE_URL)("admin relationships endpoints (Phase 11.7b-i)", () => {
+describe.skipIf(!TEST_DATABASE_URL)("admin relationships endpoints", () => {
   let prisma: PrismaClient;
   let app: Hono;
 

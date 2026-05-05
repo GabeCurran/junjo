@@ -5,11 +5,6 @@ and docs sites at desktop + mobile viewports, full-page, and writes a
 markdown INDEX file alongside the PNGs so the catalog is browsable in
 the file tree.
 
-This workspace is part of Phase 15 of the V1 roadmap. Phase 15.1
-shipped the crawler infrastructure. Phase 15.2 added the dashboard
-route config + fixture seeder. Phase 15.3 adds the docs route config
-(an FS walk of `apps/docs/pages/**/*.mdx`).
-
 ## Layout
 
 ```
@@ -27,8 +22,8 @@ tools/screenshots/
     seed-fixtures.ts          HTTP-based idempotent fixture seeder (dashboard)
     discover-docs-routes.ts   FS walk over apps/docs/pages/**/*.mdx
     configs/
-      dashboard.ts     Phase 15.2 (dev server + seed + route list)
-      docs.ts          Phase 15.3 (dev server + dynamic FS-walk routes)
+      dashboard.ts     dashboard config (dev server + seed + route list)
+      docs.ts          docs config (dev server + dynamic FS-walk routes)
   output/              Generated PNGs and INDEX.md (gitignored)
   README.md
   package.json
@@ -55,20 +50,20 @@ have (Playwright ships its own copy under
 ## Usage
 
 ```sh
-# Capture every route for the dashboard (Phase 15.2 config required)
+# Capture every route for the dashboard
 npm run screenshots:dashboard
 
-# Capture every route for the docs site (Phase 15.3 config required)
+# Capture every route for the docs site
 npm run screenshots:docs
 
 # Equivalent long form
 npm run screenshots -- --target=dashboard
 npm run screenshots -- --target=docs
 
-# Capture a single route only (used by the agent's visual feedback loop)
+# Capture a single route only
 npm run screenshots -- --target=dashboard --route=group-detail-members
 
-# Capture a single viewport only (mobile-only audit cycle, see "Mobile viewport audit" below)
+# Capture a single viewport only (mobile audit cycle)
 npm run screenshots -- --target=dashboard --viewport=mobile
 
 # Combine route + viewport for the tightest cycle
@@ -104,7 +99,7 @@ the PNGs live only in a contributor's local checkout.
 A config is a TypeScript file at `src/configs/<target>.ts` exporting a
 `CrawlConfig` as default. Two flavors:
 
-**Static routes** (the docs config, Phase 15.3):
+**Static routes** (the docs config):
 
 The docs config has no live-server dependencies. Its routes come from
 walking `apps/docs/pages/**/*.mdx` at config-load time via
@@ -137,7 +132,7 @@ const config: CrawlConfig = {
 export default config;
 ```
 
-**Dynamic routes via `prepare()`** (the dashboard config, Phase 15.2):
+**Dynamic routes via `prepare()`** (the dashboard config):
 
 The dashboard's URLs include freshly-resolved IDs (`/games/<gameId>`,
 `/games/<gameId>/groups/<groupId>?tab=...`) so the routes cannot be
@@ -158,7 +153,7 @@ The crawler:
    as a full-page PNG, writes the INDEX.md alongside.
 5. Tears down the dev server if it was spawned.
 
-## Dashboard catalog (Phase 15.2)
+## Dashboard catalog
 
 The dashboard target needs a live Junjo server reachable at
 `JUNJO_BASE_URL` plus a server-side admin token (`JUNJO_ADMIN_TOKEN`)
@@ -190,7 +185,7 @@ member is invited + accepted only if not already in the group; the
 parent / rival relationships are set only if not already present.
 Re-running the seeder is cheap and safe.
 
-## Docs catalog (Phase 15.3)
+## Docs catalog
 
 The docs target needs no auth and no backing server beyond `next dev`
 booting against `apps/docs/`. Run:
@@ -202,22 +197,19 @@ npm run screenshots:docs
 The crawler boots `next dev -w @junjo/docs` on
 `SCREENSHOTS_DOCS_PORT` (default `13131`), then walks every
 `.mdx` page under `apps/docs/pages/` and captures each at desktop +
-mobile. The route count tracks the docs surface: at the time Phase
-15.3 landed there were 38 MDX pages, so the crawl produces ~76 PNGs.
-First-page capture pays the `next dev` JIT compilation cost (~2-5s);
-subsequent captures are fast.
+mobile. The route count tracks the docs surface (~38 MDX pages today,
+so the crawl produces ~76 PNGs). First-page capture pays the
+`next dev` JIT compilation cost (~2-5s); subsequent captures are fast.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `SCREENSHOTS_DOCS_PORT` | no | `13131` | Port `next dev` is bound to during the crawl |
 
-## Visual feedback loop (Phase 15.4)
+## Visual feedback loop
 
-The loop's agent has vision: it can read PNGs as images via the Read
-tool and judge layout, contrast, cropping, and overflow directly. When
-working on user-facing UI (Phase 11 dashboard, Phase 12 analytics, Phase
-13 docs), the agent uses the single-route filter to capture just the
-page it changed and reads the result back before committing.
+The single-route filter is designed for tight visual-iteration cycles
+on user-facing UI: capture only the route that changed, read the PNG
+back, judge layout, iterate.
 
 ### Workflow
 
@@ -229,7 +221,7 @@ page it changed and reads the result back before committing.
    npm run screenshots -- --target=docs --route=<slug>
    ```
 
-3. Read both viewports back (the Read tool renders PNGs inline):
+3. Read both viewports back:
 
    - `tools/screenshots/output/<area>/<slug>.desktop.png`
    - `tools/screenshots/output/<area>/<slug>.mobile.png`
@@ -276,46 +268,15 @@ target additionally needs a running Junjo server and the env vars
 listed in "Dashboard catalog" above. The docs target needs nothing
 beyond a working repo install.
 
-### Loop prompt-template integration
-
-Hard rule 9 of `.loop/prompt-template.md` forbids the agent from
-editing the harness directly. The snippet below is the canonical
-prompt-template addition; paste it manually into the
-"Architectural conventions" area of `.loop/prompt-template.md` (above
-"Hard rules - non-negotiable") to wire the workflow into every loop
-iteration. Until that paste lands, the agent uses the workflow on its
-own initiative when it judges a UI change worth visual validation.
-
-> ### Visual feedback loop (UI work only)
->
-> When implementing Phase 11 / 12 / 13 work that produces rendered
-> output, after a substantial UI change run:
->
-> ```sh
-> npm run screenshots -- --target=dashboard --route=<slug>
-> ```
->
-> (or `--target=docs` for `apps/docs/pages/**.mdx` changes). Then read
-> the resulting PNGs at
-> `tools/screenshots/output/<area>/<slug>.{desktop,mobile}.png` via the
-> Read tool. If anything looks off (cropped content, broken layout,
-> illegible text, mobile overflow), iterate before committing. Slugs
-> for the dashboard target are listed in
-> `tools/screenshots/src/seed-fixtures.ts::buildDashboardRoutes()`;
-> slugs for the docs target are derived from MDX file paths
-> (segments joined with hyphens; `index.mdx` becomes `home`). See
-> `tools/screenshots/README.md` "Visual feedback loop" for the full
-> protocol, env-var pre-requisites, and inspection checklist.
-
-## Mobile viewport audit (Phase 15.5)
+## Mobile viewport audit
 
 The catalog captures every route at desktop (1440x900) and mobile (375x812
 with a 2x scale factor and `isMobile: true`) so layout regressions on small
 screens get visible signal. A "mobile audit" is the periodic pass where a
-human (or the loop's vision-capable agent) walks every mobile PNG and
-records issues. It is separate from the per-iteration visual feedback loop
-above: the feedback loop catches mobile breakage on routes the iteration
-touched; the audit catches breakage everywhere else.
+contributor walks every mobile PNG and records issues. It is separate
+from the per-iteration visual feedback loop above: the feedback loop
+catches mobile breakage on routes the iteration touched; the audit
+catches breakage everywhere else.
 
 ### When to run an audit
 
@@ -390,10 +351,10 @@ confirms regression.
 ### Why this is documentation, not a vitest gate
 
 The crawl needs a live dev server (and for the dashboard target, a live
-Junjo server with seeded fixtures). The loop's `verify.ps1` cannot
-reliably boot either, so the audit is a human-in-the-loop ritual rather
-than an automated check. The infrastructure is here; the cadence is on
-whoever owns the release.
+Junjo server with seeded fixtures). The standard CI gate cannot reliably
+boot either, so the audit is a human-in-the-loop ritual rather than an
+automated check. The infrastructure is here; the cadence is on whoever
+owns the release.
 
 ## Why Puppeteer and not Playwright
 
