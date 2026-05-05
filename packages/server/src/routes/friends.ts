@@ -6,10 +6,18 @@
 // in the next commit. This file deliberately handles only the local
 // (per-game scope) request/accept/decline/cancel/list/unfriend flow.
 
+import type {
+  FriendRemovedEvent,
+  FriendRequestAcceptedEvent,
+  FriendRequestSentEvent,
+  GameId,
+} from "@junjo/shared";
 import type { PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
+import type { EventHub } from "../eventHub.js";
+import { dispatchEvent } from "../events.js";
 import {
   addBlockBody,
   listBlocksQuery,
@@ -158,7 +166,7 @@ async function assertCapsBeforeWrite(
 // Handlers
 // =====================================================================
 
-export function sendFriendRequestHandler(prisma: PrismaClient): Handler {
+export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const userId = c.req.param("userId");
     if (!userId) throw Errors.badRequest("userId is required");
@@ -240,6 +248,15 @@ export function sendFriendRequestHandler(prisma: PrismaClient): Handler {
           type: "request",
         },
       });
+      // Notify the target only. The sender already knows; pushing them
+      // an event would be redundant and could double-fire UI updates.
+      await dispatchEvent<FriendRequestSentEvent>(prisma, hub, {
+        type: "friend.request.sent",
+        gameId: gameId as GameId,
+        requestId: row.id,
+        actorJunjoUserId: userId,
+        targetJunjoUserId,
+      });
       return c.json<WireFriendRequestSendResult>(
         { status: "pending", request: toWireRequest(row) },
         201,
@@ -279,6 +296,16 @@ export function sendFriendRequestHandler(prisma: PrismaClient): Handler {
         },
       }),
     ]);
+    // Auto-accept: both parties get the accepted-event because neither
+    // explicitly chose to accept (the request WAS the acceptance).
+    await dispatchEvent<FriendRequestAcceptedEvent>(prisma, hub, {
+      type: "friend.request.accepted",
+      gameId: gameId as GameId,
+      relationshipId: actorRow.id,
+      actorJunjoUserId: userId,
+      targetJunjoUserId,
+      respondedAt: now,
+    });
     return c.json<WireFriendRequestSendResult>(
       { status: "auto-accepted", friendship: toWireFriendshipFromActorPOV(actorRow) },
       201,
@@ -321,7 +348,7 @@ export function listFriendRequestsHandler(prisma: PrismaClient): Handler {
   };
 }
 
-export function acceptFriendRequestHandler(prisma: PrismaClient): Handler {
+export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
     if (!id) throw Errors.badRequest("id is required");
@@ -376,6 +403,17 @@ export function acceptFriendRequestHandler(prisma: PrismaClient): Handler {
         },
       }),
     ]);
+
+    // Fires to the original sender; the accepter already knows. Carries
+    // both junjoUserIds so receivers can update either side's UI.
+    await dispatchEvent<FriendRequestAcceptedEvent>(prisma, hub, {
+      type: "friend.request.accepted",
+      gameId: gameId as GameId,
+      relationshipId: promotedSender.id,
+      actorJunjoUserId: request.actorJunjoUserId,
+      targetJunjoUserId: request.targetJunjoUserId,
+      respondedAt: now,
+    });
 
     return c.json<WireFriendship>(toWireFriendshipFromActorPOV(promotedSender));
   };
@@ -458,7 +496,7 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
   };
 }
 
-export function unfriendHandler(prisma: PrismaClient): Handler {
+export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const userId = c.req.param("userId");
     const otherUserId = c.req.param("otherUserId");
@@ -494,6 +532,16 @@ export function unfriendHandler(prisma: PrismaClient): Handler {
         },
       }),
     ]);
+
+    // Fires to the other party only; the user who initiated the
+    // removal already knows. The dashboard's UX can use this to clear
+    // the just-removed friend from a live list view.
+    await dispatchEvent<FriendRemovedEvent>(prisma, hub, {
+      type: "friend.removed",
+      gameId: gameId as GameId,
+      removedByJunjoUserId: userId,
+      otherJunjoUserId: otherUserId,
+    });
 
     return c.body(null, 204);
   };

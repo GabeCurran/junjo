@@ -262,70 +262,111 @@ export interface ListAuditOptions {
 interface EventBase {
   id: string;
   gameId: GameId;
-  groupId: GroupId;
   occurredAt: Date;
 }
 
-export interface MemberJoinedEvent extends EventBase {
+// Most JunjoEvent types are scoped to a single group (members, roles,
+// permissions, group-level mutations). The EventHub uses `groupId` to
+// route SSE deliveries to per-group subscribers.
+interface GroupEventBase extends EventBase {
+  groupId: GroupId;
+}
+
+// User-scoped events (friends, blocks). They have no group context;
+// SSE delivery for these will use a separate per-user channel that
+// post-V1 work introduces. Webhooks deliver them today.
+type UserEventBase = EventBase;
+
+export interface MemberJoinedEvent extends GroupEventBase {
   type: "member.joined";
   userId: UserId;
   member: Member;
 }
 
-export interface MemberLeftEvent extends EventBase {
+export interface MemberLeftEvent extends GroupEventBase {
   type: "member.left";
   userId: UserId;
   reason: "left" | "kicked";
   kickedBy?: UserId;
 }
 
-export interface MemberInvitedEvent extends EventBase {
+export interface MemberInvitedEvent extends GroupEventBase {
   type: "member.invited";
   invitation: Invitation;
 }
 
-export interface RoleCreatedEvent extends EventBase {
+export interface RoleCreatedEvent extends GroupEventBase {
   type: "role.created";
   role: Role;
 }
 
-export interface RoleChangedEvent extends EventBase {
+export interface RoleChangedEvent extends GroupEventBase {
   type: "role.changed";
   userId: UserId;
   added: RoleId[];
   removed: RoleId[];
 }
 
-export interface RoleDeletedEvent extends EventBase {
+export interface RoleDeletedEvent extends GroupEventBase {
   type: "role.deleted";
   roleId: RoleId;
 }
 
-export interface PermissionGrantedEvent extends EventBase {
+export interface PermissionGrantedEvent extends GroupEventBase {
   type: "permission.granted";
   roleId: RoleId;
   permission: PermissionKey;
 }
 
-export interface PermissionRevokedEvent extends EventBase {
+export interface PermissionRevokedEvent extends GroupEventBase {
   type: "permission.revoked";
   roleId: RoleId;
   permission: PermissionKey;
 }
 
-export interface GroupUpdatedEvent extends EventBase {
+export interface GroupUpdatedEvent extends GroupEventBase {
   type: "group.updated";
   group: Group;
 }
 
-export interface GroupDeletedEvent extends EventBase {
+export interface GroupDeletedEvent extends GroupEventBase {
   type: "group.deleted";
 }
 
-export interface GroupRelationshipChangedEvent extends EventBase {
+export interface GroupRelationshipChangedEvent extends GroupEventBase {
   type: "group.relationship.changed";
   otherGroupId: GroupId;
   relationship: GroupRelationship | null; // null = cleared
+}
+
+// User-scoped friend events. No `groupId`. The accepted-event fires
+// only to the original sender (the accepter does not need to be told
+// they accepted). The removed-event fires only to the OTHER party
+// (the user who triggered the removal already knows). The decline-
+// path is intentionally silent (no event); same for blocks.
+export interface FriendRequestSentEvent extends UserEventBase {
+  type: "friend.request.sent";
+  requestId: string;
+  actorJunjoUserId: string;
+  targetJunjoUserId: string;
+}
+
+export interface FriendRequestAcceptedEvent extends UserEventBase {
+  type: "friend.request.accepted";
+  relationshipId: string;
+  // The user who originally sent the request (and who receives this event).
+  actorJunjoUserId: string;
+  // The user who accepted.
+  targetJunjoUserId: string;
+  respondedAt: Date;
+}
+
+export interface FriendRemovedEvent extends UserEventBase {
+  type: "friend.removed";
+  // The party who initiated the removal.
+  removedByJunjoUserId: string;
+  // The party who was removed (and who receives this event).
+  otherJunjoUserId: string;
 }
 
 export type JunjoEvent =
@@ -339,9 +380,19 @@ export type JunjoEvent =
   | PermissionRevokedEvent
   | GroupUpdatedEvent
   | GroupDeletedEvent
-  | GroupRelationshipChangedEvent;
+  | GroupRelationshipChangedEvent
+  | FriendRequestSentEvent
+  | FriendRequestAcceptedEvent
+  | FriendRemovedEvent;
 
 export type JunjoEventType = JunjoEvent["type"];
+
+// Type guard: events with a groupId can be fanned to per-group SSE
+// subscribers; user-scoped events skip the SSE hub and only flow
+// through webhook delivery.
+export function isGroupScopedEvent(event: JunjoEvent): event is JunjoEvent & { groupId: GroupId } {
+  return "groupId" in event && (event as { groupId?: unknown }).groupId !== undefined;
+}
 
 // =====================================================================
 // Auth adapter

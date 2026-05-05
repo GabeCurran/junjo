@@ -1,4 +1,5 @@
 import type { GroupId, JunjoEvent } from "@junjo/shared";
+import { isGroupScopedEvent } from "@junjo/shared";
 
 export type EventListener = (event: JunjoEvent) => void;
 
@@ -25,6 +26,11 @@ export class EventHub {
   }
 
   publish(event: JunjoEvent): void {
+    // User-scoped events (friends, blocks) have no groupId and are not
+    // routed through the per-group SSE channels. They reach consumers
+    // via webhook delivery only in V1; a per-user SSE channel is a
+    // post-V1 addition.
+    if (!isGroupScopedEvent(event)) return;
     const set = this.subscribers.get(event.groupId);
     if (!set || set.size === 0) return;
     for (const listener of [...set]) {

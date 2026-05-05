@@ -354,13 +354,13 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
-  v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma));
+  v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));
   v1.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));
-  v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma));
+  v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma, hub));
   v1.post("/friend-requests/:id/decline", declineFriendRequestHandler(prisma));
   v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma));
   v1.get("/users/:userId/friends", listFriendsHandler(prisma));
-  v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma));
+  v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma, hub));
   v1.post("/users/:userId/blocks", addBlockHandler(prisma));
   v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma));
   v1.get("/users/:userId/blocks", listBlocksHandler(prisma));
