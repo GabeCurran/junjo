@@ -421,6 +421,25 @@ export interface WebhookDelivery {
 }
 
 // =====================================================================
+// User relationships (Friends + blocks)
+// =====================================================================
+
+// Three states share one table. See the schema model for storage rules.
+export type UserRelationshipType = "request" | "friend" | "blocked";
+
+export const USER_RELATIONSHIP_TYPES = [
+  "request",
+  "friend",
+  "blocked",
+] as const satisfies readonly UserRelationshipType[];
+
+declare const userRelBrand: unique symbol;
+export type UserRelationshipId = string & { readonly [userRelBrand]: "UserRelationshipId" };
+
+declare const friendTagBrand: unique symbol;
+export type FriendTagId = string & { readonly [friendTagBrand]: "FriendTagId" };
+
+// =====================================================================
 // Game configuration
 // =====================================================================
 //

@@ -34,6 +34,7 @@ model Game {
   permissionDefs     PermissionDef[]
   externalIdentities ExternalIdentity[]
   webhookEndpoints   WebhookEndpoint[]
+  userRelationships  UserRelationship[]
 
   @@index([networkId])
 }
@@ -61,6 +62,8 @@ model JunjoUser {
   externalIdentities ExternalIdentity[]
   groupMemberships   GroupMember[]
   auditEntriesActed  AuditEntry[]       @relation("AuditActor")
+  userRelsAsActor    UserRelationship[] @relation("UserRelActor")
+  userRelsAsTarget   UserRelationship[] @relation("UserRelTarget")
 }
 
 // Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
@@ -250,6 +253,56 @@ model GroupRelationship {
 
   @@id([groupAId, groupBId])
   @@index([groupBId])
+}
+
+// =====================================================================
+// User relationships (Friends + blocks)
+// =====================================================================
+
+// Stored *directed* (actor -> target), mirroring `GroupRelationship`.
+// `type` discriminates the three lifecycle states the table holds:
+//
+//   - "request"  : an outbound friend request awaiting accept/decline.
+//                  One row, actor -> target. respondedAt stays null
+//                  until accept (then row may be promoted to "friend"
+//                  + a mirror row created) or decline (row deleted).
+//   - "friend"   : an accepted friendship. ALWAYS exists as two rows
+//                  (actor -> target AND target -> actor) so "is X a
+//                  friend of Y?" is a single-row read on either side.
+//   - "blocked"  : a one-directional block. One row, actor -> target.
+//                  The target is not notified. Adding a block also
+//                  removes any existing "request" or "friend" rows in
+//                  either direction in the same transaction.
+//
+// `gameId` carries scope semantics: rows are always written with their
+// originating gameId. When a Game's `config.friends.scope = "network"`
+// AND the Game has a non-null `networkId`, read queries union across
+// every Game with the same networkId. Flipping scope back to per-game
+// narrows visibility on read; data is never dropped.
+model UserRelationship {
+  id                String    @id @default(cuid())
+  gameId            String
+  game              Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  actorJunjoUserId  String
+  actor             JunjoUser @relation("UserRelActor", fields: [actorJunjoUserId], references: [id], onDelete: Cascade)
+  targetJunjoUserId String
+  target            JunjoUser @relation("UserRelTarget", fields: [targetJunjoUserId], references: [id], onDelete: Cascade)
+  type              String // "request" | "friend" | "blocked"
+  createdAt         DateTime  @default(now())
+  // Set when a "request" row is accepted (and the row promoted to
+  // "friend"). Null while the request is still pending; null on rows
+  // that were created directly as "friend" (e.g. when
+  // requestsRequired=false) or as "blocked".
+  respondedAt       DateTime?
+  metadata          Json      @default("{}")
+
+  @@unique([gameId, actorJunjoUserId, targetJunjoUserId, type])
+  // Backs inbound queries: my pending requests, my received friend
+  // mirror rows, anyone who has me blocked.
+  @@index([gameId, targetJunjoUserId, type])
+  // Backs outbound queries: my friends list, my outbound requests,
+  // my blocklist.
+  @@index([gameId, actorJunjoUserId, type])
 }
 
 // =====================================================================
