@@ -421,6 +421,78 @@ export interface WebhookDelivery {
 }
 
 // =====================================================================
+// Game configuration
+// =====================================================================
+//
+// Per-game toggles for the Friends subsystem (and a few related knobs).
+// Each Game row carries a `config` JSON column that is a partial
+// `GameConfig`; reading goes through `resolveGameConfig` on the server
+// to fill missing branches with defaults so handlers always see a
+// fully-populated tree.
+//
+// `friends.scope = "network"` AND a non-null `Game.networkId` shared
+// with sibling Games means friends/blocks created in any sibling are
+// visible from the others. Default null `networkId` keeps games
+// isolated regardless of `scope`.
+
+export type FriendsScope = "per-game" | "network";
+
+export type FriendsListVisibility = "private" | "friends-only" | "public";
+
+export const FRIENDS_LIST_VISIBILITY_VALUES = [
+  "private",
+  "friends-only",
+  "public",
+] as const satisfies readonly FriendsListVisibility[];
+
+export interface GameConfigFriendsTags {
+  enabled: boolean;
+  maxPerUser: number;
+}
+
+export interface GameConfigFriendsDiscovery {
+  enabled: boolean;
+  minMutuals: number;
+}
+
+export interface GameConfigFriendsVisibility {
+  allowed: FriendsListVisibility[];
+  default: FriendsListVisibility;
+}
+
+export interface GameConfigFriends {
+  enabled: boolean;
+  scope: FriendsScope;
+  requestsRequired: boolean;
+  maxFriends: number;
+  maxPendingRequests: number;
+  tags: GameConfigFriendsTags;
+  discovery: GameConfigFriendsDiscovery;
+  visibility: GameConfigFriendsVisibility;
+}
+
+export interface GameConfigBlocks {
+  enabled: boolean;
+}
+
+export interface GameConfig {
+  friends: GameConfigFriends;
+  blocks: GameConfigBlocks;
+}
+
+// Deeply-partial shape for PATCH payloads. Every nested branch is
+// optional so callers can flip a single toggle without restating the
+// rest of the tree.
+export type PartialGameConfig = {
+  friends?: Partial<Omit<GameConfigFriends, "tags" | "discovery" | "visibility">> & {
+    tags?: Partial<GameConfigFriendsTags>;
+    discovery?: Partial<GameConfigFriendsDiscovery>;
+    visibility?: Partial<GameConfigFriendsVisibility>;
+  };
+  blocks?: Partial<GameConfigBlocks>;
+};
+
+// =====================================================================
 // Pagination
 // =====================================================================
 

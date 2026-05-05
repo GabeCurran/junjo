@@ -6,6 +6,7 @@ import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { type RateLimiter, buildRateLimiter, rateLimitMiddleware } from "./middleware/rateLimit.js";
+import { getAdminGameConfigHandler, updateAdminGameConfigHandler } from "./routes/admin.config.js";
 import {
   checkAdminPermissionHandler,
   clearAdminGroupRelationshipHandler,
@@ -141,6 +142,16 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.get("/admin/games", adminAuthMiddleware(opts.adminToken), listAdminGamesHandler(prisma));
   v1.post("/admin/games", adminAuthMiddleware(opts.adminToken), createAdminGameHandler(prisma));
   v1.get("/admin/games/:gameId", adminAuthMiddleware(opts.adminToken), getAdminGameHandler(prisma));
+  v1.get(
+    "/admin/games/:gameId/config",
+    adminAuthMiddleware(opts.adminToken),
+    getAdminGameConfigHandler(prisma),
+  );
+  v1.patch(
+    "/admin/games/:gameId/config",
+    adminAuthMiddleware(opts.adminToken),
+    updateAdminGameConfigHandler(prisma),
+  );
   v1.get(
     "/admin/games/:gameId/api-keys",
     adminAuthMiddleware(opts.adminToken),
