@@ -94,7 +94,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(pendingDelivery?.attemptCount).toBe(0);
 
       const { fetcher, calls } = captureFetcher();
-      const tickAt = new Date("2026-05-04T08:00:00.000Z");
+      // tickAt must be at-or-after the delivery's nextAttemptAt (set by
+      // the patch above to ~real-now). Using `now() + 1s` keeps the
+      // signature timestamp realistic and avoids coupling the test to a
+      // hardcoded calendar date.
+      const tickAt = new Date(Date.now() + 1000);
       const result = await runWorkerOnce(prisma, { fetch: fetcher, now: () => tickAt });
       expect(result).toEqual({ delivered: 1, pending: 0, failed: 0 });
       expect(calls).toHaveLength(1);
