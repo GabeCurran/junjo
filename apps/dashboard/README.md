@@ -6,16 +6,22 @@ Not part of the OSS distribution. Self-hosters get the server + SDKs; the dashbo
 
 ## Local dev
 
+The simplest path is to run `npm run dev` from the repo root: it boots
+Postgres, auto-generates `.env.local` here on first run, seeds the demo
+dataset, and starts the dashboard alongside the server and docs site.
+The dashboard then sits at http://localhost:3000 (basic-auth `admin` /
+`admin`).
+
+To run the dashboard alone (a separate Junjo server already up at
+`JUNJO_BASE_URL`):
+
 ```sh
 # from the repo root
 npm install
-# create apps/dashboard/.env.local with the variables below
-cd apps/dashboard
-npm run dev
+# .env.local must exist with the variables below; the root `npm run dev`
+# generates one for you, otherwise create it manually.
+npm run dev -w @junjo/dashboard
 ```
-
-The dashboard expects a Junjo server running at `JUNJO_BASE_URL` (defaults to
-`http://localhost:8787`). Bring one up with `npm run dev -w @junjo/server`.
 
 ## Required env vars
 

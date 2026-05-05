@@ -2,6 +2,8 @@
 
 A drop-in social-organization layer for multiplayer games. Guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth; never replaces it.
 
+![Junjo dashboard](docs/screenshots/dashboard-home.png)
+
 ```ts
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY });
 const guild = await junjo.groups.create({ kind: "guild", name: "Crimson Dawn" });
@@ -17,6 +19,12 @@ await junjo.groups.inviteByUserId(guild.id, "user_123");
 - **Server**: Hono on Node, Postgres via Prisma. Self-hostable (MIT) or use the cloud.
 - **Auth adapters**: Clerk, Supabase, JWT, BYO.
 
+## A few screens from the admin dashboard
+
+| Group members | Per-game analytics |
+| --- | --- |
+| ![Group members](docs/screenshots/dashboard-group-members.png) | ![Analytics](docs/screenshots/dashboard-analytics.png) |
+
 ## Documentation
 
 User and developer docs live at **`apps/docs`** (Nextra). Run `npm run dev` and open `http://localhost:3001`, or browse the source under `apps/docs/pages/`.
@@ -28,12 +36,24 @@ git clone https://github.com/GabeCurran/junjo
 cd junjo
 npm install
 
-# Boots Postgres (Docker), runs migrations, seeds a demo dataset,
-# then runs server (:8787) + dashboard (:3000) + docs (:3001) in parallel:
+# Boots Postgres (Docker), runs migrations, seeds a demo dataset, and
+# starts the server, dashboard, and docs site in parallel.
 npm run dev
 ```
 
-Pre-flight: Docker Desktop must be running. The dev script auto-creates a Postgres container (`junjo-test-pg` on port 5433) and seeds it with demo data. See the printed game ID and API key in the bootstrap output.
+Pre-flight: Docker Desktop must be running. On first run, the dev script:
+
+- Creates a Postgres container (`junjo-test-pg` on port 5433).
+- Auto-generates `.env` (root) and `apps/dashboard/.env.local` with sane dev defaults if either is missing, including a freshly minted admin token and the demo game's API key.
+- Seeds a representative demo dataset that exercises every dashboard surface.
+
+Once the dev servers are up:
+
+- **Dashboard**: http://localhost:3000 (basic-auth user `admin`, password `admin`)
+- **Docs site**: http://localhost:3001
+- **API**: http://localhost:8787
+
+The seed prints the game ID and API key to the terminal; the same values are written into the env files automatically.
 
 ## Repository layout
 

@@ -20,14 +20,14 @@ coverage/
 .nyc_output/
 .vitest-cache/
 
-# Playwright (Phase 14.12 dashboard E2E)
+# Playwright (dashboard E2E)
 playwright-report/
 test-results/
 playwright/.cache/
 .playwright/
 .playwright-mcp/
 
-# Performance benchmarks (Phase 14.11)
+# Performance benchmarks
 packages/server/bench-results/
 **/*.bench-results.json
 
