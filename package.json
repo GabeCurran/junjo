@@ -29,12 +29,17 @@
     "diagrams": "npm run diagrams -w @junjo/diagrams --",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "npm run build && changeset publish"
+    "release": "npm run build && changeset publish",
+    "prepare": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npx biome check --staged --no-errors-on-unmatched"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@changesets/cli": "^2.27.11",
     "concurrently": "^9.2.1",
+    "simple-git-hooks": "^2.13.1",
     "typescript": "^5.6.3"
   },
   "engines": {

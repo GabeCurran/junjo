@@ -1,5 +1,10 @@
 # Junjo
 
+[![CI](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![npm @junjo/sdk](https://img.shields.io/npm/v/@junjo/sdk?label=%40junjo%2Fsdk)](https://www.npmjs.com/package/@junjo/sdk)
+[![npm @junjo/react](https://img.shields.io/npm/v/@junjo/react?label=%40junjo%2Freact)](https://www.npmjs.com/package/@junjo/react)
+
 A drop-in social-organization layer for multiplayer games. Guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth; never replaces it.
 
 ![Junjo dashboard](docs/screenshots/dashboard-home.png)
