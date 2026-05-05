@@ -49,6 +49,15 @@ import {
   updateAdminRoleHandler,
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
+import {
+  acceptFriendRequestHandler,
+  cancelFriendRequestHandler,
+  declineFriendRequestHandler,
+  listFriendRequestsHandler,
+  listFriendsHandler,
+  sendFriendRequestHandler,
+  unfriendHandler,
+} from "./routes/friends.js";
 import { groupsRouter } from "./routes/groups.js";
 import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
 import {
@@ -342,6 +351,13 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
+  v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma));
+  v1.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));
+  v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma));
+  v1.post("/friend-requests/:id/decline", declineFriendRequestHandler(prisma));
+  v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma));
+  v1.get("/users/:userId/friends", listFriendsHandler(prisma));
+  v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   v1.route(
     "/webhooks",
