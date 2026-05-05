@@ -1,0 +1,61 @@
+name: Bug report
+description: Something is broken or not behaving as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The more concrete the
+        reproduction, the faster it gets fixed.
+  - type: input
+    id: package
+    attributes:
+      label: Affected package(s)
+      description: e.g. "@junjo/sdk", "apps/dashboard", "@junjo/server"
+      placeholder: "@junjo/sdk"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `npm view <pkg> version` or commit SHA if running from source.
+      placeholder: "0.1.2 (or commit a1b2c3d)"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. Include error messages or stack traces verbatim.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What behavior were you expecting instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps. A failing test or a small reproduction repo is
+        ideal. Pseudocode is fine if the path is otherwise unambiguous.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, OS, framework version (e.g. Next 15.x), Postgres version if relevant.
+      placeholder: |
+        Node: 20.18.0
+        OS: macOS 15.1
+        Postgres: 17.0
