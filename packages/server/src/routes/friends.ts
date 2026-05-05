@@ -11,6 +11,8 @@ import type { Handler } from "hono";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import {
+  addBlockBody,
+  listBlocksQuery,
   listFriendRequestsQuery,
   listFriendsQuery,
   sendFriendRequestBody,
@@ -181,6 +183,24 @@ export function sendFriendRequestHandler(prisma: PrismaClient): Handler {
 
     await ensureUserExists(prisma, userId);
     await ensureUserExists(prisma, targetJunjoUserId);
+
+    // Block guard. If either party has blocked the other, the request
+    // is silently rejected with 404 (matching the "block makes me
+    // invisible" privacy contract). The blocking party also sees a 404
+    // for symmetry; they should not receive an explicit signal that
+    // their own block is what failed the request.
+    const blockExists = await prisma.userRelationship.findFirst({
+      where: {
+        gameId,
+        type: "blocked",
+        OR: [
+          { actorJunjoUserId: userId, targetJunjoUserId },
+          { actorJunjoUserId: targetJunjoUserId, targetJunjoUserId: userId },
+        ],
+      },
+      select: { id: true },
+    });
+    if (blockExists) throw Errors.notFound("user");
 
     // Reject if already friends in either direction.
     const existingForward = await existingFriendship(prisma, gameId, userId, targetJunjoUserId);
@@ -495,4 +515,147 @@ function parseCursor(raw: string): { respondedAt: Date; id: string } | null {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return null;
   return { respondedAt: date, id };
+}
+
+// =====================================================================
+// Block wire shapes + handlers
+// =====================================================================
+
+export interface WireBlock {
+  id: string;
+  gameId: string;
+  // The OTHER party from the requesting user's POV; matches the
+  // friendship wire shape's `junjoUserId` field for symmetry.
+  junjoUserId: string;
+  blockedAt: string;
+}
+
+export interface WireBlockList {
+  items: WireBlock[];
+}
+
+function toWireBlockFromActorPOV(row: UserRelationship): WireBlock {
+  return {
+    id: row.id,
+    gameId: row.gameId,
+    junjoUserId: row.targetJunjoUserId,
+    blockedAt: row.createdAt.toISOString(),
+  };
+}
+
+export function addBlockHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const userId = c.req.param("userId");
+    if (!userId) throw Errors.badRequest("userId is required");
+
+    const json = await c.req.json().catch(() => null);
+    if (json === null) throw Errors.badRequest("malformed JSON");
+    const parsed = addBlockBody.safeParse(json);
+    if (!parsed.success) throw Errors.badRequest("invalid body");
+    const { targetJunjoUserId } = parsed.data;
+    if (targetJunjoUserId === userId) {
+      throw Errors.badRequest("cannot block yourself");
+    }
+
+    const gameId = c.var.gameId;
+    const { config } = await loadGameConfig(prisma, gameId);
+    if (!config.blocks.enabled) throw Errors.notFound("resource");
+
+    await ensureUserExists(prisma, userId);
+    await ensureUserExists(prisma, targetJunjoUserId);
+
+    // Idempotent: if a block already exists, just return it. The
+    // dashboard's UX may surface "block" as a tappable affordance and
+    // a stray double-click should not produce a 409.
+    const existing = await prisma.userRelationship.findUnique({
+      where: {
+        gameId_actorJunjoUserId_targetJunjoUserId_type: {
+          gameId,
+          actorJunjoUserId: userId,
+          targetJunjoUserId,
+          type: "blocked",
+        },
+      },
+    });
+    if (existing) {
+      return c.json<WireBlock>(toWireBlockFromActorPOV(existing));
+    }
+
+    // Block-implicit-cleanup: a single transaction creates the block
+    // row AND removes any friendship rows in either direction AND
+    // removes any pending friend requests in either direction. Done
+    // in one tx so no observer can see a half-applied state where the
+    // block exists but the friendship still does.
+    const [block] = await prisma.$transaction([
+      prisma.userRelationship.create({
+        data: {
+          gameId,
+          actorJunjoUserId: userId,
+          targetJunjoUserId,
+          type: "blocked",
+        },
+      }),
+      prisma.userRelationship.deleteMany({
+        where: {
+          gameId,
+          type: { in: ["friend", "request"] },
+          OR: [
+            { actorJunjoUserId: userId, targetJunjoUserId },
+            { actorJunjoUserId: targetJunjoUserId, targetJunjoUserId: userId },
+          ],
+        },
+      }),
+    ]);
+
+    return c.json<WireBlock>(toWireBlockFromActorPOV(block), 201);
+  };
+}
+
+export function removeBlockHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const userId = c.req.param("userId");
+    const otherUserId = c.req.param("otherUserId");
+    if (!userId) throw Errors.badRequest("userId is required");
+    if (!otherUserId) throw Errors.badRequest("otherUserId is required");
+
+    const gameId = c.var.gameId;
+    const { config } = await loadGameConfig(prisma, gameId);
+    if (!config.blocks.enabled) throw Errors.notFound("resource");
+
+    const existing = await prisma.userRelationship.findUnique({
+      where: {
+        gameId_actorJunjoUserId_targetJunjoUserId_type: {
+          gameId,
+          actorJunjoUserId: userId,
+          targetJunjoUserId: otherUserId,
+          type: "blocked",
+        },
+      },
+    });
+    if (!existing) throw Errors.notFound("block");
+
+    await prisma.userRelationship.delete({ where: { id: existing.id } });
+    return c.body(null, 204);
+  };
+}
+
+export function listBlocksHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const userId = c.req.param("userId");
+    if (!userId) throw Errors.badRequest("userId is required");
+    const parsedQ = listBlocksQuery.safeParse(c.req.query());
+    if (!parsedQ.success) throw Errors.badRequest("invalid query");
+    const { limit } = parsedQ.data;
+
+    const gameId = c.var.gameId;
+    const { config } = await loadGameConfig(prisma, gameId);
+    if (!config.blocks.enabled) throw Errors.notFound("resource");
+
+    const rows = await prisma.userRelationship.findMany({
+      where: { gameId, actorJunjoUserId: userId, type: "blocked" },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+    return c.json<WireBlockList>({ items: rows.map(toWireBlockFromActorPOV) });
+  };
 }

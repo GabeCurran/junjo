@@ -23,3 +23,17 @@ export const listFriendsQuery = z
     cursor: z.string().optional(),
   })
   .strict();
+
+// POST /v1/users/:userId/blocks
+export const addBlockBody = z
+  .object({
+    targetJunjoUserId: z.string().min(1),
+  })
+  .strict();
+
+// GET /v1/users/:userId/blocks
+export const listBlocksQuery = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).optional().default(100),
+  })
+  .strict();

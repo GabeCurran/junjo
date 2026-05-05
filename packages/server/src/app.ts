@@ -51,10 +51,13 @@ import {
 import { subscribeEventsHandler } from "./routes/events.js";
 import {
   acceptFriendRequestHandler,
+  addBlockHandler,
   cancelFriendRequestHandler,
   declineFriendRequestHandler,
+  listBlocksHandler,
   listFriendRequestsHandler,
   listFriendsHandler,
+  removeBlockHandler,
   sendFriendRequestHandler,
   unfriendHandler,
 } from "./routes/friends.js";
@@ -358,6 +361,9 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma));
   v1.get("/users/:userId/friends", listFriendsHandler(prisma));
   v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma));
+  v1.post("/users/:userId/blocks", addBlockHandler(prisma));
+  v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma));
+  v1.get("/users/:userId/blocks", listBlocksHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   v1.route(
     "/webhooks",
