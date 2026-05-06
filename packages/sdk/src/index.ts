@@ -9,6 +9,7 @@ import type {
 } from "@junjo/shared";
 import { AuditApi } from "./audit.js";
 import { JunjoError } from "./errors.js";
+import { FriendsApi } from "./friends.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
 import { InvitationsApi } from "./invitations.js";
@@ -51,6 +52,7 @@ export class Junjo {
   readonly invitations: InvitationsApi;
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
+  readonly friends: FriendsApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
 
@@ -69,6 +71,7 @@ export class Junjo {
     this.invitations = new InvitationsApi(this.http);
     this.audit = new AuditApi(this.http);
     this.webhooks = new WebhooksApi(this.http);
+    this.friends = new FriendsApi(this.http);
     this.authAdapter = config.authAdapter;
   }
 
@@ -115,6 +118,19 @@ export class Junjo {
 
 export { AuditApi } from "./audit.js";
 export { JunjoError } from "./errors.js";
+export { FriendsApi } from "./friends.js";
+export type {
+  Block,
+  Friendship,
+  FriendRequest,
+  FriendRequestList,
+  FriendRequestSendResult,
+  FriendshipPage,
+  FriendSuggestion,
+  FriendTag,
+  FriendTagAssignment,
+  UserVisibilitySettings,
+} from "./friends.js";
 export { GroupsApi } from "./groups.js";
 export type { SubscribeOptions, Subscription } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
