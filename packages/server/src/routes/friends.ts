@@ -14,7 +14,7 @@ import type {
 } from "@junjo/shared";
 import type { PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
-import { loadGameConfig } from "../config/loadGameConfig.js";
+import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { dispatchEvent } from "../events.js";
@@ -98,64 +98,63 @@ async function ensureUserExists(prisma: PrismaClient, junjoUserId: string): Prom
   if (!user) throw Errors.notFound("user");
 }
 
+// Scope-aware lookups: under scope="network" the friend / pending /
+// block check spans every sibling game whose scope is also "network".
+// Validates against the full visible state, not just the calling game,
+// so a duplicate friendship cannot be created from a sibling game.
 async function existingFriendship(
   prisma: PrismaClient,
-  gameId: string,
+  gameIds: string[],
   a: string,
   b: string,
 ): Promise<UserRelationship | null> {
-  return prisma.userRelationship.findUnique({
+  return prisma.userRelationship.findFirst({
     where: {
-      gameId_actorJunjoUserId_targetJunjoUserId_type: {
-        gameId,
-        actorJunjoUserId: a,
-        targetJunjoUserId: b,
-        type: "friend",
-      },
+      gameId: { in: gameIds },
+      actorJunjoUserId: a,
+      targetJunjoUserId: b,
+      type: "friend",
     },
   });
 }
 
 async function existingPendingRequest(
   prisma: PrismaClient,
-  gameId: string,
+  gameIds: string[],
   actor: string,
   target: string,
 ): Promise<UserRelationship | null> {
-  return prisma.userRelationship.findUnique({
+  return prisma.userRelationship.findFirst({
     where: {
-      gameId_actorJunjoUserId_targetJunjoUserId_type: {
-        gameId,
-        actorJunjoUserId: actor,
-        targetJunjoUserId: target,
-        type: "request",
-      },
+      gameId: { in: gameIds },
+      actorJunjoUserId: actor,
+      targetJunjoUserId: target,
+      type: "request",
     },
   });
 }
 
-// Throws 409 / 400 errors when the actor cannot take on another
-// outgoing request or another friendship within this game's caps.
+// Caps are enforced across the visible scope (network-wide when
+// scope=network), not per-game. Otherwise a user could max out the
+// limit independently in each sibling game and overshoot the
+// user-visible friend list.
 async function assertCapsBeforeWrite(
   prisma: PrismaClient,
-  gameId: string,
+  gameIds: string[],
   actorJunjoUserId: string,
   caps: { maxFriends: number; maxPendingRequests: number },
   kind: "request" | "friend",
 ): Promise<void> {
   if (kind === "request") {
     const pending = await prisma.userRelationship.count({
-      where: { gameId, actorJunjoUserId, type: "request" },
+      where: { gameId: { in: gameIds }, actorJunjoUserId, type: "request" },
     });
     if (pending >= caps.maxPendingRequests) {
       throw Errors.badRequest(`outbound friend request cap reached (${caps.maxPendingRequests})`);
     }
   }
-  // Friend cap applies to both directions of the request flow: the
-  // actor that sends the request must have headroom, and on accept the
-  // accepter is checked too (in the accept handler).
   const friends = await prisma.userRelationship.count({
-    where: { gameId, actorJunjoUserId, type: "friend" },
+    where: { gameId: { in: gameIds }, actorJunjoUserId, type: "friend" },
   });
   if (friends >= caps.maxFriends) {
     throw Errors.badRequest(`friend cap reached (${caps.maxFriends})`);
@@ -186,20 +185,19 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     }
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const config = loaded.config;
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     await ensureUserExists(prisma, userId);
     await ensureUserExists(prisma, targetJunjoUserId);
 
-    // Block guard. If either party has blocked the other, the request
-    // is silently rejected with 404 (matching the "block makes me
-    // invisible" privacy contract). The blocking party also sees a 404
-    // for symmetry; they should not receive an explicit signal that
-    // their own block is what failed the request.
+    // Block guard, scope-aware. A block in any sibling game in the
+    // network silently rejects the request (404).
     const blockExists = await prisma.userRelationship.findFirst({
       where: {
-        gameId,
+        gameId: { in: visibleGameIds },
         type: "blocked",
         OR: [
           { actorJunjoUserId: userId, targetJunjoUserId },
@@ -210,17 +208,20 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     });
     if (blockExists) throw Errors.notFound("user");
 
-    // Reject if already friends in either direction.
-    const existingForward = await existingFriendship(prisma, gameId, userId, targetJunjoUserId);
+    // Existence guards span the visible scope so a duplicate friendship
+    // cannot be created from a sibling game in the same network.
+    const existingForward = await existingFriendship(
+      prisma,
+      visibleGameIds,
+      userId,
+      targetJunjoUserId,
+    );
     if (existingForward) {
       throw Errors.badRequest("already friends");
     }
-    // Reject if a request is already pending in either direction; the
-    // user who got the inbound request should accept it instead of
-    // sending their own.
     const existingOutboundReq = await existingPendingRequest(
       prisma,
-      gameId,
+      visibleGameIds,
       userId,
       targetJunjoUserId,
     );
@@ -229,7 +230,7 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     }
     const existingInboundReq = await existingPendingRequest(
       prisma,
-      gameId,
+      visibleGameIds,
       targetJunjoUserId,
       userId,
     );
@@ -237,7 +238,7 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
       throw Errors.badRequest("a pending friend request from this user already exists; accept it");
     }
 
-    await assertCapsBeforeWrite(prisma, gameId, userId, config.friends, "request");
+    await assertCapsBeforeWrite(prisma, visibleGameIds, userId, config.friends, "request");
 
     if (config.friends.requestsRequired) {
       const row = await prisma.userRelationship.create({
@@ -248,8 +249,6 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
           type: "request",
         },
       });
-      // Notify the target only. The sender already knows; pushing them
-      // an event would be redundant and could double-fire UI updates.
       await dispatchEvent<FriendRequestSentEvent>(prisma, hub, {
         type: "friend.request.sent",
         gameId: gameId as GameId,
@@ -264,10 +263,14 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     }
 
     // Auto-accept path: write the two friend rows in one transaction.
-    // Same shape as POST /accept, just without an intermediate request
-    // row. The accepter cap is checked here against the target side.
+    // The accepter cap is checked here against the target's visible
+    // scope.
     const targetFriends = await prisma.userRelationship.count({
-      where: { gameId, actorJunjoUserId: targetJunjoUserId, type: "friend" },
+      where: {
+        gameId: { in: visibleGameIds },
+        actorJunjoUserId: targetJunjoUserId,
+        type: "friend",
+      },
     });
     if (targetFriends >= config.friends.maxFriends) {
       throw Errors.badRequest(
@@ -323,21 +326,22 @@ export function listFriendRequestsHandler(prisma: PrismaClient): Handler {
     const { direction } = parsedQ.data;
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     const inbound =
       direction === "out"
         ? []
         : await prisma.userRelationship.findMany({
-            where: { gameId, targetJunjoUserId: userId, type: "request" },
+            where: { gameId: { in: visibleGameIds }, targetJunjoUserId: userId, type: "request" },
             orderBy: { createdAt: "desc" },
           });
     const outbound =
       direction === "in"
         ? []
         : await prisma.userRelationship.findMany({
-            where: { gameId, actorJunjoUserId: userId, type: "request" },
+            where: { gameId: { in: visibleGameIds }, actorJunjoUserId: userId, type: "request" },
             orderBy: { createdAt: "desc" },
           });
 
@@ -354,28 +358,36 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
     if (!id) throw Errors.badRequest("id is required");
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const config = loaded.config;
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     const request = await prisma.userRelationship.findUnique({ where: { id } });
-    // Game-scoping: the request must belong to the calling API key's
-    // game. A cross-game lookup attempt returns 404 (not 403) so the
-    // existence of foreign request IDs is not leaked.
-    if (!request || request.gameId !== gameId || request.type !== "request") {
+    // Scope-aware: a request from a sibling game in the same network
+    // can be accepted from this game's API key. A request from outside
+    // the visible scope returns 404.
+    if (!request || !visibleGameIds.includes(request.gameId) || request.type !== "request") {
       throw Errors.notFound("friend request");
     }
 
-    // Cap check for the accepter. The original sender was bounded at
-    // request time, but their headroom may have shrunk between then
-    // and now (other accepted requests).
+    // Cap checks span the visible scope (network-wide when applicable).
     const accepterFriends = await prisma.userRelationship.count({
-      where: { gameId, actorJunjoUserId: request.targetJunjoUserId, type: "friend" },
+      where: {
+        gameId: { in: visibleGameIds },
+        actorJunjoUserId: request.targetJunjoUserId,
+        type: "friend",
+      },
     });
     if (accepterFriends >= config.friends.maxFriends) {
       throw Errors.badRequest(`friend cap reached (${config.friends.maxFriends})`);
     }
     const senderFriends = await prisma.userRelationship.count({
-      where: { gameId, actorJunjoUserId: request.actorJunjoUserId, type: "friend" },
+      where: {
+        gameId: { in: visibleGameIds },
+        actorJunjoUserId: request.actorJunjoUserId,
+        type: "friend",
+      },
     });
     if (senderFriends >= config.friends.maxFriends) {
       throw Errors.badRequest(`sender friend cap reached (${config.friends.maxFriends})`);
@@ -391,11 +403,13 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
         data: { type: "friend", respondedAt: now },
       }),
       // Write the mirror row so "is X a friend of Y?" is a single-row
-      // read on either side. The mirror's createdAt is the accept time
-      // (the friendship from the accepter's POV begins now).
+      // read on either side. The mirror's gameId matches the request's
+      // originating gameId (not the calling game's gameId) so a sibling
+      // game accepting a request keeps the friendship anchored to its
+      // origin.
       prisma.userRelationship.create({
         data: {
-          gameId,
+          gameId: request.gameId,
           actorJunjoUserId: request.targetJunjoUserId,
           targetJunjoUserId: request.actorJunjoUserId,
           type: "friend",
@@ -404,11 +418,12 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
       }),
     ]);
 
-    // Fires to the original sender; the accepter already knows. Carries
-    // both junjoUserIds so receivers can update either side's UI.
+    // Fires under the request's originating gameId so webhook
+    // subscribers in that game see the lifecycle they originally saw
+    // start.
     await dispatchEvent<FriendRequestAcceptedEvent>(prisma, hub, {
       type: "friend.request.accepted",
-      gameId: gameId as GameId,
+      gameId: request.gameId as GameId,
       relationshipId: promotedSender.id,
       actorJunjoUserId: request.actorJunjoUserId,
       targetJunjoUserId: request.targetJunjoUserId,
@@ -425,11 +440,12 @@ export function declineFriendRequestHandler(prisma: PrismaClient): Handler {
     if (!id) throw Errors.badRequest("id is required");
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     const request = await prisma.userRelationship.findUnique({ where: { id } });
-    if (!request || request.gameId !== gameId || request.type !== "request") {
+    if (!request || !visibleGameIds.includes(request.gameId) || request.type !== "request") {
       throw Errors.notFound("friend request");
     }
     await prisma.userRelationship.delete({ where: { id } });
@@ -456,19 +472,17 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     const { limit, cursor } = parsedQ.data;
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    // Keyset pagination by respondedAt DESC, id DESC. The cursor is the
-    // last-row's respondedAt-ISO and id joined by "|". For rows with
-    // null respondedAt (auto-accept paths created before respondedAt
-    // was always set, theoretical only — every "friend" row gets a
-    // respondedAt in current code) the createdAt is the fallback.
+    // Keyset pagination by respondedAt DESC, id DESC. Cursor is the
+    // last row's respondedAt-ISO and id joined by "|".
     const cursorDate = cursor ? parseCursor(cursor) : null;
 
     const rows = await prisma.userRelationship.findMany({
       where: {
-        gameId,
+        gameId: { in: visibleGameIds },
         actorJunjoUserId: userId,
         type: "friend",
         ...(cursorDate
@@ -504,20 +518,20 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
     if (!otherUserId) throw Errors.badRequest("otherUserId is required");
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.friends.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const forward = await existingFriendship(prisma, gameId, userId, otherUserId);
+    const forward = await existingFriendship(prisma, visibleGameIds, userId, otherUserId);
     if (!forward) throw Errors.notFound("friendship");
 
-    // Delete both rows in one transaction. The mirror's existence is
-    // guaranteed by the accept path's two-row write; if it is missing
-    // (manual DB tampering) the transaction still succeeds because
-    // deleteMany silently returns 0 for an absent row.
+    // Delete both rows in one transaction. Both rows scope to the
+    // friendship's originating game (which may be a sibling under
+    // scope=network, not necessarily the calling game).
     await prisma.$transaction([
       prisma.userRelationship.deleteMany({
         where: {
-          gameId,
+          gameId: forward.gameId,
           actorJunjoUserId: userId,
           targetJunjoUserId: otherUserId,
           type: "friend",
@@ -525,7 +539,7 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
       }),
       prisma.userRelationship.deleteMany({
         where: {
-          gameId,
+          gameId: forward.gameId,
           actorJunjoUserId: otherUserId,
           targetJunjoUserId: userId,
           type: "friend",
@@ -533,12 +547,12 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
       }),
     ]);
 
-    // Fires to the other party only; the user who initiated the
-    // removal already knows. The dashboard's UX can use this to clear
-    // the just-removed friend from a live list view.
+    // Fires under the friendship's originating gameId so the webhook
+    // subscribers in that game see the removal even when the action
+    // was triggered from a sibling game.
     await dispatchEvent<FriendRemovedEvent>(prisma, hub, {
       type: "friend.removed",
-      gameId: gameId as GameId,
+      gameId: forward.gameId as GameId,
       removedByJunjoUserId: userId,
       otherJunjoUserId: otherUserId,
     });
@@ -606,34 +620,29 @@ export function addBlockHandler(prisma: PrismaClient): Handler {
     }
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.blocks.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     await ensureUserExists(prisma, userId);
     await ensureUserExists(prisma, targetJunjoUserId);
 
-    // Idempotent: if a block already exists, just return it. The
-    // dashboard's UX may surface "block" as a tappable affordance and
-    // a stray double-click should not produce a 409.
-    const existing = await prisma.userRelationship.findUnique({
+    // Idempotent across the visible scope: a sibling-game block of the
+    // same target returns its row instead of creating a duplicate.
+    const existing = await prisma.userRelationship.findFirst({
       where: {
-        gameId_actorJunjoUserId_targetJunjoUserId_type: {
-          gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId,
-          type: "blocked",
-        },
+        gameId: { in: visibleGameIds },
+        actorJunjoUserId: userId,
+        targetJunjoUserId,
+        type: "blocked",
       },
     });
     if (existing) {
       return c.json<WireBlock>(toWireBlockFromActorPOV(existing));
     }
 
-    // Block-implicit-cleanup: a single transaction creates the block
-    // row AND removes any friendship rows in either direction AND
-    // removes any pending friend requests in either direction. Done
-    // in one tx so no observer can see a half-applied state where the
-    // block exists but the friendship still does.
+    // Cleanup deletes spans the visible scope (a friendship from a
+    // sibling game in the same network must also disappear).
     const [block] = await prisma.$transaction([
       prisma.userRelationship.create({
         data: {
@@ -645,7 +654,7 @@ export function addBlockHandler(prisma: PrismaClient): Handler {
       }),
       prisma.userRelationship.deleteMany({
         where: {
-          gameId,
+          gameId: { in: visibleGameIds },
           type: { in: ["friend", "request"] },
           OR: [
             { actorJunjoUserId: userId, targetJunjoUserId },
@@ -667,17 +676,18 @@ export function removeBlockHandler(prisma: PrismaClient): Handler {
     if (!otherUserId) throw Errors.badRequest("otherUserId is required");
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.blocks.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const existing = await prisma.userRelationship.findUnique({
+    // Find the block row across the visible scope; deletion targets
+    // the row by primary key so it removes the originating-game row.
+    const existing = await prisma.userRelationship.findFirst({
       where: {
-        gameId_actorJunjoUserId_targetJunjoUserId_type: {
-          gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId: otherUserId,
-          type: "blocked",
-        },
+        gameId: { in: visibleGameIds },
+        actorJunjoUserId: userId,
+        targetJunjoUserId: otherUserId,
+        type: "blocked",
       },
     });
     if (!existing) throw Errors.notFound("block");
@@ -696,11 +706,12 @@ export function listBlocksHandler(prisma: PrismaClient): Handler {
     const { limit } = parsedQ.data;
 
     const gameId = c.var.gameId;
-    const { config } = await loadGameConfig(prisma, gameId);
-    if (!config.blocks.enabled) throw Errors.notFound("resource");
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
     const rows = await prisma.userRelationship.findMany({
-      where: { gameId, actorJunjoUserId: userId, type: "blocked" },
+      where: { gameId: { in: visibleGameIds }, actorJunjoUserId: userId, type: "blocked" },
       orderBy: { createdAt: "desc" },
       take: limit,
     });
