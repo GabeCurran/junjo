@@ -1,0 +1,251 @@
+# Friends
+
+Per-user social graph: friend requests, friendships, blocks, tags, and
+mutual-friend suggestions. Every Friends route is gated by per-game
+configuration; a game can disable the whole subsystem, individual
+features, or constrain the menu of allowed values for user-facing
+options.
+
+## Configuration
+
+Each `Game` row carries a JSON `config` column with a `friends` branch.
+Defaults are applied at read time; PATCH writes only the fields you set.
+
+```jsonc
+{
+  "friends": {
+    "enabled": true,                   // hard kill switch for the subsystem
+    "scope": "per-game",               // or "network"; see below
+    "requestsRequired": true,          // false auto-accepts on POST
+    "maxFriends": 1000,                // per-user cap (network-wide if scope=network)
+    "maxPendingRequests": 100,         // per-user outbound cap
+    "tags": {
+      "enabled": true,
+      "maxPerUser": 20
+    },
+    "discovery": {
+      "enabled": true,
+      "minMutuals": 2                  // suggestions must share >= N friends
+    },
+    "visibility": {
+      "allowed": ["private", "friends-only"],
+      "default": "private"
+    }
+  },
+  "blocks": { "enabled": true }
+}
+```
+
+Read or update the config via the admin endpoints:
+
+- `GET  /v1/admin/games/:gameId/config`
+- `PATCH /v1/admin/games/:gameId/config`
+
+The PATCH body accepts a partial `{ config?: PartialGameConfig, networkId?: string | null }`.
+
+### Scope
+
+`friends.scope = "per-game"` (default) keeps every friendship,
+request, and block visible only within the game it originated in.
+
+`friends.scope = "network"` plus a non-null `Game.networkId` shares
+visibility across every sibling game with the same `networkId` AND
+`scope = "network"`. Both sides must opt in: if a sibling game pins
+its scope to `"per-game"`, it stays isolated even if its `networkId`
+matches.
+
+Writes always pin to the originating game. Flipping a game's scope back
+to `"per-game"` narrows visibility on subsequent reads but never drops
+data.
+
+## Friend requests
+
+### `POST /v1/users/:userId/friend-requests`
+
+Send a friend request from `:userId` to a target.
+
+**Body**
+
+```json
+{ "targetJunjoUserId": "cmu_xyz..." }
+```
+
+**Behavior**
+
+- 404 when `friends.enabled = false`, or when either party has blocked
+  the other (silent, for both blocker and blockee).
+- 400 when already friends, when a request is pending in either
+  direction, or when caps are exceeded.
+- When `friends.requestsRequired = true` (default): creates a `request`
+  row and fires `friend.request.sent` to the target. Response shape:
+  `{ status: "pending", request: WireFriendRequest }`.
+- When `friends.requestsRequired = false`: writes the friendship
+  directly, fires `friend.request.accepted`. Response shape:
+  `{ status: "auto-accepted", friendship: WireFriendship }`.
+
+### `GET /v1/users/:userId/friend-requests?direction=in|out|both`
+
+Lists pending requests. `direction` defaults to `"both"`. Returns
+`{ inbound: WireFriendRequest[], outbound: WireFriendRequest[] }`.
+
+### `POST /v1/friend-requests/:id/accept`
+
+Promotes the request to a friendship. Atomic: updates the original
+row in place (preserving `createdAt` as the request-originated
+timestamp) and creates the mirror row. Fires
+`friend.request.accepted` to the original sender.
+
+### `POST /v1/friend-requests/:id/decline`
+
+Silently deletes the request row. **No event fires** (privacy: the
+sender is not notified of decline).
+
+### `DELETE /v1/friend-requests/:id`
+
+Same handler as decline. Used by the original sender to cancel an
+outbound pending request.
+
+## Friendships
+
+### `GET /v1/users/:userId/friends?limit=&cursor=&tagId=&viewer=`
+
+Keyset paginated list of `:userId`'s friends. Cursor is the last row's
+`respondedAt|id`.
+
+- `tagId`: filters to friends tagged with that tag. Tags are per-game,
+  so this contracts the visible scope to the calling game (no
+  scope=network expansion).
+- `viewer`: optional junjoUserId. When supplied, the visibility rules
+  are enforced from that viewer's perspective. Without it, the
+  API-key caller is treated as admin (visibility bypassed).
+
+### `DELETE /v1/users/:userId/friends/:otherUserId`
+
+Removes both rows of the friendship in one transaction. Fires
+`friend.removed` to the OTHER party (the user who triggered the
+removal already knows).
+
+## Blocks
+
+### `POST /v1/users/:userId/blocks`
+
+Adds a one-directional block. Implicitly removes any friendship rows
+in either direction AND any pending requests in either direction (one
+transaction). Idempotent: re-blocking the same user returns the
+existing row.
+
+### `DELETE /v1/users/:userId/blocks/:otherUserId`
+
+Removes the block.
+
+### `GET /v1/users/:userId/blocks`
+
+Lists `:userId`'s outbound blocks.
+
+Blocks intentionally fire **no events** (privacy: the blocked party
+is not notified).
+
+## Tags
+
+Per-(user, game) labels for organizing one's friend list. Tags are
+private to the owner: only the user that created the tag sees it
+applied. Tags only attach to the OWNER-side friend row, so each party
+in a friendship can tag independently.
+
+### `GET /v1/users/:userId/friend-tags`
+
+Lists `:userId`'s tags in the calling game, sorted by name.
+
+### `POST /v1/users/:userId/friend-tags`
+
+```json
+{ "name": "Close friends", "color": "#ff5050" }
+```
+
+`color` is optional (`#rrggbb`). Capped by
+`friends.tags.maxPerUser`.
+
+### `PATCH /v1/friend-tags/:id`
+
+Update name and/or color. `color: null` clears it.
+
+### `DELETE /v1/friend-tags/:id`
+
+Cascades to all `UserRelationshipTag` rows.
+
+### `PUT /v1/users/:userId/friends/:otherUserId/tags`
+
+Replace the tag set for one friendship.
+
+```json
+{ "tagIds": ["tag_close", "tag_guild"] }
+```
+
+Empty array clears all tags. The handler validates that every supplied
+`tagId` belongs to `:userId` in the calling game; cross-game tagging
+is rejected with 400.
+
+## Mutual-friend suggestions
+
+### `GET /v1/users/:userId/friends/suggestions?limit=N`
+
+Ranked candidates who share at least
+`friends.discovery.minMutuals` friends with `:userId`, excluding
+existing friends and anyone blocked in either direction.
+
+```json
+{
+  "items": [
+    {
+      "junjoUserId": "cmu_xyz",
+      "mutualCount": 5,
+      "sampleMutualJunjoUserIds": ["cmu_a", "cmu_b", "cmu_c"]
+    }
+  ]
+}
+```
+
+`sampleMutualJunjoUserIds` carries up to 5 mutual friends so the
+dashboard can render "you know A, B, +N others" without a follow-up
+fetch. 404 when `friends.discovery.enabled = false`.
+
+## Visibility
+
+### `GET /v1/users/:userId/visibility`
+
+Returns the user's `friendsListVisibility` setting in the calling
+game, falling back to `config.friends.visibility.default` when no row
+exists. The response also surfaces the `allowed` set so the dashboard
+can render the right radio options.
+
+### `PATCH /v1/users/:userId/visibility`
+
+```json
+{ "friendsListVisibility": "friends-only" }
+```
+
+Validates against `config.friends.visibility.allowed`. Visibility
+values:
+
+- `"private"`: only owner + admin can list this user's friends
+- `"friends-only"`: confirmed friends can also see
+- `"public"`: any caller can see (subject to the calling game's
+  `allowed` list)
+
+Enforcement on `GET /v1/users/:userId/friends` runs only when a
+`viewer` query parameter is supplied (admin callers bypass).
+
+## Webhook events
+
+Three `JunjoEvent` types fire from this subsystem:
+
+| event | fires to | conditions |
+|-------|----------|------------|
+| `friend.request.sent` | target | `requestsRequired = true`, on POST request |
+| `friend.request.accepted` | original sender (or both, when auto-accepted) | on accept, or on auto-accept POST |
+| `friend.removed` | the other party | on unfriend |
+
+Decline and block fire **no events**, by design.
+
+Friend events have no `groupId` and are not delivered over the per-group
+SSE stream. Webhook delivery is the V1 transport for them.

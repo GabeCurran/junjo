@@ -1,0 +1,200 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens. Mirrors the portfolio palette at ../portfolio/app/globals.css:
+ *   bg     #2b2b2b  (warm neutral dark gray)
+ *   fg     #ededed  (off-white)
+ *   accent #f76a6a  (coral)
+ * Saturation is held at 0% for surface colors so we get pure neutral grays
+ * (the previous shadcn default tinted everything slate-blue at hue 217).
+ * The accent (coral) is the only saturated token; it drives primary, ring,
+ * and Tremor chart brand. */
+@layer base {
+  :root {
+    /* Light mode kept structurally similar to the dark mode below: white
+     * background, warm-gray ink, coral as the brand color so the two
+     * themes feel related instead of like different products. */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 17%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 17%;
+    --primary: 0 88% 65%;
+    --primary-foreground: 0 0% 100%; /* white on coral in light mode (high punch on white page) */
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 17%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 17%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 0 88% 65%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 17%; /* #2b2b2b */
+    --foreground: 0 0% 93%; /* #ededed */
+    --card: 0 0% 14%; /* slightly darker than bg for elevation */
+    --card-foreground: 0 0% 93%;
+    --popover: 0 0% 14%;
+    --popover-foreground: 0 0% 93%;
+    --primary: 0 90% 69%; /* #f76a6a coral */
+    --primary-foreground: 0 0% 17%; /* #2b2b2b - warm gray ink on coral, not pure white */
+    --secondary: 0 0% 22%; /* hover / button-secondary surface */
+    --secondary-foreground: 0 0% 93%;
+    --muted: 0 0% 22%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 0 0% 22%;
+    --accent-foreground: 0 0% 93%;
+    --destructive: 0 62% 50%; /* deeper red, distinct from primary coral */
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 25%;
+    --input: 0 0% 25%;
+    --ring: 0 90% 69%; /* coral focus ring */
+  }
+}
+
+/* Native form-control accents. Browsers tint native checkboxes / radios /
+ * date pickers with their own brand color (Chrome blue, etc.) by default;
+ * `accent-color` overrides that to our coral, and `caret-color` keeps the
+ * text caret consistent in inputs. Date / datetime-local inputs also get
+ * a pointer cursor on the calendar indicator so users see they're
+ * clickable. */
+@layer base {
+  :root,
+  .dark {
+    accent-color: hsl(var(--primary));
+    caret-color: hsl(var(--primary));
+  }
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="month"],
+  input[type="time"],
+  input[type="week"],
+  input[type="checkbox"],
+  input[type="radio"] {
+    cursor: pointer;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+  input[type="month"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator,
+  input[type="week"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+  }
+}
+
+/* Tremor chart tokens. Coral-accent brand in both modes; surface + content
+ * tokens track the shadcn primitives above so charts inherit the same warm
+ * neutral palette as the rest of the dashboard. */
+@layer base {
+  :root {
+    --tremor-brand-faint: 0 100% 97%;
+    --tremor-brand-muted: 0 90% 88%;
+    --tremor-brand-subtle: 0 90% 80%;
+    --tremor-brand: 0 88% 65%;
+    --tremor-brand-emphasis: 0 70% 55%;
+    --tremor-brand-inverted: 0 0% 100%;
+    --tremor-background-muted: 0 0% 98%;
+    --tremor-background-subtle: 0 0% 96%;
+    --tremor-background: 0 0% 100%;
+    --tremor-background-emphasis: 0 0% 17%;
+    --tremor-border: 0 0% 90%;
+    --tremor-ring: 0 88% 65%;
+    --tremor-content-subtle: 0 0% 60%;
+    --tremor-content: 0 0% 45%;
+    --tremor-content-emphasis: 0 0% 30%;
+    --tremor-content-strong: 0 0% 17%;
+    --tremor-content-inverted: 0 0% 100%;
+  }
+
+  .dark {
+    --tremor-brand-faint: 0 0% 14%;
+    --tremor-brand-muted: 0 70% 35%;
+    --tremor-brand-subtle: 0 80% 50%;
+    --tremor-brand: 0 90% 69%;
+    --tremor-brand-emphasis: 0 90% 80%;
+    --tremor-brand-inverted: 0 0% 17%;
+    --tremor-background-muted: 0 0% 17%;
+    --tremor-background-subtle: 0 0% 22%;
+    --tremor-background: 0 0% 17%;
+    --tremor-background-emphasis: 0 0% 65%;
+    --tremor-border: 0 0% 25%;
+    --tremor-ring: 0 0% 65%;
+    /* Default Tremor content tokens were 40/65/80/93 (subtle through
+     * strong). The 65% middle (`text-tremor-content`, used for axis
+     * labels) reads as muted gray on the dark surface; bumped to
+     * match `--foreground` (93%) so axis ticks and tooltip prose are
+     * the same near-white as the rest of the page. */
+    --tremor-content-subtle: 0 0% 60%;
+    --tremor-content: 0 0% 93%;
+    --tremor-content-emphasis: 0 0% 93%;
+    --tremor-content-strong: 0 0% 100%;
+    --tremor-content-inverted: 0 0% 17%;
+  }
+}
+
+@layer base {
+  /* Fluid root font-size matches ../portfolio/app/globals.css. Tailwind
+   * sizes everything in rem (text, padding, gap, icon sizes), so bumping
+   * the html base proportionally scales the entire UI by ~25-31% over
+   * the default 16px. 18px floor at narrow viewports, 21px ceiling on
+   * wide ones; comfortable density on 1080p and up. */
+  html {
+    font-size: clamp(18px, 16px + 0.6vw, 21px);
+  }
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Theme-toggle animation. Every element fades its color-related
+   * properties (background, text, border, icon fill/stroke) over 400ms
+   * when the .dark class is added/removed by next-themes. Scoped to
+   * color properties only so existing transform/opacity transitions
+   * (drawer slides, hover lifts, etc.) keep their own durations. Uses
+   * !important on the property list so Tailwind utility transitions
+   * (e.g. `transition-colors`) cannot strip these properties from
+   * cascading; durations defined by Tailwind on hover etc. still win
+   * because those rules also re-set transition-duration on the same
+   * properties. The next-themes provider must have
+   * disableTransitionOnChange OFF for this to fire (see
+   * app/layout.tsx). */
+  *,
+  *::before,
+  *::after {
+    transition-property: background-color, border-color, color, fill, stroke, text-decoration-color !important;
+    transition-duration: 400ms;
+    transition-timing-function: ease;
+  }
+
+  /* Respect reduced-motion preference: skip the fade entirely. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0ms !important;
+    }
+  }
+
+  /* Recharts (used internally by Tremor) sets an empty `fill=""`
+   * attribute on every <text> element, which overrides the parent
+   * <g class="fill-tremor-content">'s inherited fill and SVG falls
+   * back to default black. Force every Recharts text to use our
+   * tremor content color, with !important to beat the attribute. */
+  .recharts-text {
+    fill: hsl(var(--tremor-content)) !important;
+  }
+  .recharts-cartesian-axis-tick-value {
+    fill: hsl(var(--tremor-content)) !important;
+  }
+}

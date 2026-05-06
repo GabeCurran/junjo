@@ -1,0 +1,56 @@
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Route as Mutation route
+  participant Hub as EventHub (in-process)
+  participant DB as Postgres (via Prisma)
+  participant Worker as Webhook worker (5s tick)
+  participant Receiver as Receiver URL
+
+  Note over Route,DB: Enqueue phase (in-band with the mutating request)
+  Route->>Hub: publishEvent(event)
+  Hub-->>Route: ok (live SSE subscribers receive immediately)
+  Route->>DB: SELECT WebhookEndpoint WHERE gameId AND disabledAt IS NULL<br/>AND (events IS EMPTY OR events contains type)
+  DB-->>Route: matching endpoints (may be empty)
+  alt one or more endpoints matched
+    Route->>DB: BEGIN<br/>INSERT WebhookDelivery per endpoint<br/>(status=pending, attemptCount=0, nextAttemptAt=now)<br/>COMMIT
+    DB-->>Route: delivery ids
+  end
+  Route-->>Route: respond to caller (HTTP 2xx)
+
+  Note over Route,Receiver: Drain phase (asynchronous, every 5s, single sequential worker)
+  loop every 5 seconds (setInterval, unref)
+    Worker->>DB: SELECT id FROM WebhookDelivery<br/>WHERE status=pending AND nextAttemptAt is due<br/>ORDER BY nextAttemptAt ASC LIMIT 50
+    DB-->>Worker: due ids (batch up to 50)
+    loop each id, sequential
+      opt SIGTERM received (shouldStop)
+        Worker->>Worker: break batch (stop scheduling new ticks)
+      end
+      Worker->>DB: SELECT WebhookDelivery JOIN WebhookEndpoint
+      DB-->>Worker: row + endpoint
+      alt format is junjo
+        Worker->>Worker: HMAC-SHA256(secret, timestamp.body)<br/>headers: x-junjo-event, x-junjo-event-id,<br/>x-junjo-delivery-id, x-junjo-timestamp, x-junjo-signature
+      else format is discord
+        Worker->>Worker: render Discord embed payload (no HMAC headers)
+      else format is slack
+        Worker->>Worker: render Slack Block Kit message (no HMAC headers)
+      end
+      Worker->>Receiver: POST url (10s AbortSignal timeout)
+      alt 2xx response
+        Receiver-->>Worker: 200 OK
+        Worker->>DB: UPDATE status=delivered, attemptCount+=1,<br/>responseStatus, lastAttemptAt, nextAttemptAt=NULL
+      else 4xx other than 408 or 429
+        Receiver-->>Worker: 4xx
+        Worker->>DB: UPDATE status=failed (permanent)
+      else 5xx, 408, 429, network error, or abort
+        Receiver--xWorker: error or 5xx
+        alt attemptCount+1 reaches 6 (max attempts)
+          Worker->>DB: UPDATE status=failed (retries exhausted)
+        else more attempts remain
+          Worker->>DB: UPDATE status=pending,<br/>nextAttemptAt=now + backoff[attempt]<br/>(1m, 5m, 30m, 2h, 8h)
+        end
+      end
+    end
+  end
+
+  Note over Route,Receiver: At-least-once delivery. A worker crash between POST and UPDATE<br/>can re-deliver an event, so receivers must dedupe on x-junjo-event-id.<br/>SIGTERM stops scheduling new ticks. The in-flight deliverOne completes<br/>under a 30s drain ceiling before process exit.

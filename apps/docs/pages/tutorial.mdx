@@ -1,0 +1,177 @@
+# Tutorial: your first group
+
+Five minutes, end to end. By the time you finish, you will have a group, a member who joined through an invitation, a role assigned to that member, a permission check that resolves correctly, and a live SSE stream that emitted the events along the way.
+
+This tutorial assumes you have an API key and a reachable server. If you do not, do the [Getting started](/getting-started) page first.
+
+## Setup
+
+```ts
+import { Junjo } from "@junjo/sdk";
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  // baseUrl: "http://localhost:8787", // omit on cloud
+});
+```
+
+Junjo identifies users by your existing user id (whatever your auth provider returns). The tutorial uses string ids; your real code branded them as `UserId`.
+
+## 1. Create a group
+
+```ts
+const group = await junjo.groups.create({
+  kind: "guild",
+  name: "Crimson Wolves",
+  visibility: "invite-only",
+  metadata: { motto: "Howl together" },
+});
+
+group.id;          // GroupId, e.g. "grp_..."
+group.memberCount; // 0
+```
+
+`kind` is a string you choose. Common patterns: `"guild"`, `"party"`, `"clan"`, `"faction"`. Junjo does not interpret the value.
+
+## 2. Invite a user by id
+
+The dev backend issues invitations. You decide who can be invited.
+
+```ts
+const invitation = await junjo.groups.inviteByUserId(
+  group.id,
+  "user_alice", // your existing user id
+);
+
+invitation.code;          // 16 hex chars
+invitation.targetUserId;  // "user_alice"
+invitation.expiresAt;     // null (no expiry on this one)
+```
+
+For shareable codes (anyone with the code can redeem) use [`inviteByCode`](/sdk/groups) or [`inviteByLink`](/sdk/groups). For mass invites use [`bulkInvite`](/sdk/groups).
+
+## 3. Accept the invitation
+
+This is the same call your end users hit through your invite-acceptance UI. The `userId` here is the user redeeming the invitation; on a direct invite (like the one above) it must match `targetUserId`.
+
+```ts
+const member = await junjo.groups.acceptInvitation(invitation.code, "user_alice");
+
+member.userId;  // "user_alice"
+member.status;  // "active"
+member.roles;   // []  (no roles assigned yet)
+```
+
+The first time a user appears in your game, Junjo creates an internal `JunjoUser` row and links it to your external user id via `ExternalIdentity`. You never have to manage the internal id; pass your own id everywhere and Junjo resolves it for you.
+
+For the inverse path, `junjo.groups.declineInvitation(code, { userId })` marks the invitation used without creating a member.
+
+## 4. Create a role and assign it
+
+```ts
+const officer = await junjo.roles.create(group.id, {
+  name: "Officer",
+  priority: 100,
+  color: "#dc2626",
+});
+
+await junjo.members.assignRole(group.id, "user_alice", officer.id);
+```
+
+Roles live inside a group. `priority` is your tiebreaker when a member has multiple roles; the highest-priority role with a permission wins. `color` is yours to render on member cards or rank badges.
+
+## 5. Grant a permission to the role
+
+```ts
+await junjo.roles.grantPermission(officer.id, "guild.invite_member");
+```
+
+The permission key is a string you define. Conventional patterns: `"guild.invite_member"`, `"raid.start"`, `"vault.withdraw"`. Junjo auto-registers the key in a per-game catalog the first time you use it.
+
+## 6. Check the permission
+
+```ts
+const allowed = await junjo.can("user_alice", group.id, "guild.invite_member");
+allowed; // true
+```
+
+`can` is a boolean wrapper around `check`, which returns the full resolution:
+
+```ts
+const result = await junjo.check("user_alice", group.id, "guild.invite_member");
+result.allowed;   // true
+result.source;    // "role"
+result.viaRoleId; // officer.id
+```
+
+`source` is one of:
+
+- `"none"` - the user is not an active member of this group.
+- `"default"` - active member, but no role grants this permission and no override exists.
+- `"role"` - a role the member holds grants the permission. `viaRoleId` is the highest-priority granting role.
+- `"override"` - a per-member override (grant or revoke) wins.
+
+## 7. Per-member overrides
+
+Sometimes you need to grant or revoke a permission for one user, irrespective of role. Overrides always beat role-derived defaults.
+
+```ts
+// give Alice a permission her roles do not cover
+await junjo.members.overridePermission(
+  group.id,
+  "user_alice",
+  "vault.withdraw",
+  true,
+);
+
+// or take one away
+await junjo.members.overridePermission(
+  group.id,
+  "user_bob",
+  "guild.invite_member",
+  false,
+);
+```
+
+Clear an override with [`clearPermissionOverride`](/sdk/members). List a member's overrides with [`listPermissionOverrides`](/sdk/members).
+
+## 8. Listen for events
+
+Open a Server-Sent Events stream and react to changes as they happen. The handler receives fully-typed `JunjoEvent`s; branch on `event.type`.
+
+```ts
+const subscription = await junjo.groups.subscribe(group.id, (event) => {
+  if (event.type === "member.joined") {
+    console.log(`${event.userId} joined`);
+  } else if (event.type === "role.changed") {
+    console.log(`${event.userId} roles updated`, event.added, event.removed);
+  }
+});
+
+// later, when you no longer care:
+subscription.close();
+```
+
+For React apps, `useGroup` and `useMembers` open and manage subscriptions for you; see the [React reference](/react).
+
+For server-to-server delivery (your backend reacting to events from another process), use [webhooks](/api-reference/webhooks). Webhooks are HMAC-signed and retry with exponential backoff up to 6 attempts. The SDK provides `junjo.webhooks.verify` and `junjo.webhooks.middleware` for the receiver side.
+
+## What you built
+
+In sixty lines or so you went from an empty server to a working group with:
+
+- one member, redeemed via invitation,
+- one role with a granted permission,
+- a permission check that returns the right answer with the right source,
+- a per-member override available when you need to deviate from role defaults,
+- and a live event stream you can wire into your UI or your bots.
+
+Everything else in Junjo is a variation on these primitives: more groups, more roles, sub-groups, group-to-group relationships (allies, hostile, asymmetric), audit logs, webhooks to Discord and Slack, React hooks, auth adapters.
+
+## Next steps
+
+- **[SDK reference](/sdk)** - every namespace, every method, every option.
+- **[React reference](/react)** - drop-in hooks: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`.
+- **[Webhooks](/api-reference/webhooks)** - dispatch events to your own backend, or pipe them to Discord and Slack.
+- **[Auth adapters](/auth)** - so the user id you pass to Junjo is the verified user id from your auth provider.
+- **[API reference](/api)** - the raw HTTP surface, for languages Junjo does not yet ship a native client for.

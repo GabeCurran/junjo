@@ -1,0 +1,83 @@
+# JunjoProvider + useJunjo
+
+Wires a `Junjo` client through React Context. Construct the client once at app startup and hand it to `<JunjoProvider client={client}>` near the root of your tree; every descendant then reaches it via `useJunjo()`.
+
+## `JunjoProvider`
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+
+const junjo = new Junjo({
+  apiKey: process.env.NEXT_PUBLIC_JUNJO_API_KEY!,
+});
+
+export function App({ children }: { children: React.ReactNode }) {
+  return <JunjoProvider client={junjo}>{children}</JunjoProvider>;
+}
+```
+
+### Props
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `client` | `Junjo` | yes | The instance every descendant receives via `useJunjo()`. |
+| `children` | `ReactNode` | yes | Rendered verbatim. |
+
+The provider is a thin wrapper around `Context.Provider`; passing a different `client` to `JunjoProvider` re-renders consumers with the new instance. Nested providers shadow outer ones inside their subtree.
+
+Construct the client once and reuse it across renders. A fresh `new Junjo(...)` on every render allocates a new HTTP helper each time and defeats any future caching layer in `@junjo/react`.
+
+## `useJunjo`
+
+Returns the `Junjo` instance provided by the nearest ancestor `JunjoProvider`.
+
+```tsx
+import { useJunjo } from "@junjo/react";
+
+export function CreateGroupButton({ name }: { name: string }) {
+  const junjo = useJunjo();
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        await junjo.groups.create({ kind: "guild", name });
+      }}
+    >
+      Create
+    </button>
+  );
+}
+```
+
+### Errors
+
+Calling `useJunjo()` outside a `<JunjoProvider>` throws:
+
+```
+useJunjo must be used inside a <JunjoProvider>
+```
+
+Wrap your tree (or your test) in a provider. The error is intentional: returning `null` would push the same null check into every consumer.
+
+## Testing
+
+For component-level tests, render the component inside a provider with a stub client. The Junjo constructor accepts a `fetch` override, so tests can swap in a mock without touching the network.
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { render } from "@testing-library/react";
+import { vi } from "vitest";
+
+const stub = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+
+render(
+  <JunjoProvider client={stub}>
+    <ComponentUnderTest />
+  </JunjoProvider>,
+);
+```

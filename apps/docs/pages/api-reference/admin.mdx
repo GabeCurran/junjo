@@ -1,0 +1,1770 @@
+# Admin endpoints
+
+Server-wide endpoints that operate across the games on a single Junjo deployment. These are intentionally separate from the per-game API key surface that the rest of the API uses, and they ship as cloud-only features in the runtime sense (the dashboard is the primary consumer; self-hosted single-game deployments do not need them).
+
+The code is built and tested like every other route - "cloud-only" means a future self-host build can exclude these modules via a build flag, not that they are skipped today.
+
+## Authentication
+
+Admin endpoints check the `Authorization: Bearer <admin token>` header against the server-configured `JUNJO_ADMIN_TOKEN` env var. The check is a constant-time string comparison.
+
+This is a different auth scheme from the per-game API keys (`prefix.secret`). A per-game API key cannot be used to call an admin endpoint, and vice versa. The two middlewares run on disjoint route trees.
+
+When `JUNJO_ADMIN_TOKEN` is unset on the server, every request to an admin endpoint returns:
+
+```json
+{ "code": "invalid_admin_token", "status": 401, "message": "admin endpoints are disabled on this server" }
+```
+
+This is the right default for self-hosters with a single game who do not need cross-game visibility. Cloud / dashboard deployments set the env var to a long random string at deploy time.
+
+The error envelope on a wrong or missing token:
+
+```json
+{ "code": "invalid_admin_token", "status": 401, "message": "..." }
+```
+
+## `GET /v1/users/:junjoUserId/games`
+
+Returns every game the supplied `JunjoUser` has an `ExternalIdentity` row in, with the dev-supplied external user id and the count of active group memberships for that user in that game.
+
+Used by the dashboard to render a "this player is in N games on the platform" view across the games operated by a single tenant.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `junjoUserId` | string | The internal `JunjoUser.id` (a cuid). This is NOT a dev-supplied external user id; it is the cross-game identifier the server assigns when the user first authenticates against any game. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "junjoUserId": "user_clxxx...",
+  "games": [
+    {
+      "gameId": "game_clxxx...",
+      "externalUserId": "user_alpha",
+      "joinedGroupCount": 3
+    },
+    {
+      "gameId": "game_clyyy...",
+      "externalUserId": "abc-uuid-from-clerk",
+      "joinedGroupCount": 0
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `junjoUserId` | string | Echoed from the path. |
+| `games` | array | Each entry is one game the user has an `ExternalIdentity` in, sorted by `gameId` ascending. |
+| `games[].gameId` | string | The game's id. |
+| `games[].externalUserId` | string | The dev-supplied external id this user has within that game (e.g., the Clerk `sub`, the Supabase user UUID, the Roblox `UserId` rendered as a string). The same Junjo user can appear under different external ids across games. |
+| `games[].joinedGroupCount` | number | Active group memberships in this game. Excludes `left`, `kicked`, `invited` members; excludes soft-deleted groups. |
+
+### Behavior
+
+- A `junjoUserId` with no `ExternalIdentity` rows returns `200` with `games: []`. The route does not `404` because it cannot distinguish "user we have never seen" from "user known but no cross-game footprint yet" without leaking whether a given internal id has been recorded.
+- Games where the user has an identity but no active memberships are still listed (with `joinedGroupCount: 0`). The endpoint reports presence in the game's user pool, not just in its groups.
+- `joinedGroupCount` matches the rule used by the permission resolver and `Group.memberCount`: only `status: "active"` members in non-soft-deleted groups count. A user who left every group in a game still appears in `games[]` with `joinedGroupCount: 0` as long as their identity row exists.
+- Pagination is intentionally absent. The response shape (a `games` array) is designed to allow pagination as an additive change later if needed.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  https://api.junjo.io/v1/users/user_clxxx0000000000000000000/games
+```
+
+## `GET /v1/admin/stats`
+
+Returns aggregate counts across every game on the deployment. Used by the dashboard's home page to render the four overview cards.
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "totalGames": 12,
+  "totalGroups": 87,
+  "totalActiveMembers": 1254,
+  "totalAuditEntriesLast24h": 312
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `totalGames` | number | Every row in the `Game` table. There is no soft-delete column on `Game`. |
+| `totalGroups` | number | Groups where `softDeletedAt: null`. Soft-deleted-but-undeleted-soon groups are excluded; the dashboard's "active groups" mental model wins over including the 7-day pending-deletion window. |
+| `totalActiveMembers` | number | `GroupMember` rows in `status: "active"` whose group is not soft-deleted. Matches the `Group.memberCount` precedent and the permission resolver's "non-active = effectively not a member" rule. |
+| `totalAuditEntriesLast24h` | number | `AuditEntry` rows whose `createdAt` falls in `[now() - 24h, now()]`, regardless of group soft-delete state. The dashboard's "events in last 24h" card reflects activity volume, not surviving-group volume. |
+
+### Behavior
+
+- Implemented as four parallel `prisma.count` queries via `Promise.all`. Cheap to recompute; the dashboard caches the response for 60s via Next.js `revalidate`.
+- No query parameters. The 24h window is fixed.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  https://api.junjo.io/v1/admin/stats
+```
+
+## `GET /v1/admin/audit`
+
+Returns the most recent audit entries across every game on the deployment, with the parent group's name and the parent game's name pivoted into each item so the dashboard's activity-feed card can render `<game> / <group>` headings without an N+1 lookup.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | `20` | Maximum number of entries returned. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "audit_clxxx...",
+      "action": "member.joined",
+      "gameId": "game_clxxx...",
+      "gameName": "Alpha",
+      "groupId": "group_clxxx...",
+      "groupName": "Vanguard",
+      "groupSoftDeleted": false,
+      "actorUserId": "user_clxxx...",
+      "targetId": "user_xyz",
+      "payload": { "memberId": "...", "invitationId": "..." },
+      "createdAt": "2026-04-28T22:14:51.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `AuditEntry.id`. |
+| `items[].action` | string | One of the [audit actions](./audit). |
+| `items[].gameId` | string | The parent game's id. |
+| `items[].gameName` | string | The parent game's name, pivoted in for the dashboard. |
+| `items[].groupId` | string | The parent group's id. |
+| `items[].groupName` | string | The parent group's name, pivoted in for the dashboard. |
+| `items[].groupSoftDeleted` | boolean | `true` when the parent group's `softDeletedAt` is set. The audit log preserves history regardless; the flag lets the dashboard mark the row visually. |
+| `items[].actorUserId` | string \| null | `JunjoUser.id` of the actor, or `null` for system actions. |
+| `items[].targetId` | string \| null | The dev-supplied external user id of the target, or `null` if the action does not target a user. |
+| `items[].payload` | object | Action-specific JSON payload. Shape varies per action. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. The `id` tiebreaker keeps ordering stable when two rows share the same millisecond timestamp.
+- Soft-deleted-group entries are included; the audit log preserves history regardless of the group's lifecycle state.
+- No pagination. The home page renders 20-100 items at most. The game-wide audit page owns paginated per-game audit; this endpoint stays terse on purpose.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` is not an integer in `[1, 100]`. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/audit?limit=20"
+```
+
+## `GET /v1/admin/games`
+
+Lists every game on the deployment with batched per-game stats. Used by the dashboard's games list page to render a table of every game alongside its group / member / API-key counts.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-200 | `100` | Maximum number of games returned. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "game_clxxx...",
+      "name": "Alpha",
+      "createdAt": "2026-04-29T10:14:51.000Z",
+      "updatedAt": "2026-04-29T10:14:51.000Z",
+      "groupCount": 12,
+      "activeMemberCount": 87,
+      "apiKeyCount": 2
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `Game.id`. |
+| `items[].name` | string | The dev-supplied game name. Names are not unique on the server side. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+| `items[].updatedAt` | string | ISO 8601 timestamp. Bumps when a game is renamed (no rename endpoint). |
+| `items[].groupCount` | number | Groups where `softDeletedAt: null`. Soft-deleted-but-undeleted-soon groups are excluded. |
+| `items[].activeMemberCount` | number | `GroupMember` rows in `status: "active"` whose group is not soft-deleted. Matches the `Group.memberCount` precedent. |
+| `items[].apiKeyCount` | number | API keys with `revokedAt: null`. Reflects "currently usable keys", not lifetime issuance. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. Newest games first; the id tiebreaker keeps ordering stable across same-millisecond rows.
+- Stats are computed via three batched Prisma queries (one `groupBy` for groups, one `findMany` joined to `group.gameId` for active members, one `groupBy` for API keys), tallied in memory. Avoids 3*N round-trips for N games.
+- No pagination cursor; capped at 200 rows. A future deployment that grows past that can add an offset/cursor additively.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` is not an integer in `[1, 200]`. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+## `POST /v1/admin/games`
+
+Creates a new game. The dashboard uses this from the create-game dialog on the games list page.
+
+### Request body
+
+```json
+{ "name": "MyGame" }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string (1-200 chars) | yes | The dev-facing game name. The server does not enforce uniqueness; the dashboard's create-game dialog may add a UX-level guard. |
+
+### Response
+
+`201 Created` with the same `WireAdminGame` shape as the list (`groupCount`, `activeMemberCount`, `apiKeyCount` all start at `0`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body is malformed JSON, `name` is missing, empty, longer than 200 chars, or not a string. |
+| `invalid_admin_token` | 401 | Authorization header missing, malformed, the token does not match `JUNJO_ADMIN_TOKEN`, or `JUNJO_ADMIN_TOKEN` is unset on the server. |
+
+## `GET /v1/admin/games/:gameId`
+
+Returns a single game with the same shape as the list endpoint. The dashboard uses this on the game detail page so the counts stay live (the list page's 60s `revalidate` cache could otherwise be stale relative to a recent membership change).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id`. |
+
+### Response
+
+`200 OK` with `WireAdminGame` (same shape as `items[]` on the list).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `GET /v1/admin/games/:gameId/api-keys`
+
+Lists every API key for a game, active and revoked. The dashboard renders revoked keys with a badge so operators can audit history without losing them from the view.
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "items": [
+    {
+      "id": "key_clxxx...",
+      "gameId": "game_clxxx...",
+      "prefix": "jk_AbCdEfGhIjKlMn",
+      "createdAt": "2026-04-29T10:14:51.000Z",
+      "revokedAt": null
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].id` | string | The `ApiKey.id`. |
+| `items[].gameId` | string | The owning game's id. |
+| `items[].prefix` | string | The display prefix shown to the dev. The full key is `prefix.secret`; the secret is never on this endpoint. |
+| `items[].createdAt` | string | ISO 8601 timestamp. |
+| `items[].revokedAt` | string \| null | ISO 8601 timestamp set when the key was revoked, or `null` if still active. |
+
+### Behavior
+
+- Sorted by `(createdAt desc, id desc)`. Newest keys first.
+- The secret is stored only as a scrypt hash and is not recoverable. The wire format never includes `secret`, `key`, or `hashedSecret`.
+- Includes revoked keys; consumers filter on `revokedAt === null` for "currently usable" listings.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `POST /v1/admin/games/:gameId/api-keys`
+
+Issues a fresh API key for a game. The returned `key` field carries the dev-facing `prefix.secret` form and is the only time the secret will appear on the wire. The dashboard surfaces `key` in a copy-to-clipboard dialog and warns the operator that they will not see it again.
+
+### Request body
+
+No body required.
+
+### Response
+
+`201 Created` with body:
+
+```json
+{
+  "id": "key_clxxx...",
+  "gameId": "game_clxxx...",
+  "prefix": "jk_AbCdEfGhIjKlMn",
+  "createdAt": "2026-04-29T10:14:51.000Z",
+  "revokedAt": null,
+  "key": "jk_AbCdEfGhIjKlMn.RAW_SECRET_PORTION"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` / `gameId` / `prefix` / `createdAt` / `revokedAt` | various | Same shape as the list endpoint. |
+| `key` | string | The full `prefix.secret` form. Returned **once**. The secret portion is unrecoverable after this response. Surface this to the operator and treat it as sensitive. |
+
+### Behavior
+
+- Mirrors `seed.createApiKey` and the webhook-secret-on-create-only convention.
+- The secret is generated on the server (32 bytes of `randomBytes` rendered as base64url) and scrypt-hashed before storage.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`
+
+Marks an API key as revoked. The row is never hard-deleted so the historic prefix can resolve in audit and log lookups.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` that owns the key. Cross-game scope is enforced. |
+| `keyId` | string | The `ApiKey.id` to revoke. |
+
+### Request body
+
+No body required.
+
+### Response
+
+`200 OK` with the post-state `WireAdminApiKey` (no `key` field; the secret is gone forever once revoked).
+
+### Behavior
+
+- Idempotent on already-revoked keys: returns the unchanged row without bumping the `revokedAt` timestamp. The original revoke time is what operators care about.
+- A key id that exists but belongs to a different game returns `404`. Cross-game existence is not leaked through the gameId path scope.
+- The row stays in the database; only `revokedAt` is set. Subsequent `apiKeyMiddleware` calls reject any request bearing the revoked key (existing behavior; the middleware checks `revokedAt: null`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No key with the supplied id exists, or the key exists but belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups
+
+Lists every (non-soft-deleted) group in a game. Backs the dashboard's per-game group browser (TanStack Table) with search, filter, sort, and offset-based pagination.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` to list groups for. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Page size. |
+| `offset` | int >= 0 | 0 | Number of matching rows to skip before the page. |
+| `q` | string 1-120 | - | Case-insensitive name search (Postgres `contains`). Empty string is rejected; pass the parameter unset to drop the filter. |
+| `kind` | string 1-64 | - | Exact match on `Group.kind`. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | - | Exact match. |
+| `sort` | `"createdAt" \| "name" \| "memberCount"` | `createdAt` | Sort field. |
+| `order` | `"asc" \| "desc"` | `desc` | Sort direction. |
+
+### Response
+
+`200 OK` with a `WireAdminGroupList`:
+
+```ts
+interface WireAdminGroup {
+  id: string;
+  gameId: string;
+  kind: string;
+  name: string;
+  visibility: "public" | "invite-only" | "secret";
+  metadata: Record<string, unknown>;
+  defaultRoleId: string | null;
+  parentGroupId: string | null;
+  memberCount: number;        // Active members only (status: "active")
+  createdAt: string;          // ISO 8601
+  updatedAt: string;          // ISO 8601
+}
+
+interface WireAdminGroupList {
+  items: WireAdminGroup[];
+  total: number;              // Matching rows BEFORE pagination
+  hasMore: boolean;           // offset + items.length < total
+}
+```
+
+### Behavior
+
+- Soft-deleted groups are excluded. This is the operator's "what is live now" view; a future `?includeDeleted` flag is additive.
+- `q`, `kind`, and `visibility` are AND-combined when supplied together.
+- `sort=createdAt` and `sort=name` order at the database level with `(field <order>, id asc)` for stable tiebreaking. Pagination uses `skip` / `take`.
+- `sort=memberCount` is computed in memory because the schema does not carry a denormalized counter on `Group`. The handler fetches every matching row, batches active member counts via a single `groupBy`, sorts in memory by `(count <order>, id asc)`, then slices to `[offset, offset+limit)`. To bound the work, the matching set is hard-capped at **500 groups** when `sort=memberCount`. If the filter would match more, the route returns `400 bad_request` with a message asking the caller to narrow with `q`, `kind`, or `visibility`.
+- `total` reflects the filtered count BEFORE pagination, so a TanStack Table consumer can render an accurate page count without a second round trip.
+- The route uses offset-based pagination (not the cursor-based `nextCursor` shape of `GET /v1/groups`). `sort=memberCount` does not have a stable cursor (the count can change between calls), and offset / limit / total is a more natural fit for the dashboard's data table anyway.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` path parameter does not match any game. |
+| `bad_request` | 400 | Query validation failed, or `sort=memberCount` matched more than 500 rows after filtering. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId
+
+Returns a single group's detail in the same wire shape as the list endpoint. Backs the dashboard's group detail page header so counts stay live (the list view's 60s revalidate cache could otherwise be stale relative to a recent membership change).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` the group belongs to. |
+| `groupId` | string | The `Group.id` to fetch. |
+
+### Response
+
+`200 OK` with a `WireAdminGroup` (same shape as the list endpoint above).
+
+### Behavior
+
+- 404 when the game does not exist OR when the group does not exist OR when the group exists but belongs to a different game OR when the group is soft-deleted. Cross-game existence is not leaked through the path scope.
+- `memberCount` is the active-member count, computed at request time.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` or `groupId` does not match, the group is in a different game, or the group is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/members
+
+Lists members in a single group with their roles populated. Backs the dashboard's group detail page (members tab) which renders a TanStack Table with role chips, status badges, and join timestamps.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` the group belongs to. |
+| `groupId` | string | The `Group.id` whose members to list. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Page size. |
+| `offset` | int >= 0 | 0 | Number of matching rows to skip before the page. |
+| `status` | `"active" \| "left" \| "kicked" \| "invited" \| "all"` | `active` | Filter by `GroupMember.status`. The `"all"` value drops the filter. |
+| `q` | string 1-255 | - | Case-insensitive substring search against the dev-supplied external user id (the `ExternalIdentity.externalUserId` field). Empty string is rejected; pass the parameter unset to drop the filter. |
+
+### Response
+
+`200 OK` with a `WireAdminGroupMemberList`:
+
+```ts
+interface WireAdminMemberRole {
+  id: string;
+  name: string;
+  priority: number;
+  color: string | null;
+  isDefault: boolean;
+}
+
+interface WireAdminGroupMember {
+  id: string;                    // GroupMember.id
+  groupId: string;
+  externalUserId: string;        // The dev-supplied user id (ExternalIdentity.externalUserId)
+  junjoUserId: string;           // The internal cross-game user id (JunjoUser.id)
+  status: "active" | "left" | "kicked" | "invited";
+  metadata: Record<string, unknown>;
+  notesPublic: string | null;
+  notesPrivate: string | null;
+  joinedAt: string;              // ISO 8601
+  leftAt: string | null;         // ISO 8601, null while still active
+  roles: WireAdminMemberRole[];  // Sorted by priority desc, then name asc
+}
+
+interface WireAdminGroupMemberList {
+  items: WireAdminGroupMember[];
+  total: number;                 // Matching rows BEFORE pagination
+  hasMore: boolean;              // offset + items.length < total
+}
+```
+
+### Behavior
+
+- Sorted by `(joinedAt desc, id desc)`. Newest joins first matches the per-game `members.list` route precedent and the dashboard's mental model.
+- Default `status=active` is the dominant view (the roster panel). `status=all` returns every status; the explicit individual values (`left`, `kicked`, `invited`) narrow to one.
+- `q` searches the dev-supplied external user id (the value the dev's auth adapter returned). Internal `junjoUserId` is not searched because operators recognize the external id, not the cross-game UUID.
+- Roles are populated via two batched queries (`MemberRole` join rows scoped to the page's member ids, then a single `Role` lookup for those role ids). The handler fans the results out to per-member arrays in memory; the per-member roles are sorted by `priority desc, name asc` so the highest-priority chip renders first.
+- 404 propagates from the same group existence checks the single-group endpoint enforces (missing / cross-game / soft-deleted).
+- `total` reflects the filtered count BEFORE pagination, so a TanStack Table consumer can render an accurate page count without a second round trip.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` or `groupId` does not match, the group is cross-game, or the group is soft-deleted. |
+| `bad_request` | 400 | Query validation failed (`limit` out of range, negative `offset`, unknown `status` value, empty `q`). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/kick
+
+Kicks a member from the group. Mirrors the per-game `POST /v1/groups/:id/members/:userId/kick` route's semantics exactly, with the `gameId` lifted into the path scope so cross-game existence does not leak.
+
+### Path parameters
+
+| Name | Notes |
+|------|-------|
+| `gameId` | The game the group belongs to. |
+| `groupId` | The group from which to kick the member. |
+| `userId` | The dev-supplied external user id (URL-encoded). |
+
+### Request body (optional)
+
+```ts
+interface AdminKickMemberBody {
+  reason?: string | null;        // Up to 500 chars; lands on the audit payload
+}
+```
+
+A missing body or empty object both land `reason: null` on the audit entry.
+
+### Response
+
+`200 OK` with the post-state `WireAdminGroupMember` (the same wire shape returned by `GET .../members`). Roles are populated and sorted by `priority desc, name asc`.
+
+### Behavior
+
+- Only transitions an `active` member to `kicked`. Non-active rows (`left`, `kicked`, `invited`) return their current state with no audit entry and no `leftAt` bump.
+- On a real transition writes one `member.kicked` audit entry with `actorUserId: null`, `targetId` set to the external user id, and `payload: { memberId, reason }`.
+- Dispatches a `member.left` event with `reason: "kicked"` so SSE subscribers and webhook endpoints see the same broadcast a per-game-key kick would emit.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The four causes collapse to one envelope to avoid existence enumeration. |
+| `bad_request` | 400 | `reason` longer than 500 characters. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PATCH /v1/admin/games/:gameId/groups/:groupId/members/:userId
+
+Updates a member's metadata and / or notes. Mirrors the per-game `PATCH /v1/groups/:id/members/:userId` route's semantics.
+
+### Request body
+
+```ts
+interface AdminUpdateMemberBody {
+  metadata?: Record<string, unknown>;   // Replaces wholesale; no deep merge
+  notesPublic?: string | null;          // Up to 5000 chars; null clears
+  notesPrivate?: string | null;         // Up to 5000 chars; null clears
+}
+```
+
+At least one field must be present; an empty body returns `400 bad_request`.
+
+### Response
+
+`200 OK` with the post-state `WireAdminGroupMember`.
+
+### Behavior
+
+- `metadata` is treated as a change whenever supplied (jsonb storage may not preserve key order, so a deep-equal check is unreliable; matches the `groups.update` precedent). When `metadata` is supplied a `member.metadata.updated` audit entry fires with `payload: { before: { metadata }, after: { metadata } }`.
+- Notes fields are diffed per-field against the stored row; a notes-only PATCH where every supplied field equals the stored value is a no-op (no DB write, no audit entry). When at least one notes field changed, a `member.notes.updated` audit entry fires with `payload: { before, after }` containing only the changed fields.
+- A PATCH that changes both metadata and notes writes two distinct audit entries inside one transaction.
+- No `JunjoEvent` fires for either action: notes / metadata mutations have no event-union counterpart by design.
+- Members in any status (`active`, `left`, `kicked`, `invited`) can be updated; the lifecycle gate is enforced by leave / kick, not by metadata / notes edits.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `bad_request` | 400 | Empty body, notes field over 5000 chars, or invalid JSON. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission
+
+Sets or updates a member-level permission override. Mirrors the per-game `POST /v1/groups/:id/members/:userId/permissions/:permission` route's semantics.
+
+### Path parameters
+
+| Name | Notes |
+|------|-------|
+| `permission` | The permission key (URL-encoded). 1-128 chars. |
+
+### Request body
+
+```ts
+interface AdminOverridePermissionBody {
+  grant: boolean;
+}
+```
+
+### Response
+
+`200 OK` with the post-state override:
+
+```ts
+interface WireAdminMemberPermissionOverride {
+  groupId: string;
+  userId: string;                // The dev-supplied external user id
+  permission: string;
+  grant: boolean;
+  setAt: string;                 // ISO 8601
+  setBy: string | null;          // null (no auth-adapter actor wired)
+}
+```
+
+### Behavior
+
+- Idempotent on matching `grant` (no audit entry, no DB write, no `setAt` bump).
+- On a change writes one `permission.override.set` audit entry with `payload: { memberId, permission, grant }`. On an update the payload also carries `before: { grant }` with the previous value.
+- The permission key is auto-registered into `PermissionDef (gameId, key)` on first sight per game. Mirrors the `roles.grantPermission` and per-game override route convention; the registry is monotonic per game.
+- Override semantics: an override (in either direction) wins over any role-derived grant during permission resolution (see `/api-reference/permissions`). Setting an override does not touch role assignments.
+- Invalidates the in-memory permission cache for the group after commit so the next `permissions.check` reflects the new value.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `bad_request` | 400 | `grant` missing or non-boolean, permission key over 128 chars, or invalid JSON. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission
+
+Clears a member-level permission override. Mirrors the per-game `DELETE` counterpart's semantics.
+
+### Response
+
+`204 No Content` in every case. The body is empty.
+
+### Behavior
+
+- Idempotent: a missing override returns 204 with no audit entry. The handler does not 404 on "no override exists for this key" since the join row is the only state that matters.
+- On a real delete writes one `permission.override.cleared` audit entry with `payload: { memberId, permission, grant }`, where `grant` is the previous (now-cleared) value.
+- The `PermissionDef` registry row is preserved across clears (matches the `roles.revokePermission` precedent: the catalog is monotonic per game).
+- Invalidates the in-memory permission cache for the group after commit.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions
+
+Lists a member's permission overrides.
+
+### Response
+
+`200 OK` with a bare array of `WireAdminMemberPermissionOverride` rows (no pagination wrapper). Sorted by `permissionKey` ascending for deterministic output.
+
+### Behavior
+
+- Returns `[]` for a member with no overrides (active or not).
+- Scoped to a single member; other members in the same group are not included.
+- The bare-array shape is intentional. A member typically has a handful of overrides, not thousands; pagination would be over-engineering.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/invitations
+
+Creates an invitation for a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/invitations` semantics exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior. Backs the dashboard's "Invite member" dialog, which has three tabs (by-userId / by-code / by-link); all three call this endpoint.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Body (required, JSON):
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `targetUserId` | string \| omitted | `null` | When set, the invitation is **direct** (only that user can accept). When omitted, the invitation is **open-code** (anyone with the code can accept). 1-255 chars. |
+| `roleId` | string \| omitted | `null` | Optional role to assign on accept; forwarded verbatim and not validated against `Role` (matches the per-game route; an invalid roleId surfaces at accept time). 1-255 chars. |
+| `expiresIn` | string \| omitted | `null` | Optional duration `<positive integer><unit>` where unit is `s\|m\|h\|d` (e.g. `7d`, `30m`). Server stamps `expiresAt = now() + expiresIn` at create time. Non-positive values (`0d`) return 400. |
+
+The body is required - send at least `{}` for an open-code invitation with no role and no expiry. A missing or malformed JSON body returns `400 bad_request`.
+
+Response: `201 Created` with `WireInvitation`:
+
+```ts
+interface WireInvitation {
+  id: string;
+  groupId: string;
+  code: string;            // 16 hex chars; URL-safe
+  roleId: string | null;
+  targetUserId: string | null;
+  createdBy: string | null;        // always null on the admin surface
+  createdAt: string;               // ISO 8601
+  expiresAt: string | null;        // ISO 8601
+  usedAt: string | null;
+  usedBy: string | null;
+}
+```
+
+Behavior:
+
+- One `member.invited` audit entry per call. `actorUserId` is `null` (the admin endpoint has no auth-adapter actor wired). `targetId` is `targetUserId` for direct invitations, `null` for open-code.
+- Audit `payload`: `{ invitationId, code, targetUserId, roleId, expiresAt: ISO8601 | null, source: "admin" }`. The `source` discriminator distinguishes admin-issued invitations from per-game-key calls (which set `source: "bulk-invite"` for bulk operations and omit `source` entirely for the regular per-game route).
+- Dispatches a `member.invited` `JunjoEvent` so SSE subscribers and webhook endpoints see the same event shape a per-game-key invite would emit.
+- Code generation: 16 random hex chars (8 bytes from `node:crypto`), URL-safe and unambiguous.
+- `createdByUserId` on the row is `null` (V1 has no auth-adapter actor wired on the admin surface).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing, malformed JSON, `targetUserId` empty / over 255 chars, `roleId` empty / over 255 chars, `expiresIn` malformed regex, `expiresIn` non-positive (e.g. `0d`). |
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game (cross-game scope). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/roles
+
+Lists the roles in a group on the cross-game admin surface. Backs the dashboard's group detail Roles tab. Returns a bare `WireAdminRole[]` (no pagination wrapper); roles are conventionally a small list (10s, not 1000s). Sorted by `(priority desc, id desc)` so the highest-authority roles appear first.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Response: `200 OK` with `WireAdminRole[]`:
+
+```ts
+interface WireAdminRole {
+  id: string;
+  groupId: string;
+  name: string;
+  priority: number;
+  color: string | null;        // 7-character hex (e.g. "#ff5050") or null
+  isDefault: boolean;
+  permissions: string[];       // sorted ascending; empty until grant calls land
+  createdAt: string;           // ISO 8601
+}
+```
+
+Behavior:
+
+- Permissions are batch-loaded via a single `RolePermission.findMany` so list rendering stays at two queries regardless of page size.
+- 404 collapses missing / cross-game / soft-deleted group into one envelope (existence not leaked through the path scope).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/groups/:groupId/roles
+
+Creates a role in a group on the cross-game admin surface. Mirrors the per-game `POST /v1/groups/:id/roles` body shape and audit shape exactly so the dashboard caller and a per-game-key caller see identical wire shapes and identical audit + event behavior.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id (`Group.id`). |
+
+Body (JSON):
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `name` | string | required | 1-64 characters; unique within the group (a duplicate returns `409 role_name_taken`). |
+| `priority` | int | required | Higher priority wins on tiebreaks. Negative values allowed. |
+| `color` | string \| omitted | `null` | 7-character hex color (e.g. `#ff5050`); validated against `^#[0-9a-fA-F]{6}$`. |
+| `isDefault` | boolean \| omitted | `false` | Per-role tag; the single canonical default for a group lives on `Group.defaultRoleId`. |
+
+Response: `201 Created` with the created `WireAdminRole`. The `permissions` array is empty by definition; use [`POST /v1/admin/games/:gameId/roles/:roleId/permissions`](#post-v1admingamesgameidrolesroleidpermissions) to grant after creation.
+
+Behavior:
+
+- Writes one `role.created` audit entry inside the same transaction as the create. `actorUserId` is `null`. `targetId` is the new role id. `payload` is `{ name, priority, color, isDefault }`.
+- Dispatches a `role.created` `JunjoEvent` after the transaction commits so SSE subscribers and webhook endpoints see the same event a per-game-key create would emit (behavior parity with the per-game route).
+- 404 collapses missing / cross-game / soft-deleted group; 409 on duplicate `name`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing, malformed JSON, `name` empty / over 64 chars, `priority` not an integer, `color` failing the hex regex. |
+| `role_name_taken` | 409 | Another role in the same group already has that `name`. |
+| `not_found` | 404 | Group missing, soft-deleted, or belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PATCH /v1/admin/games/:gameId/roles/:roleId
+
+Updates a role on the cross-game admin surface. Mirrors the per-game `PATCH /v1/roles/:id` semantics exactly: partial body, per-field diff, no-op short-circuit, 409 on rename collision.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Body (JSON):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string \| omitted | 1-64 characters. Renaming to a name another role in the same group already has returns `409 role_name_taken`. |
+| `priority` | int \| omitted | Negative values allowed. |
+| `color` | string \| `null` \| omitted | 7-character hex; pass `null` to clear an existing color. |
+| `isDefault` | boolean \| omitted | Per-role tag. |
+
+Empty body returns `400 bad_request`.
+
+Response: `200 OK` with the updated `WireAdminRole` (with `permissions` populated from the current `RolePermission` rows).
+
+Behavior:
+
+- Per-field diff against the stored row. Only fields whose new value differs land in both the update and the audit `payload.before` / `payload.after`. A fully no-op PATCH (every supplied field equals the stored value) writes no audit entry, no DB row, returns the unchanged role, and does not bump `updatedAt`.
+- Audit action is `role.updated` with `payload: { before, after }` containing only the changed fields. `actorUserId` is `null`.
+- Does **not** dispatch a `JunjoEvent`. There is no `RoleUpdatedEvent` in the union: rename / priority / color edits are audit-only; only role assignment changes fire `role.changed`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, malformed JSON, `name` empty / over 64 chars, `color` failing the hex regex. |
+| `role_name_taken` | 409 | Renaming to a name another role in the same group already has. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game (cross-game scope). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/roles/:roleId
+
+Deletes a role on the cross-game admin surface. Mirrors the per-game `DELETE /v1/roles/:id` semantics exactly: blocks on assigned members.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Response: `204 No Content` on success.
+
+Behavior:
+
+- Blocks if any `MemberRole` rows reference the role (returns `409 role_has_members`); the operator must reassign members first via the dashboard's row actions or the per-game `members.removeRole` API.
+- On success, hard-deletes the row, writes a `role.deleted` audit entry with `payload: { name, priority, color, isDefault }` (full snapshot), invalidates the per-group permission cache, and dispatches a `role.deleted` `JunjoEvent`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `role_has_members` | 409 | One or more `MemberRole` rows reference the role. The row is preserved. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## POST /v1/admin/games/:gameId/roles/:roleId/permissions
+
+Grants a permission key to a role on the cross-game admin surface. Mirrors the per-game `POST /v1/roles/:id/permissions` semantics exactly.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Must match the role's parent group's `gameId`; mismatches return 404. |
+| `roleId` | string | The role id (`Role.id`). |
+
+Request body:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `permission` | string | Required. 1-128 characters. Free-form (any UTF-8); convention is namespaced like `guild.invite_member` or `vault.withdraw`. |
+
+Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` populated). The wire shape matches `WireAdminRole` from the list / create endpoints.
+
+Behavior:
+
+- Idempotent: granting a permission the role already has returns the unchanged role (no audit, no DB write, no `JunjoEvent`).
+- Auto-registers the permission key into the per-game `PermissionDef` catalog on first sight (one upsert in the same transaction). Subsequent grants of the same key reuse the existing row; revoking does NOT unregister.
+- On a real grant, writes a `permission.granted` audit entry with `payload: { roleId, permission }` and `targetId` set to the role id, then dispatches a `permission.granted` `JunjoEvent` so SSE subscribers and webhook endpoints see the same event a per-game-key grant would emit.
+- Invalidates the per-group permission cache (any cached `can(...)` answers for the role's group are flushed).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body validation failed (missing / empty / non-string `permission`, or > 128 characters). Malformed JSON also returns 400. |
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. No `PermissionDef` row is created in any 404 case. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/roles/:roleId/permissions/:permission
+
+Revokes a permission key from a role on the cross-game admin surface. Mirrors the per-game `DELETE /v1/roles/:id/permissions/:permission` semantics exactly.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `roleId` | string | The role id (`Role.id`). |
+| `permission` | string | The permission key to revoke. URL-decoded; keys with `/` or other reserved characters must be `encodeURIComponent`'d by the caller. |
+
+Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` reflecting the revoke). Even no-op calls return the unchanged role.
+
+Behavior:
+
+- Idempotent: revoking a permission the role does not have (whether the key was never granted or previously revoked) returns the unchanged role with no audit entry, no DB write, and no `JunjoEvent` dispatch. Revoking a key that is not registered at all in the game's `PermissionDef` catalog is also a no-op (no 404).
+- Preserves the `PermissionDef` registry row (revoke does not "forget" the key for the game). The catalog is monotonic per game; a future cleanup endpoint could prune unused defs additively.
+- On a real revoke, writes a `permission.revoked` audit entry with `payload: { roleId, permission }` and `targetId` set to the role id, then dispatches a `permission.revoked` `JunjoEvent`.
+- Invalidates the per-group permission cache.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. The `RolePermission` row (if any) is preserved. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/permissions
+
+Lists registered permission keys for a game (the `PermissionDef` catalog). Backs the dashboard's group detail Permissions matrix tab column list.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+
+Response: `200 OK` with a bare `WireAdminPermissionDef[]` (no pagination wrapper; permission catalogs are conventionally a small list - 10s, not 1000s).
+
+```ts
+interface WireAdminPermissionDef {
+  key: string;             // The permission key
+  description: string | null; // Optional human-readable description (null)
+  createdAt: string;       // ISO 8601 timestamp of first registration
+}
+```
+
+Behavior:
+
+- Sorted by `key` ascending; matches the dashboard's stable-column-order expectation.
+- Scoped to the requested `gameId`; permission keys registered under other games are excluded.
+- Empty array if no keys have been registered yet (a brand-new game).
+- `PermissionDef` rows are auto-registered by:
+  - `POST /v1/admin/games/:gameId/roles/:roleId/permissions` (this iter)
+  - `POST /v1/roles/:id/permissions` (the per-game grant route)
+  - `POST /v1/groups/:id/members/:userId/permissions/:permission` (per-game member override)
+  - `POST /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission` (admin override)
+- Revoking does NOT remove the catalog row; the list is monotonic per game.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The supplied `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/audit
+
+Returns a timestamp-paginated audit feed for one group. Backs the dashboard's group detail Audit tab. Mirrors the per-game `GET /v1/groups/:id/audit` route byte-for-byte: same query schema, same pagination, same response shape.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+| `groupId` | string | The group id whose audit entries to list. |
+
+Query parameters (all optional):
+
+| Name | Type | Default | Notes |
+|------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Max items per page. |
+| `before` | ISO 8601 string | unset | Returns only entries with `createdAt < before`. Use the previous page's `nextCursor` value here. |
+| `actions` | repeated string | unset | Restricts results to entries whose `action` is in the supplied set (OR semantics). Each value must be a known `AuditAction`; unknowns return 400. Repeats per filter value (`?actions=group.created&actions=role.created`). |
+
+Response: `200 OK` with a `Page<WireAuditEntry>` shape. Wire format:
+
+```ts
+interface WireAuditEntry {
+  id: string;
+  groupId: string;
+  actorUserId: string | null;
+  action: string;
+  targetId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string; // ISO 8601
+}
+
+interface WireAuditPage {
+  items: WireAuditEntry[];
+  nextCursor: string | null; // ISO 8601 of the last item's createdAt, or null when no more pages
+}
+```
+
+Behavior:
+
+- Ordered `(createdAt desc, id desc)`. The `id` tiebreaker keeps pagination deterministic across rows that share a millisecond.
+- Pagination is timestamp-based via the exclusive `before` filter. Caller pages by feeding the response's `nextCursor` value back as `before` on the next call.
+- `nextCursor` is the ISO 8601 `createdAt` of the last item on the page when more pages exist; `null` when the page is the final one.
+- Wire shape is `WireAuditEntry` (functionally identical to the per-game route). The cross-game recent-audit feed at `/v1/admin/audit` carries additional `gameName` / `groupName` / `groupSoftDeleted` fields the per-group view doesn't need (the dashboard already has gameId + groupId from the URL path).
+- 404 collapses missing / cross-game / soft-deleted groups via the same three-check pattern other admin per-group routes use.
+- Cross-game soft-deleted-group audit activity is reachable via the `/v1/admin/audit` recent feed (which carries the `groupSoftDeleted` flag); per-group audit is not reachable for soft-deleted groups.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `bad_request` | 400 | `limit` out of range, `before` not parseable as ISO 8601, or `actions` includes an unknown value. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PUT /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+Set or update a directed relationship row from group `a` to group `b`. Backs the dashboard's group detail Relationships tab. Mirrors the per-game `PUT /v1/groups/:a/relationships/:b` semantics byte-for-byte: same body shape, same idempotence rules, same audit shape, same `group.relationship.changed` event dispatch.
+
+Path parameters:
+
+- `:gameId` - the game id; both groups must belong to it.
+- `:a` - the origin group id ("this group's stance").
+- `:b` - the other group.
+
+Request body (JSON):
+
+```ts
+{
+  type: string;     // 1-64 chars; dev-defined ("ally", "enemy", "vassal", etc.)
+  mutual?: boolean; // default false. When true, writes both A->B and B->A in the same transaction.
+}
+```
+
+Response: `200 OK` with the A->B `WireGroupRelationship` (the canonical "this group's stance" view):
+
+```ts
+interface WireGroupRelationship {
+  groupAId: string;
+  groupBId: string;
+  type: string;
+  since: string; // ISO 8601
+  setBy: string | null;
+}
+```
+
+Behavior:
+
+- Idempotent on each direction: if the existing row's `type` already equals the supplied value, that direction is a no-op (no DB write, no audit entry, no `since` bump). A fully no-op call still returns 200 with the unchanged A->B row.
+- A direction that does change writes one `group.relationship.set` audit entry on the origin group's audit log. `mutual: true` therefore produces up to 2 audit entries (one per changed direction, partial-mutual produces 1 if only the missing direction was written).
+- Audit `payload` is `{ groupAId, groupBId, type, mutual: boolean }` plus `before: { type }` only when the row already existed.
+- Dispatches one `group.relationship.changed` `JunjoEvent` per actually-changed direction (after the transaction commits) so SSE subscribers and webhook endpoints see the same events a per-game-key call would emit.
+- Self-relationships (`a == b`) return `400 bad_request`. `actorUserId` is null on the audit row (V1 has no auth-adapter actor wired).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `a == b`, missing / over-cap / non-string `type`, or malformed JSON body. |
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## DELETE /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+Clear the directed A->B relationship row. Mirrors the per-game `DELETE /v1/groups/:a/relationships/:b` semantics byte-for-byte: idempotent on missing rows, audit entry per actually-cleared direction, `group.relationship.changed` event with `relationship: null` per cleared direction.
+
+Path parameters: same as `PUT`.
+
+Query parameters:
+
+- `?mutual=true` - clears both directions in the same transaction. Strict `"true"` / `"false"` only; anything else returns 400.
+
+Response: `204 No Content` in every case (whether the row existed or not). Caller does not need to branch on whether something was actually deleted.
+
+Behavior:
+
+- Missing row is a no-op (no audit entry, no event). Same for the second direction when `?mutual=true` and only one side exists.
+- Each cleared direction writes a `group.relationship.cleared` audit entry on the origin group with payload `{ groupAId, groupBId, type, mutual }` carrying the *previous* `type`.
+- Dispatches one `group.relationship.changed` event per cleared direction with `relationship: null` (so subscribers can branch on the `null` payload to detect a clear vs a set).
+- Self-relationships (`a == b`) return `400 bad_request`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `a == b` or `?mutual` is not exactly `"true"` / `"false"`. |
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:a/relationships/:b
+
+Fetch the directed A->B relationship row, or 404 if no such row exists. Mirrors the per-game `GET /v1/groups/:a/relationships/:b`.
+
+Path parameters: same as `PUT`.
+
+Response: `200 OK` with `WireGroupRelationship` (same shape as the `PUT` response).
+
+Behavior:
+
+- Existence is not leaked through cross-game lookups: if either group is in a different game (or missing or soft-deleted), the call returns 404 with the standard envelope.
+- Self-relationship lookups return 404 (the row cannot exist).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Either group does not exist, belongs to a different `gameId`, is soft-deleted, the row does not exist for that direction, or `a == b`. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:a/relationships
+
+List every directed relationship where group `a` is the A-side ("this group's stance toward others"). Mirrors the per-game `GET /v1/groups/:a/relationships`.
+
+Path parameters:
+
+- `:gameId` - the game id; the A-side group must belong to it.
+- `:a` - the origin group id.
+
+Response: `200 OK` with a bare `WireGroupRelationship[]` sorted by `groupBId` ascending. No pagination wrapper.
+
+Behavior:
+
+- Returns A-side rows only; the B-side ("incoming" relationships) is left for a future `?direction=incoming` filter as an additive change.
+- Symmetric pairs (set via `mutual: true`) appear once per direction; the dev queries the other group to see the reverse row.
+- Empty array when the group has no outgoing relationships.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PUT /v1/admin/games/:gameId/groups/:groupId/parent
+
+Set or clear the sub-group / alliance parent of a group. Mirrors the per-game `PUT /v1/groups/:id/parent` byte-for-byte: body shape, idempotence rules, audit shape, cycle detection, and `group.updated` `JunjoEvent` dispatch.
+
+Path parameters:
+
+- `:gameId` - the game id; both the child and (when set) the candidate parent must belong to it.
+- `:groupId` - the child group id.
+
+Request body:
+
+```json
+{ "parentGroupId": "grp_abc" }
+```
+
+The `parentGroupId` field is required; omitting it returns 400. Pass `null` to clear the parent. A non-null value must reference a live group in the same game.
+
+Response: `200 OK` with the updated `WireAdminGroup` (the same shape as the single-group detail endpoint). `parentGroupId` reflects the post-state value (matches the requested `parentGroupId`).
+
+Behavior:
+
+- **Idempotent on matching value.** If the supplied `parentGroupId` already equals the stored value, the route returns the unchanged group with no DB write, no audit entry, and no `updatedAt` bump. No `JunjoEvent` is dispatched.
+- **Cycle detection.** Self-parent (`parentGroupId === groupId`) returns `400 parent_cycle`. The route also walks the candidate parent's ancestor chain (one Prisma round-trip per ancestor, bounded at 100 levels) and rejects with `400 parent_cycle` if the child group itself appears in the chain.
+- **Audit entry.** On a value change, one transaction updates the row and writes a single audit entry: `group.parent.set` when the new value is non-null; `group.parent.cleared` when it is null. The audit `payload` is `{ before, after }` (each may be null); the audit row's `targetId` is the new parent id (null when cleared); `actorUserId` is null.
+- **Event dispatch.** A `group.updated` `JunjoEvent` is dispatched after the transaction commits (no dedicated `GroupParentChangedEvent` in the union, mirroring the per-game route's choice).
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `parentGroupId`, empty string, non-string non-null, or malformed JSON. |
+| `parent_cycle` | 400 | Self-parent or any cycle in the candidate ancestor chain. |
+| `not_found` | 404 | Child group missing / cross-game / soft-deleted, OR candidate parent missing / cross-game / soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/groups/:groupId/children
+
+List the direct children of a group. Mirrors the per-game `GET /v1/groups/:id/children` byte-for-byte.
+
+Path parameters:
+
+- `:gameId` - the game id; the parent must belong to it.
+- `:groupId` - the parent group id.
+
+Response: `200 OK` with a bare `WireAdminGroup[]`, sorted by `(createdAt desc, id desc)`. No pagination wrapper (a group's direct child set is conventionally small).
+
+Behavior:
+
+- **Direct children only.** Grandchildren are NOT recursed; the dashboard's Sub-groups tab navigates one level at a time.
+- **Soft-deleted children excluded.** Operators see the live hierarchy.
+- **`memberCount` populated** per child via a single batched `groupBy` (active-only count); avoids N round-trip counts for large child sets.
+- Empty array when the parent has no children.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group does not exist, belongs to a different `gameId`, or is soft-deleted. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/audit
+
+Returns a timestamp-paginated audit feed scoped to one game (across every group, including soft-deleted ones). Backs the dashboard's game-wide audit log viewer. The cross-group fan-in distinguishes this endpoint from `GET /v1/admin/games/:gameId/groups/:groupId/audit` (which is per-group and excludes soft-deleted groups).
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). |
+
+Query parameters (all optional):
+
+| Name | Type | Default | Notes |
+|------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Max items per page. |
+| `before` | ISO 8601 string | unset | Returns only entries with `createdAt < before` (exclusive upper bound). Pass the previous page's `nextCursor` here to walk pagination. |
+| `since` | ISO 8601 string | unset | Returns only entries with `createdAt >= since` (inclusive lower bound). Combined with `before` gives a date-range filter. |
+| `actions` | repeated string | unset | Restricts results to entries whose `action` is in the supplied set (OR semantics). Each value must be a known `AuditAction`; unknowns return 400. Repeats per filter value (`?actions=group.created&actions=role.created`). |
+| `actorUserId` | string 1-255 | unset | Exact match on the stored `AuditEntry.actorUserId` (the internal `JunjoUser.id` for routes that resolved an actor; null for routes that wrote `actorUserId: null`). The dashboard surfaces the value from a prior row, so operators don't need to know external/internal id mapping. |
+| `targetId` | string 1-255 | unset | Exact match on the stored `AuditEntry.targetId`. The stored value depends on the route (sometimes external user id, sometimes member id, sometimes role id). |
+
+Response: `200 OK` with `WireAdminGameAuditPage`. Wire format:
+
+```ts
+interface WireAdminAuditEntry {
+  id: string;
+  action: string;
+  gameId: string;        // The calling game's id (always equal to the path :gameId).
+  gameName: string;      // The calling game's name.
+  groupId: string;       // The group the entry belongs to.
+  groupName: string;     // The group's name (pivoted in via `include`).
+  groupSoftDeleted: boolean; // True when the group's `softDeletedAt` is not null.
+  actorUserId: string | null;
+  targetId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;     // ISO 8601
+}
+
+interface WireAdminGameAuditPage {
+  items: WireAdminAuditEntry[];
+  nextCursor: string | null; // ISO 8601 of the last item's `createdAt`, or null when no more pages.
+}
+```
+
+Behavior:
+
+- Ordered `(createdAt desc, id desc)`. The `id` tiebreaker keeps pagination deterministic across rows that share a millisecond.
+- **Soft-deleted-group entries ARE included.** This is the key behavior difference from the per-group `GET /v1/admin/games/:gameId/groups/:groupId/audit` route, which 404s on soft-deleted groups. The audit log preserves history regardless of group lifecycle; `groupSoftDeleted: boolean` on each row lets the dashboard mark them visually.
+- 404 only when the `gameId` itself does not exist; a game with zero audit entries returns `200` with `items: []`.
+- Filters are AND-combined. `since` is inclusive; `before` is exclusive.
+- Wire shape reuses `WireAdminAuditEntry` (the cross-game recent-audit shape from `/v1/admin/audit`). The dashboard ignores `gameId` / `gameName` since URL context already carries them; the same dashboard helper parses both feeds.
+- Pagination is timestamp-based via `nextCursor` -> `before`. Caller does not maintain state; the cursor is just an ISO timestamp.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | `limit` out of range; `before` / `since` not parseable as ISO 8601; `actions` includes an unknown value; `actorUserId` / `targetId` empty or over 255 chars. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## GET /v1/admin/games/:gameId/permissions/check
+
+Resolves the canonical answer to "can user X do Y in group Z?" for any game on the deployment. Mirrors the per-game `GET /v1/permissions/check` byte-for-byte: same query shape, same `PermissionCheckResult` wire format, same resolution order, same in-process cache. Backs the dashboard's permission check tester.
+
+Path parameters:
+
+| Name | Type | Notes |
+|------|------|-------|
+| `gameId` | string | The cross-game id (`Game.id`). Scopes the `ExternalIdentity` lookup, the group membership join, and the cache key. |
+
+Query parameters (all required):
+
+| Name | Type | Notes |
+|------|------|-------|
+| `userId` | string 1-N | The dev-supplied external user id (NOT the internal `JunjoUser.id`). |
+| `groupId` | string 1-N | The group whose membership + roles + overrides drive the resolution. |
+| `permission` | string 1-128 | The permission key. Cap matches `ADMIN_PERMISSION_KEY_MAX_LENGTH`. |
+
+Response: `200 OK` with `PermissionCheckResult`. Wire format:
+
+```ts
+type PermissionSource = "none" | "default" | "role" | "override";
+
+interface PermissionCheckResult {
+  allowed: boolean;
+  source: PermissionSource;
+  viaRoleId?: string; // Only set when source === "role"
+}
+```
+
+Resolution order (mirrors the per-game route):
+
+1. **`source: "none"`** when the user has no `ExternalIdentity` for this game, or no `GroupMember` row in this group, or the member is non-active (left / kicked / invited). The lifecycle gate stops at the read path.
+2. **`source: "override"`** when a `MemberPermissionOverride` row exists for this (member, permission) pair. The override wins regardless of direction. `allowed = override.grant`.
+3. **`source: "role"`** when any of the member's roles has the permission via `RolePermission`. `allowed = true`. `viaRoleId` is the highest-priority granting role (priority desc, role id desc as tiebreaker so the answer is stable across ties).
+4. **`source: "default"`** when the member is in-group with no override and no granting role. `allowed = false`. The default state for any permission the dev has not explicitly configured.
+
+Behavior:
+
+- **404 collapse.** Missing `gameId`, missing `groupId`, soft-deleted group, and cross-game `groupId` all return `404 not_found` with the same envelope. Existence is not leaked through differential responses.
+- **Cross-game ExternalIdentity isolation.** A `userId` registered in another game (with the same external string) does NOT resolve through the path `:gameId`; the lookup is scoped to the calling game and returns `source: "none"` on the wrong-game case.
+- **Shared cache.** The route reads + writes through the same singleton `permissionCache` the per-game `/v1/permissions/check` and every mutation route uses. A hit is served from memory; a miss calls `resolvePermission` and populates the cache. Mutation routes (per-game or admin) call `permissionCache.invalidateGroup(groupId)` after committing, so stale answers wait at most one round-trip.
+- **Behavior parity with the per-game route is essential.** The answer to "can user X do Y in group Z?" must be identical regardless of which surface asked. ~50 lines of duplicated handler code (the cross-game route mirrors the per-game route's resolution + cache logic exactly) is acceptable to preserve this.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist; `groupId` does not exist, is soft-deleted, or belongs to a different game. |
+| `bad_request` | 400 | Missing or empty `userId` / `groupId` / `permission`; `permission` over 128 chars. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/permissions/check?userId=user_alice&groupId=cm_group_xyz&permission=guild.kick"
+```
+
+```json
+{ "allowed": true, "source": "role", "viaRoleId": "cm_role_officer" }
+```
+
+## `GET /v1/admin/games/:gameId/analytics/group-churn`
+
+Returns the binned tenure histogram of departures (kicked + left members) for groups created within `[from, to)`. Backs the dashboard's group churn chart.
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | open | Inclusive lower bound on `Group.createdAt`. |
+| `to` | no | ISO 8601 | open | Exclusive upper bound on `Group.createdAt`. |
+
+Response:
+
+```ts
+interface WireAdminGroupChurn {
+  from: string | null;
+  to: string | null;
+  totalGroupsInWindow: number;
+  totalDeparturesInWindow: number;
+  bins: Array<{
+    label: string;
+    minMs: number | null;
+    maxMs: number | null;
+    count: number;
+  }>;
+}
+```
+
+The five bins are wire-stable: `< 1h`, `1h - 1d`, `1d - 1w`, `1w - 1mo`, `1mo+`. Each bin is half-open `[minMs, maxMs)`; `minMs: null` means -infinity (always the first bin), `maxMs: null` means +infinity (always the last). A tenure that lands exactly on a boundary goes into the higher bin (lower bound is inclusive, upper bound is exclusive).
+
+Behavior:
+
+- **The window applies to `Group.createdAt`**, NOT to the departure timestamps. A group born today with a year-old departure counts; a year-old group with a today departure does not. The semantic is "for groups created in the date range, plot the distribution of tenure for kicked + left members".
+- **Departure** = `GroupMember` with `status` in `("left", "kicked")` AND `leftAt` non-null. Tenure is `leftAt - joinedAt` in milliseconds, computed in JS rather than SQL so the bin boundaries stay readable. Active and invited members are excluded.
+- **Soft-deleted groups are excluded** from the population (matches the rest of the admin read surface). The audit log preserves history but the analytics view ignores it.
+- **Empty population** (no groups match the window) returns `0` in every bin and the response is otherwise still well-formed.
+- **404 only when the gameId itself does not exist.** A game with zero matching groups returns 200 with the empty-bin shape.
+- **Open-ended windows.** Either `from` or `to` (or both) may be omitted. Omitting both runs the histogram over every group the game has ever had. The response echoes whatever was supplied verbatim and `null` otherwise.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` or `to` (not an ISO 8601 date). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-churn?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00Z",
+  "to": "2026-05-01T00:00:00Z",
+  "totalGroupsInWindow": 42,
+  "totalDeparturesInWindow": 17,
+  "bins": [
+    { "label": "< 1h", "minMs": null, "maxMs": 3600000, "count": 4 },
+    { "label": "1h - 1d", "minMs": 3600000, "maxMs": 86400000, "count": 5 },
+    { "label": "1d - 1w", "minMs": 86400000, "maxMs": 604800000, "count": 3 },
+    { "label": "1w - 1mo", "minMs": 604800000, "maxMs": 2592000000, "count": 3 },
+    { "label": "1mo+", "minMs": 2592000000, "maxMs": null, "count": 2 }
+  ]
+}
+```
+
+## `GET /v1/admin/games/:gameId/analytics/group-growth`
+
+Returns time-bucketed cumulative active member counts across the supplied window for the top-N groups (by current active count) plus an "All others" aggregated series. Backs the dashboard's group growth chart.
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | `to - 30d` | Inclusive lower bound on the time series. |
+| `to` | no | ISO 8601 | now | Exclusive upper bound on the time series. |
+| `topN` | no | integer 1-10 | 5 | How many top groups (by active count at `to`) to render as separate series. The remainder roll up into a single "All others" series. |
+
+Response:
+
+```ts
+interface WireAdminGroupGrowthSeries {
+  key: string;             // opaque, stable across renders ("group:<id>" or "all-others")
+  name: string;            // group.name, or "All others"
+  groupId: string | null;  // null for the aggregate series
+  data: number[];          // counts, one per bucket boundary, aligned 1:1 with `buckets`
+}
+
+interface WireAdminGroupGrowth {
+  from: string;                 // resolved ISO 8601 (post-defaults)
+  to: string;                   // resolved ISO 8601 (post-defaults)
+  bucketSizeMs: number;         // chosen by the handler from window length
+  buckets: string[];            // ISO 8601 timestamps for every bucket boundary
+  series: WireAdminGroupGrowthSeries[];
+}
+```
+
+Behavior:
+
+- **Bucket size auto-picked** from the window length: `<=1d` -> hourly, `<=7d` -> 6 hours, `<=30d` -> daily, `<=90d` -> 3 days, longer -> weekly. The handler caps total buckets at 100 and returns 400 if the chosen size would emit more (narrow the window or wait for finer-grained controls).
+- **"Active at T"** means a `GroupMember` row where `joinedAt <= T` AND (`leftAt IS NULL` OR `leftAt > T`). Status (`active` / `left` / `kicked` / `invited`) is intentionally NOT consulted: a member that was active at T but later kicked at T+1 still counts at T. The lifecycle taxonomy is captured by `joinedAt` / `leftAt` directly; reading status would double-filter and produce wrong historical counts.
+- **Top-N ranking** uses each group's active count at the window's `to` boundary (the rightmost bucket). Ties break by `groupId` ascending so the ranking is deterministic across requests.
+- **Soft-deleted groups are excluded** from both the ranking and the aggregate (matches the rest of the admin read surface).
+- **"All others" only ships when groups.length > topN.** Otherwise the response carries `groups.length` series and no aggregate row.
+- **Empty population** (a brand-new game with zero groups) returns 200 with `series: []`.
+- **404 only when the gameId itself does not exist.**
+- **Default window** when neither `from` nor `to` is supplied: the last 30 days. Matches the dashboard's default range.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` / `to`, `from >= to`, `topN` out of range, or a window + bucket combination that would emit more than 100 buckets. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-growth?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z&topN=5"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00.000Z",
+  "to": "2026-05-01T00:00:00.000Z",
+  "bucketSizeMs": 86400000,
+  "buckets": ["2026-04-01T00:00:00.000Z", "2026-04-02T00:00:00.000Z", "..."],
+  "series": [
+    { "key": "group:cm_grp_a", "name": "Knights", "groupId": "cm_grp_a", "data": [12, 14, 14, "..."] },
+    { "key": "group:cm_grp_b", "name": "Mages", "groupId": "cm_grp_b", "data": [8, 8, 9, "..."] },
+    { "key": "all-others", "name": "All others", "groupId": null, "data": [42, 47, 51, "..."] }
+  ]
+}
+```
+
+## `GET /v1/admin/games/:gameId/analytics/member-activity`
+
+Returns a 7x24 grid of audit-entry counts pivoted by UTC day-of-week and hour-of-day across every group in the game (cross-group fan-in). Backs the dashboard's member activity heatmap.
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+Query parameters:
+
+| Name | Required | Format | Default | Description |
+|------|----------|--------|---------|-------------|
+| `from` | no | ISO 8601 | none | Inclusive lower bound on `AuditEntry.createdAt`. Omitted means no lower bound. |
+| `to` | no | ISO 8601 | none | Exclusive upper bound on `AuditEntry.createdAt`. Omitted means no upper bound. |
+
+Response:
+
+```ts
+interface WireAdminMemberActivity {
+  from: string | null;     // echoed verbatim from the query (or null when omitted)
+  to: string | null;       // ditto
+  totalEvents: number;     // sum of every cell; 0 when the game has no matching entries
+  cells: number[][];       // [day][hour] = count, day in 0..6 (0=Sunday), hour in 0..23
+}
+```
+
+Behavior:
+
+- **Cross-group fan-in.** Every audit entry on every group in the game contributes one to the matching cell, regardless of the entry's `action`. The dashboard renders the grid as a heatmap so any signal of "when do players show up?" surfaces.
+- **Soft-deleted groups are INCLUDED.** The audit log preserves history regardless of group lifecycle (matches the per-game audit feed). A group deleted last week still contributes its prior activity to the heatmap.
+- **UTC bucketing.** Day-of-week is `EXTRACT(DOW FROM createdAt)` server-side, which matches JS's `Date.getUTCDay()`: 0=Sunday, 1=Monday, ..., 6=Saturday. Hour is `EXTRACT(HOUR FROM createdAt)`: 0-23. The dashboard rotates the day axis client-side if it wants Mon-first visualization.
+- **Half-open `[from, to)` filter.** Both bounds are optional and independent (you can supply only `from` or only `to`). A row at exactly `from` is included; a row at exactly `to` is excluded. Mirrors the per-game audit feed's `since` / `before` convention.
+- **Empty population** (a game with zero matching audit entries) returns 200 with the fully-zero grid and `totalEvents: 0`.
+- **404 only when the gameId itself does not exist.** A game with no audit entries is a valid 200 response.
+- **SQL-side aggregation.** The handler runs `EXTRACT(DOW)` and `EXTRACT(HOUR)` in Postgres via `$queryRaw` rather than pulling every audit row over the wire. The response is bounded at 168 rows max regardless of source data size, so a busy game's 90-day window does not blow up the wire.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `bad_request` | 400 | Malformed `from` / `to` (not ISO 8601). |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/member-activity?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+```
+
+```json
+{
+  "from": "2026-04-01T00:00:00Z",
+  "to": "2026-05-01T00:00:00Z",
+  "totalEvents": 1284,
+  "cells": [
+    [3, 0, 0, 0, 0, 1, 4, 12, 27, 41, 58, 62, 70, 65, 58, 49, 38, 31, 22, 15, 9, 6, 3, 1],
+    [2, 0, 0, 0, 0, 0, 5, 14, 30, 44, 61, 68, 73, 64, 56, 47, 36, 29, 21, 14, 8, 5, 2, 1],
+    "..."
+  ]
+}
+```
+
+## `GET /v1/admin/games/:gameId/analytics/role-distribution`
+
+Returns a top-10 list of role names ranked by the count of active-member assignments, aggregated across every non-soft-deleted group in the game. Backs the dashboard's role distribution donut chart.
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+No query parameters: the chart is a snapshot, not a time-windowed analytic. The dashboard's page-level date-range picker is irrelevant to this endpoint.
+
+Response:
+
+```ts
+interface WireAdminRoleSlice {
+  name: string;
+  count: number;
+}
+
+interface WireAdminRoleDistribution {
+  totalAssignments: number;     // sum of every counted MemberRole row (top-10 + other)
+  uniqueRoleNames: number;      // distinct role.name values with at least one active assignment
+  topRoles: WireAdminRoleSlice[]; // up to 10 entries, sorted by count desc, name asc
+  otherCount: number;           // assignments belonging to role names outside the top-10
+}
+```
+
+Behavior:
+
+- **Aggregation key is `Role.name`, not `Role.id`.** Two groups that both have a role named "Officer" contribute to the same slice. The donut chart shows one slice per named role category, not one slice per (group, role) pair.
+- **Active members only.** A `MemberRole` row counts only when the underlying `GroupMember.status === "active"`. Kicked / left / invited members keep their join rows but contribute zero to the chart, matching the active-set semantics used by `Group.memberCount` and the home page's `totalActiveMembers`.
+- **Soft-deleted groups are excluded.**
+- **Members with multiple roles count once per role.** A member assigned to both "Officer" and "Veteran" contributes one assignment to each slice.
+- **Role names with zero active assignments are invisible.** A role that exists but has no active members does not appear in `topRoles` or count toward `uniqueRoleNames` (the donut chart would render a zero-area slice anyway).
+- **Empty population** returns 200 with `{ totalAssignments: 0, uniqueRoleNames: 0, topRoles: [], otherCount: 0 }`.
+- **404 only when the gameId itself does not exist.**
+- **Tiebreaks alphabetically.** Two role names with the same count sort by `name asc`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/role-distribution"
+```
+
+```json
+{
+  "totalAssignments": 487,
+  "uniqueRoleNames": 12,
+  "topRoles": [
+    { "name": "Member", "count": 312 },
+    { "name": "Officer", "count": 84 },
+    { "name": "Recruit", "count": 41 },
+    "..."
+  ],
+  "otherCount": 23
+}
+```
+
+## `GET /v1/admin/games/:gameId/analytics/permission-usage`
+
+Returns a top-15 list of permission keys ranked by the combined count of role grants (`RolePermission` rows) plus member-level overrides (`MemberPermissionOverride` rows). Backs the dashboard's permission usage horizontal bar chart.
+
+Path parameters:
+
+| Name | Required | Description |
+|------|----------|-------------|
+| `gameId` | yes | The game id. URL-decoded. |
+
+No query parameters: the chart is a snapshot, not a time-windowed analytic.
+
+Response:
+
+```ts
+interface WireAdminPermissionUsageItem {
+  permission: string;
+  roleGrants: number;       // RolePermission row count for this key
+  memberOverrides: number;  // MemberPermissionOverride row count for this key
+  total: number;            // roleGrants + memberOverrides
+}
+
+interface WireAdminPermissionUsage {
+  totalCount: number;       // sum of `total` across every observed key (top-15 + other)
+  uniqueKeys: number;       // distinct permission keys with at least one row counted
+  items: WireAdminPermissionUsageItem[]; // up to 15 entries sorted by total desc, permission asc
+  otherCount: number;       // combined count for keys outside the top-15
+}
+```
+
+Behavior:
+
+- **Both row types count.** Each `RolePermission` row contributes 1 to `roleGrants`; each `MemberPermissionOverride` row contributes 1 to `memberOverrides`. The chart's bars represent `total` (the combined sum).
+- **All `MemberPermissionOverride` rows count regardless of member status.** Operator-authored config exists independently of member lifecycle; an override on a kicked member is still a deployment-state fact about the game.
+- **Soft-deleted groups are excluded** (both their roles' grants and their members' overrides drop out).
+- **Permission keys with `total === 0` are invisible.** A registered `PermissionDef` row with no grants and no overrides does not appear in `items` or `uniqueKeys`. The catalog endpoint at [`/v1/admin/games/:gameId/permissions`](#get-v1admingamesgameidpermissions) is the right place to enumerate every registered key.
+- **Empty population** returns 200 with `{ totalCount: 0, uniqueKeys: 0, items: [], otherCount: 0 }`.
+- **404 only when the gameId itself does not exist.**
+- **Tiebreaks alphabetically.** Two keys with the same combined `total` sort by `permission asc`.
+
+Errors:
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | `gameId` does not exist. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/permission-usage"
+```
+
+```json
+{
+  "totalCount": 142,
+  "uniqueKeys": 23,
+  "items": [
+    { "permission": "guild.invite_member", "roleGrants": 18, "memberOverrides": 4, "total": 22 },
+    { "permission": "guild.kick_member", "roleGrants": 12, "memberOverrides": 7, "total": 19 },
+    { "permission": "vault.withdraw", "roleGrants": 8, "memberOverrides": 2, "total": 10 },
+    "..."
+  ],
+  "otherCount": 17
+}
+```
+
+## SDK
+
+Not part of the per-game `@junjo/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.
+
+A dashboard-internal client typically looks like:
+
+```ts
+async function listUserGames(junjoUserId: string) {
+  const res = await fetch(`${process.env.JUNJO_BASE_URL}/v1/users/${encodeURIComponent(junjoUserId)}/games`, {
+    headers: { authorization: `Bearer ${process.env.JUNJO_ADMIN_TOKEN}` },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message ?? `admin lookup failed: ${res.status}`);
+  }
+  return res.json() as Promise<{
+    junjoUserId: string;
+    games: Array<{ gameId: string; externalUserId: string; joinedGroupCount: number }>;
+  }>;
+}
+```

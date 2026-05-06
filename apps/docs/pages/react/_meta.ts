@@ -1,0 +1,10 @@
+export default {
+  index: "Overview",
+  provider: "JunjoProvider + useJunjo",
+  "use-group": "useGroup",
+  "use-can": "useCan",
+  "use-members": "useMembers",
+  "use-invitations": "useInvitations",
+  "use-audit-log": "useAuditLog",
+  "use-mutation": "useMutation",
+};

@@ -1,0 +1,134 @@
+# useMutation
+
+Generic mutation primitive for any function that calls the SDK and returns a Promise. Tracks loading / success / error state, and supports optimistic updates through a typed `onMutate -> context -> onError` pattern.
+
+`useMutation` is the foundation the optimistic-update story is built on. Purpose-built hooks (e.g., `useKickMember`, `useInviteByUserId`) that wrap `useMutation` with the right optimistic snapshot + rollback wiring are a post-V1 idea; you can wire your own with the same primitive today.
+
+```tsx
+import { useMembers, useMutation, useJunjo } from "@junjo/react";
+
+function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { mutate, isPending } = useMutation({
+    mutationFn: () => junjo.members.kick(groupId, userId, { reason: "violation" }),
+  });
+  return (
+    <button type="button" onClick={() => mutate()} disabled={isPending}>
+      {isPending ? "Kicking..." : "Kick"}
+    </button>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useMutation<TData, TError = Error, TVariables = void, TContext = unknown>(
+  options: UseMutationOptions<TData, TError, TVariables, TContext>,
+): UseMutationResult<TData, TError, TVariables>;
+```
+
+### Options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mutationFn` | `(variables: TVariables) => Promise<TData>` | The async work the hook performs each time `mutate` / `mutateAsync` is called. Required. |
+| `onMutate` | `(variables) => TContext \| Promise<TContext> \| void` | Runs *before* `mutationFn`. The return value is the **context** threaded to `onSuccess`, `onError`, and `onSettled`. Use it to take a snapshot for rollback or apply an optimistic update. |
+| `onSuccess` | `(data, variables, context) => void \| Promise<void>` | Fires after `mutationFn` resolves. The mutation state has already transitioned to `success` by the time `onSuccess` runs. |
+| `onError` | `(error, variables, context) => void \| Promise<void>` | Fires when `onMutate` or `mutationFn` rejects. The mutation state has already transitioned to `error`. |
+| `onSettled` | `(data, error, variables, context) => void \| Promise<void>` | Always fires after the mutation finishes, regardless of outcome. `data` is the resolved value or `undefined`; `error` is the rejection reason or `null`. |
+
+### Result
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mutate` | `(variables: TVariables) => void` | Fire-and-forget. Never throws to the caller; failures land in `error` and surface through `onError`. |
+| `mutateAsync` | `(variables: TVariables) => Promise<TData>` | Returns a Promise that resolves with `data` on success or rejects with the error on failure. |
+| `status` | `"idle" \| "pending" \| "success" \| "error"` | Discriminator for the four mutation phases. |
+| `data` | `TData \| undefined` | Last successful result, or `undefined` until the first success (or after `reset`). |
+| `error` | `TError \| null` | Last failure reason, or `null` if no error has occurred since the last reset. |
+| `isIdle`, `isPending`, `isSuccess`, `isError` | `boolean` | Booleans matching `status`. |
+| `reset` | `() => void` | Returns the hook to `idle` and clears `data` + `error`. |
+
+## Optimistic updates
+
+The `onMutate -> onError` rollback pattern is how `useMutation` supports optimistic UI. Inside `onMutate`, snapshot the local state you are about to mutate and apply the optimistic change; return the snapshot as the context. If `mutationFn` rejects, `onError` receives that snapshot and restores it.
+
+When you are mutating local hook state, prefer the hook's `applyOptimistic` helper - it owns the snapshot lifecycle for you and returns a rollback closure:
+
+- [`useMembers`](./use-members#optimistic-updates) - `applyOptimistic((prev: Member[]) => Member[])`
+- [`useInvitations`](./use-invitations#optimistic-updates) - `applyOptimistic((prev: Invitation[]) => Invitation[])`
+- [`useGroup`](./use-group#optimistic-updates) - `applyOptimistic((prev: { group, members }) => { group, members })`
+
+```tsx
+function KickWithRollback({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useMembers(groupId);
+
+  const { mutate } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.kick(groupId, userId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => prev.filter((m) => m.userId !== userId)),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Kick</button>;
+}
+```
+
+For state that does not live in a Junjo hook (e.g., a `useState` value in your own component), the explicit snapshot pattern still applies: hold the prior value in a ref, apply the optimistic mutation in `onMutate`, return the snapshot as the context, and restore it from `onError`.
+
+The dominant SSE path is still authoritative: a successful `kick` emits a `member.left` event that `useMembers` already handles, so the local state stays consistent. The optimistic helper just makes the UI flip *immediately* on click.
+
+## Lifecycle and ordering
+
+1. `mutate(vars)` synchronously transitions state to `pending`.
+2. `onMutate(vars)` runs and returns `context` (sync or async).
+3. `mutationFn(vars)` runs.
+4. On success: state transitions to `success`, then `onSuccess(data, vars, context)`, then `onSettled(data, null, vars, context)`.
+5. On failure (from `onMutate` or `mutationFn`): state transitions to `error`, then `onError(error, vars, context)`, then `onSettled(undefined, error, vars, context)`.
+
+Errors thrown inside `onSuccess` or `onSettled` propagate from `mutateAsync` (they do **not** flip the state back to `error`; the mutation itself succeeded). Errors thrown inside `onError` are captured and the original `mutationFn` error still propagates from `mutateAsync`.
+
+## Multiple in-flight mutations
+
+Calling `mutate` twice in rapid succession runs both mutations to completion: every `onMutate` / `mutationFn` / `onSuccess` / `onError` / `onSettled` call fires for each. State updates (`status`, `data`, `error`) reflect only the **latest** call: an earlier resolution does not overwrite a later one. This matches React Query's mutation-call ordering.
+
+If you need explicit serialization, await `mutateAsync` before kicking off the next call.
+
+## Reset
+
+`reset()` returns `status` to `idle` and clears `data` and `error`. Any mutation already in flight continues firing its callbacks (since they may have side effects that other components depend on), but its final state update is discarded.
+
+## Stale closures
+
+`mutationFn` and the lifecycle callbacks are read from the latest render via a ref, so they always see the current props / state of the calling component. However, the **specific** callbacks invoked by an in-flight mutation are snapshotted at the moment `mutate` / `mutateAsync` was called: re-rendering with new callbacks while a mutation is pending does not redirect that mutation's `onSuccess` to the new function.
+
+## Component unmount
+
+If the consuming component unmounts mid-flight, the mutation's `onMutate` / `onSuccess` / `onError` / `onSettled` callbacks still fire (they often have side effects beyond the component's local state, e.g., rolling back optimistic updates that other components see). Internal hook state simply stops updating.
+
+## Testing
+
+Pass a stubbed mutation function and assert on the lifecycle:
+
+```tsx
+import { renderHook, act } from "@testing-library/react";
+import { useMutation } from "@junjo/react";
+import { vi } from "vitest";
+
+it("transitions to success on resolve", async () => {
+  const mutationFn = vi.fn().mockResolvedValue("ok");
+  const { result } = renderHook(() => useMutation({ mutationFn }));
+
+  await act(async () => {
+    await result.current.mutateAsync();
+  });
+
+  expect(result.current.status).toBe("success");
+  expect(result.current.data).toBe("ok");
+});
+```
+
+For optimistic-update tests, supply matching `onMutate` and `onError` and assert the snapshot context flows correctly through both.

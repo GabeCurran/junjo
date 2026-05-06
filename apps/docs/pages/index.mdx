@@ -1,0 +1,104 @@
+# Junjo
+
+Game-domain primitives for groups, ranks, and permissions. A drop-in social-organization layer for any multiplayer game.
+
+Junjo gives your game the building blocks it would otherwise spend a quarter writing from scratch: groups (guilds, parties, factions), ranks (with priority and color), permissions (with per-member overrides), invitations (direct or shareable code), real-time events (over SSE or webhooks), and a typed TypeScript SDK that runs in Node and the browser.
+
+## What it is, in one sentence
+
+Junjo is the same layer Stripe is for payments, Auth0 is for auth, or Pusher is for real-time: an HTTP API plus a thin native SDK. You bring your game; Junjo handles the social graph.
+
+## How it fits together
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  subgraph clients["Your game"]
+    nodeApp["Node game server"]
+    browserApp["Browser client"]
+    robloxApp["Roblox place"]
+    dashboard["apps/dashboard (admin UI)"]
+  end
+
+  subgraph sdks["Junjo SDKs"]
+    tsSdk["@junjo/sdk (Node + browser)"]
+    reactSdk["@junjo/react (hooks)"]
+    robloxSdk["junjo-roblox (Luau)"]
+  end
+
+  subgraph server["junjo-server"]
+    hono["Hono HTTP (REST + SSE) /v1"]
+    eventHub["EventHub (in-process SSE broadcast)"]
+    webhookWorker["WebhookWorker (HMAC + retries)"]
+    prisma["Prisma client"]
+  end
+
+  postgres[("Postgres")]
+
+  subgraph auth["Auth providers (verify session tokens)"]
+    clerk["Clerk"]
+    supabase["Supabase"]
+    jwt["JWT issuer"]
+  end
+
+  subgraph subscribers["Outbound consumers"]
+    sseClient["SSE consumers (live UIs)"]
+    webhookSink["Webhook subscribers (Discord, Slack, custom)"]
+  end
+
+  nodeApp --> tsSdk
+  browserApp --> reactSdk
+  reactSdk --> tsSdk
+  robloxApp --> robloxSdk
+  dashboard --> tsSdk
+
+  tsSdk -- HTTPS --> hono
+  robloxSdk -- HTTPS --> hono
+
+  hono --> eventHub
+  hono --> webhookWorker
+  hono --> prisma
+  webhookWorker --> prisma
+  prisma --> postgres
+
+  hono -- verifyToken --> clerk
+  hono --> supabase
+  hono --> jwt
+
+  eventHub -- SSE stream --> sseClient
+  webhookWorker -- signed POST --> webhookSink
+```
+
+## What it gives you
+
+- **Groups** with kinds you define (`"guild"`, `"party"`, `"faction"`), visibility levels, metadata, and soft-delete with a 7-day undo window.
+- **Members** with statuses (`active`, `left`, `kicked`, `invited`), per-member metadata, public and private notes, and bulk-invite via CSV.
+- **Roles** with priorities, colors, and a permission catalog that auto-registers as you grant.
+- **Permissions** with role-derived defaults and explicit per-member overrides. `junjo.can(userId, groupId, permission)` answers in one call.
+- **Invitations** by direct user id or shareable code, with optional expiry and a public preview endpoint your invite-acceptance UI can call without an API key.
+- **Group relationships** (allied, hostile, asymmetric) and a parent-child hierarchy with cycle detection.
+- **Real-time events** through Server-Sent Events (`junjo.groups.subscribe`) and outbound webhooks (with HMAC signing, exponential-backoff retries, and per-endpoint Discord and Slack output formats).
+- **Auth adapters** for Clerk, Supabase, raw JWT, and bring-your-own.
+- **React hooks** in `@junjo/react`: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`, plus per-list optimistic-update helpers.
+
+## What it is not
+
+Junjo intentionally does not handle:
+
+- In-app chat (use Discord, Twilio, or your own).
+- Authentication itself (only adapters that verify tokens issued by your auth provider).
+- Game-state sync, matchmaking, leaderboards, achievements, or game-specific systems.
+- Friends lists or DMs.
+
+## Get going
+
+- **[Getting started](/getting-started)** - install the SDK and make your first call in under a minute.
+- **[Tutorial](/tutorial)** - a five-minute walkthrough that creates a group, invites a user, redeems the invitation, assigns a role, and checks a permission.
+- **[Self-hosting](/self-host)** - run the open-source server yourself: Docker recipes, env vars, migrations, API-key issuance, and reverse-proxy notes.
+
+## Reference
+
+- **[SDK](/sdk)** - per-namespace reference for `@junjo/sdk` (`junjo.groups`, `junjo.members`, `junjo.roles`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks`, plus the top-level `can` / `check`).
+- **[React](/react)** - hooks and provider in `@junjo/react`.
+- **[API](/api)** - the HTTP API the SDKs wrap. Use raw HTTP from any language Junjo does not yet ship a native client for.
+- **[Auth](/auth)** - adapter setup for Clerk, Supabase, and JWT.

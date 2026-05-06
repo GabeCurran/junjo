@@ -1,0 +1,754 @@
+# groups
+
+Methods on `junjo.groups`.
+
+## `create(input)`
+
+Creates a new group scoped to the calling game. Returns the persisted `Group` with timestamps already deserialized to `Date` instances.
+
+```ts
+const group = await junjo.groups.create({
+  kind: "guild",
+  name: "Crimson Wolves",
+  visibility: "invite-only",        // optional; default: "invite-only"
+  metadata: { motto: "Howl together" }, // optional; default: {}
+  defaultRoleId: "role_xyz",        // optional; default: null
+});
+
+group.id;            // GroupId (branded string)
+group.gameId;        // GameId (branded string)
+group.memberCount;   // 0
+group.createdAt;     // Date
+group.softDeletedAt; // null
+```
+
+### Input
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| `kind` | string | yes | |
+| `name` | string | yes | |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | no | `"invite-only"` |
+| `metadata` | object | no | `{}` |
+| `defaultRoleId` | `RoleId` | no | `null` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation (missing field, bad visibility, malformed JSON, etc.). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups`](/api-reference/groups) - the underlying HTTP route.
+
+## `get(id)`
+
+Fetches a single group by id. Returns `Group | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (group)` without a try/catch. Other errors (invalid API key, network failure, etc.) throw `JunjoError`.
+
+```ts
+const group = await junjo.groups.get("grp_xyz" as GroupId);
+if (!group) {
+  // not in this game, or soft-deleted
+  return;
+}
+group.memberCount; // active member count, computed server-side
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown. |
+
+`404 not_found` is converted to `null`; it is not thrown.
+
+### See also
+
+- [`GET /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
+
+## `list(opts?)`
+
+Returns a single page of groups for the calling game, sorted newest-first. Pagination is cursor-based: pass the `nextCursor` from the previous response to fetch the next page. When `nextCursor` is `null`, the page is the last one.
+
+```ts
+let cursor: string | null | undefined;
+do {
+  const page = await junjo.groups.list({ limit: 50, cursor: cursor ?? undefined });
+  for (const group of page.items) {
+    console.log(group.name, group.memberCount);
+  }
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | number | `50` | 1-100 inclusive. |
+| `cursor` | string | undefined | The `nextCursor` from a previous `list` call. Must point at a group in the calling game (soft-deleted is fine). |
+| `gameId` | `GameId` | the calling game | Optional. Must equal the calling key's game; cross-game queries return `400`. Provided for forward-compatibility with cloud-only admin tooling. |
+
+### Returns
+
+`Page<Group>`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items` | `Group[]` | Up to `limit` groups, sorted by `createdAt` desc with `id` desc as a tiebreaker. |
+| `nextCursor` | string \| null | The id of the last item, or `null` if this is the last page. |
+
+`memberCount` per group is the count of `GroupMember` rows in `status = "active"`, computed at request time.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` out of range, non-integer, unknown `cursor`, or `gameId` does not match the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups`](/api-reference/groups) - the underlying HTTP route.
+
+## `update(id, input)`
+
+Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
+
+```ts
+const updated = await junjo.groups.update("grp_xyz" as GroupId, {
+  name: "Crimson Lions",
+  visibility: "public",
+});
+
+updated.name;       // "Crimson Lions"
+updated.visibility; // "public"
+updated.updatedAt;  // Date - bumped only when something actually changed
+```
+
+### Input
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | 1-120 characters. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | |
+| `metadata` | object | **Replaces the existing metadata wholesale**, not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
+| `defaultRoleId` | `RoleId \| null` | Pass `null` to clear; pass a string to set. |
+
+### Returns
+
+`Group` - the updated row, with timestamps deserialized to `Date`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, and leaves `updatedAt` unchanged.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty input, invalid field, malformed body. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). Thrown, not converted to `null`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PATCH /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
+
+## `delete(id, opts?)`
+
+Soft-deletes a group. The group disappears from `get` / `list` immediately but the row stays in Postgres for 7 days; call `restore(id)` within the window to undo. Pass `{ hard: true }` to skip the grace period and remove the row immediately (this also removes the group's audit history via cascade).
+
+```ts
+await junjo.groups.delete("grp_xyz" as GroupId);
+
+await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `hard` | boolean | `false` | When `true`, hard-deletes immediately. When `false` (or omitted), soft-deletes; the row is hard-deleted by the server's background sweeper after 7 days. |
+
+### Returns
+
+`Promise<void>`. The server returns the soft-deleted group (or `204` for a hard delete) but the SDK discards the body in both cases. A second `delete()` on an already-soft-deleted group is idempotent.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (also for cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`DELETE /v1/groups/:id`](/api-reference/groups) - the underlying HTTP route.
+
+## `restore(id)`
+
+Restores a soft-deleted group within the 7-day undo window. Returns the restored `Group`. Idempotent on a live group (returns the unchanged group, no audit entry). Throws `restore_window_expired` (HTTP 410) if the group was soft-deleted more than 7 days ago and is on its way out.
+
+```ts
+const group = await junjo.groups.restore("grp_xyz" as GroupId);
+group.softDeletedAt; // null
+```
+
+### Returns
+
+`Group` - the restored row, with timestamps deserialized to `Date`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `restore_window_expired` | 410 | The group's `softDeletedAt` is older than 7 days; the background sweeper is about to (or already did) hard-delete it. |
+| `not_found` | 404 | No group with that id in the calling game (cross-game and hard-deleted ids also return 404). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/restore`](/api-reference/groups) - the underlying HTTP route.
+
+## `inviteByUserId(groupId, userId, opts?)`
+
+Creates a direct-user invitation. The recipient is identified by the external user id from the dev's auth provider (the same id `whoami` will return). The server generates a unique 16-character hex code; subsequent endpoints (accept, decline, get-by-code) read invitations by the code.
+
+```ts
+const invitation = await junjo.groups.inviteByUserId(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { roleId: "role_officer" as RoleId }, // optional
+);
+
+invitation.code;          // "abcd1234abcd1234"
+invitation.targetUserId;  // "user_alice"
+invitation.roleId;        // "role_officer"
+invitation.createdBy;     // null (no auth-adapter actor wired)
+invitation.createdAt;     // Date
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `roleId` | `RoleId` | none | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`junjo.members.assignRole`](/sdk/members#assignrole) afterward) and not validated against the group's roles. |
+
+### Returns
+
+`Invitation` with timestamps deserialized to `Date`. `createdBy` is `null` because no acting user is resolved on this path.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing `targetUserId`, malformed body. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). Thrown, not converted to `null`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
+
+## `inviteByCode(groupId, input?)`
+
+Creates an open-code invitation (no targeted user). Anyone with the returned `code` can accept. Pair with `expiresIn` to make it a short-lived link.
+
+```ts
+const invitation = await junjo.groups.inviteByCode("grp_xyz" as GroupId, {
+  roleId: "role_recruit" as RoleId, // optional
+  expiresIn: "7d",                   // optional, see below
+});
+
+invitation.code;          // "abcd1234abcd1234"
+invitation.targetUserId;  // null (open-code invitation)
+invitation.expiresAt;     // Date | null
+```
+
+### Input
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `roleId` | `RoleId` | none | The role to grant on accept. Not validated against the group's roles. |
+| `expiresIn` | string | none | Duration string. `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`. Examples: `30s`, `15m`, `2h`, `7d`. The server stamps `expiresAt = now() + expiresIn`. |
+| `targetUserId` | `UserId` | ignored | Silently dropped from the request body. Use `inviteByUserId` for direct invitations. |
+
+### Returns
+
+`Invitation` with timestamps deserialized to `Date`. `targetUserId` is `null`. `createdBy` is `null`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body, malformed or non-positive `expiresIn`. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
+
+## `inviteByLink(groupId, input?)`
+
+Convenience wrapper around `inviteByCode` that also returns a URL the dev's frontend can hand to players. The URL is built locally in the SDK from the configured `inviteBaseUrl` (or `baseUrl` if `inviteBaseUrl` is unset) and the server-generated invitation `code`:
+
+```
+${inviteBaseUrl}/invite/${code}
+```
+
+The server does not generate the URL and does not host the page at that path. The dev's frontend is responsible for the route at `/invite/:code` (it typically calls `acceptInvitation(code)` once the user lands there).
+
+```ts
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY,
+  baseUrl: "https://api.junjo.io",
+  inviteBaseUrl: "https://app.mygame.com", // your frontend's origin
+});
+
+const { invitation, url } = await junjo.groups.inviteByLink("grp_xyz" as GroupId, {
+  roleId: "role_recruit" as RoleId,
+  expiresIn: "7d",
+});
+
+share(url); // https://app.mygame.com/invite/abcd1234abcd1234
+```
+
+### Configuration
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `JunjoConfig.inviteBaseUrl` | `baseUrl` | Origin (or path prefix) where your frontend handles the `/invite/:code` route. Trailing slashes are trimmed. |
+
+### Input
+
+Same as `inviteByCode(groupId, input?)`. `targetUserId` is silently dropped.
+
+### Returns
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `invitation` | `Invitation` | Same value `inviteByCode` returns. |
+| `url` | string | `${inviteBaseUrl}/invite/${encodeURIComponent(code)}`. |
+
+### Errors
+
+Same as `inviteByCode`. `inviteByLink` does not add any error cases of its own; the URL is constructed only after the underlying request succeeds.
+
+### See also
+
+- [`POST /v1/groups/:id/invitations`](/api-reference/groups) - the underlying HTTP route.
+
+## `acceptInvitation(code, userId)`
+
+Redeems an invitation: creates a `GroupMember` for the supplied user and marks the invitation used. Returns the new `Member` with `joinedAt` deserialized to a `Date`.
+
+```ts
+const member = await junjo.groups.acceptInvitation(
+  "abcd1234abcd1234",
+  "user_alice" as UserId,
+);
+
+member.id;       // MemberId (branded string)
+member.groupId;  // GroupId (branded string)
+member.userId;   // "user_alice" (the same external id passed in)
+member.status;   // "active"
+member.joinedAt; // Date
+```
+
+The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). In V1 the dev's backend is the trusted layer: it authenticates the player itself and tells Junjo who is accepting.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+| `userId` | `UserId` | The external user id. For direct invitations, must match the invitation's `targetUserId`. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` is `[]` immediately after redemption; the invitation's `roleId` is not auto-applied today, so call [`members.assignRole`](/sdk/members#assignrole) after acceptance if you need it.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation. |
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the supplied `userId` does not match. |
+| `not_found` | 404 | No invitation with that code in the calling game (also for soft-deleted groups). |
+| `already_member` | 409 | The user is already in the group. |
+| `invitation_expired` | 410 | `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed or declined. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/invitations/:code/accept`](/api-reference/invitations) - the underlying HTTP route.
+
+## `declineInvitation(code, opts?)`
+
+Burns an invitation without joining the group. The row is marked used (so it can never be redeemed) and no member is created. Returns `void`.
+
+```ts
+await junjo.groups.declineInvitation("abcd1234abcd1234", {
+  userId: "user_alice" as UserId, // optional
+});
+
+// or anonymously:
+await junjo.groups.declineInvitation("abcd1234abcd1234");
+```
+
+The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the invitation so audit traces can answer "who burned this code". When omitted, the row's `usedByUserId` is left `null`.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+| `opts.userId` | `UserId` | Optional. For direct invitations, must match the invitation's `targetUserId` if supplied. |
+
+### Returns
+
+`Promise<void>`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the supplied `userId` does not match. |
+| `not_found` | 404 | No invitation with that code in the calling game (also for soft-deleted groups). |
+| `invitation_expired` | 410 | `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed or declined. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/invitations/:code/decline`](/api-reference/invitations) - the underlying HTTP route.
+
+## `leave(groupId, userId)`
+
+Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
+
+```ts
+const member = await junjo.groups.leave("grp_xyz" as GroupId, "user_alice" as UserId);
+member.status;  // "left"
+```
+
+The `userId` is the dev's external user id. As with `acceptInvitation`, V1's trust boundary is the dev's backend: the route doesn't authenticate the leaver itself, it trusts the API-key holder to identify them.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to leave. |
+| `userId` | `UserId` | The leaver's external user id. Must already be a member. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows (empty).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `userId` or malformed JSON. |
+| `not_found` | 404 | The group is unknown / soft-deleted / cross-game, OR the user has no `ExternalIdentity` for this game, OR the user has no `GroupMember` row in this group. The three causes collapse into one code so existence is not leaked. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/leave`](/api-reference/groups) - the underlying HTTP route.
+
+## `kick(groupId, userId, opts?)`
+
+Removes a member from the group on the dev backend's behalf. Returns the post-state `Member` (status `"kicked"`). Idempotent on already-kicked members; non-active states (`left`, `invited`) are returned unchanged with no audit entry.
+
+```ts
+const member = await junjo.groups.kick(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { reason: "violated guild rules" },
+);
+member.status; // "kicked"
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group. |
+| `userId` | `UserId` | The kicked user's external id. |
+| `opts.reason` | string | Optional. Up to 500 characters. Lands on the `member.kicked` audit entry's payload; `null` when omitted. |
+
+### Returns
+
+`Member` with `joinedAt: Date`. `roles` reflects the member's current `MemberRole` rows.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `reason` longer than 500 characters. |
+| `not_found` | 404 | Same collapsed-existence semantics as `leave`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/members/:userId/kick`](/api-reference/groups) - the underlying HTTP route.
+
+## `bulkInvite(groupId, csv, opts?)`
+
+Creates many open-code invitations in one request. The body is plain text, one external user id per line; the SDK accepts either a `string` or a `ReadableStream<Uint8Array>` so callers can stream a large file without first reading it into memory.
+
+```ts
+const result = await junjo.groups.bulkInvite(
+  "grp_xyz" as GroupId,
+  ["user_alice", "user_bob", "user_carol"].join("\n"),
+  { roleId: "role_recruit" as RoleId },
+);
+
+result.invited; // 3
+result.skipped; // 0
+result.errors;  // []
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to invite into. |
+| `csv` | `string \| ReadableStream<Uint8Array>` | One trimmed, non-empty line per userId. Empty lines are silently ignored. Both `\n` and `\r\n` line endings are accepted. Lines are not split on commas; each line is treated as a single userId. |
+| `opts.roleId` | `RoleId` | Optional. Applied to every created invitation. |
+
+### Returns
+
+```ts
+{
+  invited: number,             // count of created Invitation rows
+  skipped: number,             // already-active, already-pending, or duplicate-in-batch
+  errors: Array<{
+    row: number,               // 1-indexed source-line position
+    reason: string,            // e.g. "userId exceeds 255 characters"
+  }>,
+}
+```
+
+### Limits
+
+- 1000 rows per request (errored + valid combined). Exceeding returns `JunjoError("bad_request")`.
+- 255 characters per userId. Longer userids land in `errors`, not in `skipped`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Row count over 1000, or `roleId` is the empty string. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/bulk-invite`](/api-reference/groups) - the underlying HTTP route.
+
+## `setRelationship(groupAId, groupBId, type, opts?)`
+
+```ts
+async setRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+  type: GroupRelationshipType,
+  opts?: { mutual?: boolean },
+): Promise<GroupRelationship>
+```
+
+Set or update the directed A->B relationship. Pass `mutual: true` to write both A->B and B->A with the same `type` in the same transaction. The return value is always the A->B row (the canonical "this group's stance" view).
+
+### Behavior
+
+- Each direction is independent. If A->B already has the supplied `type` it is a no-op for that direction (no audit, no `since` bump). The other direction (B->A) still goes through its own check when `mutual: true`.
+- `actorUserId` is null (the dev's backend is the trusted layer behind the API key); `setBy` reads as `null` on the wire and on the deserialized SDK type.
+- Self-relationships (`groupAId === groupBId`) throw `bad_request`.
+
+### Returns
+
+```ts
+interface GroupRelationship {
+  groupAId: GroupId;
+  groupBId: GroupId;
+  type: string;
+  since: Date;
+  setBy: UserId | null;
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Self-relationship, `type` missing, empty, or over 64 chars. |
+| `not_found` | 404 | Either group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`PUT /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
+
+## `clearRelationship(groupAId, groupBId, opts?)`
+
+```ts
+async clearRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+  opts?: { mutual?: boolean },
+): Promise<void>
+```
+
+Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missing row is a no-op (no audit entry, no error).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Self-relationship. |
+| `not_found` | 404 | Either group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`DELETE /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
+
+## `getRelationship(groupAId, groupBId)`
+
+```ts
+async getRelationship(
+  groupAId: GroupId,
+  groupBId: GroupId,
+): Promise<GroupRelationship | null>
+```
+
+Fetch the directed A->B row, or `null` when no row exists for that direction. To inspect the reverse direction, call again with the arguments swapped.
+
+### See also
+
+- [`GET /v1/groups/:a/relationships/:b`](/api-reference/groups) - the underlying HTTP route.
+
+## `listRelationships(groupId)`
+
+```ts
+async listRelationships(groupId: GroupId): Promise<GroupRelationship[]>
+```
+
+Return every directed row where this group is the A-side ("this group's stance toward others"). Sorted by `groupBId` ascending. A group with no outgoing relationships returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`GET /v1/groups/:a/relationships`](/api-reference/groups) - the underlying HTTP route.
+
+## `setParent(groupId, parentGroupId)`
+
+```ts
+async setParent(groupId: GroupId, parentGroupId: GroupId | null): Promise<Group>
+```
+
+Set or clear the sub-group / alliance parent. Pass a group id to nest under that parent; pass `null` to detach. Both groups must belong to the calling game; the candidate parent must not be soft-deleted.
+
+### Behavior
+
+- Idempotent: when the supplied `parentGroupId` already matches the stored value, no audit entry is written and the unchanged group is returned.
+- Cycle detection: a candidate that would create a loop in the parent chain (including `parentGroupId === groupId` directly, or any ancestor that is already a descendant) throws `parent_cycle`. The walk is bounded at depth 100 to defend against corrupted state.
+- One audit entry is written on the *child* group's audit log on every actual change: `group.parent.set` when the new value is non-null; `group.parent.cleared` when null. Payload is `{ before, after }`.
+
+### Returns
+
+The updated `Group` (including the new `parentGroupId`).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `parent_cycle` | 400 | `parentGroupId === groupId`, or the candidate is already a descendant. |
+| `bad_request` | 400 | `parentGroupId` is missing, empty string, or not a string-or-null. |
+| `not_found` | 404 | The child or candidate parent is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`PUT /v1/groups/:id/parent`](/api-reference/groups) - the underlying HTTP route.
+
+## `listChildren(groupId)`
+
+```ts
+async listChildren(groupId: GroupId): Promise<Group[]>
+```
+
+Return the direct children of a group (groups whose `parentGroupId` points at this one). Sorted by `createdAt desc, id desc` so the most recently nested children appear first. Soft-deleted children are excluded. Grandchildren are NOT included; call `listChildren` on each child for a multi-level tree walk.
+
+A group with no live children returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group is missing / soft-deleted / cross-game. |
+
+### See also
+
+- [`GET /v1/groups/:id/children`](/api-reference/groups) - the underlying HTTP route.
+
+## `subscribe(groupId, handler, opts?)`
+
+Open a Server-Sent Events stream against `GET /v1/events/:groupId` and invoke `handler` once per delivered event, with `Date` fields rehydrated. Returns a `Subscription` whose `close()` aborts the underlying fetch and stops further handler invocations.
+
+```ts
+const sub = await junjo.groups.subscribe(
+  "grp_xyz" as GroupId,
+  (event) => {
+    if (event.type === "member.joined") {
+      console.log(`${event.userId} joined`, event.member);
+    }
+    if (event.type === "member.left") {
+      console.log(`${event.userId} left`, event.reason);
+    }
+  },
+  {
+    onError: (err) => console.error("subscription failed", err),
+  },
+);
+
+// later
+sub.close();
+```
+
+The promise resolves once the server has accepted the connection. Initial-handshake errors (`401 invalid_api_key`, `404 not_found`) reject the promise with `JunjoError`. Mid-stream errors (network drop, malformed frame, JSON parse failure) close the subscription and call `opts.onError`; reconnect by calling `subscribe` again.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to subscribe to. Must belong to the calling game and not be soft-deleted. |
+| `handler` | `(event: JunjoEvent) => void` | Called once per delivered event, in publication order. The `JunjoEvent` is fully deserialized: `Date` fields are `Date` instances, branded ids are typed. |
+| `opts.onError` | `(err: Error) => void` | Optional. Called with the underlying error after the subscription closes due to a streaming failure. Initial-handshake failures throw instead. |
+
+### Returns
+
+`Promise<Subscription>` where `Subscription` is `{ close: () => void }`. `close()` is idempotent; subsequent calls are no-ops.
+
+### Behavior
+
+- **Single group per stream.** One connection covers one group; subscribe to N groups with N calls.
+- **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) or [webhooks](/api-reference/webhooks) for durable propagation.
+- **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
+- **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The group is missing / soft-deleted / cross-game. Thrown from the awaited `subscribe()`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. Thrown from the awaited `subscribe()`. |
+
+### See also
+
+- [`GET /v1/events/:groupId`](/api-reference/events) - the underlying HTTP route.

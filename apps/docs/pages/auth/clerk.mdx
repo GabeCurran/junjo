@@ -1,0 +1,91 @@
+# clerkAdapter
+
+`clerkAdapter` is the built-in `AuthAdapter` for verifying Clerk-issued session tokens. Use it when your app uses [Clerk](https://clerk.com/) for authentication and you want Junjo to resolve a user id from each request.
+
+The adapter wraps a `verifyToken` function that you wire up against `@clerk/backend`. The Clerk SDK is a peer dependency of `@junjo/sdk`, not a direct dependency: callers without Clerk pay no install cost.
+
+## Install
+
+`@clerk/backend` is a peer dependency. Install it in your own application:
+
+```sh
+npm install @clerk/backend
+```
+
+## Basic usage
+
+```ts
+import { Junjo } from "@junjo/sdk";
+import { clerkAdapter } from "@junjo/sdk/adapters";
+import { verifyToken } from "@clerk/backend";
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  authAdapter: clerkAdapter({
+    verifyToken: (token) =>
+      verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY!,
+      }),
+  }),
+});
+```
+
+The `verifyToken` you pass in is `@clerk/backend`'s standalone function pre-bound with your secret key. Wrapping it inside the adapter call keeps the Clerk-specific configuration (secret key, audience, JWT key) close to where it is configured in your app, not buried inside Junjo.
+
+## Options
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `verifyToken` | yes | A function taking a token string and resolving to a payload object. Throws or returns `null` / `undefined` on verification failure. |
+| `userIdClaim` | no | The claim to read the user id from. Defaults to `"sub"`, which is Clerk's user id (e.g. `"user_2abc..."`). Override only if you use a Clerk session-token template that exposes the id under a different claim. |
+
+## Failure modes
+
+`verifyToken` returns `null` for any verification failure. None of these cases throw, so the calling code can treat `null` as "session not authorized":
+
+- token is missing or empty
+- the wrapped Clerk verifier throws (invalid signature, expired token, audience mismatch, network error against Clerk's JWKS endpoint, etc.)
+- the wrapped Clerk verifier resolves with `null` or `undefined`
+- the configured user-id claim is missing, not a string, or empty
+
+The adapter throws `JunjoError({ code: "invalid_config" })` only when the static configuration is unusable: a missing or non-function `verifyToken`. Configuration errors should fail loud at startup, not at runtime.
+
+## Custom claims
+
+If your Clerk session template puts your application's user id under a custom claim:
+
+```ts
+clerkAdapter({
+  verifyToken: (token) => verifyToken(token, { secretKey }),
+  userIdClaim: "app_user_id",
+});
+```
+
+The adapter reads exactly that claim. Clerk's `sub` claim is ignored if `userIdClaim` is overridden.
+
+## Audience and authorized parties
+
+`@clerk/backend`'s `verifyToken` accepts `audience` and `authorizedParties` options for tighter validation. Configure them on the wrapped function, not on the adapter:
+
+```ts
+clerkAdapter({
+  verifyToken: (token) =>
+    verifyToken(token, {
+      secretKey: process.env.CLERK_SECRET_KEY!,
+      audience: "https://api.example.com",
+      authorizedParties: ["https://app.example.com"],
+    }),
+});
+```
+
+The adapter does not surface these options directly because Clerk's verification API is the authoritative place to configure them, and re-exposing them here would lock the adapter to one specific `@clerk/backend` version.
+
+## Why a wrapper, not direct integration
+
+`@clerk/backend` evolves its `verifyToken` signature across major versions. Pinning the adapter to one version would either force every Junjo user onto that version or churn the adapter every time Clerk ships a release. Instead, the adapter takes a function that *you* supply, which means:
+
+- you upgrade Clerk on your schedule, not Junjo's
+- you can pre-bind whatever options your Clerk version supports
+- callers without Clerk never touch `@clerk/backend` at all
+
+The cost is two extra lines of glue code at integration time. The benefit is decoupling.

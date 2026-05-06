@@ -1,0 +1,176 @@
+# useGroup
+
+Live, snapshot-plus-stream view of a single group and its active members. Fetches the group and the first page of members up-front, then subscribes to the SSE event stream and applies incoming events to the cached state. Cleans up the subscription on unmount or when `groupId` changes.
+
+```tsx
+import { useGroup } from "@junjo/react";
+
+function GuildPanel({ groupId }: { groupId: GroupId }) {
+  const { group, members, loading, error, refetch } = useGroup(groupId);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBanner error={error} onRetry={refetch} />;
+  if (!group) return <Empty />;
+
+  return (
+    <section>
+      <h1>{group.name}</h1>
+      <MemberList members={members} />
+    </section>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useGroup(groupId: GroupId): UseGroupResult;
+
+interface UseGroupResult {
+  group: Group | null;
+  members: Member[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  applyOptimistic: (
+    updater: (prev: { group: Group | null; members: Member[] }) => {
+      group: Group | null;
+      members: Member[];
+    },
+  ) => () => void;
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `group` | `Group \| null` | The group on success. `null` while loading, after a 404, or after a `group.deleted` event arrives on the live stream. |
+| `members` | `Member[]` | Active members only (status `"active"`). Initialized from the first page of `members.list`; updated by `member.joined` / `member.left` / `role.changed` events. |
+| `loading` | `boolean` | `true` until the initial fetch resolves (success or error). Does NOT flip back to `true` on `refetch`; the hook keeps the last snapshot visible while the new fetch is in flight. |
+| `error` | `Error \| null` | The fetch error or a streaming error. `JunjoError` instances pass through; cast with `instanceof JunjoError` if you want the typed `code` / `status`. |
+| `refetch` | `() => Promise<void>` | Re-runs the group + members fetch. Clears `error` on entry. The promise resolves once state has been dispatched; errors flow into `error`, never thrown. |
+| `applyOptimistic` | `(updater) => () => void` | Applies an updater to a `{ group, members }` snapshot immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
+
+## Behavior
+
+- **Initial fetch.** Issues `groups.get(groupId)` and `members.list(groupId)` in parallel. The members page is filtered to `status === "active"` before being placed in state.
+- **Subscription.** After the initial fetch resolves, opens an SSE subscription via `groups.subscribe(groupId, ...)`. Events are applied to local state synchronously; the subscription is closed on unmount, on `groupId` change, and after a streaming error fires `onError`.
+- **Race protection.** A monotonic generation counter discards stale fetch results when `groupId` changes mid-flight or `refetch` is called while another fetch is pending.
+- **Snapshot durability.** A streaming error sets `error` but leaves `group` and `members` unchanged so the UI can keep rendering the last-known state. Call `refetch` to reset and reopen the stream.
+- **No replay across reconnects.** Per the V1 SSE contract, events that fire while no subscription is active are not replayed; if you suspect a gap, call `refetch` for an authoritative snapshot.
+
+## Event handling
+
+| Event | Effect on state |
+|-------|-----------------|
+| `member.joined` | Appends `event.member` to `members`. If a member with the same `userId` already exists, replaces that entry in place. |
+| `member.left` | Removes any member with the matching `userId`. |
+| `role.changed` | Finds the member with `event.userId`; replaces their `roles` with `(roles - removed) + added`. Members not currently in the roster are ignored. |
+| `group.updated` | Replaces `group` with `event.group`. |
+| `group.deleted` | Sets `group` to `null` and clears `members`. The subscription stays open for any subsequent `group.updated` (e.g., after a restore). |
+| Other event types | Ignored. Role / permission CRUD events that do not affect group identity or member roster have no effect on this hook's state. |
+
+## Errors
+
+The hook never throws to the caller. Both fetch errors and streaming errors land in `error`:
+
+- `groups.get` or `members.list` rejects -> `error` set, `loading` -> `false`, `group` / `members` cleared. `JunjoError` instances pass through unchanged.
+- The SSE handshake fails (typically `permission_denied` or a network error) -> `error` set; the prior snapshot is left intact and `loading` is unchanged.
+- The stream drops mid-flight -> `error` set via the subscription's `onError`. `group` and `members` are not touched.
+
+Use `refetch` to recover from any of these states; it clears `error` before retrying.
+
+## Optimistic updates
+
+`applyOptimistic(updater)` lets a mutation flip the local `group` and `members` snapshot *before* the server confirms. The updater receives a `{ group, members }` snapshot and must return a new `{ group, members }` value. The hook returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation):
+
+```tsx
+import { useGroup, useJunjo, useMutation } from "@junjo/react";
+
+function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useGroup(groupId);
+
+  const { mutate, isPending } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.kick(groupId, userId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => ({
+        group: prev.group,
+        members: prev.members.filter((m) => m.userId !== userId),
+      })),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()} disabled={isPending}>Kick</button>;
+}
+```
+
+The same primitive covers an optimistic group rename (touching `prev.group` while leaving `prev.members` untouched):
+
+```tsx
+function RenameButton({ groupId, name }: { groupId: GroupId; name: string }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useGroup(groupId);
+
+  const { mutate } = useMutation<Group, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.groups.update(groupId, { name }),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => ({
+        group: prev.group ? { ...prev.group, name } : null,
+        members: prev.members,
+      })),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Rename</button>;
+}
+```
+
+A single call can update `group` and `members` together (e.g., kick a member and bump `memberCount` in lockstep), which is why the snapshot is a single object instead of two methods.
+
+### Why one method covers both fields
+
+`group` and `members` are two slices of the same logical entity. A single atomic snapshot avoids the trap of an inconsistent intermediate state when a mutation needs to update both (e.g., a kick that should drop both the member row and the cached `group.memberCount`). Spread `prev.group` and `prev.members` through unchanged when you only mean to touch one.
+
+### How the snapshot interacts with SSE events
+
+After `applyOptimistic` runs, the hook keeps applying SSE events on top of the optimistic state. A successful `kick` emits `member.left`, which the reducer's `member.left` handler treats as a no-op when the user is already absent; a successful rename emits `group.updated` with the authoritative `group` payload. The optimistic state and the live stream converge on success.
+
+### Rollback restores the pre-update snapshot exactly
+
+The rollback closure stores `{ group, members }` as it was when `applyOptimistic` was called, and restores both fields verbatim. SSE events that arrived between the optimistic update and the rollback are dropped on rollback. The mutation window is short enough that this is rare in practice; if your UI is sensitive to it, call `refetch()` from `onError` after `rollback()`.
+
+### Concurrent overlapping mutations
+
+Multiple in-flight mutations rolling back in arbitrary order get LIFO snapshot-restore semantics: each rollback restores to the snapshot taken at *its* `applyOptimistic` call. Rolling back an earlier mutation can therefore overwrite the optimistic state of a later one. Matches React Query's mutation rollback behavior.
+
+### `applyOptimistic` does not call the SDK
+
+The hook only mutates local state; the network request is whatever you put in `mutationFn`. Any mutation (kick, rename, role assignment, custom server route) can wire optimistic UI through the same primitive.
+
+## Multiple consumers
+
+Two `useGroup(sameId)` calls inside the same provider open two SSE subscriptions and two snapshot fetches today; there is no shared cache yet. Promote the hook into a parent component and pass `group` / `members` down if you need a single source of truth. A shared cache layer is a post-V1 idea and would be transparent to callers when it lands.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Render the consumer inside a `JunjoProvider` and either point the underlying `Junjo` at a fake server or stub the SDK methods directly:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.groups, {
+  get: vi.fn().mockResolvedValue(testGroup),
+  subscribe: vi.fn().mockResolvedValue({ close: vi.fn() }),
+});
+Object.assign(client.members, {
+  list: vi.fn().mockResolvedValue({ items: [memberA], nextCursor: null }),
+});
+```

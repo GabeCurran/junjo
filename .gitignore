@@ -1,0 +1,118 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/cache
+.yarn/install-state.gz
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+.swc/
+.rollup.cache/
+*.tsbuildinfo
+
+# Test + coverage
+coverage/
+*.lcov
+.nyc_output/
+.vitest-cache/
+
+# Playwright (dashboard E2E)
+playwright-report/
+test-results/
+playwright/.cache/
+.playwright/
+.playwright-mcp/
+
+# Performance benchmarks
+packages/server/bench-results/
+**/*.bench-results.json
+
+# Env
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+.env.*.local
+
+# Logs + process
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.iml
+.fleet/
+.zed/
+*.swp
+*.swo
+*.bak
+*.orig
+*~
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local Postgres data dirs (if someone runs without Docker)
+pgdata/
+postgres-data/
+
+# Vercel
+.vercel/
+
+# npm pack artifacts
+*.tgz
+
+# Prisma
+packages/server/prisma/migrations/.queries/
+
+# Changesets staging
+.changeset/.cache/
+
+# Local notes / scratch
+PROMPT.txt
+NOTES.md
+SCRATCH.md
+TODO.local.md
+/tmp/
+/temp/
+
+# Claude Code
+.claude/
+
+# Other AI assistants
+.cursor/
+.cursorignore
+.cursorrules
+.aider*
+.codeium/
+.continue/
+.windsurfrules
+
+# Personal overnight automation loop (orchestrator, vision, runs, summaries)
+.loop/
+
+# Generated UI screenshot catalog (regeneratable; large PNG binaries)
+tools/screenshots/output/
+
+# Generated Mermaid diagram previews (regeneratable; the source .mmd is committed)
+tools/diagrams/output/

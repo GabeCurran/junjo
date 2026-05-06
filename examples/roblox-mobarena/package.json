@@ -1,0 +1,7 @@
+{
+  "name": "@junjo/example-roblox-mobarena",
+  "version": "0.0.0",
+  "description": "Pointer to the mobarena-roblox dogfood target. No code here yet.",
+  "license": "MIT",
+  "private": true
+}

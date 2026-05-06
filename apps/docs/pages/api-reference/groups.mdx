@@ -1,0 +1,1131 @@
+# Groups
+
+A `Group` is the unit Junjo organizes players around: guild, clan, faction, party, crew. The dev's UI labels it however they want; Junjo stores the dev-supplied `kind` string verbatim and never branches on it.
+
+## Wire format
+
+`Group` is returned in this shape on every endpoint that emits it. Timestamps are ISO 8601 strings (the SDK rehydrates them into `Date` instances on the client).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `gameId` | string | The game that owns the group. Always equal to the calling key's game. |
+| `kind` | string | Dev-defined taxonomy ("guild", "clan", "faction", ...). Stored verbatim. |
+| `name` | string | Display name. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | See `POST /v1/groups`. |
+| `metadata` | object | Free-form JSON. The dev's bag for motto, banner URL, etc. |
+| `defaultRoleId` | string \| null | Role automatically assigned to new members; null until set. |
+| `memberCount` | number | Cached count of active members. `0` for a freshly created group. |
+| `createdAt` | string | ISO 8601 timestamp. |
+| `updatedAt` | string | ISO 8601 timestamp. |
+| `softDeletedAt` | string \| null | Set when the group is soft-deleted; null otherwise. |
+
+## `POST /v1/groups`
+
+Creates a new group scoped to the calling game. Writes a `group.created` audit entry in the same transaction.
+
+### Request
+
+```json
+{
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz"
+}
+```
+
+| Field | Required | Default | Notes |
+|-------|----------|---------|-------|
+| `kind` | yes | | 1-64 characters. Dev-defined taxonomy string. |
+| `name` | yes | | 1-120 characters. Not unique. |
+| `visibility` | no | `"invite-only"` | One of `"public"`, `"invite-only"`, `"secret"`. |
+| `metadata` | no | `{}` | Arbitrary JSON object. |
+| `defaultRoleId` | no | null | Pre-assigned role for new members. The role must exist on this group; the server does not verify this on create (a defensive existence check is a post-V1 idea). |
+
+A missing or malformed body returns `400 bad_request` with the failing path in the message (e.g., `name: required`). A malformed JSON body also returns `400 bad_request`.
+
+### Response
+
+`201 Created` with a `Group` body:
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz",
+  "memberCount": 0,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T05:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Audit log
+
+Every successful create writes one entry:
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.created` |
+| `groupId` | the new group id |
+| `targetId` | the new group id |
+| `actorUserId` | `null` (server-to-server creation; user actors arrive in later phases) |
+| `payload` | `{ kind, name, visibility, metadata, defaultRoleId }` |
+
+## `GET /v1/groups/:id`
+
+Fetches a single group by id. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Response
+
+`200 OK` with a `Group` body. `memberCount` is the number of `GroupMember` rows with `status = "active"` for this group, computed at request time.
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Wolves",
+  "visibility": "invite-only",
+  "metadata": { "motto": "Howl together" },
+  "defaultRoleId": "role_xyz",
+  "memberCount": 42,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T05:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups`
+
+Lists groups for the calling game, newest-first. Cursor-based pagination via the `Page<T>` envelope.
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | `50` | 1-100 inclusive. Out-of-range values return `400`. |
+| `cursor` | string | none | The `nextCursor` from a prior response. Must point at a group in the calling game; soft-deleted is fine, the cursor row is used purely as a sort position. |
+| `gameId` | string | the calling game | Optional. If provided, must equal the calling key's game id; mismatches return `400`. |
+
+### Response
+
+`200 OK` with a `Page<Group>` body. Items are sorted by `createdAt` desc with `id` desc as a tiebreaker so pagination is deterministic even when many groups share a timestamp. `nextCursor` is `null` when no further pages remain.
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "gameId": "ckyyy...",
+      "kind": "guild",
+      "name": "Crimson Wolves",
+      "visibility": "invite-only",
+      "metadata": {},
+      "defaultRoleId": null,
+      "memberCount": 42,
+      "createdAt": "2026-04-28T05:00:00.000Z",
+      "updatedAt": "2026-04-28T05:00:00.000Z",
+      "softDeletedAt": null
+    }
+  ],
+  "nextCursor": "ckxxx..."
+}
+```
+
+`memberCount` per item is the count of `GroupMember` rows in `status = "active"`, computed at request time via a single batched `groupBy` query (no N+1).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` invalid, `cursor` not found in this game, or `gameId` does not match the calling game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PATCH /v1/groups/:id`
+
+Partially updates a group. The body is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields included are touched. At least one field must be provided. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{
+  "name": "Crimson Lions",
+  "visibility": "public",
+  "metadata": { "motto": "Roar" },
+  "defaultRoleId": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | Optional. 1-120 characters. |
+| `visibility` | `"public" \| "invite-only" \| "secret"` | Optional. |
+| `metadata` | object | Optional. **Replaces the existing metadata wholesale**; not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
+| `defaultRoleId` | string \| null | Optional. Pass `null` to clear; pass a string to set. |
+
+An empty body, an unknown visibility value, an empty `name`, or a malformed JSON body all return `400 bad_request`.
+
+### Response
+
+`200 OK` with the updated `Group` body. `memberCount` is computed at request time from active members, just like `GET /v1/groups/:id`.
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "kind": "guild",
+  "name": "Crimson Lions",
+  "visibility": "public",
+  "metadata": { "motto": "Roar" },
+  "defaultRoleId": null,
+  "memberCount": 42,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "updatedAt": "2026-04-28T06:00:00.000Z",
+  "softDeletedAt": null
+}
+```
+
+### Audit log
+
+Writes one `group.updated` entry **only when at least one field actually changed**. The payload is a `{ before, after }` pair containing only the changed fields:
+
+```json
+{
+  "action": "group.updated",
+  "groupId": "ckxxx...",
+  "targetId": "ckxxx...",
+  "actorUserId": null,
+  "payload": {
+    "before": { "name": "Old Name", "visibility": "invite-only" },
+    "after": { "name": "New Name", "visibility": "public" }
+  }
+}
+```
+
+A no-op PATCH (every supplied field already matches the stored value) succeeds with `200 OK`, returns the unchanged group, and writes no audit entry. The `updatedAt` timestamp is also unchanged in that case. Metadata is treated as changed whenever it is provided, even when the new value is structurally equal to the stored one (deep equality across `jsonb` ordering is not attempted).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, invalid field value, malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id`
+
+Soft-deletes a group by stamping `softDeletedAt` with the current time. The group disappears from `GET` and `LIST` responses immediately but the row stays in Postgres for 7 days so it can be restored. After 7 days an in-process sweeper hard-deletes the row (and its cascade-related rows). Pass `?hard=true` to bypass the soft-delete grace and remove the row immediately.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `hard` | `"true"` | absent | Any other value (or absence) keeps the soft-delete path. Only the literal string `"true"` triggers hard delete. |
+
+### Response
+
+- Soft delete on a live group: `200 OK` with the now-soft-deleted `Group` body (`softDeletedAt` populated). Writes one `group.deleted` audit entry in the same transaction.
+- Soft delete on an already soft-deleted group: `200 OK` with the existing group body, `softDeletedAt` left at its prior value, **no second audit entry**, no timestamp bump. Idempotent.
+- Hard delete: `204 No Content`. Cascade rules remove related rows, including the group's audit history. No audit entry is written (it would be cascade-deleted anyway).
+
+### Audit log (soft delete only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.deleted` |
+| `groupId` | the deleted group id |
+| `targetId` | the deleted group id |
+| `actorUserId` | `null` |
+| `payload` | `{ kind: "soft", softDeletedAt: <iso>, retentionDays: 7 }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/restore`
+
+Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Idempotent on a live group; returns `410 Gone` if the soft-delete is older than 7 days (the row may be on the next sweep tick or already gone).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Response
+
+- Restore inside the window: `200 OK` with the restored `Group` body (`softDeletedAt: null`). Writes one `group.restored` audit entry.
+- Restore on a live (not soft-deleted) group: `200 OK` with the existing group body, no audit entry. Idempotent.
+
+### Audit log (restore inside window only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `group.restored` |
+| `groupId` | the restored group id |
+| `targetId` | the restored group id |
+| `actorUserId` | `null` |
+| `payload` | `{ previousSoftDeletedAt: <iso> }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `restore_window_expired` | 410 | The group's `softDeletedAt` is older than 7 days. The row may be hard-deleted soon (or already). |
+| `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). Hard-deleted rows return 404 because the row is gone. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### Background sweeper
+
+Soft-deleted groups whose `softDeletedAt` is older than `SOFT_DELETE_RETENTION_DAYS` (7) are removed by an in-process scheduler running on `setInterval` inside the same Node process as the API. The interval defaults to one hour. There is no separate worker process or external cron. Keeping background work in-process avoids an operational dependency for self-hosters.
+
+## `POST /v1/groups/:id/invitations`
+
+Creates an invitation. Two variants share the same endpoint, picked by whether `targetUserId` is present in the body:
+
+- **Direct invite** (`targetUserId` set): a single-use invitation addressed to a specific external user id (the one returned by the configured auth adapter).
+- **Open code** (`targetUserId` omitted): an invitation anyone with the code can accept. Pair with `expiresIn` to make it a short-lived link.
+
+The server picks a unique 16-character hex code in both cases; subsequent endpoints (`GET /v1/invitations/:code`, accept/decline) read invitations by that code.
+
+Soft-deleted groups and groups belonging to a different game return `404 not_found` (existence is not leaked across game boundaries).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{
+  "targetUserId": "user_alice",
+  "roleId": "role_officer",
+  "expiresIn": "7d"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `targetUserId` | no | Omit for an open-code invitation. When set, this is the external user id from the dev's auth provider; stored verbatim, the server does not require a corresponding `JunjoUser` row at invite time. |
+| `roleId` | no | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`members.assignRole`](/sdk/members#assignrole) afterward) and not validated against the group's roles. |
+| `expiresIn` | no | Duration string `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`. Examples: `30s`, `15m`, `2h`, `7d`. The server stamps `expiresAt = now() + expiresIn` at create time. |
+
+An empty `targetUserId`, a malformed `expiresIn`, an `expiresIn` with a non-positive value (e.g., `0d`), or a malformed JSON body all return `400 bad_request`.
+
+### Response
+
+`201 Created` with an `Invitation` body. Timestamps are ISO 8601 strings.
+
+```json
+{
+  "id": "ckxxx...",
+  "groupId": "ckyyy...",
+  "code": "abcd1234abcd1234",
+  "roleId": "role_officer",
+  "targetUserId": "user_alice",
+  "createdBy": null,
+  "createdAt": "2026-04-28T05:00:00.000Z",
+  "expiresAt": "2026-05-05T05:00:00.000Z",
+  "usedAt": null,
+  "usedBy": null
+}
+```
+
+For an open-code invitation the response is the same shape with `"targetUserId": null`.
+
+`createdBy` is `null` because no auth-adapter actor is wired through this code path. The field parallels `AuditEntry.actorUserId`.
+
+### Audit log
+
+Every successful create writes one entry:
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.invited` |
+| `groupId` | the group id |
+| `targetId` | the invited `targetUserId`, or `null` for open-code invitations |
+| `actorUserId` | `null` |
+| `payload` | `{ invitationId, code, targetUserId, roleId, expiresAt }` (each value is `null` when not set on the invitation) |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body fails validation, malformed JSON, malformed or non-positive `expiresIn`. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/invitations`
+
+Lists invitations for a group, scoped to the calling game. Soft-deleted groups and groups belonging to a different game return `404 not_found`. Cursor-based pagination via the `Page<T>` envelope.
+
+By default the response excludes invitations that have already been used (`usedAt` set) or have expired (`expiresAt < now()`). Pass `includeUsed=true` and/or `includeExpired=true` to include them.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | `50` | 1-100 inclusive. Out-of-range values return `400`. |
+| `cursor` | string | none | The `nextCursor` from a prior response. Must point at an invitation in this group. |
+| `includeExpired` | `"true" \| "false"` | `false` | When `true`, expired invitations are included. |
+| `includeUsed` | `"true" \| "false"` | `false` | When `true`, used invitations (with `usedAt` set) are included. |
+
+### Response
+
+`200 OK` with a `Page<Invitation>` body. Items are sorted by `createdAt` desc with `id` desc as a tiebreaker. `nextCursor` is `null` when no further pages remain.
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "groupId": "ckyyy...",
+      "code": "abcd1234abcd1234",
+      "roleId": null,
+      "targetUserId": "user_alice",
+      "createdBy": null,
+      "createdAt": "2026-04-28T05:00:00.000Z",
+      "expiresAt": null,
+      "usedAt": null,
+      "usedBy": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
+| `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/leave`
+
+Voluntarily removes a member from a group. The body's `userId` is the dev's external user id (the one returned by the configured auth provider). Only an `active` member is transitioned; any other state is returned unchanged with no audit entry, so calling leave on an already-left or kicked member is idempotent.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{ "userId": "user_alice" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | The dev's external user id. Must already have an `ExternalIdentity` row for the calling game and a `GroupMember` row in this group. |
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` reflects the member's current `MemberRole` rows.
+
+```json
+{
+  "id": "ckxxx...",
+  "groupId": "ckyyy...",
+  "userId": "user_alice",
+  "status": "left",
+  "roles": [],
+  "metadata": {},
+  "notesPublic": null,
+  "notesPrivate": null,
+  "joinedAt": "2026-04-28T05:00:00.000Z"
+}
+```
+
+For an idempotent call (member already in `left`, `kicked`, or `invited` state) the response body is the unchanged member; the `status` field tells the caller what happened.
+
+### Audit log (active -> left transition only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.left` |
+| `groupId` | the group id |
+| `targetId` | the leaver's external user id |
+| `actorUserId` | the leaver's resolved JunjoUser id (the user is the actor of their own departure) |
+| `payload` | `{ memberId, reason: "left" }` |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `userId` or malformed JSON. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. The three cases share one error code so existence is not leaked. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/kick`
+
+Removes a member from a group on the dev backend's behalf. Only an `active` member is transitioned to `kicked`; any other state is returned unchanged with no audit entry, so a second kick (or a kick on a left member) is idempotent.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The kicked user's external id (the one the dev's auth provider returns). |
+
+### Request
+
+The body is optional; an empty body, `{}`, and `{ "reason": null }` are all accepted.
+
+```json
+{ "reason": "violated guild rules" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `reason` | no | Free-form string up to 500 characters, or `null`, or omitted. Lands on the audit `payload`. |
+
+### Response
+
+`200 OK` with the post-state `Member` body. Shape is identical to `POST /v1/groups/:id/leave`'s response.
+
+For an idempotent call (member already kicked, or in `left`/`invited` state) the response body is the unchanged member; the `status` field tells the caller what happened.
+
+### Audit log (active -> kicked transition only)
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.kicked` |
+| `groupId` | the group id |
+| `targetId` | the kicked user's external id |
+| `actorUserId` | `null` (V1 has no auth-adapter actor wired; the dev's backend is the trusted layer behind the API key) |
+| `payload` | `{ memberId, reason }` where `reason` is the body's value, or `null` when omitted |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members/:userId`
+
+Fetches a single member by the dev's external user id. Scoped to the calling game.
+
+The response includes members in any status (`active`, `left`, `kicked`, `invited`); historical members carry the audit story and the dev decides client-side whether to display them.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The dev's external user id. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with the same `Member` wire format documented under [`POST /v1/invitations/:code/accept`](/api-reference/invitations).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members`
+
+Lists the members of a group with cursor-based pagination. Returns rows in every status; the caller filters client-side. (V1 does not yet expose a `?status=` filter; that can land as an additive change.)
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | integer | 50 | 1 to 100. |
+| `cursor` | string | none | The id of the last item from the previous page; the route looks it up to position the next page. |
+
+### Response
+
+`200 OK` with `{ items: Member[], nextCursor: string \| null }`. Items are ordered by `joinedAt` descending, with `id` descending as a tiebreaker.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `limit` out of range, or `cursor` does not point at a member of this group. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PATCH /v1/groups/:id/members/:userId`
+
+Updates a single member's metadata and / or officer notes. The body is partial: any subset of `{ metadata, notesPublic, notesPrivate }`. An empty body returns `400 bad_request`.
+
+The route writes up to two audit entries in one transaction depending on which subset of fields actually changed (see [Audit log](#audit-log) below). A fully no-op PATCH (notes-only PATCH where every supplied notes field equals the stored value) writes no audit entry, performs no DB update, and returns the unchanged member.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+
+### Request
+
+```json
+{
+  "metadata": { "rank": "officer" },
+  "notesPublic": "great healer",
+  "notesPrivate": "do not promote yet"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `metadata` | no | Object. Replaces wholesale (no deep merge). Always treated as a change when supplied. |
+| `notesPublic` | no | String up to 5000 characters, or `null` to clear. Diffed per-field; supplying the same value as stored is a no-op. |
+| `notesPrivate` | no | String up to 5000 characters, or `null` to clear. Same diff rule as `notesPublic`. |
+
+### Response
+
+`200 OK` with the post-state `Member` body (same wire format as the other member endpoints). Terminal-status members (`left`, `kicked`) can also be updated; the route does not gate on `status`.
+
+### Audit log
+
+Up to two entries are written, both with `actorUserId` set to `null` (V1 has no auth-adapter actor wired):
+
+| Action | When | Payload |
+|--------|------|---------|
+| `member.metadata.updated` | `metadata` was supplied in the body | `{ before: { metadata: <old> }, after: { metadata: <new> } }` |
+| `member.notes.updated` | At least one supplied notes field differed from the stored value | `{ before: <changed fields only>, after: <changed fields only> }` |
+
+`targetId` on each entry is the member's external user id.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty body, malformed JSON, notes longer than 5000 chars. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## POST /v1/groups/:id/bulk-invite
+
+Creates many open-code invitations at once. Body is plain text: one trimmed, non-empty line per target external user id.
+
+```http
+POST /v1/groups/:id/bulk-invite[?roleId=<RoleId>]
+Authorization: Bearer <api-key>
+Content-Type: text/csv
+
+user_alice
+user_bob
+user_carol
+```
+
+### Path params
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `id` | `GroupId` | The group to invite into. URL-decoded. |
+
+### Query params
+
+| Param | Required | Notes |
+|-------|----------|-------|
+| `roleId` | no | Forwarded to every created invitation as `Invitation.roleId`. |
+
+### Body format
+
+- One userId per line. Leading and trailing whitespace are trimmed.
+- Empty lines (or lines that are whitespace only) are silently skipped and do not appear in any count.
+- Each non-empty line is treated as a single CSV field; commas are not parsed as separators.
+- Both `\n` and `\r\n` line endings are accepted.
+- Userids longer than 255 characters are reported in `errors` (the row is not invited, not skipped).
+- The total row count (errored + valid) is capped at 1000 per request; exceeding returns `400 bad_request`.
+
+### Response
+
+```json
+{
+  "invited": 47,
+  "skipped": 3,
+  "errors": [
+    { "row": 5, "reason": "userId exceeds 255 characters" }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `invited` | number | Count of new `Invitation` rows created. |
+| `skipped` | number | Count of rows that were not invited because the user is already an active member, or already has an unused, unexpired invitation, or appeared earlier in the same batch. |
+| `errors` | array | One entry per malformed row. `row` is 1-indexed and counts every source line (empty lines included), so the dev can map errors back to the original input. |
+
+### Audit log
+
+One `member.invited` audit entry is written per created invitation, all in the same transaction. `actorUserId` is `null`; `targetId` is the invited user's external id; `payload.source` is the string `"bulk-invite"` so audit consumers can distinguish bulk-issued invitations from single-shot `inviteByUserId` ones.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | More than 1000 rows in one request, or `roleId=` empty. |
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/roles/:roleId`
+
+Assigns a role to a member. Idempotent: assigning a role the member already has returns the unchanged member with no audit entry written. The role must belong to the same group as the member; cross-group assignment returns `400 role_group_mismatch`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+| `roleId` | string | The role id. URL-decoded by the router. |
+
+### Request
+
+No body. The route ignores any body that is sent.
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` includes the newly assigned role id alongside any existing role ids. Members in any status (`active`, `left`, `kicked`, `invited`) can be assigned roles; the route does not gate on `status` (matches the metadata / notes precedent).
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `role.assigned` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, roleId }` |
+
+A no-op (the role was already assigned) does not write an audit entry.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | The role exists but belongs to a different group (`role_group_mismatch`). |
+| `not_found` | 404 | The group / member / role does not exist (the four cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group; no `Role` row at all). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id/members/:userId/roles/:roleId`
+
+Removes a role from a member. Idempotent: if the member does not have the role assigned, returns the unchanged member with no audit entry written. A role that does not exist or belongs to a different group is treated identically to "not assigned"; both are no-ops.
+
+### Path parameters
+
+Same as `POST /v1/groups/:id/members/:userId/roles/:roleId`.
+
+### Response
+
+`200 OK` with the post-state `Member` body. `roles` excludes the removed role id; other role assignments are preserved.
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `role.unassigned` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, roleId }` |
+
+A no-op (the role was not assigned) does not write an audit entry.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The role's existence is *not* validated; an unknown role id collapses to a no-op. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/:userId/permissions/:permission`
+
+Sets or updates a member-level permission override. The override wins over any role-derived grant during permission resolution (see [Permissions](/sdk/permissions)). Idempotent: setting an override with the same `grant` value as the existing one returns the unchanged override with no audit entry.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+| `permission` | string | 1-128 characters. URL-decoded by the router. Auto-registered into the per-game `PermissionDef` catalog on first sight. |
+
+### Request
+
+```json
+{ "grant": true }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `grant` | yes | `true` to grant regardless of roles, `false` to revoke regardless of roles. |
+
+### Response
+
+`200 OK` with a `MemberPermissionOverride` body:
+
+```json
+{
+  "groupId": "ckxxx...",
+  "userId": "user_alice",
+  "permission": "guild.kick",
+  "grant": true,
+  "setAt": "2026-04-28T05:00:00.000Z",
+  "setBy": null
+}
+```
+
+`setBy` is the dev's external id of the actor that set the override; it is `null` (no auth-adapter actor wired yet).
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `permission.override.set` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, permission, grant }`; on update of an existing override, `before: { grant }` is added. |
+
+A no-op (the override already had the same `grant`) writes no audit entry. The first time a permission key is used on a game (across roles or overrides), the route upserts a `PermissionDef` row inside the same transaction; subsequent overrides of the same key reuse the existing registry row.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing or non-boolean `grant`, malformed JSON, or `permission` is empty / over 128 characters. |
+| `not_found` | 404 | The group / member does not exist (the cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:id/members/:userId/permissions/:permission`
+
+Clears a member-level permission override. Idempotent: clearing a permission the member does not have an override for returns `204 No Content` with no audit entry.
+
+### Path parameters
+
+Same as `POST /v1/groups/:id/members/:userId/permissions/:permission`.
+
+### Response
+
+`204 No Content`. The route does not echo the deleted row; consumers that need the previous `grant` value can pull it from the `permission.override.cleared` audit entry.
+
+### Audit log
+
+| Field | Value |
+|-------|-------|
+| `action` | `permission.override.cleared` |
+| `groupId` | the group id |
+| `targetId` | the external user id |
+| `actorUserId` | `null` |
+| `payload` | `{ memberId, permission, grant }` where `grant` carries the *previous* value of the cleared override. |
+
+A no-op (no existing override to clear) writes no audit entry. The `PermissionDef` registry row is preserved across clears (matches the `roles.revokePermission` precedent: the catalog is monotonic per game).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `permission` path parameter is empty. |
+| `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/members/:userId/permissions`
+
+Lists a member's permission overrides. Returns a bare array (no pagination wrapper); a member is conventionally going to have a small handful of overrides, not thousands.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+| `userId` | string | The member's external user id. URL-decoded by the router. |
+
+### Response
+
+`200 OK` with a `MemberPermissionOverride[]` body, sorted by `permission` ascending for deterministic output.
+
+```json
+[
+  {
+    "groupId": "ckxxx...",
+    "userId": "user_alice",
+    "permission": "guild.invite_member",
+    "grant": false,
+    "setAt": "2026-04-28T05:00:00.000Z",
+    "setBy": null
+  },
+  {
+    "groupId": "ckxxx...",
+    "userId": "user_alice",
+    "permission": "guild.kick",
+    "grant": true,
+    "setAt": "2026-04-28T05:00:00.000Z",
+    "setBy": null
+  }
+]
+```
+
+A member with no overrides returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PUT /v1/groups/:a/relationships/:b`
+
+Set or update a directed relationship from group A to group B. Relationships are stored *directed* (A's stance toward B), so an asymmetric pair like "A allies B but B sees A as neutral" is two rows. Pass `mutual: true` to write both directions in one call.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Request body
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string (1-64 chars) | Required. Open string: `"ally"`, `"enemy"`, `"neutral"`, `"trade-partner"`, `"vassal"`, etc. The server stores it verbatim. |
+| `mutual` | boolean | Optional. When `true` the route writes both A->B and B->A rows with the same `type`. Defaults to `false`. |
+
+### Response
+
+`200 OK` with the A->B `GroupRelationship` row (the canonical "this group's stance" view, even when `mutual: true` writes both sides).
+
+```json
+{
+  "groupAId": "grp_a",
+  "groupBId": "grp_b",
+  "type": "ally",
+  "since": "2026-04-28T05:00:00.000Z",
+  "setBy": null
+}
+```
+
+### Behavior
+
+- Each direction is independent. If A->B already has the supplied `type`, that direction is a no-op (no DB write, no audit entry, no `since` bump). The other direction (B->A) still goes through its own check.
+- A direction whose `type` actually changes writes one `group.relationship.set` audit entry on the *origin* group's audit log. Mutual writes therefore produce up to two audit entries; partial-mutual writes produce one.
+- Self-relationships (`a === b`) are rejected with `400 bad_request`.
+- The audit payload is `{ groupAId, groupBId, type, mutual, before? }`. `before` is included only when the row already existed and the type changed; on a fresh insert `before` is omitted.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `type`, `type` empty or over 64 chars, body malformed JSON, or `a === b`. |
+| `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `DELETE /v1/groups/:a/relationships/:b`
+
+Clear the directed A->B relationship. Idempotent: a missing row is a no-op (no audit entry). Pass `?mutual=true` to clear B->A in the same transaction.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Query parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `mutual` | `"true"` \| `"false"` | Optional. When `"true"`, clears both A->B and B->A. Strict string match. |
+
+### Response
+
+`204 No Content`. The audit log carries the previous `type` for any direction that was actually deleted.
+
+### Behavior
+
+- For each direction (A->B, plus B->A when `mutual=true`):
+  - If no row exists: no-op for that direction.
+  - If a row exists: hard-deleted, and one `group.relationship.cleared` audit entry is written on the *origin* group's audit log with `payload: { groupAId, groupBId, type, mutual }` (where `type` is the row's previous value).
+- Self-relationships (`a === b`) are rejected with `400 bad_request`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `mutual` is not `"true"` / `"false"`, or `a === b`. |
+| `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:a/relationships/:b`
+
+Fetch the directed A->B relationship row.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+| `b` | string | The target group id. URL-decoded. |
+
+### Response
+
+`200 OK` with the `GroupRelationship` row, or `404 not_found` if no such row exists in this direction. To fetch the reverse direction, swap `a` and `b`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No A->B row, or either group is missing / soft-deleted / cross-game / `a === b`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:a/relationships`
+
+List every directed relationship where this group is the A-side ("this group's stance toward others"). Returns a bare array (no pagination wrapper); a group's relationship list is conventionally a small set.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `a` | string | The origin group id. URL-decoded. |
+
+### Response
+
+`200 OK` with a `GroupRelationship[]` body, sorted by `groupBId` ascending for deterministic output. Symmetric pairs appear once per direction; query the other group to see the reverse row.
+
+```json
+[
+  { "groupAId": "grp_a", "groupBId": "grp_b", "type": "ally", "since": "2026-04-28T05:00:00.000Z", "setBy": null },
+  { "groupAId": "grp_a", "groupBId": "grp_c", "type": "enemy", "since": "2026-04-28T05:00:00.000Z", "setBy": null }
+]
+```
+
+A group with no outgoing relationships returns `[]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PUT /v1/groups/:id/parent`
+
+Set or clear the sub-group / alliance parent. The parent must be in the same game and not soft-deleted. Cycle detection: a candidate that would create a loop in the parent chain is rejected with `400 parent_cycle`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The child group id. URL-decoded. |
+
+### Request body
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `parentGroupId` | string \| null | Required. Set to a group id to nest under that parent; set to `null` to clear the parent. Omitting the field returns `400 bad_request`. |
+
+### Response
+
+`200 OK` with the updated `Group` (the child). `parentGroupId` reflects the new value.
+
+### Behavior
+
+- A child group with `parentGroupId` already equal to the supplied value is a no-op (no DB write, no audit entry); the unchanged group is returned.
+- The candidate parent's ancestor chain is walked; if the child group itself appears anywhere in that chain (including the candidate being the child's own id), the call is rejected with `400 parent_cycle`. The walk is bounded at depth 100 to defend against corrupted state.
+- On a value change, one audit entry is written on the *child* group's audit log:
+  - `group.parent.set` when the new value is non-null.
+  - `group.parent.cleared` when the new value is null.
+- The audit `payload` is `{ before, after }` carrying the prior and new parent ids (either may be null). The audit row's `targetId` is the new parent id (null when cleared). `actorUserId` is null (no auth-adapter actor wired).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `parentGroupId`, value is not a non-empty string or null, or body is malformed JSON. |
+| `parent_cycle` | 400 | `parentGroupId === id`, or the candidate is already a descendant of the child. |
+| `not_found` | 404 | The child or candidate parent does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/children`
+
+List the direct children of a group (groups whose `parentGroupId` points at this one).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The parent group id. URL-decoded. |
+
+### Response
+
+`200 OK` with a bare `Group[]` body, sorted by `createdAt desc, id desc` to match `groups.list`. Soft-deleted children are excluded. Each item carries a fresh `memberCount`.
+
+```json
+[
+  { "id": "grp_child_2", "name": "Second", "parentGroupId": "grp_parent", "memberCount": 0, "...": "..." },
+  { "id": "grp_child_1", "name": "First", "parentGroupId": "grp_parent", "memberCount": 3, "...": "..." }
+]
+```
+
+A group with no live direct children returns `[]`. Grandchildren are not included; call `listChildren` on each child for a multi-level tree.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Parent group does not exist, is soft-deleted, or belongs to a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

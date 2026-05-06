@@ -1,0 +1,85 @@
+# Error codes
+
+Every non-2xx response from the Junjo server uses the same envelope:
+
+```json
+{
+  "code": "<snake_case_code>",
+  "status": <http_status>,
+  "message": "<human-readable explanation>"
+}
+```
+
+The TypeScript SDK preserves all three fields on the `JunjoError` it throws, so callers can branch on `error.code` instead of parsing strings:
+
+```ts
+import { JunjoError } from "@junjo/sdk";
+
+try {
+  await junjo.groups.get(groupId);
+} catch (err) {
+  if (err instanceof JunjoError && err.code === "not_found") {
+    return null;
+  }
+  throw err;
+}
+```
+
+This page is the canonical inventory. Per-resource pages mention the codes they raise; this page lists every code that the server or the SDK can produce.
+
+## Server codes
+
+These are returned by the Junjo server (`packages/server`) and round-trip through the SDK as `JunjoError` instances with the same `code` and `status`.
+
+| code | status | when it is raised | how to handle |
+|------|--------|-------------------|---------------|
+| `bad_request` | 400 | Body or query parameters failed Zod validation. Also raised for semantic input errors that are not domain-specific (e.g. unknown `kind` on `groups.create`). | Fix the request shape. The `message` field describes which field failed. |
+| `parent_cycle` | 400 | `PUT /v1/groups/:id/parent` was called with a parent id that would create a cycle in the parent chain. | Pick a different parent or restructure the hierarchy. |
+| `role_group_mismatch` | 400 | Tried to assign a role to a member of a group the role does not belong to, or to perform a similar cross-group operation on roles. | Pass a role id that belongs to the same group as the member. |
+| `invalid_api_key` | 401 | API key missing, malformed, unknown, or revoked. | Check the `Authorization: Bearer <prefix>.<secret>` header. Issue a new key if the secret was lost. |
+| `invalid_admin_token` | 401 | Admin endpoint called with a missing or wrong admin token. Also returned when the server has `JUNJO_ADMIN_TOKEN` unset (admin endpoints are disabled on that deployment). See [Admin](/api-reference/admin). | Set `JUNJO_ADMIN_TOKEN` on the server and pass it as `Authorization: Bearer <token>`. |
+| `permission_denied` | 403 | Caller lacks permission to perform the action. | The action is intentional refusal, not a missing resource. Either grant the caller the required permission or have a different actor perform the call. |
+| `not_found` | 404 | Resource does not exist or is soft-deleted. | The SDK turns `not_found` from `groups.get` and a few other read endpoints into `null`; for mutations it surfaces as a thrown `JunjoError`. Treat as "no such resource". |
+| `already_member` | 409 | Tried to invite, accept an invitation for, or otherwise add a user who is already an active `GroupMember` of the group. | Idempotent on the caller side: if the goal is "make sure user is a member", check membership first or treat 409 as success. |
+| `role_has_members` | 409 | `DELETE /v1/roles/:id` was called on a role that still has members assigned. | Reassign the affected members to a different role first, then retry the delete. |
+| `role_name_taken` | 409 | Tried to create or rename a role to a name that another role in the same group already uses. | Pick a different name. Role names are unique per group, not globally. |
+| `invitation_expired` | 410 | The invitation code is past its `expiresAt`. | Issue a new invitation. |
+| `invitation_used` | 410 | The invitation was already accepted, declined, or revoked. | Issue a new invitation. |
+| `restore_window_expired` | 410 | `POST /v1/groups/:id/restore` was called more than 7 days after the soft-delete. | The group is no longer recoverable; create a new one if needed. |
+| `rate_limit_exceeded` | 429 | The per-API-key token bucket is empty. The response carries a `Retry-After` header (seconds, integer >= 1). Tunable via `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST`. | Back off for at least `Retry-After` seconds. The SDK does not retry automatically; the caller decides. |
+| `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. | Treat as transient. Retry with backoff once or twice; if it persists, check server logs. |
+
+## SDK-only codes
+
+These codes are produced by the TypeScript SDK before any HTTP request, or by helpers (webhook verification, auth adapters) that never round-trip through the server. They do not have a meaningful HTTP status, so the `JunjoError.status` field is either `undefined` or, where the SDK helper documents one, the status the equivalent server response would carry.
+
+| code | status | when it is raised | how to handle |
+|------|--------|-------------------|---------------|
+| `invalid_config` | none | An auth adapter constructor (`jwtAdapter`, `clerkAdapter`, `supabaseAdapter`) was called with required arguments missing or of the wrong type, or `Junjo#whoami` was called without an `authAdapter` configured on the client. | Fix the setup. The `message` field names the field at fault. |
+| `webhook_signature_missing` | 400 | `verifyWebhook` was called and the request had no `X-Junjo-Signature` header. | Reject the request. Returning 400 is the right HTTP response. |
+| `webhook_timestamp_missing` | 400 | Same, but for the `X-Junjo-Timestamp` header. | Same as above. |
+| `webhook_timestamp_invalid` | 400 | The `X-Junjo-Timestamp` header value is not a parseable ISO 8601 timestamp. | Reject. The sender is not a real Junjo deployment, or the proxy mangled the header. |
+| `webhook_timestamp_out_of_tolerance` | 400 | The signed timestamp is more than `tolerance` ms (default 5 minutes) away from the receiver's clock. Defends against replay attacks. | Reject. If clocks are legitimately skewed, fix the receiver clock; do not widen the tolerance. |
+| `webhook_invalid_signature` | 400 | The HMAC of the body+timestamp does not match the `X-Junjo-Signature` header. | Reject. The body was tampered with or the secret is wrong. Do NOT log the body or signature; they may contain sensitive data. |
+| `webhook_invalid_body` | 400 | The body is not parseable as JSON after the signature check passed. | Reject. This indicates an upstream proxy mangled the body; the signature would not have matched if the body changed in transit, but the JSON parse runs after sig verify so a malformed but-correctly-signed body still surfaces here. |
+| `internal` | varies | Fallback the SDK uses when an HTTP response is non-2xx but the body is missing, not JSON, or does not include a `code` field. The `status` field carries the original HTTP status. Also raised by `groups.subscribe` when the SSE stream returns no body. | Treat as transient. Inspect `error.status` to distinguish "real 500" (retry) from a 4xx whose body the server failed to serialize (do not retry). |
+
+## SDK type
+
+The `JunjoError` class is exported from the top-level entry of `@junjo/sdk`:
+
+```ts
+import { JunjoError } from "@junjo/sdk";
+
+class JunjoError extends Error {
+  readonly code: string;
+  readonly status?: number;
+  // `message` is inherited from Error
+}
+```
+
+`status` is optional because SDK-only codes (`invalid_config`) do not have an HTTP status. For codes that originate on the server, `status` is always populated.
+
+## Adding a new code
+
+If you are extending the server with a new error condition, add a factory to `packages/server/src/errors.ts` and a row to the table above. Codes are `snake_case`, scoped narrowly enough that callers can branch on them, and stable: a code that has shipped should not change meaning. Renaming a code is a breaking change for SDK callers.

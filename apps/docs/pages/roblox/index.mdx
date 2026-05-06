@@ -1,0 +1,285 @@
+# Roblox SDK
+
+`junjo-roblox` is the Luau client for Roblox game servers. It wraps `HttpService` for outbound REST calls, mirrors the TypeScript SDK's `JunjoConfig` shape, exposes per-namespace methods that match the TS SDK surface, and surfaces server errors as a typed `JunjoError` table.
+
+The package is distributed as a Roblox model (`.rbxm`) on each GitHub release and (later) on the Roblox marketplace. It is not on npm.
+
+## Surface area
+
+| Surface | Notes |
+|---------|-------|
+| `Junjo.new(config)` factory | Constructs a Junjo client. |
+| HTTP wrapper (`junjo.http:get / :post / :patch / :put / :delete`) | Auto-encodes JSON bodies, parses JSON responses, throws `JunjoError` on non-2xx. |
+| `Junjo.Null` sentinel for explicit JSON nulls in PATCH bodies | See "Sending JSON null in PATCH bodies" below. |
+| `HttpService:GetSecret(...)` lookup with `apiKey` fallback | Pass `apiKeySecret` to read from the Roblox secret store, with `apiKey` as a literal fallback. |
+| `junjo.groups:create / get / list / update / delete / restore` | Group CRUD + soft-delete + restore. |
+| `junjo.groups` membership: `inviteByUserId / inviteByCode / inviteByLink / bulkInvite / acceptInvitation / declineInvitation / leave / kick` | Full membership lifecycle. |
+| `junjo.groups` relationships: `setRelationship / clearRelationship / getRelationship / listRelationships` | Directed and mutual relationships between groups. |
+| `junjo.groups` sub-groups: `setParent / listChildren` | Sub-group / alliance hierarchy. |
+| `junjo.members:get / getById / list / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | Member surface, parity with the TS SDK. |
+| `junjo.roles:create / get / list / update / delete / grantPermission / revokePermission` | Role CRUD + permission grants. |
+| `junjo.invitations:list / get / revoke` | Invitation listing and revocation. |
+| `junjo.audit:list` | Paginated audit feed for a group. |
+| `junjo.webhooks.endpoints:create / list / update / delete` | Webhook endpoint CRUD (no receiver-side helpers; see below). |
+| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | Permission check helpers. |
+| `Junjo.RobloxUserIdAdapter(opts?)` | Built-in user-id adapter for Roblox `Player` instances. |
+| `groups.subscribe` (SSE) and `webhooks:verify` / `:middleware` (receiver-side) | not planned for V1. Roblox `HttpService` does not stream, and a Roblox game server cannot expose an HTTP endpoint to receive webhooks. The `MessagingService`-backed replacement for real-time is deferred post-V1. |
+
+## Construct a client
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local junjo = Junjo.new({
+  apiKey = game:GetService("HttpService"):GetSecret("JUNJO_API_KEY"),
+})
+```
+
+Or let the SDK do the secret lookup for you, with a literal-string fallback for local Studio testing where the secret is not registered:
+
+```lua
+local junjo = Junjo.new({
+  apiKeySecret = "JUNJO_API_KEY",
+  apiKey = "junjo_test.localdev",
+})
+```
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `apiKey` | yes (or `apiKeySecret`) | A `prefix.secret` string OR a `Secret` userdata returned by `HttpService:GetSecret`. Concatenated into the `Authorization: Bearer ...` header; Roblox interpolates the actual secret value at request time when a `Secret` is passed through. |
+| `apiKeySecret` | no | A Roblox secret-store name. The SDK calls `HttpService:GetSecret(apiKeySecret)`. If the call errors (the secret is not registered, HttpService is disabled, etc.) the SDK falls back to `apiKey` when present, otherwise raises `invalid_config`. |
+| `baseUrl` | no | Override the API root. Trailing slashes are trimmed. Defaults to `https://api.junjo.io`. |
+| `inviteBaseUrl` | no | Base URL used by `groups:inviteByLink`. Defaults to `baseUrl`. Trailing slashes are trimmed. |
+| `httpService` | no | Override the `HttpService` reference. Used to inject a fake during unit testing of higher-level wrappers; production reads `game:GetService("HttpService")`. |
+
+## Errors
+
+Every method that talks to the server raises a `JunjoError`-shaped Lua error table when the response is non-2xx. Catch it with `pcall` and branch on `code`:
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local ok, result = pcall(function()
+  return junjo.groups:create({
+    kind = "guild",
+    name = "",
+  })
+end)
+
+if not ok then
+  if Junjo.JunjoError.is(result) then
+    print(result.code)    -- "bad_request"
+    print(result.status)  -- 400
+    print(result.message) -- "name: too short"
+  else
+    -- Lua-level error (typo in your code, etc.)
+    error(result)
+  end
+end
+```
+
+Branch on `error.code`, not on `error.message`. Codes are stable; messages are not.
+
+The `JunjoError` table is a Lua object with `name`, `message`, `code`, and `status` fields plus a `__tostring` metamethod, so `print(err)` and `tostring(err)` produce a readable summary.
+
+## User ids on Roblox
+
+The TypeScript SDK treats user ids as opaque strings. Roblox's `Player.UserId` is a number; convert to a string with `tostring(...)` at the call site so the cross-runtime user-id contract holds (the server stores them as strings; mixing numeric and string ids creates duplicate `ExternalIdentity` rows).
+
+```lua
+local userId = tostring(player.UserId)
+
+local allowed = junjo:can(userId, groupId, "invite_member")
+```
+
+## RobloxUserIdAdapter
+
+`Junjo.RobloxUserIdAdapter(opts?)` is the built-in adapter that resolves a Roblox `Player` (or a numeric `UserId`) to the opaque-string user id Junjo expects. The `tostring(player.UserId)` rule above is exactly what the adapter encapsulates; using it everywhere a route call needs a user id keeps the conversion in one place and removes the chance of a forgotten `tostring` creating a numeric / string duplicate in `ExternalIdentity`.
+
+```lua
+local Junjo = require(ReplicatedStorage.Junjo)
+
+local adapter = Junjo.RobloxUserIdAdapter()
+
+local function onJoin(player)
+  local userId = adapter:resolve(player)
+  junjo.groups:acceptInvitation(invite.code, userId)
+end
+```
+
+The `:resolve(value?)` method accepts four call shapes:
+
+| Argument | Behavior |
+|----------|----------|
+| `Player` (a real Roblox `Player` instance, or a stub table with a numeric `UserId` field) | Reads `value.UserId`, converts to string. Throws `invalid_config` if the field is missing or not a positive integer. |
+| number (positive integer) | Returns `tostring(value)`. Throws `invalid_config` for zero, negative, or non-integer values. |
+| string (non-empty) | Returns the string verbatim (treated as already-resolved). Empty strings throw `invalid_config`. |
+| nil (no argument) | Reads `Players.LocalPlayer.UserId`. Throws `invalid_config` on the server side, where `LocalPlayer` is `nil`; pass the `Player` explicitly from server scripts. |
+
+The adapter is purely a renderer; it does not call the Junjo API and never throws a `JunjoError` with a non-`invalid_config` code. There is no token to verify (Roblox does not give the dev's backend a session token for the player; the trust boundary is the Roblox game server itself, which already trusts the `Player` instance it received), so the adapter is intentionally narrower than the TypeScript `AuthAdapter` interface (which is async and returns `null` on verification failure).
+
+### Options
+
+```lua
+local adapter = Junjo.RobloxUserIdAdapter({
+  explicitUserId = "12345",         -- optional; tests / scripted contexts
+  players = mockPlayersService,     -- optional; inject for unit testing
+})
+```
+
+| Option | Notes |
+|--------|-------|
+| `explicitUserId` | Hard-coded id returned by every `:resolve()` call regardless of input. Accepts a non-empty string OR a positive integer (which is rendered with `tostring`). Use only in tests or scripted automation; a production deployment with this option set returns the same id for every player. |
+| `players` | Inject a fake `Players` service for unit tests. Defaults to `game:GetService("Players")`. The fake just needs a `LocalPlayer` field carrying a `UserId`. |
+
+### Server-side vs client-side
+
+Roblox scripts run on either the server (`Script` instances) or the client (`LocalScript` instances). `Players.LocalPlayer` is only populated on the client. Pattern by context:
+
+- **Server scripts** (the common case for Junjo calls): always pass the `Player` reference you already have on hand from a `Players.PlayerAdded` callback or a `RemoteEvent` invocation. `adapter:resolve(player)` does the `tostring(player.UserId)` conversion for you.
+- **Client scripts**: `adapter:resolve()` (no argument) reads from `LocalPlayer`. Useful when a `LocalScript` builds a Junjo call before forwarding to a server-side handler.
+- **Tests**: construct with `explicitUserId` so the adapter never touches the Roblox `Players` service.
+
+## Sending JSON null in PATCH bodies
+
+Lua tables treat `nil` as "key absent", so a literal table cannot express a JSON `null`. Use the `Junjo.Null` sentinel for fields that must be cleared:
+
+```lua
+junjo.groups:update(groupId, {
+  defaultRoleId = Junjo.Null, -- sends `"defaultRoleId": null`
+})
+```
+
+A field set to `nil` is omitted from the request body entirely (matching every other Junjo PATCH route's "absent means no change" convention). Use `Junjo.Null` only when you specifically want to clear a server-side value.
+
+`groups:setParent` is the one exception: passing either `nil` OR `Junjo.Null` clears the parent (the server requires the field to be present, so the SDK substitutes `Null` when the caller passes nil):
+
+```lua
+junjo.groups:setParent(groupId, nil)        -- clears parent
+junjo.groups:setParent(groupId, Junjo.Null) -- clears parent (explicit)
+junjo.groups:setParent(groupId, parentId)   -- sets parent
+```
+
+## Namespace surface at a glance
+
+```lua
+-- Groups
+local group = junjo.groups:create({ kind = "guild", name = "Crimson Wolves" })
+local g     = junjo.groups:get(groupId)              -- nil on 404
+local page  = junjo.groups:list({ limit = 50 })
+junjo.groups:update(groupId, { name = "Renamed" })
+junjo.groups:delete(groupId)                          -- soft delete
+junjo.groups:delete(groupId, { hard = true })         -- bypass undo window
+junjo.groups:restore(groupId)
+
+-- Membership
+junjo.groups:inviteByUserId(groupId, userId, { roleId = "member" })
+local invite = junjo.groups:inviteByCode(groupId, { roleId = "member", expiresIn = "7d" })
+local result = junjo.groups:inviteByLink(groupId)     -- { invitation, url }
+junjo.groups:bulkInvite(groupId, "user_alpha\nuser_beta\n", { roleId = "member" })
+junjo.groups:acceptInvitation(invite.code, userId)
+junjo.groups:declineInvitation(invite.code)
+junjo.groups:leave(groupId, userId)
+junjo.groups:kick(groupId, userId, { reason = "afk" })
+
+-- Group relationships
+junjo.groups:setRelationship(allyA, allyB, "alliance", { mutual = true })
+junjo.groups:clearRelationship(allyA, allyB, { mutual = true })
+local rel  = junjo.groups:getRelationship(allyA, allyB) -- nil on 404
+local rels = junjo.groups:listRelationships(allyA)
+
+-- Sub-groups
+junjo.groups:setParent(childId, parentId)
+junjo.groups:setParent(childId, nil)                  -- clear parent
+junjo.groups:listChildren(parentId)
+
+-- Members
+local m  = junjo.members:get(groupId, userId)         -- nil on 404
+local m2 = junjo.members:getById(memberId)            -- nil on 404
+junjo.members:list(groupId, { limit = 50 })
+junjo.members:listForUser(userId)
+junjo.members:setMetadata(groupId, userId, { rank = "officer" })
+junjo.members:setNotes(groupId, userId, { notesPublic = "Recruited by Alex" })
+junjo.members:assignRole(groupId, userId, roleId)
+junjo.members:removeRole(groupId, userId, roleId)
+junjo.members:overridePermission(groupId, userId, "vault.withdraw", true)
+junjo.members:clearPermissionOverride(groupId, userId, "vault.withdraw")
+junjo.members:listPermissionOverrides(groupId, userId)
+
+-- Roles
+junjo.roles:create(groupId, { name = "Officer", priority = 100, color = "#ff0000" })
+junjo.roles:get(roleId)                                -- nil on 404
+junjo.roles:list(groupId)
+junjo.roles:update(roleId, { name = "Captain" })
+junjo.roles:delete(roleId)
+junjo.roles:grantPermission(roleId, "invite_member")
+junjo.roles:revokePermission(roleId, "invite_member")
+
+-- Invitations
+junjo.invitations:list(groupId, { limit = 50, includeExpired = true })
+junjo.invitations:get(code)                            -- nil on 404
+junjo.invitations:revoke(code)
+
+-- Audit
+local page = junjo.audit:list(groupId, { limit = 50 })
+local next = junjo.audit:list(groupId, { before = page.nextCursor, limit = 50 })
+
+-- Webhooks (CRUD only; no receiver-side helpers)
+local endpoint = junjo.webhooks.endpoints:create({
+  url = "https://example.com/junjo-hook",
+  events = { "member.joined", "member.left" },
+})
+junjo.webhooks.endpoints:list()
+junjo.webhooks.endpoints:update(endpoint.id, { disabled = true })
+junjo.webhooks.endpoints:delete(endpoint.id)
+
+-- Top-level permission checks
+local allowed = junjo:can(userId, groupId, "invite_member")
+local result  = junjo:check(userId, groupId, "invite_member")
+-- { allowed = true, source = "role", viaRoleId = "..." }
+```
+
+## Response shapes
+
+Every namespace method returns the parsed server response verbatim (a Lua table, string, number, or `nil`). The SDK does not deserialize timestamp fields into a Roblox-specific type: ISO 8601 strings stay as strings on the wire, so callers who want a `DateTime` value call `DateTime.fromIsoDate(s)` themselves.
+
+```lua
+local group = junjo.groups:create({ kind = "guild", name = "Crimson Wolves" })
+
+print(group.id)                            -- "grp_..."
+print(group.kind)                          -- "guild"
+print(group.createdAt)                     -- "2026-04-28T00:00:00.000Z"
+print(DateTime.fromIsoDate(group.createdAt):FormatLocalTime("LL", "en-us"))
+```
+
+## Error codes you may see
+
+| `code` | When |
+|--------|------|
+| `invalid_config` | `Junjo.new(config)` was called without `apiKey` or `apiKeySecret`, with a non-table argument, or with an empty / non-string `baseUrl` / `inviteBaseUrl`. |
+| `network` | `HttpService:RequestAsync` itself raised (HttpService is disabled, the URL is not in the allowed-origins list, DNS / TLS failure, etc.). |
+| `internal` | A non-2xx response whose body could not be parsed as the canonical `{ code, status, message }` envelope, or a 2xx response whose body was not valid JSON. |
+| `<server-supplied>` | Any value the server returned in the JSON envelope (`not_found`, `bad_request`, `permission_denied`, `invitation_used`, `parent_cycle`, etc.). The full code list is documented in the per-route pages under [API](/api). |
+
+Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `members:get`, `members:getById`, `roles:get`, `invitations:get`) catch the `not_found` error inside the SDK and translate it to `nil`. Every other error code (`bad_request`, `permission_denied`, etc.) re-throws verbatim so callers can branch on it via `pcall`.
+
+## Manual verification
+
+The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
+
+- `Junjo.new({ apiKey = "..." })` constructs without error in Roblox Studio.
+- `junjo.groups:create({ kind = "guild", name = "Test" })` returns a parsed Lua table whose `id` is a string.
+- `junjo.groups:get("does-not-exist")` returns `nil` (not an error).
+- `junjo.groups:get(group.id)` returns the same table (round-trip).
+- `junjo.members:list(group.id, { limit = 5 })` returns a `{ items, nextCursor }` table.
+- `junjo:can(userId, group.id, "some_permission")` returns a Lua boolean.
+- A 4xx response is surfaced as a Lua error whose `code`, `status`, and `message` fields match the server envelope (assert via `pcall` + `Junjo.JunjoError.is(err)`).
+- `Junjo.new({ apiKeySecret = "JUNJO_API_KEY" })` reads from `HttpService:GetSecret` when the secret is registered.
+- `Junjo.new({ apiKeySecret = "MISSING", apiKey = "fallback" })` falls back to the literal apiKey when the secret is missing.
+- `junjo.groups:update(group.id, { defaultRoleId = Junjo.Null })` clears the field (verify by re-reading `junjo.groups:get(group.id).defaultRoleId == nil`).
+- `junjo.groups:setParent(child, nil)` clears the parent (verify same way).
+- `Junjo.RobloxUserIdAdapter():resolve(player)` returns `tostring(player.UserId)` for a real `Player` instance triggered by `Players.PlayerAdded`.
+- `Junjo.RobloxUserIdAdapter():resolve()` (no argument) reads `Players.LocalPlayer.UserId` from a `LocalScript` and returns it as a string.
+- `Junjo.RobloxUserIdAdapter():resolve()` from a server-side `Script` raises a `JunjoError` with `code = "invalid_config"` (because `Players.LocalPlayer` is `nil` server-side).
+- `Junjo.RobloxUserIdAdapter({ explicitUserId = "12345" }):resolve()` returns `"12345"` regardless of context.
+- `Junjo.RobloxUserIdAdapter():resolve(0)` raises `JunjoError({ code = "invalid_config" })` (zero is not a positive integer).

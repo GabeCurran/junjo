@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a new capability or enhancement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are most useful when they describe the problem
+        being solved, not just the solution being proposed.
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What are you trying to do?
+      description: Describe the actual game / app / scenario you're building.
+      placeholder: |
+        We're building a 4v4 PvP game where guilds can form temporary
+        alliances during a season. We want to ...
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How are you handling this today?
+      description: Existing workarounds, even partial ones, help us understand the gap.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape (optional)
+      description: API sketch, mock UI, or wire-format suggestion. Skip if you don't have one.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected surface
+      multiple: true
+      options:
+        - SDK (TypeScript)
+        - React hooks
+        - Roblox SDK (Luau)
+        - Server / HTTP API
+        - Dashboard
+        - Docs
+        - Webhook events
+        - Other / unsure
+    validations:
+      required: true

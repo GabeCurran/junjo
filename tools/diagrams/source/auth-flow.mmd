@@ -1,0 +1,54 @@
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant App as Dev backend
+  participant Adapter as AuthAdapter
+  participant SDK as Junjo SDK
+  participant Server as junjo-server (Hono)
+  participant DB as Postgres (via Prisma)
+
+  Note over App,DB: Step 1 - resolve session token to external user id (dev's host, never on Junjo's server)
+  App->>SDK: junjo.whoami(sessionToken)
+  alt no authAdapter configured
+    SDK--xApp: throw JunjoError invalid_config (setup-time mistake)
+  else authAdapter present
+    SDK->>Adapter: verifyToken(sessionToken)
+    alt verifies (signature, exp, iss, aud, claim)
+      Adapter-->>SDK: { userId: externalUserId }
+      SDK-->>App: { userId: externalUserId }
+    else missing, expired, bad signature, network error
+      Adapter-->>SDK: null
+      SDK-->>App: null
+    end
+  end
+
+  Note over App,DB: Step 2 - SDK call carrying the external user id (e.g. accept invitation)
+  App->>SDK: junjo.invitations.accept(code, { userId: externalUserId })
+  SDK->>Server: POST /v1/invitations/{code}/accept<br/>Authorization Bearer jk_...<br/>body { userId: externalUserId }
+  Server->>DB: SELECT ApiKey WHERE prefix
+  DB-->>Server: gameId, hashedSecret, revokedAt
+  Server->>Server: scrypt verify, check revokedAt<br/>set c.var.gameId
+  Server->>Server: zod-parse body, load invitation by code
+
+  Note over App,DB: Step 3 - external id resolved to junjoUserId (race-safe, created lazily on accept or decline)
+  Server->>DB: SELECT ExternalIdentity WHERE gameId, externalUserId
+  alt mapping exists
+    DB-->>Server: junjoUserId
+  else first appearance for this game
+    DB-->>Server: null
+    Server->>DB: BEGIN<br/>INSERT JunjoUser<br/>INSERT ExternalIdentity (gameId, junjoUserId, externalUserId)<br/>COMMIT
+    alt insert wins (no concurrent first-appearance)
+      DB-->>Server: junjoUserId (just created)
+    else unique-constraint conflict P2002 (concurrent winner committed)
+      DB--xServer: rollback inner tx
+      Server->>DB: SELECT ExternalIdentity WHERE gameId, externalUserId
+      DB-->>Server: winner's junjoUserId
+    end
+  end
+
+  Server->>DB: route's main transaction<br/>INSERT GroupMember (groupId, junjoUserId)<br/>UPDATE Invitation SET usedAt, usedByUserId<br/>INSERT AuditEntry member.joined
+  DB-->>Server: row counts
+  Server-->>SDK: 201 Created + Member
+  SDK-->>App: Member
+
+  Note over App,DB: Read-only routes (members.get, permissions.check) take the external id and<br/>call findJunjoUserId only, returning 404 when no mapping exists. Only invitation<br/>accept and decline call findOrCreateJunjoUser, so a user's junjoUserId is allocated<br/>exactly when they first interact with a group on that game.

@@ -1,0 +1,87 @@
+# Audit log
+
+Every mutation that changes a group's state writes one or more rows to that group's audit log. Reads return the entries that were written for a single group, newest first, with optional filtering by action and timestamp.
+
+The audit log is the durable counterpart to the [SSE event stream](./events). SSE delivers events to live subscribers but does not replay across reconnects; the audit log is the source of truth for "what has happened to this group" and supports pagination over the full history.
+
+## `GET /v1/groups/:id/audit`
+
+Returns the most recent audit entries for the group, sorted by `createdAt` descending (and `id` descending as a tiebreaker for entries that share a timestamp).
+
+### Path parameters
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `id` | yes | The group to fetch audit entries for. Must belong to the calling game and not be soft-deleted. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | integer (1-100) | 50 | Max number of entries to return. |
+| `before` | ISO 8601 timestamp | none | If supplied, only entries with `createdAt < before` are returned. Used for pagination by feeding the response's `nextCursor` back in. |
+| `actions` | repeated string | (no filter) | Filter to entries whose `action` is one of the supplied values. Repeat the parameter for OR semantics: `?actions=group.created&actions=group.updated`. |
+
+The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `@junjo/shared`. Unknown values are rejected with `400 bad_request`.
+
+### Response
+
+`200 OK` with the standard `Page<AuditEntry>` envelope:
+
+```json
+{
+  "items": [
+    {
+      "id": "audit_2",
+      "groupId": "grp_xyz",
+      "actorUserId": "user_alice",
+      "action": "member.invited",
+      "targetId": "user_bob",
+      "payload": { "invitationId": "inv_1", "code": "abc123" },
+      "createdAt": "2026-04-28T05:01:00.000Z"
+    },
+    {
+      "id": "audit_1",
+      "groupId": "grp_xyz",
+      "actorUserId": null,
+      "action": "group.created",
+      "targetId": "grp_xyz",
+      "payload": { "kind": "guild", "name": "Crimson Wolves" },
+      "createdAt": "2026-04-28T05:00:00.000Z"
+    }
+  ],
+  "nextCursor": "2026-04-28T05:00:00.000Z"
+}
+```
+
+`nextCursor` is the ISO 8601 `createdAt` of the last item when the page is full; `null` when no further entries exist. To fetch the next page, pass `nextCursor` back as `before`.
+
+### Audit entry shape
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Stable cuid for the entry. |
+| `groupId` | string | The group the entry belongs to. |
+| `actorUserId` | string \| null | The Junjo user id that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired for most mutations). |
+| `action` | [`AuditAction`](../../sdk/index) | One of the strings in the union. |
+| `targetId` | string \| null | Free-form pointer to whatever the action targeted: a user id, role id, permission key, group id. Type depends on action. |
+| `payload` | object | Action-specific details. The `before` / `after` fields on update actions only contain the keys that actually changed. |
+| `createdAt` | ISO 8601 timestamp | When the entry was written. |
+
+### Errors
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `bad_request` | The query is malformed (out-of-range limit, malformed `before`, unknown `actions` value). |
+| 401 | `invalid_api_key` | API key missing or invalid. |
+| 404 | `not_found` | Group does not exist, is soft-deleted, or belongs to a different game. |
+
+### Pagination semantics
+
+The pagination uses `before` (a timestamp) rather than an opaque cursor. To walk all entries:
+
+1. Call without `before`. Receive `items` and `nextCursor` (an ISO timestamp).
+2. If `nextCursor` is non-null, call again with `before = nextCursor`.
+3. Repeat until `nextCursor` is null.
+
+If two entries share the same `createdAt` to millisecond precision, the page boundary may skip entries with that exact timestamp on the next call (since `before` is exclusive). Audit entries are written one per transaction, so collisions are rare in practice; consumers that need strict ordering should treat the audit log as eventually consistent across page boundaries.

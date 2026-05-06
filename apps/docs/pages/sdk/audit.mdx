@@ -1,0 +1,80 @@
+# `junjo.audit`
+
+Read the audit log for a group. The audit log is the durable record of every mutation Junjo has performed; the live event stream ([`junjo.groups.subscribe`](./groups#subscribegroupid-handler-opts)) is for transient UX, and `audit.list` is for "what has happened to this group, ever."
+
+```ts
+import { Junjo } from "@junjo/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+
+const page = await junjo.audit.list(groupId, {
+  limit: 50,
+  actions: ["member.invited", "member.joined", "member.left", "member.kicked"],
+});
+for (const entry of page.items) {
+  console.log(entry.action, entry.targetId, entry.createdAt);
+}
+```
+
+## `list(groupId, opts?)`
+
+Returns `Promise<Page<AuditEntry>>`. Entries are sorted newest first.
+
+```ts
+list(groupId: GroupId, opts?: ListAuditOptions): Promise<Page<AuditEntry>>;
+
+interface ListAuditOptions {
+  limit?: number;
+  before?: Date;
+  actions?: AuditAction[];
+}
+```
+
+### Options
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | number (1-100) | 50 | Max entries to return on this page. |
+| `before` | `Date` | (no filter) | Filter to entries with `createdAt < before`. Used for pagination by feeding the previous page's `nextCursor` (an ISO timestamp) back through `new Date(...)`. |
+| `actions` | `AuditAction[]` | (no filter) | Restrict the page to entries whose `action` is in the supplied list. Empty array is treated as "no filter" by the SDK and the server. |
+
+### Pagination
+
+`Page<AuditEntry>.nextCursor` is the ISO 8601 `createdAt` of the last item when the page is full, or `null` otherwise. Walk pages by feeding it back as `before`:
+
+```ts
+let cursor: string | null = null;
+do {
+  const opts: ListAuditOptions = { limit: 100 };
+  if (cursor !== null) opts.before = new Date(cursor);
+  const page = await junjo.audit.list(groupId, opts);
+  for (const entry of page.items) handle(entry);
+  cursor = page.nextCursor;
+} while (cursor !== null);
+```
+
+If two entries share `createdAt` to millisecond precision, the page boundary may skip entries with that exact timestamp on the next call. Audit entries are written one per transaction, so collisions are rare; consumers that need strict ordering across page boundaries should treat the audit log as eventually consistent.
+
+### Entry shape
+
+```ts
+interface AuditEntry {
+  id: AuditEntryId;
+  groupId: GroupId;
+  actorUserId: UserId | null;
+  action: AuditAction;
+  targetId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: Date;
+}
+```
+
+`actorUserId` is `null` for system-driven actions and for the V1 mutations that have no auth-adapter actor wired (most of them). `targetId` is a free-form pointer to whatever the action targeted: a user id, role id, permission key, or group id; type depends on action.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Out-of-range `limit`, malformed `before`, or unknown `action` value. |
+| `not_found` | 404 | Group missing, soft-deleted, or owned by a different game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

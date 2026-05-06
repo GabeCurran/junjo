@@ -1,0 +1,162 @@
+# Invitations
+
+Endpoints for working with invitations by `code` (rather than by group). Invitations are created via [`POST /v1/groups/:id/invitations`](/api-reference/groups) and can be listed within a group via [`GET /v1/groups/:id/invitations`](/api-reference/groups). The endpoints below operate on a single invitation by its code.
+
+## Wire format
+
+`Invitation` is the same shape returned by the create and list endpoints. Timestamps are ISO 8601 strings.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `groupId` | string | The group this invitation grants membership in. |
+| `code` | string | 16-character hex (8 random bytes). Server-generated, never caller-supplied. |
+| `roleId` | string \| null | Role to grant on accept; `null` if no role was specified. |
+| `targetUserId` | string \| null | External user id from the dev's auth provider, or `null` for an open-code invitation. |
+| `createdBy` | string \| null | Acting user id; `null` (no auth-adapter actor wired yet). |
+| `createdAt` | string | ISO 8601 timestamp. |
+| `expiresAt` | string \| null | When the code stops being redeemable; `null` if it never expires. |
+| `usedAt` | string \| null | Set when the invitation was redeemed. |
+| `usedBy` | string \| null | The user who redeemed it. |
+
+## `GET /v1/invitations/:code`
+
+Fetches an invitation by code. **Public**: no API key is required; the invite-acceptance UI on the dev's frontend can call this directly to render a preview before the user signs in.
+
+The route returns the full `Invitation` shape. To keep the API surface minimal and forward-compatible, the response is the same wire format as the create and list endpoints; the UI is responsible for picking the fields it wants to display.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. URL-decoded by the router; codes containing non-`[a-z0-9]` characters can be percent-encoded in the path. |
+
+### Response
+
+`200 OK` with an `Invitation` body. See "Wire format" above.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No invitation with that code, or the invitation's group is soft-deleted. |
+
+## `DELETE /v1/invitations/:code`
+
+Revokes an invitation. Requires an API key (the calling game must own the invitation's group).
+
+- **Unused invitations** are hard-deleted; a second revoke call against the same code returns `404 not_found`.
+- **Already-used invitations** (with `usedAt` set) are left in place to preserve the redemption history; the call returns `204 No Content`. Calling revoke on a used invitation is therefore idempotent: every call returns `204`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+
+### Response
+
+`204 No Content` (no body).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No invitation with that code in the calling game (cross-game codes also return 404; the row is not leaked). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/invitations/:code/accept`
+
+Redeems an invitation: creates a `GroupMember` for the supplied user, marks the invitation used, and writes a `member.joined` audit entry. Requires an API key. The dev's backend is the trusted layer: it authenticates the player itself and tells Junjo "this user is accepting", so the body carries the external user id rather than a player session token.
+
+The supplied `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). The server resolves it to an internal `JunjoUser` via `ExternalIdentity (gameId, externalUserId)`; if no row exists yet, both the `JunjoUser` and the `ExternalIdentity` are created on first sight.
+
+For direct invitations (`targetUserId` set on the row), the body's `userId` must match the `targetUserId`; otherwise the call returns `403 permission_denied`. Open-code invitations (`targetUserId: null`) accept any user id.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+
+### Body
+
+```json
+{ "userId": "user_alice" }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `userId` | string | yes | The external user id from the dev's auth provider. |
+
+### Response
+
+`201 Created` with the new `Member`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Server-generated cuid. |
+| `groupId` | string | The group the user just joined. |
+| `userId` | string | The external user id supplied in the body. |
+| `status` | string | Always `"active"` for newly-redeemed invitations. |
+| `roles` | string[] | Always `[]` immediately after redemption. The invitation's `roleId` is not auto-applied today; use [`members.assignRole`](/sdk/members#assignrole) after acceptance if you need it. |
+| `metadata` | object | `{}` on creation. |
+| `notesPublic` | string \| null | `null` on creation. |
+| `notesPrivate` | string \| null | `null` on creation. |
+| `joinedAt` | string | ISO 8601 timestamp. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body is missing `userId` or malformed JSON. |
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the body's `userId` is different. |
+| `not_found` | 404 | No invitation with that code in the calling game, or the invitation's group is soft-deleted. |
+| `already_member` | 409 | The user already has a `GroupMember` row in this group (any status). |
+| `invitation_expired` | 410 | The invitation's `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed (or declined). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### Side effects
+
+A successful call writes one `AuditEntry`: `action: "member.joined"`, `actorUserId: <junjoUserId>`, `targetId: <externalUserId>`, `payload: { memberId, invitationId, code }`.
+
+## `POST /v1/invitations/:code/decline`
+
+Marks the invitation used without creating any membership. No audit entry is written. Requires an API key.
+
+The body is optional. When the calling code supplies a `userId`, the server resolves it to an internal `JunjoUser` and writes that id into `usedByUserId` on the invitation (so the audit trail can answer "who burned this code"). When the body is empty, `usedByUserId` is left `null`.
+
+For direct invitations (`targetUserId` set), a supplied `userId` must match the target; otherwise `403 permission_denied`. Open-code invitations accept any user id (or none).
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | The invitation code. |
+
+### Body
+
+```json
+{ "userId": "user_alice" }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `userId` | string | no | The external user id; recorded as `usedByUserId` for the audit trail. Omit to decline anonymously. |
+
+An empty body (`{}`, or missing entirely) is also accepted.
+
+### Response
+
+`204 No Content` (no body).
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `permission_denied` | 403 | The invitation has a `targetUserId` and the body's `userId` is different. |
+| `not_found` | 404 | No invitation with that code in the calling game, or the invitation's group is soft-deleted. |
+| `invitation_expired` | 410 | The invitation's `expiresAt` is in the past. |
+| `invitation_used` | 410 | The invitation has already been redeemed or declined. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |

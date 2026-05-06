@@ -1,0 +1,22 @@
+# Force LF line endings everywhere. Without this, git on Windows applies
+# core.autocrlf at checkout time (LF in repo -> CRLF in working tree),
+# which breaks biome's `lineEnding: "lf"` formatter check after any
+# `git reset --hard` or `git checkout`.
+* text=auto eol=lf
+
+# Binary types - never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.rbxm binary
+*.rbxmx binary

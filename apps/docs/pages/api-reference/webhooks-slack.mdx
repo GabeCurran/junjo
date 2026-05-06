@@ -1,0 +1,103 @@
+# Slack webhook format
+
+Junjo can deliver events directly to a Slack [Incoming Webhook URL](https://api.slack.com/messaging/webhooks) by setting `format: "slack"` on the [webhook endpoint](./webhooks.mdx). The worker translates each `JunjoEvent` into a [Block Kit](https://api.slack.com/reference/block-kit/blocks) message before POSTing.
+
+This is the fastest way to drop Junjo activity into a Slack channel without a self-hosted relay: create a Slack incoming webhook, paste its URL into `endpoints.create`, and you're done.
+
+## Setup
+
+1. In Slack, install the **Incoming Webhooks** app, pick a channel, and click **Add Incoming WebHooks Integration** (or use a custom Slack app's webhook URL). Slack webhook URLs look like `https://hooks.slack.com/services/T<workspace>/B<bot>/<token>`.
+2. Create the Junjo endpoint with `format: "slack"`:
+
+```ts
+const endpoint = await junjo.webhooks.endpoints.create({
+  url: "https://hooks.slack.com/services/T0/B0/abc...",
+  format: "slack",
+  events: ["member.joined", "member.left", "group.deleted"],
+});
+```
+
+The `secret` field is still returned (a Junjo signing secret is generated unless one is supplied), but it is **not used** for the Slack delivery path. Slack webhook URLs are themselves the auth token, so there is no signed-headers verification step. Junjo keeps the secret stored so the same endpoint can be flipped back to `format: "junjo"` later without rotating.
+
+## Wire format
+
+The worker POSTs a Slack [`chat.postMessage`-shaped](https://api.slack.com/methods/chat.postMessage) payload with both a `text` fallback and a `blocks` array:
+
+```json
+{
+  "text": "Member joined: user_a joined `grp_1`",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "Member joined", "emoji": true } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "user_a joined `grp_1`" } },
+    {
+      "type": "section",
+      "fields": [
+        { "type": "mrkdwn", "text": "*User*\nuser_a" },
+        { "type": "mrkdwn", "text": "*Group*\ngrp_1" },
+        { "type": "mrkdwn", "text": "*Status*\nactive" },
+        { "type": "mrkdwn", "text": "*Roles*\n0" }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        { "type": "mrkdwn", "text": "Junjo · evt_...  ·  2026-04-28T12:00:00.000Z" }
+      ]
+    }
+  ]
+}
+```
+
+The top-level `text` field is what Slack shows in mobile push notifications, channel sidebar previews, and old clients that don't render blocks. Without it Slack logs a warning, so it's always present.
+
+Headers sent on the Slack delivery:
+
+| Header | Notes |
+|--------|-------|
+| `content-type` | Always `application/json`. |
+
+That's it. No `x-junjo-*` headers, no HMAC signature - Slack ignores unknown headers, and the URL token is the auth.
+
+## Title and field map per event type
+
+The formatter renders one Slack message per event with a fixed header title:
+
+| Event type | Header title |
+|------------|--------------|
+| `member.joined` | Member joined |
+| `member.left` | Member left |
+| `member.invited` | Member invited |
+| `role.created` | Role created |
+| `role.changed` | Role membership changed |
+| `role.deleted` | Role deleted |
+| `permission.granted` | Permission granted |
+| `permission.revoked` | Permission revoked |
+| `group.updated` | Group updated |
+| `group.deleted` | Group deleted |
+| `group.relationship.changed` | Group relationship changed |
+
+Every message ends with a `context` block carrying the event id and `occurredAt` timestamp, so you can search Slack for a specific event by id when investigating.
+
+The formatter is forward-compatible: an unknown event type renders as a generic message (`Junjo event: <type>`) with the type and event id in the fields. New event types added to the union after a rolling deploy still arrive in Slack, just without bespoke styling, until the formatter ships an updated mapping.
+
+## Retry semantics
+
+Slack deliveries follow the [same retry policy](./webhooks.mdx#retry-policy) as `format: "junjo"`:
+
+- 2xx -> `delivered`.
+- `5xx`, `408`, `429`, network errors -> retry with exponential backoff up to 6 attempts.
+- Other 4xx (`404` "no_service" / "no_team", `400` malformed payload, `403` "action_prohibited") -> immediate `failed`.
+
+Slack's typical 2xx response is `200 ok`; the worker treats that as `delivered`.
+
+## Field truncation
+
+Slack caps individual `mrkdwn` text blocks at 3000 chars and individual section fields at 2000 chars. The formatter truncates anything longer with a single `…` suffix. This only kicks in for `role.changed` events with very large `added` / `removed` arrays; the typical event flows through verbatim. A Slack section also caps at 10 fields per block; the formatter never produces more than 4 fields per event so the cap is documentary.
+
+## Limitations
+
+- **One message per event.** Each delivery is a single Slack post. Batching multiple events into one threaded message is out of scope for V1.
+- **No threading.** The payload does not set `thread_ts`. Replies group only by channel.
+- **No mentions.** Channel `@here` / `@channel` and user `@<user-id>` mentions are not emitted - Junjo doesn't know your Slack user-id mapping. Permission-sensitive events that should ping a person need an outbound relay between Junjo and Slack.
+- **No icon / username override.** The `icon_url`, `icon_emoji`, and `username` fields are not set. Slack uses the webhook's configured display name and icon. Per-event branding requires a relay.
+- **No interactive blocks.** Block Kit `actions` / `input` / `image` blocks are not emitted. The current shape is read-only: header, section text, fields, context.

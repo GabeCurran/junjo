@@ -1,0 +1,132 @@
+# Getting started
+
+This page gets you from "I want to try Junjo" to "I have a working SDK call against a live server" in under a minute. After this, the [tutorial](/tutorial) walks through creating a group, inviting a user, and assigning a role.
+
+## 1. Pick a server
+
+Junjo runs as a single binary. Cloud and self-host are the same code; the only difference is who hosts the Postgres database and the Node process.
+
+| Option | When to pick it |
+|--------|-----------------|
+| Cloud (managed) | You want a hosted endpoint and zero infrastructure. |
+| Self-host (Docker) | You want full control, want to avoid a managed dependency, or are running a closed network. |
+| Local dev (this repo) | You are evaluating Junjo or developing against a feature branch. |
+
+### Cloud
+
+Sign up, create a project, and copy the API key from the dashboard. Skip to [step 2](#2-install-the-sdk).
+
+### Self-host (Docker)
+
+```sh
+docker run -e DATABASE_URL=postgres://... -p 8787:8787 ghcr.io/junjo/server:latest
+```
+
+Then issue an API key against your running container. The key is shown exactly once and cannot be recovered:
+
+```sh
+docker exec <container> npm run db:seed -- --name "My Game"
+```
+
+For a real deployment (Docker Compose recipe, the full env-var table, the migration lifecycle across upgrades, reverse-proxy notes for the SSE path), see the [Self-hosting](/self-host) page.
+
+### Local dev
+
+Clone the repo, bring up a Postgres database (any will do), and run:
+
+```sh
+npm install
+npm run db:migrate --workspace @junjo/server
+npm run db:seed --workspace @junjo/server -- --name "My Game"
+npm run dev --workspace @junjo/server
+```
+
+The seed command prints a `prefix.secret` API key to stdout. Save it; the secret half is hashed at rest and cannot be recovered.
+
+The default listen port is `8787`. Override with `PORT=...`. See [`packages/server/README.md`](https://github.com/GabeCurran/junjo/blob/main/packages/server/README.md) for the full env-var table.
+
+## 2. Install the SDK
+
+```sh
+npm install @junjo/sdk
+```
+
+For React apps, also install the hooks package:
+
+```sh
+npm install @junjo/react
+```
+
+The hooks package depends on `@junjo/sdk` and React 18+. Both packages are pure ESM with TypeScript types bundled.
+
+Junjo's auth adapters live behind a separate import path so non-Clerk / non-Supabase consumers do not pay the dependency cost:
+
+```sh
+# only if you use the Clerk adapter
+npm install @clerk/backend
+
+# only if you use the Supabase adapter
+npm install @supabase/supabase-js
+
+# the JWT adapter has no peer deps
+```
+
+## 3. Construct a client
+
+```ts
+import { Junjo } from "@junjo/sdk";
+
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  // baseUrl: "http://localhost:8787", // self-host or local dev
+});
+```
+
+| Option | Required | Notes |
+|--------|----------|-------|
+| `apiKey` | yes | The full `prefix.secret` string from the dashboard or `db:seed`. |
+| `baseUrl` | no | Override the API root. Defaults to the cloud endpoint. Trailing slashes are stripped. |
+| `inviteBaseUrl` | no | Public URL prefix used by `inviteByLink` to build the share URL. Defaults to `baseUrl`. |
+| `authAdapter` | no | An [`AuthAdapter`](/auth) (Clerk, Supabase, JWT, or BYO). Server-to-server calls do not need one. |
+| `fetch` | no | Override the `fetch` implementation. Useful for tests and for runtimes without a global `fetch`. |
+
+The `Junjo` class is cheap to construct. You can either keep one instance for the lifetime of your process (the common case) or build one per request if you scope the API key per tenant.
+
+## 4. Make your first call
+
+The fastest sanity-check: list your groups. A fresh project returns an empty page.
+
+```ts
+const page = await junjo.groups.list();
+console.log(page.items);    // []
+console.log(page.nextCursor); // null
+```
+
+If this returns without throwing, your API key is good and the server is reachable.
+
+## 5. Errors
+
+Every SDK method throws `JunjoError` for any non-2xx response. Branch on `error.code` (stable) rather than `error.message` (not stable):
+
+```ts
+import { JunjoError } from "@junjo/sdk";
+
+try {
+  await junjo.groups.create({ kind: "guild", name: "" });
+} catch (e) {
+  if (e instanceof JunjoError) {
+    e.code;    // "bad_request"
+    e.status;  // 400
+    e.message; // "name: too short"
+  }
+}
+```
+
+The full code table lives on the [API overview](/api).
+
+## Where to next
+
+- **[Tutorial](/tutorial)** - create a group, invite a user, assign a role, and listen for events.
+- **[SDK reference](/sdk)** - every namespace, every method, every option.
+- **[React reference](/react)** - hooks and the provider.
+- **[Auth adapters](/auth)** - hook Junjo into Clerk, Supabase, or your own JWT issuer.

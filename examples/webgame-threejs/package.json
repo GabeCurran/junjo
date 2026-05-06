@@ -1,0 +1,17 @@
+{
+  "name": "@junjo/example-webgame-threejs",
+  "version": "0.0.0",
+  "description": "Example Three.js browser game wired up to @junjo/sdk for guild + party management.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@junjo/sdk": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

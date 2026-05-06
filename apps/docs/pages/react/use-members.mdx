@@ -1,0 +1,193 @@
+# useMembers
+
+Returns the paginated roster for a group plus a live event subscription that keeps it in sync with `member.joined`, `member.left`, and `role.changed` events.
+
+```tsx
+import { useMembers } from "@junjo/react";
+
+function Roster({ groupId }: { groupId: GroupId }) {
+  const { members, loading, error, hasMore, fetchMore, loadingMore } = useMembers(groupId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {members.map((m) => (
+        <li key={m.id}>{m.userId}</li>
+      ))}
+      {hasMore ? (
+        <li>
+          <button type="button" onClick={fetchMore} disabled={loadingMore}>
+            {loadingMore ? "Loading more..." : "Load more"}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembersResult;
+
+interface UseMembersOptions {
+  status?: MemberStatus | "all";
+  limit?: number;
+}
+
+interface UseMembersResult {
+  members: Member[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  fetchMore: () => Promise<void>;
+  applyOptimistic: (updater: (prev: Member[]) => Member[]) => () => void;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `members` | The current roster, filtered by `status`. Server order on the initial page; new pages append at the end; live events insert / remove in place. |
+| `loading` | `true` from mount until the first `members.list` response (success or error). |
+| `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
+| `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
+| `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+| `applyOptimistic` | Applies an updater to the local `members` array immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
+
+## Status filter
+
+The `status` option defaults to `"active"`, which is the dominant case (a roster panel that should not show ex-members). The other valid values are `"active"`, `"left"`, `"kicked"`, `"invited"`, or `"all"`.
+
+The filter is applied client-side after the server returns each page. The server does not currently narrow by status, so a heavily-filtered group (e.g. one `active` member out of 1000 historical) may need several `fetchMore` calls to surface them. This is acceptable for V1 because the dominant use case is the active filter and active members are usually the majority.
+
+Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands) but does NOT re-open the SSE subscription.
+
+## Pagination
+
+Pagination is cursor-based. The hook calls `junjo.members.list(groupId, opts)` for each page, where the first call carries `{ limit?: number }` (no cursor) and subsequent `fetchMore` calls carry `{ cursor: <last-page-cursor>, limit?: number }`. The server's response shape is `{ items: Member[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
+
+`fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `userId` when appending, so a member already present in the current snapshot (e.g., added via a `member.joined` event between page boundaries) will not appear twice.
+
+## Live updates
+
+After the first page lands, the hook opens an SSE subscription scoped to the group. Three event types modify state:
+
+| Event | Behavior |
+|-------|----------|
+| `member.joined` | If the member matches the current filter, append at the end (or replace in-place when the same `userId` is already present, idempotent on dedupe). If the filter excludes them, ignore. |
+| `member.left` | Remove the member from the visible roster regardless of filter. For non-active filters, call `refetch` if you need to track lifecycle status precisely - V1 does not synthesize the post-left member shape from event data. |
+| `role.changed` | Update the member's `roles` in place: remove anything in `event.removed`, then append anything in `event.added` that is not already present. |
+
+Other events (`role.created`, `role.deleted`, `permission.granted`, `permission.revoked`, `member.invited`, `group.updated`, `group.deleted`, `group.relationship.changed`) are ignored and do not cause re-renders.
+
+The subscription is tied to `(junjo, groupId)`. Changing `status` does not re-open it. Changing `groupId` closes the old subscription and opens a new one.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Three sources:
+
+- **Initial fetch error**: a `JunjoError` (or other) from the first `members.list` call. The hook stays at `loading: false` with `members: []`.
+- **`fetchMore` error**: appended to `error` while `members` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
+- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+
+If `useMembers` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Optimistic updates
+
+`applyOptimistic(updater)` lets a mutation flip the local roster *before* the server confirms. It runs `updater(state.members)` and replaces `members` with the result; it returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation) so the snapshot lives inside the mutation's `context`:
+
+```tsx
+import { useJunjo, useMembers, useMutation } from "@junjo/react";
+
+function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useMembers(groupId);
+
+  const { mutate, isPending } = useMutation<void, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.kick(groupId, userId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) => prev.filter((m) => m.userId !== userId)),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()} disabled={isPending}>Kick</button>;
+}
+```
+
+The same shape covers role assignment:
+
+```tsx
+function AssignRoleButton({
+  groupId,
+  userId,
+  roleId,
+}: {
+  groupId: GroupId;
+  userId: UserId;
+  roleId: RoleId;
+}) {
+  const junjo = useJunjo();
+  const { applyOptimistic } = useMembers(groupId);
+
+  const { mutate } = useMutation<Member, Error, void, { rollback: () => void }>({
+    mutationFn: () => junjo.members.assignRole(groupId, userId, roleId),
+    onMutate: () => ({
+      rollback: applyOptimistic((prev) =>
+        prev.map((m) =>
+          m.userId === userId && !m.roles.includes(roleId)
+            ? { ...m, roles: [...m.roles, roleId] }
+            : m,
+        ),
+      ),
+    }),
+    onError: (_err, _vars, ctx) => ctx?.rollback(),
+  });
+
+  return <button type="button" onClick={() => mutate()}>Assign</button>;
+}
+```
+
+### How the snapshot interacts with SSE events
+
+After `applyOptimistic` runs, the hook keeps applying SSE events on top of the optimistic state. A successful `kick` emits a `member.left` for the same user; the reducer's `member.left` handler is idempotent, so the optimistic removal is preserved without flicker. A successful `assignRole` emits a `role.changed` whose `added` array is filtered against the existing roles, so the optimistic role addition is preserved.
+
+### Rollback restores the pre-update snapshot exactly
+
+The rollback closure stores the `members` array as it was when `applyOptimistic` was called, and restores it verbatim. If unrelated SSE events arrived between the optimistic update and the rollback, those changes are dropped on rollback. In practice this is rare (the mutation window is short) and the next `refetch` reconciles. If your UI is sensitive to it, call `refetch()` from `onError` after `rollback()`.
+
+### Concurrent overlapping mutations
+
+Multiple in-flight mutations rolling back in arbitrary order get LIFO snapshot-restore semantics: each rollback restores to the snapshot taken at *its* `applyOptimistic` call. Rolling back an earlier mutation can therefore overwrite the optimistic state of a later one. This matches React Query's mutation rollback behavior. The mitigation is the same: rollbacks are rare on short mutation windows, and `refetch` reconciles divergence.
+
+### `applyOptimistic` does not call the SDK
+
+The hook only mutates local state; the network request is whatever you put in `mutationFn`. This is by design: any mutation (kick, invite, role assignment, custom server route) can wire optimistic UI through the same primitive without the hook needing per-method support.
+
+## Composing with `useGroup`
+
+The two hooks each open their own SSE subscription. If a screen renders both, two parallel streams open against the server. This is correct (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea; until then, prefer one of the hooks per screen unless you specifically need both result shapes.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.members.list` and `junjo.groups.subscribe` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.members, { list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }) });
+Object.assign(client.groups, {
+  subscribe: vi.fn().mockResolvedValue({ close: vi.fn() }),
+});
+```
