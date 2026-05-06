@@ -85,6 +85,7 @@ import {
   revokePermissionHandler,
   updateRoleByIdHandler,
 } from "./routes/roles.js";
+import { getUserVisibilityHandler, setUserVisibilityHandler } from "./routes/visibility.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 
 export interface CreateAppOptions {
@@ -376,6 +377,8 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.patch("/friend-tags/:id", updateFriendTagHandler(prisma));
   v1.delete("/friend-tags/:id", deleteFriendTagHandler(prisma));
   v1.put("/users/:userId/friends/:otherUserId/tags", setFriendTagsHandler(prisma));
+  v1.get("/users/:userId/visibility", getUserVisibilityHandler(prisma));
+  v1.patch("/users/:userId/visibility", setUserVisibilityHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   v1.route(
     "/webhooks",

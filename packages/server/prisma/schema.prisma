@@ -36,6 +36,7 @@ model Game {
   webhookEndpoints   WebhookEndpoint[]
   userRelationships  UserRelationship[]
   friendTags         FriendTag[]
+  userVisibilities   UserVisibility[]
 
   @@index([networkId])
 }
@@ -66,6 +67,7 @@ model JunjoUser {
   userRelsAsActor    UserRelationship[] @relation("UserRelActor")
   userRelsAsTarget   UserRelationship[] @relation("UserRelTarget")
   friendTags         FriendTag[]
+  userVisibilities   UserVisibility[]
 }
 
 // Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
@@ -345,6 +347,29 @@ model UserRelationshipTag {
 
   @@id([userRelationshipId, friendTagId])
   @@index([friendTagId])
+}
+
+// Per-(user, game) preference: who can see this user's friend list.
+// Stored as its own table (not on ExternalIdentity) so a user can have
+// a visibility setting in a game without yet having an ExternalIdentity
+// binding (i.e., they were friended via direct junjoUserId before
+// joining any group in this game).
+//
+// `friendsListVisibility`: "private" | "friends-only" | "public".
+// Validated against the game's `config.friends.visibility.allowed`
+// whitelist on write so admins can constrain the menu of allowed
+// values. Reads fall back to `config.friends.visibility.default` when
+// no row exists.
+model UserVisibility {
+  gameId      String
+  game        Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId String
+  junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  friendsListVisibility String @default("private")
+  updatedAt   DateTime  @updatedAt
+
+  @@id([gameId, junjoUserId])
+  @@index([junjoUserId])
 }
 
 // =====================================================================

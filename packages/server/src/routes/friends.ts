@@ -25,6 +25,7 @@ import {
   listFriendsQuery,
   sendFriendRequestBody,
 } from "./friends.schema.js";
+import { canViewFriendsList } from "./visibility.js";
 
 // =====================================================================
 // Wire shapes
@@ -469,7 +470,7 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     if (!userId) throw Errors.badRequest("userId is required");
     const parsedQ = listFriendsQuery.safeParse(c.req.query());
     if (!parsedQ.success) throw Errors.badRequest("invalid query");
-    const { limit, cursor, tagId } = parsedQ.data;
+    const { limit, cursor, tagId, viewer } = parsedQ.data;
 
     const gameId = c.var.gameId;
     const loaded = await loadGameConfig(prisma, gameId);
@@ -483,6 +484,17 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
       throw Errors.notFound("resource");
     }
     const visibleGameIds = useTagFilter ? [gameId] : await gameIdsInScope(prisma, loaded);
+
+    // Visibility enforcement. Bypassed when no `viewer` is supplied
+    // (admin caller); applied when the dashboard provides one.
+    const allowed = await canViewFriendsList(
+      prisma,
+      visibleGameIds,
+      loaded.config,
+      userId,
+      viewer ?? null,
+    );
+    if (!allowed) throw Errors.notFound("user");
 
     // Keyset pagination by respondedAt DESC, id DESC. Cursor is the
     // last row's respondedAt-ISO and id joined by "|".
