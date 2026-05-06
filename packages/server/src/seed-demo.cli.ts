@@ -47,6 +47,10 @@ async function wipe(): Promise<void> {
   // explicit order documents the dependency graph.
   await prisma.webhookDelivery.deleteMany();
   await prisma.webhookEndpoint.deleteMany();
+  await prisma.userRelationshipTag.deleteMany();
+  await prisma.friendTag.deleteMany();
+  await prisma.userRelationship.deleteMany();
+  await prisma.userVisibility.deleteMany();
   await prisma.auditEntry.deleteMany();
   await prisma.invitation.deleteMany();
   await prisma.memberPermissionOverride.deleteMany();
@@ -430,6 +434,206 @@ async function main(): Promise<void> {
     }
   }
 
+  // 12. Friends subsystem demo data: a friendship graph spanning
+  // primary + secondary games via shared networkId, with friend tags
+  // and a mix of visibility settings. Two games sharing a networkId
+  // demonstrates the scope=network toggle (visible payoff in the
+  // dashboard's user-detail page).
+  console.log("[seed:demo] friends graph + tags + visibility...");
+  const NETWORK_ID = "demo-network";
+  await prisma.game.update({
+    where: { id: game.id },
+    data: {
+      networkId: NETWORK_ID,
+      config: { friends: { scope: "network" } } as object,
+    },
+  });
+  const siblingGame = await prisma.game.create({
+    data: {
+      name: "Demo Game (sibling, networked)",
+      networkId: NETWORK_ID,
+      config: { friends: { scope: "network" } } as object,
+    },
+  });
+
+  // Friendship graph: ~60 unordered pairs across the user pool. Hub
+  // users (first 5) get higher fan-out so the dashboard shows variance.
+  const friendPairs = new Set<string>();
+  for (let i = 0; i < 5; i++) {
+    for (let j = i + 1; j < 18; j++) {
+      // hubs friend most of the field
+      if ((i * 7 + j * 3) % 5 !== 0) friendPairs.add(`${users[i]?.id}|${users[j]?.id}`);
+    }
+  }
+  for (let i = 5; i < users.length; i++) {
+    for (let j = i + 1; j < users.length; j++) {
+      // tail of the graph: sparser
+      if ((i * 11 + j) % 13 === 0) friendPairs.add(`${users[i]?.id}|${users[j]?.id}`);
+    }
+  }
+  const friendshipRows: { gameId: string; aId: string; bId: string }[] = [];
+  let pairIndex = 0;
+  for (const pair of friendPairs) {
+    const [aId, bId] = pair.split("|");
+    if (!aId || !bId) continue;
+    // Distribute about 80% of friendships to the primary game and 20%
+    // to the sibling so the dashboard's user-detail page can demonstrate
+    // both same-game and cross-network friendships.
+    const friendshipGameId = pairIndex++ % 5 === 0 ? siblingGame.id : game.id;
+    friendshipRows.push({ gameId: friendshipGameId, aId, bId });
+  }
+  for (const { gameId, aId, bId } of friendshipRows) {
+    const ts = daysAgo((aId.charCodeAt(0) + bId.charCodeAt(1)) % 30);
+    await prisma.userRelationship.create({
+      data: {
+        gameId,
+        actorJunjoUserId: aId,
+        targetJunjoUserId: bId,
+        type: "friend",
+        respondedAt: ts,
+        createdAt: ts,
+      },
+    });
+    await prisma.userRelationship.create({
+      data: {
+        gameId,
+        actorJunjoUserId: bId,
+        targetJunjoUserId: aId,
+        type: "friend",
+        respondedAt: ts,
+        createdAt: ts,
+      },
+    });
+  }
+
+  // ~15 pending friend requests scattered across the field.
+  let pendingCount = 0;
+  for (let i = 0; i < users.length && pendingCount < 15; i++) {
+    for (let j = 0; j < users.length && pendingCount < 15; j++) {
+      if (i === j) continue;
+      const a = users[i]?.id;
+      const b = users[j]?.id;
+      if (!a || !b) continue;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (friendPairs.has(key)) continue;
+      if ((i * 17 + j * 5) % 23 !== 0) continue;
+      try {
+        await prisma.userRelationship.create({
+          data: {
+            gameId: game.id,
+            actorJunjoUserId: a,
+            targetJunjoUserId: b,
+            type: "request",
+          },
+        });
+        pendingCount++;
+      } catch {
+        // ignore duplicate-pair conflicts
+      }
+    }
+  }
+
+  // 5 blocks (privacy stress test data).
+  const blockPairs: [number, number][] = [
+    [3, 19],
+    [7, 14],
+    [11, 22],
+    [16, 5],
+    [21, 8],
+  ];
+  let blockCount = 0;
+  for (const [i, j] of blockPairs) {
+    const a = users[i]?.id;
+    const b = users[j]?.id;
+    if (!a || !b) continue;
+    try {
+      await prisma.userRelationship.create({
+        data: {
+          gameId: game.id,
+          actorJunjoUserId: a,
+          targetJunjoUserId: b,
+          type: "blocked",
+        },
+      });
+      blockCount++;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Friend tags for ~10 users, with mixed assignments so the dashboard's
+  // tag-distribution histogram has variety.
+  const TAG_NAMES = ["Close friends", "Guildmates", "Co-op buddies"] as const;
+  const TAG_COLORS = ["#ff5050", "#ffd23f", "#3b82f6"] as const;
+  const tagOwners = users.slice(0, 10);
+  let tagCreateCount = 0;
+  let tagAssignCount = 0;
+  for (const owner of tagOwners) {
+    const ownerTags: { id: string; name: string }[] = [];
+    for (let i = 0; i < TAG_NAMES.length; i++) {
+      const tagName = TAG_NAMES[i];
+      const tagColor = TAG_COLORS[i];
+      if (!tagName) continue;
+      const tag = await prisma.friendTag.create({
+        data: {
+          gameId: game.id,
+          junjoUserId: owner.id,
+          name: tagName,
+          color: tagColor ?? null,
+        },
+      });
+      ownerTags.push({ id: tag.id, name: tag.name });
+      tagCreateCount++;
+    }
+    // Apply tags to a subset of this owner's friend rows in the
+    // primary game (tags are per-game; cross-network tagging is a v2
+    // feature).
+    const ownerFriendRows = await prisma.userRelationship.findMany({
+      where: { gameId: game.id, actorJunjoUserId: owner.id, type: "friend" },
+    });
+    for (let i = 0; i < ownerFriendRows.length; i++) {
+      const row = ownerFriendRows[i];
+      if (!row) continue;
+      const tag = ownerTags[i % ownerTags.length];
+      if (!tag) continue;
+      await prisma.userRelationshipTag.create({
+        data: { userRelationshipId: row.id, friendTagId: tag.id },
+      });
+      tagAssignCount++;
+    }
+  }
+
+  // Mixed visibility: 70% private (default; no row needed),
+  // 25% friends-only, 5% public.
+  await prisma.game.update({
+    where: { id: game.id },
+    data: {
+      config: {
+        friends: {
+          scope: "network",
+          visibility: {
+            allowed: ["private", "friends-only", "public"],
+            default: "private",
+          },
+        },
+      } as object,
+    },
+  });
+  let visibilityCount = 0;
+  for (let i = 0; i < users.length; i++) {
+    const u = users[i];
+    if (!u) continue;
+    const r = (i * 13) % 100;
+    let value: "friends-only" | "public" | null = null;
+    if (r < 5) value = "public";
+    else if (r < 30) value = "friends-only";
+    if (value === null) continue;
+    await prisma.userVisibility.create({
+      data: { gameId: game.id, junjoUserId: u.id, friendsListVisibility: value },
+    });
+    visibilityCount++;
+  }
+
   // ----- summary -----
   console.log("");
   console.log("Seed complete.");
@@ -443,10 +647,19 @@ async function main(): Promise<void> {
   console.log(`  prefix: ${rawKey.prefix}`);
   console.log(`  full:   ${rawKey.full}`);
   console.log("");
-  console.log(`Groups:       ${groups.length}`);
-  console.log(`Users:        ${users.length}`);
-  console.log(`Permissions:  ${PERM_KEYS.length}`);
-  console.log(`Webhooks:     ${endpoints.length}`);
+  console.log("Sibling game (shared networkId for friends.scope=network)");
+  console.log(`  id:        ${siblingGame.id}`);
+  console.log(`  networkId: ${NETWORK_ID}`);
+  console.log("");
+  console.log(`Groups:        ${groups.length}`);
+  console.log(`Users:         ${users.length}`);
+  console.log(`Permissions:   ${PERM_KEYS.length}`);
+  console.log(`Webhooks:      ${endpoints.length}`);
+  console.log(`Friendships:   ${friendshipRows.length} pairs`);
+  console.log(`Pending reqs:  ${pendingCount}`);
+  console.log(`Blocks:        ${blockCount}`);
+  console.log(`Friend tags:   ${tagCreateCount} (${tagAssignCount} assignments)`);
+  console.log(`Visibility:    ${visibilityCount} non-default rows`);
   console.log("");
   console.log("Open the dashboard at http://localhost:3000/games to explore.");
 }

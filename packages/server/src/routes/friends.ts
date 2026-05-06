@@ -455,7 +455,7 @@ export function declineFriendRequestHandler(prisma: PrismaClient): Handler {
 }
 
 export function cancelFriendRequestHandler(prisma: PrismaClient): Handler {
-  // Same wire path as decline (DELETE /v1/friend-requests/:id) — the
+  // Same wire path as decline (DELETE /v1/friend-requests/:id); the
   // outbound sender's "I changed my mind" flow. Distinguished from
   // decline by who is calling: V1 has no per-user auth so the handler
   // accepts either party deleting a pending request. The dashboard's

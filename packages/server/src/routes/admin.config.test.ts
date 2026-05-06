@@ -165,7 +165,7 @@ describe.skipIf(!TEST_DATABASE_URL)("admin GET/PATCH /v1/admin/games/:gameId/con
   });
 
   it("visibility default snaps to first allowed when narrowed", async () => {
-    // Set allowed=["private"] while default was "public" — resolver
+    // Set allowed=["private"] while default was "public"; the resolver
     // should report "private" on the next read.
     const game = await createGame("Alpha", prisma);
     await app.request(`/v1/admin/games/${game.id}/config`, {
