@@ -9,6 +9,7 @@ import {
   Gamepad2,
   Home,
   ScrollText,
+  Settings,
   ShieldCheck,
   Users,
 } from "lucide-react";
@@ -37,6 +38,7 @@ function buildGameNavItems(gameId: string): readonly NavItem[] {
     { href: `/games/${safe}/audit`, label: "Audit log", icon: ScrollText },
     { href: `/games/${safe}/analytics`, label: "Analytics", icon: BarChart3 },
     { href: `/games/${safe}/permissions/check`, label: "Permission check", icon: ShieldCheck },
+    { href: `/games/${safe}/settings`, label: "Settings", icon: Settings },
   ];
 }
 

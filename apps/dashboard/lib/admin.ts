@@ -165,6 +165,74 @@ export function fetchAdminGame(gameId: string, opts?: FetchOptions): Promise<Adm
   return adminFetch<AdminGame>(`/v1/admin/games/${encodeURIComponent(gameId)}`, opts);
 }
 
+// Mirrors WireAdminGameConfig from the server. Resolved config (every
+// field populated by defaults) plus the optional networkId.
+export interface AdminGameConfig {
+  gameId: string;
+  config: {
+    friends: {
+      enabled: boolean;
+      scope: "per-game" | "network";
+      requestsRequired: boolean;
+      maxFriends: number;
+      maxPendingRequests: number;
+      tags: { enabled: boolean; maxPerUser: number };
+      discovery: { enabled: boolean; minMutuals: number };
+      visibility: {
+        allowed: ("private" | "friends-only" | "public")[];
+        default: "private" | "friends-only" | "public";
+      };
+    };
+    blocks: { enabled: boolean };
+  };
+  networkId: string | null;
+}
+
+export type AdminGameConfigPatch = {
+  config?: Partial<{
+    friends?: Partial<{
+      enabled: boolean;
+      scope: "per-game" | "network";
+      requestsRequired: boolean;
+      maxFriends: number;
+      maxPendingRequests: number;
+      tags?: Partial<{ enabled: boolean; maxPerUser: number }>;
+      discovery?: Partial<{ enabled: boolean; minMutuals: number }>;
+      visibility?: Partial<{
+        allowed: ("private" | "friends-only" | "public")[];
+        default: "private" | "friends-only" | "public";
+      }>;
+    }>;
+    blocks?: Partial<{ enabled: boolean }>;
+  }>;
+  networkId?: string | null;
+};
+
+export function fetchAdminGameConfig(
+  gameId: string,
+  opts?: FetchOptions,
+): Promise<AdminGameConfig> {
+  // Operator config rarely changes; cache for 30s so back-to-back nav
+  // hits don't pound the server.
+  return adminFetch<AdminGameConfig>(`/v1/admin/games/${encodeURIComponent(gameId)}/config`, {
+    revalidate: 30,
+    ...opts,
+  });
+}
+
+export function updateAdminGameConfig(
+  gameId: string,
+  patch: AdminGameConfigPatch,
+  opts?: MutationOptions,
+): Promise<AdminGameConfig> {
+  return adminMutate<AdminGameConfigPatch, AdminGameConfig>(
+    "PATCH",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/config`,
+    patch,
+    opts,
+  );
+}
+
 export function fetchAdminApiKeys(gameId: string, opts?: FetchOptions): Promise<AdminApiKeyList> {
   return adminFetch<AdminApiKeyList>(
     `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys`,
