@@ -469,12 +469,20 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     if (!userId) throw Errors.badRequest("userId is required");
     const parsedQ = listFriendsQuery.safeParse(c.req.query());
     if (!parsedQ.success) throw Errors.badRequest("invalid query");
-    const { limit, cursor } = parsedQ.data;
+    const { limit, cursor, tagId } = parsedQ.data;
 
     const gameId = c.var.gameId;
     const loaded = await loadGameConfig(prisma, gameId);
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
-    const visibleGameIds = await gameIdsInScope(prisma, loaded);
+
+    // Tag filtering bounds visibility to the calling game (tags are
+    // per-game; see listFriendsQuery doc). Otherwise the visible scope
+    // expands per friends.scope.
+    const useTagFilter = tagId !== undefined;
+    if (useTagFilter && !loaded.config.friends.tags.enabled) {
+      throw Errors.notFound("resource");
+    }
+    const visibleGameIds = useTagFilter ? [gameId] : await gameIdsInScope(prisma, loaded);
 
     // Keyset pagination by respondedAt DESC, id DESC. Cursor is the
     // last row's respondedAt-ISO and id joined by "|".
@@ -485,6 +493,11 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
         gameId: { in: visibleGameIds },
         actorJunjoUserId: userId,
         type: "friend",
+        ...(useTagFilter
+          ? {
+              relationshipTags: { some: { friendTagId: tagId } },
+            }
+          : {}),
         ...(cursorDate
           ? {
               OR: [

@@ -16,11 +16,17 @@ export const listFriendRequestsQuery = z
   })
   .strict();
 
-// GET /v1/users/:userId/friends?limit=&cursor=
+// GET /v1/users/:userId/friends?limit=&cursor=&tagId=
+//
+// `tagId` filters the result to friends tagged with that tag. Tags are
+// per-game (not network-wide); see `friendTags.ts` for the rationale.
+// When `tagId` is supplied, the returned set is bounded to friend rows
+// in the calling game (no scope=network expansion for tag filtering).
 export const listFriendsQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(100).optional().default(50),
     cursor: z.string().optional(),
+    tagId: z.string().min(1).optional(),
   })
   .strict();
 

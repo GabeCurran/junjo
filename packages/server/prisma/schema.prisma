@@ -35,6 +35,7 @@ model Game {
   externalIdentities ExternalIdentity[]
   webhookEndpoints   WebhookEndpoint[]
   userRelationships  UserRelationship[]
+  friendTags         FriendTag[]
 
   @@index([networkId])
 }
@@ -64,6 +65,7 @@ model JunjoUser {
   auditEntriesActed  AuditEntry[]       @relation("AuditActor")
   userRelsAsActor    UserRelationship[] @relation("UserRelActor")
   userRelsAsTarget   UserRelationship[] @relation("UserRelTarget")
+  friendTags         FriendTag[]
 }
 
 // Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
@@ -296,6 +298,8 @@ model UserRelationship {
   respondedAt       DateTime?
   metadata          Json      @default("{}")
 
+  relationshipTags UserRelationshipTag[]
+
   @@unique([gameId, actorJunjoUserId, targetJunjoUserId, type])
   // Backs inbound queries: my pending requests, my received friend
   // mirror rows, anyone who has me blocked.
@@ -303,6 +307,44 @@ model UserRelationship {
   // Backs outbound queries: my friends list, my outbound requests,
   // my blocklist.
   @@index([gameId, actorJunjoUserId, type])
+}
+
+// Per-(user, game) tag for organizing the user's friend list. Tags are
+// private to the owner: only the user that created the tag sees it
+// applied to their friend rows. Tags only attach to the OWNER-side
+// friend row, never the mirror, so each party can tag friendships
+// independently.
+model FriendTag {
+  id          String    @id @default(cuid())
+  gameId      String
+  game        Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId String
+  junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  name        String
+  color       String?
+  createdAt   DateTime  @default(now())
+
+  relationshipTags UserRelationshipTag[]
+
+  @@unique([gameId, junjoUserId, name])
+  @@index([gameId, junjoUserId])
+}
+
+// Many-to-many join between a friend row and the tags applied to it.
+// Both sides cascade: deleting the friendship or the tag removes the
+// join row. The tag's gameId+junjoUserId must match the friend row's
+// gameId+actorJunjoUserId; this is enforced at the application layer
+// rather than via SQL since the cross-table constraint would require
+// triggers or check constraints.
+model UserRelationshipTag {
+  userRelationshipId String
+  userRelationship   UserRelationship @relation(fields: [userRelationshipId], references: [id], onDelete: Cascade)
+  friendTagId        String
+  friendTag          FriendTag        @relation(fields: [friendTagId], references: [id], onDelete: Cascade)
+  taggedAt           DateTime         @default(now())
+
+  @@id([userRelationshipId, friendTagId])
+  @@index([friendTagId])
 }
 
 // =====================================================================

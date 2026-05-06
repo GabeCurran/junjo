@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app.js";
-import { createApiKey, createGame } from "../seed.js";
+import { createApiKey } from "../seed.js";
 import type {
   WireFriendRequest,
   WireFriendRequestSendResult,

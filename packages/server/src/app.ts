@@ -50,6 +50,13 @@ import {
 } from "./routes/admin.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import {
+  createFriendTagHandler,
+  deleteFriendTagHandler,
+  listFriendTagsHandler,
+  setFriendTagsHandler,
+  updateFriendTagHandler,
+} from "./routes/friendTags.js";
+import {
   acceptFriendRequestHandler,
   addBlockHandler,
   cancelFriendRequestHandler,
@@ -364,6 +371,11 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/users/:userId/blocks", addBlockHandler(prisma));
   v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma));
   v1.get("/users/:userId/blocks", listBlocksHandler(prisma));
+  v1.get("/users/:userId/friend-tags", listFriendTagsHandler(prisma));
+  v1.post("/users/:userId/friend-tags", createFriendTagHandler(prisma));
+  v1.patch("/friend-tags/:id", updateFriendTagHandler(prisma));
+  v1.delete("/friend-tags/:id", deleteFriendTagHandler(prisma));
+  v1.put("/users/:userId/friends/:otherUserId/tags", setFriendTagsHandler(prisma));
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   v1.route(
     "/webhooks",
