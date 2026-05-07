@@ -399,6 +399,13 @@ async function main(): Promise<void> {
       events: ["group.created", "role.created"],
     },
   ] as const;
+  // Pre-disable the demo endpoints. The URLs are placeholders that
+  // resolve to nothing, so a live endpoint would fire forever-failing
+  // deliveries on every event the dev environment emits. Seeding them
+  // disabled keeps the dashboard's webhooks tab populated for
+  // screenshots / demo flow without spamming the worker. Re-enable
+  // through the dashboard or PATCH /v1/webhooks/:id { disabled: false }
+  // when wiring a real receiver.
   const endpoints = await Promise.all(
     WH_SPECS.map((spec) =>
       prisma.webhookEndpoint.create({
@@ -408,6 +415,7 @@ async function main(): Promise<void> {
           secret: hex(16),
           events: [...spec.events],
           format: spec.format,
+          disabledAt: new Date(),
         },
       }),
     ),
