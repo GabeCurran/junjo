@@ -58,6 +58,8 @@ Once the dev servers are up:
 - **Docs site**: http://localhost:3001
 - **API**: http://localhost:8787
 
+Integrating against the API from another local project (port 3000 already in use, dashboard not needed)? Use `npm run dev:server-only` to skip the dashboard and docs and boot just Postgres + the API server.
+
 The seed prints the game ID and API key to the terminal; the same values are written into the env files automatically.
 
 ## Repository layout
