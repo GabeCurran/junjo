@@ -88,6 +88,12 @@ Fetches a single group by id. Soft-deleted groups and groups belonging to a diff
 |-------|------|-------|
 | `id` | string | The group id. |
 
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `viewer` | string | none | Optional external user id. When supplied, a group with `visibility = "secret"` returns `404` unless `viewer` is an active member. Omitting it is a server-to-server / admin call and bypasses the secret-group filter. |
+
 ### Response
 
 `200 OK` with a `Group` body. `memberCount` is the number of `GroupMember` rows with `status = "active"` for this group, computed at request time.
@@ -126,6 +132,7 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
 | `limit` | int | `50` | 1-100 inclusive. Out-of-range values return `400`. |
 | `cursor` | string | none | The `nextCursor` from a prior response. Must point at a group in the calling game; soft-deleted is fine, the cursor row is used purely as a sort position. |
 | `gameId` | string | the calling game | Optional. If provided, must equal the calling key's game id; mismatches return `400`. |
+| `viewer` | string | none | Optional external user id. When supplied, groups with `visibility = "secret"` are filtered out unless `viewer` is an active member. Omitting `viewer` is treated as a server-to-server / admin call and returns every non-deleted group regardless of visibility. |
 
 ### Response
 
@@ -443,6 +450,72 @@ By default the response excludes invitations that have already been used (`usedA
 |------|--------|------|
 | `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/join`
+
+Open join for a group whose `visibility` is `"public"`. Use this when the dev wants users to be able to add themselves to a group without an `Invitation`. Invite-only and secret groups still go through the invitation flow; this route returns `403` (invite-only) or `404` (secret) for them.
+
+If the user previously left or was kicked from this group, the existing `GroupMember` row is reactivated rather than duplicated; `joinedAt` is preserved, `leftAt` is cleared, and `status` flips back to `"active"`.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. |
+
+### Request
+
+```json
+{ "userId": "user_alice" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | The dev's external user id. The route auto-creates a `JunjoUser` and `ExternalIdentity` for unknown users (same upsert semantics as invitation accept). |
+
+### Response
+
+`201 Created` with the `Member` body, identical in shape to the invitation-accept response.
+
+```json
+{
+  "id": "ckxxx...",
+  "groupId": "ckyyy...",
+  "userId": "user_alice",
+  "status": "active",
+  "roles": [],
+  "metadata": {},
+  "notesPublic": null,
+  "notesPrivate": null,
+  "joinedAt": "2026-04-28T05:00:00.000Z"
+}
+```
+
+### Audit log
+
+Writes one `member.joined` entry per successful join. The payload carries `via: "public-join"` so audit consumers can distinguish open joins from invitation redemptions.
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.joined` |
+| `groupId` | the group id |
+| `targetId` | the joiner's external user id |
+| `actorUserId` | the joiner's resolved JunjoUser id |
+| `payload` | `{ memberId, via: "public-join" }` |
+
+### Webhook event
+
+Fires `member.joined` with the new `Member` body, mirroring the invitation-accept flow.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing `userId` or malformed JSON. |
+| `permission_denied` | 403 | The group's `visibility` is `"invite-only"`. The error message is `"this group requires an invitation to join"`. |
+| `not_found` | 404 | No group with that id in the calling game, or the group is soft-deleted, or the group's `visibility` is `"secret"` (existence stays invisible to non-members). |
+| `already_member` | 409 | The user already has an active `GroupMember` row in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/leave`

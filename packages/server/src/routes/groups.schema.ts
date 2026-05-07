@@ -16,9 +16,24 @@ export const listGroupsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().min(1).optional(),
   gameId: z.string().min(1).optional(),
+  viewer: z.string().min(1).optional(),
 });
 
 export type ListGroupsQuery = z.infer<typeof listGroupsQuery>;
+
+// `viewer` is the user the caller wants visibility evaluated against.
+// Omitting it (server-to-server / admin) bypasses the secret-group filter.
+export const viewerQuery = z.object({
+  viewer: z.string().min(1).optional(),
+});
+
+export type ViewerQuery = z.infer<typeof viewerQuery>;
+
+export const joinGroupBody = z.object({
+  userId: z.string().min(1),
+});
+
+export type JoinGroupBody = z.infer<typeof joinGroupBody>;
 
 export const updateGroupBody = z
   .object({

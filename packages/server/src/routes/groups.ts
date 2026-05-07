@@ -5,6 +5,7 @@ import type {
   GroupRelationshipChangedEvent,
   GroupUpdatedEvent,
   MemberInvitedEvent,
+  MemberJoinedEvent,
   MemberLeftEvent,
   RoleChangedEvent,
   RoleCreatedEvent,
@@ -20,9 +21,10 @@ import {
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
+  toPublicMember,
   toPublicRole,
 } from "../events.js";
-import { findJunjoUserId } from "../identity.js";
+import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { listAuditForGroup } from "./audit.js";
@@ -31,12 +33,14 @@ import {
   bulkInviteQuery,
   clearRelationshipQuery,
   createGroupBody,
+  joinGroupBody,
   kickMemberBody,
   leaveGroupBody,
   listGroupsQuery,
   setParentBody,
   setRelationshipBody,
   updateGroupBody,
+  viewerQuery,
 } from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
@@ -136,6 +140,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       limit: c.req.query("limit"),
       cursor: c.req.query("cursor"),
       gameId: c.req.query("gameId"),
+      viewer: c.req.query("viewer"),
     });
     if (!parsed.success) {
       const issues = parsed.error.issues
@@ -143,7 +148,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid query");
     }
-    const { limit, cursor, gameId: filterGameId } = parsed.data;
+    const { limit, cursor, gameId: filterGameId, viewer } = parsed.data;
     if (filterGameId !== undefined && filterGameId !== gameId) {
       throw Errors.badRequest("gameId must match the calling game");
     }
@@ -158,17 +163,40 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       cursorRow = row;
     }
 
+    // Visibility filter: omit secret groups unless the supplied viewer
+    // is an active member. Calls without a viewer are treated as
+    // server-to-server (admin) and see every non-deleted group.
+    const viewerJunjoUserId = viewer ? await findJunjoUserId(prisma, gameId, viewer) : null;
+    const conditions: Prisma.GroupWhereInput[] = [];
+    if (viewer) {
+      conditions.push(
+        viewerJunjoUserId
+          ? {
+              OR: [
+                { visibility: { not: "secret" } },
+                {
+                  members: {
+                    some: { junjoUserId: viewerJunjoUserId, status: "active" },
+                  },
+                },
+              ],
+            }
+          : { visibility: { not: "secret" } },
+      );
+    }
+    if (cursorRow) {
+      conditions.push({
+        OR: [
+          { createdAt: { lt: cursorRow.createdAt } },
+          { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
+        ],
+      });
+    }
+
     const where: Prisma.GroupWhereInput = {
       gameId,
       softDeletedAt: null,
-      ...(cursorRow
-        ? {
-            OR: [
-              { createdAt: { lt: cursorRow.createdAt } },
-              { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
-            ],
-          }
-        : {}),
+      ...(conditions.length > 0 ? { AND: conditions } : {}),
     };
 
     const groups = await prisma.group.findMany({
@@ -201,10 +229,32 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   r.get("/:id", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
+    const parsedQ = viewerQuery.safeParse({ viewer: c.req.query("viewer") });
+    if (!parsedQ.success) throw Errors.badRequest("invalid query");
+    const { viewer } = parsedQ.data;
+
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
     });
     if (!group) throw Errors.notFound("group");
+
+    // Secret groups 404 for non-members so existence stays invisible.
+    // No viewer = admin/server caller, sees everything.
+    if (viewer && group.visibility === "secret") {
+      const viewerJunjoUserId = await findJunjoUserId(prisma, gameId, viewer);
+      const isMember = viewerJunjoUserId
+        ? await prisma.groupMember.findUnique({
+            where: {
+              groupId_junjoUserId: { groupId: group.id, junjoUserId: viewerJunjoUserId },
+            },
+            select: { status: true },
+          })
+        : null;
+      if (!isMember || isMember.status !== "active") {
+        throw Errors.notFound("group");
+      }
+    }
+
     const memberCount = await prisma.groupMember.count({
       where: { groupId: group.id, status: "active" },
     });
@@ -686,6 +736,73 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   });
 
   // Idempotent on already-left / already-kicked (no audit, no event).
+  // Open join for `visibility = "public"` groups. Invite-only and secret
+  // groups still require an `Invitation`; secret groups 404 (existence is
+  // invisible), invite-only returns 403 with a clear message.
+  r.post("/:id/join", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = joinGroupBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { userId } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+    if (group.visibility === "secret") throw Errors.notFound("group");
+    if (group.visibility !== "public") {
+      throw Errors.permissionDenied("this group requires an invitation to join");
+    }
+
+    const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
+
+    const member = await prisma.$transaction(async (tx) => {
+      const existing = await tx.groupMember.findUnique({
+        where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+      });
+      if (existing && existing.status === "active") throw Errors.alreadyMember();
+
+      const result = existing
+        ? await tx.groupMember.update({
+            where: { id: existing.id },
+            data: { status: "active", leftAt: null },
+          })
+        : await tx.groupMember.create({
+            data: { groupId: group.id, junjoUserId, status: "active" },
+          });
+
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: junjoUserId,
+          action: "member.joined",
+          targetId: userId,
+          payload: {
+            memberId: result.id,
+            via: "public-join",
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    await dispatchEvent<MemberJoinedEvent>(prisma, hub, {
+      type: "member.joined",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      member: toPublicMember(member, userId, []),
+    });
+    return c.json(serializeMember(member, userId, []), 201);
+  });
+
   r.post("/:id/leave", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;

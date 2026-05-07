@@ -133,9 +133,19 @@ export class GroupsApi {
     return deserializeGroup(wire);
   }
 
-  async get(id: GroupId): Promise<Group | null> {
+  // Pass `viewer` (an external userId) to scope visibility to that user;
+  // secret groups they aren't a member of will return null. Without it
+  // the server treats the call as admin/server-side and returns the group
+  // regardless of visibility.
+  async get(id: GroupId, opts?: { viewer?: UserId }): Promise<Group | null> {
     try {
-      const wire = await this.http.get<WireGroup>(`/v1/groups/${encodeURIComponent(id)}`);
+      const params = new URLSearchParams();
+      if (opts?.viewer !== undefined) params.set("viewer", opts.viewer);
+      const qs = params.toString();
+      const path = qs
+        ? `/v1/groups/${encodeURIComponent(id)}?${qs}`
+        : `/v1/groups/${encodeURIComponent(id)}`;
+      const wire = await this.http.get<WireGroup>(path);
       return deserializeGroup(wire);
     } catch (err) {
       if (err instanceof JunjoError && err.code === "not_found") return null;
@@ -143,11 +153,12 @@ export class GroupsApi {
     }
   }
 
-  async list(opts?: PageOptions & { gameId?: GameId }): Promise<Page<Group>> {
+  async list(opts?: PageOptions & { gameId?: GameId; viewer?: UserId }): Promise<Page<Group>> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
     if (opts?.gameId !== undefined) params.set("gameId", opts.gameId);
+    if (opts?.viewer !== undefined) params.set("viewer", opts.viewer);
     const qs = params.toString();
     const path = qs ? `/v1/groups?${qs}` : "/v1/groups";
     const wire = await this.http.get<{ items: WireGroup[]; nextCursor: string | null }>(path);
@@ -241,6 +252,16 @@ export class GroupsApi {
   async leave(groupId: GroupId, userId: UserId): Promise<Member> {
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/leave`,
+      { userId },
+    );
+    return deserializeMember(wire);
+  }
+
+  // Open join. Server enforces that the group's `visibility` is "public";
+  // invite-only groups return 403 and secret groups return 404.
+  async join(groupId: GroupId, userId: UserId): Promise<Member> {
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/join`,
       { userId },
     );
     return deserializeMember(wire);

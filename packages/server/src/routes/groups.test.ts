@@ -5106,3 +5106,224 @@ describe.skipIf(!TEST_DATABASE_URL)("Sub-group parent + children", () => {
     });
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("Group visibility enforcement", () => {
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  async function makeGroup(visibility: "public" | "invite-only" | "secret", name: string) {
+    return prisma.group.create({
+      data: { gameId, kind: "guild", name, visibility, metadata: {} },
+    });
+  }
+
+  async function makeMember(groupId: string, externalUserId: string) {
+    const ju = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, junjoUserId: ju.id, externalUserId },
+    });
+    await prisma.groupMember.create({
+      data: { groupId, junjoUserId: ju.id, status: "active" },
+    });
+    return ju.id;
+  }
+
+  describe("GET /v1/groups", () => {
+    it("returns secret groups when no viewer is supplied (admin/server caller)", async () => {
+      await makeGroup("public", "p");
+      await makeGroup("invite-only", "i");
+      await makeGroup("secret", "s");
+
+      const res = await app.request("/v1/groups", { headers: { authorization: authHeader } });
+      const body = (await res.json()) as { items: Array<{ name: string }> };
+      expect(body.items.map((g) => g.name).sort()).toEqual(["i", "p", "s"]);
+    });
+
+    it("hides secret groups from a viewer who is not a member", async () => {
+      await makeGroup("public", "p");
+      await makeGroup("invite-only", "i");
+      const secret = await makeGroup("secret", "s");
+      await makeMember(secret.id, "memberA");
+
+      const res = await app.request("/v1/groups?viewer=stranger", {
+        headers: { authorization: authHeader },
+      });
+      const body = (await res.json()) as { items: Array<{ name: string }> };
+      expect(body.items.map((g) => g.name).sort()).toEqual(["i", "p"]);
+    });
+
+    it("shows a viewer their own secret groups but not others", async () => {
+      await makeGroup("public", "p");
+      const mySecret = await makeGroup("secret", "mine");
+      const theirSecret = await makeGroup("secret", "theirs");
+      await makeMember(mySecret.id, "viewerUser");
+      await makeMember(theirSecret.id, "otherUser");
+
+      const res = await app.request("/v1/groups?viewer=viewerUser", {
+        headers: { authorization: authHeader },
+      });
+      const body = (await res.json()) as { items: Array<{ name: string }> };
+      expect(body.items.map((g) => g.name).sort()).toEqual(["mine", "p"]);
+    });
+
+    it("treats an unknown viewer as a non-member (still hides all secrets)", async () => {
+      const secret = await makeGroup("secret", "s");
+      await makeMember(secret.id, "memberA");
+
+      const res = await app.request("/v1/groups?viewer=ghost", {
+        headers: { authorization: authHeader },
+      });
+      const body = (await res.json()) as { items: Array<{ name: string }> };
+      expect(body.items).toEqual([]);
+    });
+  });
+
+  describe("GET /v1/groups/:id", () => {
+    it("admin caller can read a secret group with no viewer", async () => {
+      const secret = await makeGroup("secret", "s");
+      const res = await app.request(`/v1/groups/${secret.id}`, {
+        headers: { authorization: authHeader },
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it("a viewer who is a member can read a secret group", async () => {
+      const secret = await makeGroup("secret", "s");
+      await makeMember(secret.id, "alice");
+      const res = await app.request(`/v1/groups/${secret.id}?viewer=alice`, {
+        headers: { authorization: authHeader },
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it("a viewer who is not a member 404s on a secret group", async () => {
+      const secret = await makeGroup("secret", "s");
+      const res = await app.request(`/v1/groups/${secret.id}?viewer=stranger`, {
+        headers: { authorization: authHeader },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("public and invite-only groups are visible to any viewer", async () => {
+      const pub = await makeGroup("public", "p");
+      const inv = await makeGroup("invite-only", "i");
+      const r1 = await app.request(`/v1/groups/${pub.id}?viewer=anyone`, {
+        headers: { authorization: authHeader },
+      });
+      const r2 = await app.request(`/v1/groups/${inv.id}?viewer=anyone`, {
+        headers: { authorization: authHeader },
+      });
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+    });
+  });
+
+  describe("POST /v1/groups/:id/join", () => {
+    function joinGroup(groupId: string, body: unknown) {
+      return app.request(`/v1/groups/${groupId}/join`, {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("creates an active member on a public group", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await joinGroup(pub.id, { userId: "newcomer" });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { groupId: string; userId: string; status: string };
+      expect(body).toMatchObject({ groupId: pub.id, userId: "newcomer", status: "active" });
+
+      const stored = await prisma.groupMember.findFirst({
+        where: { groupId: pub.id },
+        include: { junjoUser: { include: { externalIdentities: true } } },
+      });
+      expect(stored?.status).toBe("active");
+      expect(stored?.junjoUser.externalIdentities[0]?.externalUserId).toBe("newcomer");
+    });
+
+    it("rejects joining an invite-only group with 403", async () => {
+      const inv = await makeGroup("invite-only", "i");
+      const res = await joinGroup(inv.id, { userId: "newcomer" });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("permission_denied");
+    });
+
+    it("404s on a secret group (existence stays invisible)", async () => {
+      const secret = await makeGroup("secret", "s");
+      const res = await joinGroup(secret.id, { userId: "newcomer" });
+      expect(res.status).toBe(404);
+    });
+
+    it("409s when the user is already an active member", async () => {
+      const pub = await makeGroup("public", "p");
+      await joinGroup(pub.id, { userId: "twice" });
+      const res = await joinGroup(pub.id, { userId: "twice" });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("already_member");
+    });
+
+    it("re-joins after leaving by reactivating the existing row", async () => {
+      const pub = await makeGroup("public", "p");
+      await joinGroup(pub.id, { userId: "rejoin" });
+      // Mark them left.
+      const ju = await prisma.junjoUser.findFirst({
+        where: { externalIdentities: { some: { externalUserId: "rejoin" } } },
+      });
+      await prisma.groupMember.updateMany({
+        where: { groupId: pub.id, junjoUserId: ju?.id },
+        data: { status: "left", leftAt: new Date() },
+      });
+
+      const res = await joinGroup(pub.id, { userId: "rejoin" });
+      expect(res.status).toBe(201);
+      const memberRows = await prisma.groupMember.findMany({ where: { groupId: pub.id } });
+      expect(memberRows).toHaveLength(1);
+      expect(memberRows[0]?.status).toBe("active");
+      expect(memberRows[0]?.leftAt).toBeNull();
+    });
+
+    it("writes a member.joined audit entry tagged via=public-join", async () => {
+      const pub = await makeGroup("public", "p");
+      await joinGroup(pub.id, { userId: "auditme" });
+      const entry = await prisma.auditEntry.findFirst({
+        where: { groupId: pub.id, action: "member.joined" },
+      });
+      expect(entry).not.toBeNull();
+      expect((entry?.payload as { via?: string })?.via).toBe("public-join");
+    });
+
+    it("rejects a body missing userId", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await joinGroup(pub.id, {});
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects requests without an API key", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await app.request(`/v1/groups/${pub.id}/join`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "anon" }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+});
