@@ -442,6 +442,11 @@ model WebhookEndpoint {
   format     String    @default("junjo")
   createdAt  DateTime  @default(now())
   disabledAt DateTime?
+  // Rolling counter of consecutive failed delivery attempts (network
+  // error, timeout, 5xx, retriable 4xx). Reset to 0 on any successful
+  // delivery. The worker auto-flips `disabledAt` when this crosses the
+  // configured threshold so a permanently-dead URL stops spamming logs.
+  consecutiveFailures Int @default(0)
 
   deliveries WebhookDelivery[]
 

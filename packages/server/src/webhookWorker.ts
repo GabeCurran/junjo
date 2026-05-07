@@ -22,6 +22,15 @@ export const WEBHOOK_REQUEST_TIMEOUT_MS = 10_000;
 export const WEBHOOK_WORKER_INTERVAL_MS = 5_000;
 export const WEBHOOK_WORKER_BATCH_SIZE = 50;
 export const WEBHOOK_SIGNATURE_SCHEME = "v1";
+// After this many consecutive failed delivery attempts (network error,
+// timeout, 5xx, or retriable 4xx) with no successful delivery in
+// between, the endpoint is auto-disabled (`disabledAt = now()`). Picked
+// to (a) tolerate transient outages -- a few minutes of upstream
+// flapping won't trip it given the worker poll interval and the per-
+// delivery retry budget -- and (b) catch permanently-dead URLs in
+// well under an hour at the typical event cadence so they stop
+// spamming logs. Re-enable manually via the existing PATCH route.
+export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 25;
 
 // Matches a typical container orchestrator's terminationGracePeriod
 // (Docker / Kubernetes / Nomad SIGKILL 30s after SIGTERM); a higher
@@ -179,16 +188,51 @@ export async function deliverOne(
     nextAttemptAt = new Date(nowDate.getTime() + backoffMs(attemptCount));
   }
 
-  await prisma.webhookDelivery.update({
-    where: { id: deliveryId },
-    data: {
-      status: nextStatus,
-      attemptCount,
-      lastAttemptAt: nowDate,
-      responseStatus: httpStatus,
-      nextAttemptAt: nextStatus === "pending" ? nextAttemptAt : null,
-    },
-  });
+  // Decide the endpoint-side counter update in lockstep with the
+  // delivery row update so a crash between the two leaves no drift.
+  // - Successful attempt: reset counter (transient outages ride through
+  //   without inching toward auto-disable).
+  // - Unsuccessful attempt (network error, timeout, 5xx, or retriable
+  //   4xx -- retriable in the sense that the worker would re-attempt;
+  //   a permanently-failed 4xx still increments because from the
+  //   endpoint's point of view it's a botched delivery).
+  const newConsecutive = httpOk ? 0 : delivery.endpoint.consecutiveFailures + 1;
+  const shouldAutoDisable =
+    !httpOk &&
+    delivery.endpoint.disabledAt === null &&
+    newConsecutive >= WEBHOOK_AUTO_DISABLE_THRESHOLD;
+
+  await prisma.$transaction([
+    prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: nextStatus,
+        attemptCount,
+        lastAttemptAt: nowDate,
+        responseStatus: httpStatus,
+        nextAttemptAt: nextStatus === "pending" ? nextAttemptAt : null,
+      },
+    }),
+    prisma.webhookEndpoint.update({
+      where: { id: delivery.endpoint.id },
+      data: {
+        consecutiveFailures: newConsecutive,
+        ...(shouldAutoDisable ? { disabledAt: nowDate } : {}),
+      },
+    }),
+  ]);
+
+  if (shouldAutoDisable) {
+    logger.warn(
+      {
+        endpointId: delivery.endpoint.id,
+        url: delivery.endpoint.url,
+        consecutiveFailures: newConsecutive,
+        lastResponseStatus: httpStatus,
+      },
+      `auto-disabled webhook endpoint after ${newConsecutive} consecutive failures`,
+    );
+  }
 
   if (nextStatus === "delivered") {
     return { status: "delivered", httpStatus: httpStatus ?? 0 };
@@ -200,13 +244,20 @@ export async function deliverOne(
 }
 
 // Capped at `batchSize` so a single tick cannot starve other server work.
+// Skips deliveries whose endpoint is disabled -- both the auto-disable
+// path and operator-driven disables stop firing immediately even for
+// rows that had already been queued before the disable landed.
 export async function pollDueDeliveries(
   prisma: PrismaClient,
   now: Date,
   batchSize: number = WEBHOOK_WORKER_BATCH_SIZE,
 ): Promise<string[]> {
   const rows = await prisma.webhookDelivery.findMany({
-    where: { status: "pending", nextAttemptAt: { lte: now } },
+    where: {
+      status: "pending",
+      nextAttemptAt: { lte: now },
+      endpoint: { disabledAt: null },
+    },
     orderBy: { nextAttemptAt: "asc" },
     take: batchSize,
     select: { id: true },

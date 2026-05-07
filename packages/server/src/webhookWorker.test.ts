@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { newEventId } from "./events.js";
 import { createApiKey, createGame } from "./seed.js";
 import {
+  WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_BACKOFF_MS,
   WEBHOOK_MAX_ATTEMPTS,
   WEBHOOK_WORKER_DRAIN_MS,
@@ -628,6 +629,153 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       expect(row.attemptCount).toBe(1);
     });
   });
+
+  describe("auto-disable on consecutive failures", () => {
+    it("does not disable an endpoint after N consecutive successes", async () => {
+      const ep = await makeEndpoint({ url: "https://ok.test/" });
+      const total = WEBHOOK_AUTO_DISABLE_THRESHOLD + 5;
+      const { fetcher } = makeFetcher(
+        Array.from({ length: total }, () => ({ ok: true, status: 200 })),
+      );
+      for (let i = 0; i < total; i++) {
+        const event = makeGroupUpdatedEvent(gameId, groupId);
+        const [id] = await enqueueWebhookDeliveries(prisma, event);
+        if (!id) throw new Error("expected enqueued delivery");
+        await deliverOne(prisma, id, fetcher, () => new Date());
+      }
+      const final = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(final.disabledAt).toBeNull();
+      expect(final.consecutiveFailures).toBe(0);
+    });
+
+    it(`disables an endpoint after exactly ${WEBHOOK_AUTO_DISABLE_THRESHOLD} consecutive 5xx failures`, async () => {
+      const ep = await makeEndpoint({ url: "https://dead.test/" });
+      // Fire one delivery short of the threshold; endpoint should still be live.
+      const responses = Array.from({ length: WEBHOOK_AUTO_DISABLE_THRESHOLD - 1 }, () => ({
+        ok: false,
+        status: 500,
+      }));
+      const { fetcher } = makeFetcher(responses);
+      for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD - 1; i++) {
+        const event = makeGroupUpdatedEvent(gameId, groupId);
+        const [id] = await enqueueWebhookDeliveries(prisma, event);
+        if (!id) throw new Error("expected enqueued delivery");
+        await deliverOne(prisma, id, fetcher, () => new Date());
+      }
+      let row = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(row.disabledAt).toBeNull();
+      expect(row.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD - 1);
+
+      // The Nth failure flips disabledAt.
+      const event = makeGroupUpdatedEvent(gameId, groupId);
+      const [id] = await enqueueWebhookDeliveries(prisma, event);
+      if (!id) throw new Error("expected enqueued delivery");
+      const { fetcher: f2 } = makeFetcher([{ ok: false, status: 500 }]);
+      const before = new Date();
+      await deliverOne(prisma, id, f2, () => new Date());
+      row = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(row.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+      expect(row.disabledAt).not.toBeNull();
+      expect(row.disabledAt?.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+    });
+
+    it("disables on consecutive thrown network errors (no HTTP response)", async () => {
+      const ep = await makeEndpoint({ url: "https://unreachable.test/" });
+      const responses: Array<{ ok: boolean; status: number } | Error> = Array.from(
+        { length: WEBHOOK_AUTO_DISABLE_THRESHOLD },
+        () => new Error("ENOTFOUND unreachable.test"),
+      );
+      const { fetcher } = makeFetcher(responses);
+      for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD; i++) {
+        const event = makeGroupUpdatedEvent(gameId, groupId);
+        const [id] = await enqueueWebhookDeliveries(prisma, event);
+        if (!id) throw new Error("expected enqueued delivery");
+        await deliverOne(prisma, id, fetcher, () => new Date());
+      }
+      const row = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(row.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+      expect(row.disabledAt).not.toBeNull();
+    });
+
+    it("a single success between failures resets the counter", async () => {
+      const ep = await makeEndpoint({ url: "https://flaky.test/" });
+      // Five 5xx, then one 2xx, then five more 5xx. The counter must
+      // reset on the 2xx so the trailing 5xx run isn't enough to trip
+      // the threshold.
+      const responses: Array<{ ok: boolean; status: number }> = [
+        ...Array.from({ length: 5 }, () => ({ ok: false, status: 500 })),
+        { ok: true, status: 200 },
+        ...Array.from({ length: 5 }, () => ({ ok: false, status: 500 })),
+      ];
+      const { fetcher } = makeFetcher(responses);
+      for (let i = 0; i < responses.length; i++) {
+        const event = makeGroupUpdatedEvent(gameId, groupId);
+        const [id] = await enqueueWebhookDeliveries(prisma, event);
+        if (!id) throw new Error("expected enqueued delivery");
+        await deliverOne(prisma, id, fetcher, () => new Date());
+      }
+      const row = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(row.disabledAt).toBeNull();
+      // Counter reflects only the trailing 5xx run, not the cumulative 10.
+      expect(row.consecutiveFailures).toBe(5);
+    });
+
+    it("pollDueDeliveries skips pending rows whose endpoint is disabled", async () => {
+      const live = await makeEndpoint({ url: "https://live.test/" });
+      const dead = await makeEndpoint({ url: "https://dead.test/", disabledAt: new Date() });
+      const event = makeGroupUpdatedEvent(gameId, groupId);
+      const livePending = await prisma.webhookDelivery.create({
+        data: {
+          webhookEndpointId: live.id,
+          eventId: event.id,
+          payload: { id: event.id, type: event.type },
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+        },
+      });
+      await prisma.webhookDelivery.create({
+        data: {
+          webhookEndpointId: dead.id,
+          eventId: event.id,
+          payload: { id: event.id, type: event.type },
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+        },
+      });
+
+      const due = await pollDueDeliveries(prisma, new Date());
+      expect(due).toEqual([livePending.id]);
+    });
+
+    it("does not flip disabledAt a second time once already disabled", async () => {
+      // Pre-disabled endpoint with an old disabledAt; a new failure must
+      // not overwrite the timestamp (operators rely on it as the
+      // disable cause / time-of-onset signal).
+      const original = new Date(0);
+      const ep = await makeEndpoint({ url: "https://manual.test/", disabledAt: original });
+      const event = makeGroupUpdatedEvent(gameId, groupId);
+      // enqueueWebhookDeliveries filters out disabled endpoints, so
+      // create the delivery directly.
+      const delivery = await prisma.webhookDelivery.create({
+        data: {
+          webhookEndpointId: ep.id,
+          eventId: event.id,
+          payload: { id: event.id, type: event.type },
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+        },
+      });
+      const { fetcher } = makeFetcher([{ ok: false, status: 500 }]);
+      await deliverOne(prisma, delivery.id, fetcher, () => new Date());
+      const row = await prisma.webhookEndpoint.findUniqueOrThrow({ where: { id: ep.id } });
+      expect(row.disabledAt?.toISOString()).toBe(original.toISOString());
+      // Counter still increments (informational).
+      expect(row.consecutiveFailures).toBe(1);
+    });
+  });
 });
 
 describe("startWebhookWorker heartbeat", () => {
@@ -697,10 +845,16 @@ describe("runWorkerOnce shouldStop", () => {
             url: `https://example.test/${where.id}`,
             secret: "topsecret",
             format: "junjo",
+            disabledAt: null,
+            consecutiveFailures: 0,
           },
         }),
         update: async () => ({}),
       },
+      webhookEndpoint: {
+        update: async () => ({}),
+      },
+      $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     } as unknown as PrismaClient;
 
     const result = await runWorkerOnce(fakePrisma, {
@@ -731,10 +885,16 @@ describe("runWorkerOnce shouldStop", () => {
             url: `https://example.test/${where.id}`,
             secret: "topsecret",
             format: "junjo",
+            disabledAt: null,
+            consecutiveFailures: 0,
           },
         }),
         update: async () => ({}),
       },
+      webhookEndpoint: {
+        update: async () => ({}),
+      },
+      $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     } as unknown as PrismaClient;
 
     const result = await runWorkerOnce(fakePrisma, { fetch: fetcher });
