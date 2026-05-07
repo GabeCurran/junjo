@@ -24,7 +24,9 @@ const CONTAINER = "junjo-test-pg";
 const DB_USER = "postgres";
 const DB_PASS = "junjo";
 const DB_NAME = "junjo_test";
-const DB_PORT = "5433";
+// Override via JUNJO_DB_PORT when 5433 collides with another local
+// Postgres on the host (common for devs running multiple projects).
+const DB_PORT = process.env.JUNJO_DB_PORT ?? "5433";
 const DATABASE_URL = `postgres://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}`;
 
 const ROOT_ENV = ".env";
