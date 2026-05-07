@@ -4,11 +4,12 @@
 
 import { z } from "zod";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
+import { pageLimit } from "./page.schema.js";
 
 export const GAME_NAME_MAX_LENGTH = 200;
 
 export const listRecentAuditQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  limit: pageLimit(20),
 });
 
 export const listAdminGamesQuery = z.object({
@@ -32,7 +33,7 @@ export const ADMIN_GROUP_SORT_ORDERS = ["asc", "desc"] as const;
 export const ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS = 500;
 
 export const listAdminGroupsQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   offset: z.coerce.number().int().min(0).default(0),
   q: z.string().min(1).max(ADMIN_GROUP_NAME_SEARCH_MAX_LENGTH).optional(),
   kind: z.string().min(1).max(ADMIN_GROUP_KIND_MAX_LENGTH).optional(),
@@ -44,7 +45,7 @@ export const listAdminGroupsQuery = z.object({
 export const ADMIN_MEMBER_STATUSES = ["active", "left", "kicked", "invited", "all"] as const;
 
 export const listAdminGroupMembersQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   offset: z.coerce.number().int().min(0).default(0),
   status: z.enum(ADMIN_MEMBER_STATUSES).default("active"),
   q: z.string().min(1).max(255).optional(),
@@ -158,7 +159,7 @@ export const ADMIN_AUDIT_ACTOR_ID_MAX_LENGTH = 255;
 export const ADMIN_AUDIT_TARGET_ID_MAX_LENGTH = 255;
 
 export const listAdminGameAuditQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   before: z
     .string()
     .min(1)

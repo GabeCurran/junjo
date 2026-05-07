@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageLimit } from "./page.schema.js";
 
 const expiresInPattern = /^\d+[smhd]$/;
 
@@ -19,7 +20,7 @@ const boolFlag = z
   .transform((s) => s === "true");
 
 export const listInvitationsQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   cursor: z.string().min(1).optional(),
   includeExpired: boolFlag,
   includeUsed: boolFlag,

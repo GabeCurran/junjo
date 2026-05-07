@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { pageLimit } from "./page.schema.js";
 
 export const listMembersQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   cursor: z.string().min(1).optional(),
 });
 

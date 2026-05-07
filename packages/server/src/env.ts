@@ -39,6 +39,23 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v === "" ? "info" : v))
     .pipe(z.enum(["error", "warn", "info", "debug", "silent"])),
+  // Upper bound on the `limit` query parameter for every list endpoint.
+  // Default 100 matches cloud's abuse-protection ceiling; self-hosters
+  // running junjo against their own infrastructure can raise it. The
+  // SDK and webhook delivery worker honor whatever value the server
+  // accepts, so no client-side change is needed beyond passing a higher
+  // limit. Set at boot via setMaxPageSize() in index.ts; tests can
+  // override via the same setter.
+  JUNJO_MAX_PAGE_SIZE: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 100 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("JUNJO_MAX_PAGE_SIZE must be a positive integer")
+        .positive("JUNJO_MAX_PAGE_SIZE must be a positive integer"),
+    ),
   // Operator escape hatch for webhook URL SSRF guard. Default false rejects
   // POST /v1/webhooks { url: ... } pointed at loopback / link-local /
   // RFC1918 / IPv6 ULA hosts. Self-host devs running a receiver on the same

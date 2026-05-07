@@ -5463,3 +5463,57 @@ describe.skipIf(!TEST_DATABASE_URL)("Group visibility enforcement", () => {
     });
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("Page-size cap (JUNJO_MAX_PAGE_SIZE)", () => {
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "AuditEntry", "GroupMember", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  it("rejects limit > default cap (100) with 400", async () => {
+    // Default cap is 100; the existing groups.test exercises 101 too,
+    // but this assertion makes the contract explicit alongside the
+    // raised-cap test below.
+    void gameId;
+    const res = await app.request("/v1/groups?limit=200", {
+      headers: { authorization: authHeader },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts limit > default cap once setMaxPageSize raises it", async () => {
+    const { setMaxPageSize, resetMaxPageSize } = await import("../config/runtime.js");
+    setMaxPageSize(500);
+    try {
+      const res = await app.request("/v1/groups?limit=200", {
+        headers: { authorization: authHeader },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      resetMaxPageSize();
+    }
+  });
+
+  it("re-rejects limit > 100 after the cap is reset to the default", async () => {
+    const { setMaxPageSize, resetMaxPageSize } = await import("../config/runtime.js");
+    setMaxPageSize(500);
+    resetMaxPageSize();
+    const res = await app.request("/v1/groups?limit=200", {
+      headers: { authorization: authHeader },
+    });
+    expect(res.status).toBe(400);
+  });
+});

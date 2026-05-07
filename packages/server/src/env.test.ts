@@ -151,4 +151,26 @@ describe("loadEnv", () => {
       expect(env.WEBHOOK_ALLOW_PRIVATE_HOSTS).toBe(false);
     }
   });
+
+  it("defaults JUNJO_MAX_PAGE_SIZE to 100", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.JUNJO_MAX_PAGE_SIZE).toBe(100);
+  });
+
+  it("parses JUNJO_MAX_PAGE_SIZE from a numeric string", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x", JUNJO_MAX_PAGE_SIZE: "5000" });
+    expect(env.JUNJO_MAX_PAGE_SIZE).toBe(5000);
+  });
+
+  it("rejects a non-positive JUNJO_MAX_PAGE_SIZE", () => {
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", JUNJO_MAX_PAGE_SIZE: "0" })).toThrow(
+      /JUNJO_MAX_PAGE_SIZE/,
+    );
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", JUNJO_MAX_PAGE_SIZE: "-1" })).toThrow(
+      /JUNJO_MAX_PAGE_SIZE/,
+    );
+    expect(() => loadEnv({ DATABASE_URL: "postgres://x", JUNJO_MAX_PAGE_SIZE: "1.5" })).toThrow(
+      /JUNJO_MAX_PAGE_SIZE/,
+    );
+  });
 });

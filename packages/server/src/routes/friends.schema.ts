@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageLimit } from "./page.schema.js";
 
 // POST /v1/users/:userId/friend-requests
 export const sendFriendRequestBody = z
@@ -11,7 +12,7 @@ export const sendFriendRequestBody = z
 export const listFriendRequestsQuery = z
   .object({
     direction: z.enum(["in", "out", "both"]).optional().default("both"),
-    limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+    limit: pageLimit(50),
     cursor: z.string().optional(),
   })
   .strict();
@@ -29,7 +30,7 @@ export const listFriendRequestsQuery = z
 // when the target's friendsListVisibility blocks the viewer.
 export const listFriendsQuery = z
   .object({
-    limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+    limit: pageLimit(50),
     cursor: z.string().optional(),
     tagId: z.string().min(1).optional(),
     viewer: z.string().min(1).optional(),
@@ -46,6 +47,6 @@ export const addBlockBody = z
 // GET /v1/users/:userId/blocks
 export const listBlocksQuery = z
   .object({
-    limit: z.coerce.number().int().min(1).max(100).optional().default(100),
+    limit: pageLimit(100),
   })
   .strict();

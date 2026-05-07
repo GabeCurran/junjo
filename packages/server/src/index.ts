@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
+import { setMaxPageSize } from "./config/runtime.js";
 import { disconnectPrisma, prisma } from "./db.js";
 import { loadEnv } from "./env.js";
 import { createLogger, logger, setLogger } from "./logger.js";
@@ -8,6 +9,7 @@ import { startWebhookWorker } from "./webhookWorker.js";
 
 const env = loadEnv();
 setLogger(createLogger({ level: env.LOG_LEVEL, nodeEnv: env.NODE_ENV }));
+setMaxPageSize(env.JUNJO_MAX_PAGE_SIZE);
 
 // Workers must boot before `createApp` so the webhook worker's heartbeat
 // handle can be threaded into `/healthz`.

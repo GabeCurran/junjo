@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageLimit } from "./page.schema.js";
 
 const VISIBILITY = ["public", "invite-only", "secret"] as const;
 
@@ -15,7 +16,7 @@ export const createGroupBody = z.object({
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
 
 export const listGroupsQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: pageLimit(50),
   cursor: z.string().min(1).optional(),
   gameId: z.string().min(1).optional(),
   viewer: z.string().min(1).optional(),
