@@ -48,7 +48,7 @@ npm run dev
 
 Pre-flight: Docker Desktop must be running. On first run, the dev script:
 
-- Creates a Postgres container (`junjo-test-pg` on port 5433). Override the port with `JUNJO_DB_PORT=5499 npm run dev` if 5433 is already taken on your host.
+- Creates a Postgres container (`junjo-test-pg` on port 5433). Override the port with `JUNJO_DB_PORT=5499 npm run dev` if 5433 is already taken on your host. The `DATABASE_URL` and `TEST_DATABASE_URL` lines in `.env` are reconciled against the current `JUNJO_DB_PORT` on every dev run, so manual edits to those two lines will be overwritten.
 - Auto-generates `.env` (root) and `apps/dashboard/.env.local` with sane dev defaults if either is missing, including a freshly minted admin token and the demo game's API key.
 - Seeds a representative demo dataset that exercises every dashboard surface.
 

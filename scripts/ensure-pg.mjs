@@ -125,6 +125,33 @@ function readEnvValue(path, key) {
   return m ? m[1].trim() : null;
 }
 
+// Replace `${key}=...` on its own line, or append `${key}=value` when
+// absent (gated by `appendIfMissing`). No-op when the file doesn't
+// exist or when the value already matches. Used to reconcile env-file
+// state against runtime constants on every dev run, instead of only
+// writing on first-run boot.
+//
+// Repro the bug this guards against (DATABASE_URL drift):
+//   JUNJO_DB_PORT=5434 npm run dev:server-only   # .env now points at 5434
+//   JUNJO_DB_PORT=5435 npm run dev:server-only   # .env reconciles to 5435
+function persistEnvLine(path, key, value, { appendIfMissing = true } = {}) {
+  if (!existsSync(path)) return false;
+  const body = readFileSync(path, "utf8");
+  const re = new RegExp(`^${key}=.*$`, "m");
+  let updated;
+  if (re.test(body)) {
+    updated = body.replace(re, `${key}=${value}`);
+  } else if (appendIfMissing) {
+    updated = `${body}${body.endsWith("\n") ? "" : "\n"}${key}=${value}\n`;
+  } else {
+    return false;
+  }
+  if (updated === body) return false;
+  writeFileSync(path, updated, "utf8");
+  log(`reconciled ${key} -> ${path}`);
+  return true;
+}
+
 function ensureEnvFiles() {
   // Reuse an existing JUNJO_ADMIN_TOKEN if either env file already has
   // one, so re-running `npm run dev` doesn't invalidate auth across a
@@ -169,6 +196,18 @@ function ensureEnvFiles() {
       "utf8",
     );
   }
+
+  // Reconcile DATABASE_URL / TEST_DATABASE_URL against the current
+  // DB_PORT on every run. The first-run write above is unconditional,
+  // but on subsequent runs an env override (e.g. JUNJO_DB_PORT=5434)
+  // would otherwise leave a stale URL behind and the server would
+  // connect to whatever else is on 5433. Dashboard env doesn't carry
+  // a DATABASE_URL today, so it's left untouched (`appendIfMissing:
+  // false`); flipping that to true on a future schema change is safe.
+  persistEnvLine(ROOT_ENV, "DATABASE_URL", DATABASE_URL);
+  persistEnvLine(ROOT_ENV, "TEST_DATABASE_URL", DATABASE_URL);
+  persistEnvLine(DASHBOARD_ENV, "DATABASE_URL", DATABASE_URL, { appendIfMissing: false });
+  persistEnvLine(DASHBOARD_ENV, "TEST_DATABASE_URL", DATABASE_URL, { appendIfMissing: false });
 }
 
 function applyMigrations() {
@@ -202,17 +241,8 @@ function seedDemo() {
     return;
   }
   const apiKey = match[1];
-  for (const path of [ROOT_ENV, DASHBOARD_ENV]) {
-    if (!existsSync(path)) continue;
-    const body = readFileSync(path, "utf8");
-    const updated = /^JUNJO_ADMIN_API_KEY=/m.test(body)
-      ? body.replace(/^JUNJO_ADMIN_API_KEY=.*$/m, `JUNJO_ADMIN_API_KEY=${apiKey}`)
-      : `${body}${body.endsWith("\n") ? "" : "\n"}JUNJO_ADMIN_API_KEY=${apiKey}\n`;
-    if (updated !== body) {
-      writeFileSync(path, updated, "utf8");
-      log(`persisted JUNJO_ADMIN_API_KEY -> ${path}`);
-    }
-  }
+  persistEnvLine(ROOT_ENV, "JUNJO_ADMIN_API_KEY", apiKey);
+  persistEnvLine(DASHBOARD_ENV, "JUNJO_ADMIN_API_KEY", apiKey);
   log("seed complete; spawning dev servers...");
 }
 
