@@ -128,6 +128,14 @@ export class GroupsApi {
     private readonly inviteBaseUrl: string,
   ) {}
 
+  // Pass `creatorUserId` to atomically add the creator as an active
+  // member in the same transaction as the group insert, with a
+  // `member.joined` audit entry tagged `via: "creator"` and a
+  // `member.joined` webhook event. Useful for non-public groups where
+  // the creator can't reach themselves through `groups.join` (which
+  // requires `visibility = "public"`). When `defaultRoleId` is set and
+  // a matching Role already exists in the new group, the role is
+  // assigned to the creator in the same transaction.
   async create(input: CreateGroupInput): Promise<Group> {
     const wire = await this.http.post<WireGroup>("/v1/groups", input);
     return deserializeGroup(wire);

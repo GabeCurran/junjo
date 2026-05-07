@@ -120,6 +120,30 @@ describe("groups.create", () => {
     expect(group.defaultRoleId).toBe("role_xyz");
   });
 
+  it("forwards creatorUserId verbatim in the request body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({
+        kind: "guild",
+        name: "Founders",
+        creatorUserId: "user_alice",
+      });
+      return jsonResponse({ ...wireFixture, name: "Founders" }, 201);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const group = await junjo.groups.create({
+      kind: "guild",
+      name: "Founders",
+      creatorUserId: "user_alice" as UserId,
+    });
+    expect(group.name).toBe("Founders");
+  });
+
   it("throws JunjoError preserving the server's code, status, and message", async () => {
     const fetchMock = makeFetch(async () =>
       jsonResponse({ code: "bad_request", status: 400, message: "name: required" }, 400),

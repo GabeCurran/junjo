@@ -43,6 +43,7 @@ Creates a new group scoped to the calling game. Writes a `group.created` audit e
 | `visibility` | no | `"invite-only"` | One of `"public"`, `"invite-only"`, `"secret"`. |
 | `metadata` | no | `{}` | Arbitrary JSON object. |
 | `defaultRoleId` | no | null | Pre-assigned role for new members. The role must exist on this group; the server does not verify this on create (a defensive existence check is a post-V1 idea). |
+| `creatorUserId` | no | none | Optional external user id of the group's creator. When supplied, the create call atomically adds them as an active `GroupMember` in the same transaction, writes a second audit entry (`member.joined` with `payload.via = "creator"`), and fires the `member.joined` webhook event. Works for every visibility, so creators of `"invite-only"` and `"secret"` groups don't need a separate join call. If `defaultRoleId` is set AND a `Role` row with that id already exists in the new group, that role is assigned to the creator in the same transaction; otherwise the role assignment is silently skipped. |
 
 A missing or malformed body returns `400 bad_request` with the failing path in the message (e.g., `name: required`). A malformed JSON body also returns `400 bad_request`.
 
@@ -68,7 +69,7 @@ A missing or malformed body returns `400 bad_request` with the failing path in t
 
 ### Audit log
 
-Every successful create writes one entry:
+Every successful create writes one `group.created` entry. When `creatorUserId` is supplied, a second `member.joined` entry is written in the same transaction.
 
 | Field | Value |
 |-------|-------|
@@ -77,6 +78,20 @@ Every successful create writes one entry:
 | `targetId` | the new group id |
 | `actorUserId` | `null` (server-to-server creation; user actors arrive in later phases) |
 | `payload` | `{ kind, name, visibility, metadata, defaultRoleId }` |
+
+When `creatorUserId` is supplied, a follow-up entry:
+
+| Field | Value |
+|-------|-------|
+| `action` | `member.joined` |
+| `groupId` | the new group id |
+| `targetId` | the creator's external user id |
+| `actorUserId` | the creator's resolved JunjoUser id |
+| `payload` | `{ memberId, via: "creator" }`, plus `roleId` when a default role was assigned |
+
+### Webhook event
+
+When `creatorUserId` is supplied, the create call also fires `member.joined` (same shape as the invitation-accept and public-join flows).
 
 ## `GET /v1/groups/:id`
 

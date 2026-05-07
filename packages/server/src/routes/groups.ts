@@ -275,7 +275,14 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const metadataInput = (body.metadata ?? {}) as Prisma.InputJsonValue;
 
-    const group = await prisma.$transaction(async (tx) => {
+    // Resolve the creator's JunjoUser outside the main transaction (the
+    // helper opens its own short-lived tx for the upsert and must own
+    // its failing connection on P2002 retries; see identity.ts notes).
+    const creatorJunjoUserId = body.creatorUserId
+      ? await findOrCreateJunjoUser(prisma, gameId, body.creatorUserId)
+      : null;
+
+    const result = await prisma.$transaction(async (tx) => {
       const created = await tx.group.create({
         data: {
           gameId,
@@ -301,10 +308,70 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           } as Prisma.InputJsonValue,
         },
       });
-      return created;
+
+      if (!creatorJunjoUserId || !body.creatorUserId) {
+        return { group: created, member: null, assignedRoleId: null };
+      }
+
+      const member = await tx.groupMember.create({
+        data: {
+          groupId: created.id,
+          junjoUserId: creatorJunjoUserId,
+          status: "active",
+        },
+      });
+
+      // defaultRoleId is a free-form string with no FK; assign only
+      // when a Role row matching this group actually exists. Roles are
+      // normally created after the group, so on a fresh create this
+      // path almost always no-ops, but the check keeps the door open
+      // for callers who pre-seed Role rows for canned templates.
+      let assignedRoleId: string | null = null;
+      if (created.defaultRoleId) {
+        const role = await tx.role.findFirst({
+          where: { id: created.defaultRoleId, groupId: created.id },
+          select: { id: true },
+        });
+        if (role) {
+          await tx.memberRole.create({
+            data: { groupMemberId: member.id, roleId: role.id },
+          });
+          assignedRoleId = role.id;
+        }
+      }
+
+      await tx.auditEntry.create({
+        data: {
+          groupId: created.id,
+          actorUserId: creatorJunjoUserId,
+          action: "member.joined",
+          targetId: body.creatorUserId,
+          payload: {
+            memberId: member.id,
+            via: "creator",
+            ...(assignedRoleId ? { roleId: assignedRoleId } : {}),
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return { group: created, member, assignedRoleId };
     });
 
-    return c.json(serializeGroup(group, 0), 201);
+    if (result.member && body.creatorUserId) {
+      await dispatchEvent<MemberJoinedEvent>(prisma, hub, {
+        type: "member.joined",
+        gameId: gameId as GameId,
+        groupId: result.group.id as GroupId,
+        userId: body.creatorUserId as UserId,
+        member: toPublicMember(
+          result.member,
+          body.creatorUserId,
+          result.assignedRoleId ? [result.assignedRoleId] : [],
+        ),
+      });
+    }
+
+    return c.json(serializeGroup(result.group, result.member ? 1 : 0), 201);
   });
 
   r.patch("/:id", async (c) => {

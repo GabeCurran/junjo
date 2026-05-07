@@ -52,6 +52,17 @@ export interface CreateGroupInput {
   visibility?: GroupVisibility;
   metadata?: GroupMetadata;
   defaultRoleId?: RoleId;
+  // Optional external user id of the group's creator. When supplied, the
+  // create call atomically adds them as an active member, writes a
+  // `member.joined` audit entry tagged `via: "creator"`, and fires the
+  // `member.joined` webhook event in the same flow as a public-join.
+  // Works for every visibility (public, invite-only, secret) so creators
+  // of non-public groups don't need a separate join call. If
+  // `defaultRoleId` is set AND a Role row with that id already exists in
+  // the (newly created) group, the role is assigned to the creator in
+  // the same transaction; otherwise the role assignment is silently
+  // skipped.
+  creatorUserId?: UserId;
 }
 
 export interface UpdateGroupInput {

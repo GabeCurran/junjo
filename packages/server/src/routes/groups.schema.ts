@@ -8,6 +8,8 @@ export const createGroupBody = z.object({
   visibility: z.enum(VISIBILITY).optional(),
   metadata: z.record(z.unknown()).optional(),
   defaultRoleId: z.string().min(1).optional(),
+  // Same external-userId validation as joinGroupBody.
+  creatorUserId: z.string().min(1).optional(),
 });
 
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
