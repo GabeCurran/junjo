@@ -2,7 +2,7 @@
 // distinct from the boot-time env (which loads once into a typed Env).
 // Schemas live as top-level constants in `routes/*.schema.ts` and are
 // constructed at module-load time, so anything they consult must be
-// resolvable lazily — hence the getter/setter shape.
+// resolvable lazily; hence the getter/setter shape.
 
 const DEFAULT_MAX_PAGE_SIZE = 100;
 
