@@ -89,6 +89,7 @@ export interface WireGroup {
   defaultRoleId: string | null;
   parentGroupId: string | null;
   memberCount: number;
+  hasPasscode: boolean;
   createdAt: string;
   updatedAt: string;
   softDeletedAt: string | null;
@@ -105,6 +106,7 @@ export function deserializeGroup(w: WireGroup): Group {
     defaultRoleId: w.defaultRoleId === null ? null : (w.defaultRoleId as RoleId),
     parentGroupId: w.parentGroupId === null ? null : (w.parentGroupId as GroupId),
     memberCount: w.memberCount,
+    hasPasscode: w.hasPasscode,
     createdAt: new Date(w.createdAt),
     updatedAt: new Date(w.updatedAt),
     softDeletedAt: w.softDeletedAt === null ? null : new Date(w.softDeletedAt),
@@ -267,10 +269,14 @@ export class GroupsApi {
 
   // Open join. Server enforces that the group's `visibility` is "public";
   // invite-only groups return 403 and secret groups return 404.
-  async join(groupId: GroupId, userId: UserId): Promise<Member> {
+  // Pass `opts.passcode` when the group has `hasPasscode: true`; the
+  // server returns 403 `passcode_required` / `passcode_invalid` otherwise.
+  async join(groupId: GroupId, userId: UserId, opts?: { passcode?: string }): Promise<Member> {
+    const body: Record<string, string> = { userId };
+    if (opts?.passcode !== undefined) body.passcode = opts.passcode;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/join`,
-      { userId },
+      body,
     );
     return deserializeMember(wire);
   }

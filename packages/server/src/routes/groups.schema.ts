@@ -3,6 +3,13 @@ import { pageLimit } from "./page.schema.js";
 
 const VISIBILITY = ["public", "invite-only", "secret"] as const;
 
+// Passcode bounds. 4 chars is low enough to allow short numeric PINs
+// (room codes, "1234"-style); 128 is generous enough to fit a phrase
+// without becoming a covert long-form data field.
+export const PASSCODE_MIN_LENGTH = 4;
+export const PASSCODE_MAX_LENGTH = 128;
+const passcodeString = z.string().min(PASSCODE_MIN_LENGTH).max(PASSCODE_MAX_LENGTH);
+
 export const createGroupBody = z.object({
   kind: z.string().min(1).max(64),
   name: z.string().min(1).max(120),
@@ -11,6 +18,10 @@ export const createGroupBody = z.object({
   defaultRoleId: z.string().min(1).optional(),
   // Same external-userId validation as joinGroupBody.
   creatorUserId: z.string().min(1).optional(),
+  // Optional shared-secret join gate. Omitted = no passcode; a string
+  // hashes + stores. `null` is rejected on create (use omit instead);
+  // null is only meaningful on update for clearing.
+  passcode: passcodeString.optional(),
 });
 
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
@@ -34,6 +45,10 @@ export type ViewerQuery = z.infer<typeof viewerQuery>;
 
 export const joinGroupBody = z.object({
   userId: z.string().min(1),
+  // Required when the target group has a passcode set; ignored
+  // otherwise. The validator only checks shape (length); the
+  // join handler verifies against the stored hash.
+  passcode: passcodeString.optional(),
 });
 
 export type JoinGroupBody = z.infer<typeof joinGroupBody>;
@@ -44,6 +59,9 @@ export const updateGroupBody = z
     visibility: z.enum(VISIBILITY).optional(),
     metadata: z.record(z.unknown()).optional(),
     defaultRoleId: z.string().min(1).nullable().optional(),
+    // String = set new passcode (replaces any prior); null = clear.
+    // Omit to leave the existing passcode (if any) untouched.
+    passcode: passcodeString.nullable().optional(),
   })
   .refine((d) => Object.values(d).some((v) => v !== undefined), {
     message: "at least one field is required",

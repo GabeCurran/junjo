@@ -12,6 +12,7 @@ interface WireGroupSnapshot {
   defaultRoleId: string | null;
   parentGroupId: string | null;
   memberCount: number;
+  hasPasscode: boolean;
   createdAt: string;
   updatedAt: string;
   softDeletedAt: string | null;
@@ -27,6 +28,7 @@ const wireFixture: WireGroupSnapshot = {
   defaultRoleId: null,
   parentGroupId: null,
   memberCount: 0,
+  hasPasscode: false,
   createdAt: "2026-04-28T05:00:00.000Z",
   updatedAt: "2026-04-28T05:00:00.000Z",
   softDeletedAt: null,

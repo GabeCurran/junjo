@@ -20,6 +20,7 @@ const sampleEvent = {
     defaultRoleId: null,
     parentGroupId: null,
     memberCount: 0,
+    hasPasscode: false,
     createdAt: "2026-04-28T05:00:00.000Z",
     updatedAt: "2026-04-28T05:01:00.000Z",
     softDeletedAt: null,

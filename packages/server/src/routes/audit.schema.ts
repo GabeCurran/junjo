@@ -14,6 +14,8 @@ export const AUDIT_ACTIONS = [
   "group.relationship.cleared",
   "group.parent.set",
   "group.parent.cleared",
+  "group.passcode.set",
+  "group.passcode.cleared",
   "member.invited",
   "member.joined",
   "member.left",

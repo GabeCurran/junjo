@@ -16,6 +16,7 @@ import type {
 } from "@junjo/shared";
 import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
+import { hashSecret, verifySecret } from "../apiKey.js";
 import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
@@ -113,6 +114,7 @@ interface WireGroup {
   defaultRoleId: string | null;
   parentGroupId: string | null;
   memberCount: number;
+  hasPasscode: boolean;
   createdAt: string;
   updatedAt: string;
   softDeletedAt: string | null;
@@ -129,6 +131,8 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
     defaultRoleId: group.defaultRoleId,
     parentGroupId: group.parentGroupId,
     memberCount,
+    // Surface presence only; the hash itself never leaves the server.
+    hasPasscode: group.passcodeHash !== null,
     createdAt: group.createdAt.toISOString(),
     updatedAt: group.updatedAt.toISOString(),
     softDeletedAt: group.softDeletedAt ? group.softDeletedAt.toISOString() : null,
@@ -286,6 +290,11 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       ? await findOrCreateJunjoUser(prisma, gameId, body.creatorUserId)
       : null;
 
+    // Hash the passcode outside the transaction (scrypt is intentionally
+    // slow; holding it open across the hash would tie up a DB connection).
+    const passcodeHash = body.passcode ? await hashSecret(body.passcode) : null;
+    const passcodeSetAt = passcodeHash ? new Date() : null;
+
     const result = await prisma.$transaction(async (tx) => {
       const created = await tx.group.create({
         data: {
@@ -295,6 +304,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           visibility: body.visibility ?? "invite-only",
           metadata: metadataInput,
           defaultRoleId: body.defaultRoleId,
+          passcodeHash,
+          passcodeSetAt,
         },
       });
       await tx.auditEntry.create({
@@ -310,6 +321,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
             visibility: created.visibility,
             metadata: metadataInput,
             defaultRoleId: created.defaultRoleId,
+            // Don't log the plaintext passcode; presence-only.
+            hasPasscode: passcodeHash !== null,
           } as Prisma.InputJsonValue,
         },
       });
@@ -393,6 +406,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     }
     const body = parsed.data;
 
+    // Hash outside the transaction (scrypt is intentionally slow).
+    // We hash even when the new passcode equals the existing one in
+    // plaintext since we can't compare plaintexts; the verify path
+    // handles it. Skip hashing when the field was omitted entirely.
+    const newPasscodeHash =
+      body.passcode === undefined
+        ? undefined
+        : body.passcode === null
+          ? null
+          : await hashSecret(body.passcode);
+
     const updated = await prisma.$transaction(async (tx) => {
       const existing = await tx.group.findFirst({
         where: { id, gameId, softDeletedAt: null },
@@ -402,6 +426,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       const before: Record<string, unknown> = {};
       const after: Record<string, unknown> = {};
       const data: Prisma.GroupUpdateInput = {};
+      // Track passcode transitions separately so we can write a
+      // dedicated audit row (the standard group.updated row only logs
+      // presence as a boolean, never the value).
+      let passcodeTransition: "set" | "cleared" | "rotated" | null = null;
 
       if (body.name !== undefined && body.name !== existing.name) {
         before.name = existing.name;
@@ -423,6 +451,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         after.defaultRoleId = body.defaultRoleId;
         data.defaultRoleId = body.defaultRoleId;
       }
+      if (newPasscodeHash !== undefined) {
+        const hadPasscode = existing.passcodeHash !== null;
+        const willHavePasscode = newPasscodeHash !== null;
+        if (hadPasscode || willHavePasscode) {
+          before.hasPasscode = hadPasscode;
+          after.hasPasscode = willHavePasscode;
+          data.passcodeHash = newPasscodeHash;
+          data.passcodeSetAt = willHavePasscode ? new Date() : null;
+          passcodeTransition = willHavePasscode ? (hadPasscode ? "rotated" : "set") : "cleared";
+        }
+      }
 
       if (Object.keys(data).length === 0) {
         return { row: existing, changed: false };
@@ -443,6 +482,25 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           payload: { before, after } as Prisma.InputJsonValue,
         },
       });
+
+      // Dedicated passcode audit row: keeps "show me every passcode
+      // change" filterable via `?actions=group.passcode.set` without
+      // scanning every group.updated payload.
+      if (passcodeTransition) {
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: result.id,
+            actorUserId: null,
+            action:
+              passcodeTransition === "cleared" ? "group.passcode.cleared" : "group.passcode.set",
+            targetId: result.id,
+            payload: {
+              transition: passcodeTransition,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
 
       return { row: result, changed: true };
     });
@@ -827,7 +885,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid request body");
     }
-    const { userId } = parsed.data;
+    const { userId, passcode } = parsed.data;
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -836,6 +894,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (group.visibility === "secret") throw Errors.notFound("group");
     if (group.visibility !== "public") {
       throw Errors.permissionDenied("this group requires an invitation to join");
+    }
+
+    // Passcode gate: orthogonal to visibility. Only enforced on public
+    // join; invitation accept treats the invitation itself as the
+    // credential. Verify before resolving the JunjoUser to avoid
+    // leaking "user exists" information through identity creation.
+    if (group.passcodeHash) {
+      if (!passcode) throw Errors.passcodeRequired();
+      const ok = await verifySecret(passcode, group.passcodeHash);
+      if (!ok) throw Errors.passcodeInvalid();
     }
 
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);

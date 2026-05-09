@@ -72,6 +72,7 @@ function makeGroup(overrides: Partial<Group> = {}): Group {
     defaultRoleId: null,
     parentGroupId: null,
     memberCount: 0,
+    hasPasscode: false,
     createdAt: new Date("2026-04-28T00:00:00.000Z"),
     updatedAt: new Date("2026-04-28T00:00:00.000Z"),
     softDeletedAt: null,

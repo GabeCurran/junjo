@@ -46,6 +46,7 @@ export function toPublicGroup(group: PrismaGroup, memberCount: number): PublicGr
     defaultRoleId: group.defaultRoleId ? (group.defaultRoleId as RoleId) : null,
     parentGroupId: group.parentGroupId ? (group.parentGroupId as GroupId) : null,
     memberCount,
+    hasPasscode: group.passcodeHash !== null,
     createdAt: group.createdAt,
     updatedAt: group.updatedAt,
     softDeletedAt: group.softDeletedAt,

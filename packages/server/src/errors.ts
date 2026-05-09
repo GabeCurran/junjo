@@ -37,4 +37,7 @@ export const Errors = {
   rateLimitExceeded: (msg = "rate limit exceeded") =>
     new JunjoError("rate_limit_exceeded", 429, msg),
   banned: (msg = "user is banned") => new JunjoError("banned", 403, msg),
+  passcodeRequired: (msg = "this group requires a passcode to join") =>
+    new JunjoError("passcode_required", 403, msg),
+  passcodeInvalid: (msg = "invalid passcode") => new JunjoError("passcode_invalid", 403, msg),
 };

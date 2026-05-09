@@ -41,6 +41,10 @@ export interface Group {
   // null = top-level group. Cycle-checked server-side.
   parentGroupId: GroupId | null;
   memberCount: number;
+  // True when the group has a passcode set. The plaintext passcode is
+  // never returned by the API; this flag tells callers whether they
+  // need to prompt for one before calling `groups.join`.
+  hasPasscode: boolean;
   createdAt: Date;
   updatedAt: Date;
   softDeletedAt: Date | null;
@@ -63,6 +67,10 @@ export interface CreateGroupInput {
   // the same transaction; otherwise the role assignment is silently
   // skipped.
   creatorUserId?: UserId;
+  // Optional shared-secret join gate. 4-128 chars. Stored as a
+  // scrypt hash; never returned by the API. Members joining via
+  // `groups.join` must supply the same string.
+  passcode?: string;
 }
 
 export interface UpdateGroupInput {
@@ -70,6 +78,9 @@ export interface UpdateGroupInput {
   visibility?: GroupVisibility;
   metadata?: GroupMetadata;
   defaultRoleId?: RoleId | null;
+  // Pass a string to set/replace the passcode; pass `null` to clear it.
+  // Omit to leave the existing passcode (if any) untouched.
+  passcode?: string | null;
 }
 
 // =====================================================================
@@ -252,12 +263,18 @@ export type AuditAction =
   | "group.relationship.cleared"
   | "group.parent.set"
   | "group.parent.cleared"
+  | "group.passcode.set"
+  | "group.passcode.cleared"
   | "member.invited"
   | "member.joined"
   | "member.left"
   | "member.kicked"
+  | "member.banned"
+  | "member.unbanned"
   | "member.metadata.updated"
   | "member.notes.updated"
+  | "game.user.banned"
+  | "game.user.unbanned"
   | "role.created"
   | "role.updated"
   | "role.deleted"

@@ -16,6 +16,7 @@ A `Group` is the unit Junjo organizes players around: guild, clan, faction, part
 | `metadata` | object | Free-form JSON. The dev's bag for motto, banner URL, etc. |
 | `defaultRoleId` | string \| null | Role automatically assigned to new members; null until set. |
 | `memberCount` | number | Cached count of active members. `0` for a freshly created group. |
+| `hasPasscode` | boolean | `true` when a join passcode is set. The plaintext passcode is never returned; callers use this flag to know whether `groups.join` needs a `passcode` field. See [Passcodes](#passcodes). |
 | `createdAt` | string | ISO 8601 timestamp. |
 | `updatedAt` | string | ISO 8601 timestamp. |
 | `softDeletedAt` | string \| null | Set when the group is soft-deleted; null otherwise. |
@@ -43,6 +44,7 @@ Creates a new group scoped to the calling game. Writes a `group.created` audit e
 | `visibility` | no | `"invite-only"` | One of `"public"`, `"invite-only"`, `"secret"`. |
 | `metadata` | no | `{}` | Arbitrary JSON object. |
 | `defaultRoleId` | no | null | Pre-assigned role for new members. The role must exist on this group; the server does not verify this on create (a defensive existence check is a post-V1 idea). |
+| `passcode` | no | none | Optional shared-secret join gate. 4-128 chars. Stored as a scrypt hash; the plaintext is never returned. Members joining via `groups.join` must supply the same string. Orthogonal to `visibility` -- a public group with a passcode is "discoverable but gated". See [Passcodes](#passcodes). |
 | `creatorUserId` | no | none | Optional external user id of the group's creator. When supplied, the create call atomically adds them as an active `GroupMember` in the same transaction, writes a second audit entry (`member.joined` with `payload.via = "creator"`), and fires the `member.joined` webhook event. Works for every visibility, so creators of `"invite-only"` and `"secret"` groups don't need a separate join call. If `defaultRoleId` is set AND a `Role` row with that id already exists in the new group, that role is assigned to the creator in the same transaction; otherwise the role assignment is silently skipped. |
 
 A missing or malformed body returns `400 bad_request` with the failing path in the message (e.g., `name: required`). A malformed JSON body also returns `400 bad_request`.
@@ -210,6 +212,7 @@ Partially updates a group. The body is a subset of `{ name, visibility, metadata
 | `visibility` | `"public" \| "invite-only" \| "secret"` | Optional. |
 | `metadata` | object | Optional. **Replaces the existing metadata wholesale**; not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
 | `defaultRoleId` | string \| null | Optional. Pass `null` to clear; pass a string to set. |
+| `passcode` | string \| null | Optional. Pass a 4-128 char string to set or replace the join passcode; pass `null` to clear it. Omit to leave any existing passcode untouched. See [Passcodes](#passcodes). |
 
 An empty body, an unknown visibility value, an empty `name`, or a malformed JSON body all return `400 bad_request`.
 
@@ -482,12 +485,13 @@ If the user previously left or was kicked from this group, the existing `GroupMe
 ### Request
 
 ```json
-{ "userId": "user_alice" }
+{ "userId": "user_alice", "passcode": "open-sesame" }
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
 | `userId` | yes | The dev's external user id. The route auto-creates a `JunjoUser` and `ExternalIdentity` for unknown users (same upsert semantics as invitation accept). |
+| `passcode` | conditional | Required when the target group has `hasPasscode: true`; ignored otherwise. The passcode check runs **before** identity resolution so a wrong passcode does not auto-create a `JunjoUser` for the caller's id. |
 
 ### Response
 
@@ -529,6 +533,9 @@ Fires `member.joined` with the new `Member` body, mirroring the invitation-accep
 |------|--------|------|
 | `bad_request` | 400 | Body missing `userId` or malformed JSON. |
 | `permission_denied` | 403 | The group's `visibility` is `"invite-only"`. The error message is `"this group requires an invitation to join"`. |
+| `passcode_required` | 403 | The group has a passcode set and the body omitted `passcode`. |
+| `passcode_invalid` | 403 | The supplied `passcode` did not match. |
+| `banned` | 403 | The user is game-banned or per-group-banned (with an active `bannedUntil`). |
 | `not_found` | 404 | No group with that id in the calling game, or the group is soft-deleted, or the group's `visibility` is `"secret"` (existence stays invisible to non-members). |
 | `already_member` | 409 | The user already has an active `GroupMember` row in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -697,6 +704,56 @@ both check the ban state before any state mutation:
 `POST /v1/groups/:id/bulk-invite` surfaces banned users as per-row
 errors (`{ row, reason: "user is banned from this group" }`) rather
 than silent skips, so the operator sees the moderation outcome.
+
+## Passcodes
+
+Optional shared-secret join gate, set per-group. When a group has a
+passcode, `POST /v1/groups/:id/join` requires the caller to send a
+matching `passcode` field in the body in addition to passing the
+visibility / ban checks. Stored as a scrypt hash (same primitive as
+API keys); the plaintext is never returned by any route. Surfaced in
+serialized `Group` responses as `hasPasscode: boolean`.
+
+Passcode is **orthogonal to visibility** -- not a fourth visibility
+mode. A `"public"` group with a passcode is "discoverable but gated"
+(the listening-room pattern). An `"invite-only"` or `"secret"` group
+with a passcode is harmless: the `/join` route is already blocked, and
+invitation accept does not consult the passcode (the invitation IS
+the credential).
+
+### Setting a passcode
+
+| Surface | Behavior |
+|---------|----------|
+| `POST /v1/groups` | Optional `passcode: string` (4-128 chars). |
+| `PATCH /v1/groups/:id` | Optional `passcode: string \| null`. String sets/replaces; `null` clears; omit to leave existing untouched. |
+
+### Verification
+
+`POST /v1/groups/:id/join` runs the passcode check **before** identity
+resolution, so a wrong passcode does not auto-create a `JunjoUser` for
+the caller's id (no enumeration via failed attempts).
+
+| Code | Status | When |
+|------|--------|------|
+| `passcode_required` | 403 | Group has a passcode set but the body omitted `passcode`. |
+| `passcode_invalid` | 403 | Supplied `passcode` did not match. |
+
+### Audit
+
+Passcode transitions write a dedicated audit row in addition to the
+standard `group.updated` row. Plaintext is never logged; only the
+transition shape:
+
+| Action | Payload | When |
+|--------|---------|------|
+| `group.passcode.set` | `{ transition: "set" }` | First time a passcode is set on this group. |
+| `group.passcode.set` | `{ transition: "rotated" }` | A new passcode replaces an existing one. |
+| `group.passcode.cleared` | `{ transition: "cleared" }` | Existing passcode is removed (`passcode: null`). |
+
+Filter via `?actions=group.passcode.set,group.passcode.cleared` on
+the `/admin/audit` endpoint to see every passcode change for a game
+without scanning `group.updated` payloads.
 
 ## `GET /v1/groups/:id/members/:userId`
 

@@ -108,6 +108,15 @@ model Group {
   visibility    String // "public" | "invite-only" | "secret"
   metadata      Json    @default("{}")
   defaultRoleId String?
+  // Optional shared-secret join gate. When non-null, `POST /:id/join`
+  // requires the caller to send a matching `passcode` in the body in
+  // addition to passing the visibility / ban checks. Stored as a
+  // scrypt hash (apiKey.ts hashSecret/verifySecret); the plaintext is
+  // never persisted. Orthogonal to visibility -- a public group with
+  // a passcode is "discoverable but gated", an invite-only group with
+  // a passcode is harmless (the join path is already blocked).
+  passcodeHash  String?
+  passcodeSetAt DateTime?
   // Sub-group / alliance parent. WoW-style guild alliances and
   // multi-tier factions both use this.
   parentGroupId String?
