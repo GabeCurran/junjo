@@ -426,6 +426,43 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/invitations/:code/accept", () => {
     expect(stored?.usedAt).toBeNull();
   });
 
+  it.each(["left", "kicked"] as const)(
+    "reactivates a %s member when they accept an invite",
+    async (status) => {
+      const group = await seedGroup();
+      const existingUser = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, junjoUserId: existingUser.id, externalUserId: "user_alice" },
+      });
+      const existingMember = await prisma.groupMember.create({
+        data: {
+          groupId: group.id,
+          junjoUserId: existingUser.id,
+          status,
+          leftAt: new Date(),
+        },
+      });
+      const code = status === "left" ? "leftinvitecode__" : "kickedinvite____";
+      const inv = await seedInvite(group.id, code);
+
+      const res = await postAccept(code, { userId: "user_alice" });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { id: string; status: string };
+      expect(body.id).toBe(existingMember.id);
+      expect(body.status).toBe("active");
+
+      const storedMember = await prisma.groupMember.findUnique({
+        where: { id: existingMember.id },
+      });
+      expect(storedMember?.status).toBe("active");
+      expect(storedMember?.leftAt).toBeNull();
+
+      const storedInvite = await prisma.invitation.findUnique({ where: { id: inv.id } });
+      expect(storedInvite?.usedAt).not.toBeNull();
+      expect(storedInvite?.usedByUserId).toBe(existingUser.id);
+    },
+  );
+
   it("returns 404 when the invitation does not exist", async () => {
     const res = await postAccept("nosuchcode______", { userId: "user_alice" });
     expect(res.status).toBe(404);

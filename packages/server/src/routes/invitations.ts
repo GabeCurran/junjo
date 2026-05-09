@@ -148,15 +148,20 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       const existing = await tx.groupMember.findUnique({
         where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
       });
-      if (existing) throw Errors.alreadyMember();
+      if (existing?.status === "active") throw Errors.alreadyMember();
 
-      const member = await tx.groupMember.create({
-        data: {
-          groupId: invitation.groupId,
-          junjoUserId,
-          status: "active",
-        },
-      });
+      const member = existing
+        ? await tx.groupMember.update({
+            where: { id: existing.id },
+            data: { status: "active", leftAt: null },
+          })
+        : await tx.groupMember.create({
+            data: {
+              groupId: invitation.groupId,
+              junjoUserId,
+              status: "active",
+            },
+          });
 
       await tx.invitation.update({
         where: { id: invitation.id },
