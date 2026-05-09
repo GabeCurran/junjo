@@ -38,6 +38,7 @@ model Game {
   friendTags         FriendTag[]
   userVisibilities   UserVisibility[]
   gameBans           GameBan[]
+  auditEntries       AuditEntry[]
 
   @@index([networkId])
 }
@@ -411,8 +412,14 @@ model Invitation {
 // (S3 cold storage on the Pro tier) will be easier to bolt on.
 model AuditEntry {
   id          String     @id @default(cuid())
-  groupId     String
-  group       Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  // Denormalized from group.gameId for query efficiency on the per-game
+  // admin audit feed and to support game-scoped events (groupId=null
+  // when the action is game-wide rather than tied to a single group --
+  // e.g. game.user.banned / game.user.unbanned).
+  gameId      String
+  game        Game       @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  groupId     String?
+  group       Group?     @relation(fields: [groupId], references: [id], onDelete: Cascade)
   // null when an action is taken by the system (invitation expiry,
   // soft-delete cleanup, etc.).
   actorUserId String?
@@ -423,6 +430,7 @@ model AuditEntry {
   createdAt   DateTime   @default(now())
 
   @@index([groupId, createdAt(sort: Desc)])
+  @@index([gameId, createdAt(sort: Desc)])
   @@index([actorUserId, createdAt(sort: Desc)])
 }
 

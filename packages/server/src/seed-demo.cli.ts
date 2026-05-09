@@ -373,6 +373,7 @@ async function main(): Promise<void> {
       const actor = pick(users, i + group.id.length);
       await prisma.auditEntry.create({
         data: {
+          gameId: group.gameId,
           groupId: group.id,
           actorUserId: i % 7 === 0 ? null : actor.id, // some system actions
           action,

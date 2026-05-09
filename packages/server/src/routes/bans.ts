@@ -63,38 +63,56 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
 
     const now = new Date();
-    const existing = await prisma.gameBan.findUnique({
-      where: { gameId_junjoUserId: { gameId, junjoUserId } },
+    const ban = await prisma.$transaction(async (tx) => {
+      const existing = await tx.gameBan.findUnique({
+        where: { gameId_junjoUserId: { gameId, junjoUserId } },
+      });
+      const isExistingActive = existing
+        ? existing.expiresAt === null || existing.expiresAt > now
+        : false;
+      // GameBan row carries bannedAt + reason + bannedByUserId by
+      // design; the audit row below is the same event in the generic
+      // /admin/audit feed (filterable by `actions=game.user.banned`).
+      const result = existing
+        ? await tx.gameBan.update({
+            where: { id: existing.id },
+            data: {
+              expiresAt: expiresAtValue,
+              reason: reasonValue,
+              // Refresh `bannedAt` only when re-banning after expiry;
+              // an in-place edit of an active ban keeps the original
+              // timestamp so the timeline reads cleanly.
+              ...(isExistingActive ? {} : { bannedAt: now }),
+            },
+          })
+        : await tx.gameBan.create({
+            data: {
+              gameId,
+              junjoUserId,
+              expiresAt: expiresAtValue,
+              reason: reasonValue,
+              bannedAt: now,
+            },
+          });
+      await tx.auditEntry.create({
+        data: {
+          gameId,
+          // Game-scoped event: no per-group context. Drops out of
+          // per-group audit feeds; appears in the per-game and recent
+          // /admin/audit feeds.
+          groupId: null,
+          actorUserId: null,
+          action: "game.user.banned",
+          targetId: userId,
+          payload: {
+            gameBanId: result.id,
+            reason: reasonValue,
+            expiresAt: expiresAtValue ? expiresAtValue.toISOString() : null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
     });
-    const isExistingActive = existing
-      ? existing.expiresAt === null || existing.expiresAt > now
-      : false;
-    // The GameBan row itself is the audit trail for game-level bans:
-    // it carries bannedAt + reason + bannedByUserId by design.
-    // AuditEntry is per-group (groupId is non-null in the schema) so
-    // we don't write a parallel audit row here; the webhook event below
-    // covers live observability.
-    const ban = existing
-      ? await prisma.gameBan.update({
-          where: { id: existing.id },
-          data: {
-            expiresAt: expiresAtValue,
-            reason: reasonValue,
-            // Refresh `bannedAt` only when re-banning after expiry; an
-            // in-place edit of an active ban keeps the original
-            // timestamp so the timeline reads cleanly.
-            ...(isExistingActive ? {} : { bannedAt: now }),
-          },
-        })
-      : await prisma.gameBan.create({
-          data: {
-            gameId,
-            junjoUserId,
-            expiresAt: expiresAtValue,
-            reason: reasonValue,
-            bannedAt: now,
-          },
-        });
 
     await dispatchEvent<GameUserBannedEvent>(prisma, hub, {
       type: "game.user.banned",
@@ -120,7 +138,19 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!existing) throw Errors.notFound("ban");
 
-    await prisma.gameBan.delete({ where: { id: existing.id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.gameBan.delete({ where: { id: existing.id } });
+      await tx.auditEntry.create({
+        data: {
+          gameId,
+          groupId: null,
+          actorUserId: null,
+          action: "game.user.unbanned",
+          targetId: userId,
+          payload: { gameBanId: existing.id } as Prisma.InputJsonValue,
+        },
+      });
+    });
 
     await dispatchEvent<GameUserUnbannedEvent>(prisma, hub, {
       type: "game.user.unbanned",

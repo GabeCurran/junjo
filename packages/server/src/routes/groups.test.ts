@@ -890,6 +890,7 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/groups/:id", () => {
     const group = await seedGroup();
     await prisma.auditEntry.create({
       data: {
+        gameId,
         groupId: group.id,
         action: "group.created",
         targetId: group.id,

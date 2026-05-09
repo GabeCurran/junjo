@@ -343,10 +343,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
       data: { groupId: group2.id, junjoUserId: userB.id, status: "active" },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group1.id, action: "group.created", payload: {} },
+      data: { gameId: group1.gameId, groupId: group1.id, action: "group.created", payload: {} },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group2.id, action: "group.updated", payload: {} },
+      data: { gameId: group2.gameId, groupId: group2.id, action: "group.updated", payload: {} },
     });
 
     const res = await statsFetch();
@@ -437,10 +437,22 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
     const justInside = new Date(now - 60 * 60 * 1000); // 1h ago
     const wayOutside = new Date(now - 48 * 60 * 60 * 1000); // 48h ago
     await prisma.auditEntry.create({
-      data: { groupId: group.id, action: "group.created", payload: {}, createdAt: justInside },
+      data: {
+        gameId: group.gameId,
+        groupId: group.id,
+        action: "group.created",
+        payload: {},
+        createdAt: justInside,
+      },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group.id, action: "group.updated", payload: {}, createdAt: wayOutside },
+      data: {
+        gameId: group.gameId,
+        groupId: group.id,
+        action: "group.updated",
+        payload: {},
+        createdAt: wayOutside,
+      },
     });
     const res = await statsFetch();
     const body = (await res.json()) as Record<string, number>;
@@ -460,7 +472,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/stats", () => {
       },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group.id, action: "group.deleted", payload: {} },
+      data: { gameId: group.gameId, groupId: group.id, action: "group.deleted", payload: {} },
     });
     const res = await statsFetch();
     const body = (await res.json()) as Record<string, number>;
@@ -549,6 +561,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     const actor = await prisma.junjoUser.create({ data: {} });
     const created = await prisma.auditEntry.create({
       data: {
+        gameId: group.gameId,
         groupId: group.id,
         action: "member.joined",
         actorUserId: actor.id,
@@ -591,6 +604,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     const t = Date.now();
     await prisma.auditEntry.create({
       data: {
+        gameId: group.gameId,
         groupId: group.id,
         action: "group.created",
         payload: {},
@@ -599,6 +613,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     });
     await prisma.auditEntry.create({
       data: {
+        gameId: group.gameId,
         groupId: group.id,
         action: "group.updated",
         payload: {},
@@ -607,6 +622,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     });
     await prisma.auditEntry.create({
       data: {
+        gameId: group.gameId,
         groupId: group.id,
         action: "member.joined",
         payload: {},
@@ -635,7 +651,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
       },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group.id, action: "group.deleted", payload: {} },
+      data: { gameId: group.gameId, groupId: group.id, action: "group.deleted", payload: {} },
     });
     const res = await auditFetch();
     const body = (await res.json()) as { items: WireItem[] };
@@ -666,10 +682,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
       },
     });
     await prisma.auditEntry.create({
-      data: { groupId: groupA.id, action: "group.created", payload: {} },
+      data: { gameId: groupA.gameId, groupId: groupA.id, action: "group.created", payload: {} },
     });
     await prisma.auditEntry.create({
-      data: { groupId: groupB.id, action: "group.created", payload: {} },
+      data: { gameId: groupB.gameId, groupId: groupB.id, action: "group.created", payload: {} },
     });
     const res = await auditFetch();
     const body = (await res.json()) as { items: WireItem[] };
@@ -691,7 +707,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     });
     for (let i = 0; i < 25; i++) {
       await prisma.auditEntry.create({
-        data: { groupId: group.id, action: "group.updated", payload: { i } },
+        data: { gameId: group.gameId, groupId: group.id, action: "group.updated", payload: { i } },
       });
     }
     const res = await auditFetch();
@@ -712,7 +728,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
     });
     for (let i = 0; i < 8; i++) {
       await prisma.auditEntry.create({
-        data: { groupId: group.id, action: "group.updated", payload: { i } },
+        data: { gameId: group.gameId, groupId: group.id, action: "group.updated", payload: { i } },
       });
     }
     const res = await auditFetch("?limit=5");
@@ -747,7 +763,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/audit", () => {
       },
     });
     await prisma.auditEntry.create({
-      data: { groupId: group.id, action: "group.created", payload: {} },
+      data: { gameId: group.gameId, groupId: group.id, action: "group.created", payload: {} },
     });
     const res = await auditFetch();
     const body = (await res.json()) as { items: WireItem[] };

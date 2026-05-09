@@ -5,7 +5,9 @@ import { listAuditQuery } from "./audit.schema.js";
 
 export interface WireAuditEntry {
   id: string;
-  groupId: string;
+  // Null for game-scoped events (e.g. game.user.banned). Non-null for
+  // every per-group action.
+  groupId: string | null;
   actorUserId: string | null;
   action: string;
   targetId: string | null;

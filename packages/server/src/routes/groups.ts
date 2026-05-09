@@ -299,6 +299,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: created.id,
           actorUserId: null,
           action: "group.created",
@@ -346,6 +347,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: created.id,
           actorUserId: creatorJunjoUserId,
           action: "member.joined",
@@ -433,6 +435,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: result.id,
           actorUserId: null,
           action: "group.updated",
@@ -493,6 +496,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: result.id,
           actorUserId: null,
           action: "group.deleted",
@@ -549,6 +553,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: result.id,
           actorUserId: null,
           action: "group.restored",
@@ -612,6 +617,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.invited",
@@ -860,6 +866,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: junjoUserId,
           action: "member.joined",
@@ -920,6 +927,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: junjoUserId,
           action: "member.left",
@@ -985,6 +993,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.kicked",
@@ -1064,6 +1073,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.banned",
@@ -1119,6 +1129,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.unbanned",
@@ -1202,6 +1213,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       if (metadataChanged) {
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: group.id,
             actorUserId: null,
             action: "member.metadata.updated",
@@ -1216,6 +1228,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       if (notesChanged) {
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: group.id,
             actorUserId: null,
             action: "member.notes.updated",
@@ -1381,6 +1394,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         all.push(created);
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: group.id,
             actorUserId: null,
             action: "member.invited",
@@ -1452,6 +1466,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "role.assigned",
@@ -1512,6 +1527,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "role.unassigned",
@@ -1615,6 +1631,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       if (existing) auditPayload.before = { grant: existing.grant };
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "permission.override.set",
@@ -1672,6 +1689,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "permission.override.cleared",
@@ -1753,6 +1771,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "role.created",
@@ -1858,6 +1877,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         if (existing) auditPayload.before = { type: existing.type };
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: dir.aId,
             actorUserId: null,
             action: "group.relationship.set",
@@ -1930,6 +1950,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         });
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: dir.aId,
             actorUserId: null,
             action: "group.relationship.cleared",
@@ -2057,6 +2078,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: parentGroupId === null ? "group.parent.cleared" : "group.parent.set",

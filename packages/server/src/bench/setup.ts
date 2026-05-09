@@ -161,12 +161,13 @@ async function seed(prisma: PrismaClient, gameId: string): Promise<void> {
   }
 
   for (let i = 0; i < BENCH_TARGETS.audit; i += BENCH_INSERT_BATCH) {
-    const data: { groupId: string; action: string; createdAt: Date }[] = [];
+    const data: { gameId: string; groupId: string; action: string; createdAt: Date }[] = [];
     const end = Math.min(i + BENCH_INSERT_BATCH, BENCH_TARGETS.audit);
     for (let idx = i; idx < end; idx++) {
       const targetGroupId = groupIds[idx % groupIds.length];
       if (!targetGroupId) continue;
       data.push({
+        gameId,
         groupId: targetGroupId,
         action: idx % 3 === 0 ? "member.joined" : idx % 3 === 1 ? "member.left" : "role.assigned",
         createdAt: new Date(baseTime + idx * 500),

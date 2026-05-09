@@ -157,6 +157,7 @@ export function updateRoleByIdHandler(prisma: PrismaClient): Handler {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: existing.groupId,
           actorUserId: null,
           action: "role.updated",
@@ -211,6 +212,7 @@ export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Han
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: role.groupId,
           actorUserId: null,
           action: "permission.granted",
@@ -262,6 +264,7 @@ export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Ha
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: role.groupId,
           actorUserId: null,
           action: "permission.revoked",
@@ -305,6 +308,7 @@ export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Hand
       await tx.role.delete({ where: { id: existing.id } });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: existing.groupId,
           actorUserId: null,
           action: "role.deleted",

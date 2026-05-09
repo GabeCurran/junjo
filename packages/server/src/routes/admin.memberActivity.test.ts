@@ -50,9 +50,15 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     });
   }
 
-  async function seedAudit(groupId: string, createdAt: Date, action = "member.joined") {
+  async function seedAudit(
+    gameId: string,
+    groupId: string,
+    createdAt: Date,
+    action = "member.joined",
+  ) {
     return prisma.auditEntry.create({
       data: {
+        gameId,
         groupId,
         action,
         actorUserId: null,
@@ -92,7 +98,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const group = await seedGroup(game.id, "g1");
     // Wednesday 2026-01-07 at 14:30 UTC. UTC day-of-week: Wednesday=3.
     // UTC hour: 14.
-    await seedAudit(group.id, new Date("2026-01-07T14:30:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-01-07T14:30:00Z"));
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -111,9 +117,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     // Three entries on Sunday 2026-01-04 at hour 9 UTC. dow=0, hour=9.
-    await seedAudit(group.id, new Date("2026-01-04T09:01:00Z"));
-    await seedAudit(group.id, new Date("2026-01-04T09:30:00Z"));
-    await seedAudit(group.id, new Date("2026-01-04T09:59:59Z"));
+    await seedAudit(game.id, group.id, new Date("2026-01-04T09:01:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-01-04T09:30:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-01-04T09:59:59Z"));
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -125,13 +131,13 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     // 2026-01-04 (Sun) through 2026-01-10 (Sat), one entry each.
-    await seedAudit(group.id, new Date("2026-01-04T12:00:00Z")); // Sun -> 0
-    await seedAudit(group.id, new Date("2026-01-05T12:00:00Z")); // Mon -> 1
-    await seedAudit(group.id, new Date("2026-01-06T12:00:00Z")); // Tue -> 2
-    await seedAudit(group.id, new Date("2026-01-07T12:00:00Z")); // Wed -> 3
-    await seedAudit(group.id, new Date("2026-01-08T12:00:00Z")); // Thu -> 4
-    await seedAudit(group.id, new Date("2026-01-09T12:00:00Z")); // Fri -> 5
-    await seedAudit(group.id, new Date("2026-01-10T12:00:00Z")); // Sat -> 6
+    await seedAudit(game.id, group.id, new Date("2026-01-04T12:00:00Z")); // Sun -> 0
+    await seedAudit(game.id, group.id, new Date("2026-01-05T12:00:00Z")); // Mon -> 1
+    await seedAudit(game.id, group.id, new Date("2026-01-06T12:00:00Z")); // Tue -> 2
+    await seedAudit(game.id, group.id, new Date("2026-01-07T12:00:00Z")); // Wed -> 3
+    await seedAudit(game.id, group.id, new Date("2026-01-08T12:00:00Z")); // Thu -> 4
+    await seedAudit(game.id, group.id, new Date("2026-01-09T12:00:00Z")); // Fri -> 5
+    await seedAudit(game.id, group.id, new Date("2026-01-10T12:00:00Z")); // Sat -> 6
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -147,7 +153,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     // 24 entries at 24 distinct hours on Sunday 2026-01-04.
     for (let h = 0; h < 24; h += 1) {
       const ts = new Date(Date.UTC(2026, 0, 4, h, 0, 0));
-      await seedAudit(group.id, ts);
+      await seedAudit(game.id, group.id, ts);
     }
 
     const res = await getActivity(game.id);
@@ -164,8 +170,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const dead = await seedGroup(game.id, "dead", { softDeleted: true });
     // Both groups generate one entry at the same timestamp.
     const ts = new Date("2026-01-04T08:00:00Z"); // Sun, hr 8
-    await seedAudit(live.id, ts);
-    await seedAudit(dead.id, ts);
+    await seedAudit(live.gameId, live.id, ts);
+    await seedAudit(dead.gameId, dead.id, ts);
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -180,9 +186,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const c = await seedGroup(game.id, "C");
     // Three groups, each one entry at the same time.
     const ts = new Date("2026-01-04T15:00:00Z"); // Sun, hr 15
-    await seedAudit(a.id, ts);
-    await seedAudit(b.id, ts);
-    await seedAudit(c.id, ts);
+    await seedAudit(a.gameId, a.id, ts);
+    await seedAudit(b.gameId, b.id, ts);
+    await seedAudit(c.gameId, c.id, ts);
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -196,8 +202,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const ag = await seedGroup(a.id, "ag");
     const bg = await seedGroup(b.id, "bg");
     const ts = new Date("2026-01-04T10:00:00Z");
-    await seedAudit(ag.id, ts);
-    await seedAudit(bg.id, ts);
+    await seedAudit(ag.gameId, ag.id, ts);
+    await seedAudit(bg.gameId, bg.id, ts);
 
     const res = await getActivity(a.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -209,9 +215,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     // Three entries: before window, in window, after window.
-    await seedAudit(group.id, new Date("2025-12-31T12:00:00Z"));
-    await seedAudit(group.id, new Date("2026-01-04T12:00:00Z")); // in window
-    await seedAudit(group.id, new Date("2026-02-15T12:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2025-12-31T12:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-01-04T12:00:00Z")); // in window
+    await seedAudit(game.id, group.id, new Date("2026-02-15T12:00:00Z"));
 
     const res = await getActivity(game.id, "from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z");
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -225,7 +231,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     const boundary = new Date("2026-01-04T00:00:00Z");
-    await seedAudit(group.id, boundary);
+    await seedAudit(game.id, group.id, boundary);
 
     const res = await getActivity(game.id, "from=2026-01-01T00:00:00Z&to=2026-01-04T00:00:00Z");
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -236,7 +242,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     const boundary = new Date("2026-01-04T00:00:00Z");
-    await seedAudit(group.id, boundary);
+    await seedAudit(game.id, group.id, boundary);
 
     const res = await getActivity(game.id, "from=2026-01-04T00:00:00Z");
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -246,8 +252,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
   it("supports a from-only window (open upper bound)", async () => {
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
-    await seedAudit(group.id, new Date("2025-01-01T08:00:00Z"));
-    await seedAudit(group.id, new Date("2026-04-15T08:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2025-01-01T08:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-04-15T08:00:00Z"));
 
     const res = await getActivity(game.id, "from=2026-04-01T00:00:00Z");
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -257,8 +263,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
   it("supports a to-only window (open lower bound)", async () => {
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
-    await seedAudit(group.id, new Date("2025-01-01T08:00:00Z"));
-    await seedAudit(group.id, new Date("2026-04-15T08:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2025-01-01T08:00:00Z"));
+    await seedAudit(game.id, group.id, new Date("2026-04-15T08:00:00Z"));
 
     const res = await getActivity(game.id, "to=2026-04-01T00:00:00Z");
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -285,11 +291,11 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
     const ts = new Date("2026-01-04T11:00:00Z"); // Sun, hr 11
-    await seedAudit(group.id, ts, "member.joined");
-    await seedAudit(group.id, ts, "member.left");
-    await seedAudit(group.id, ts, "role.created");
-    await seedAudit(group.id, ts, "permission.granted");
-    await seedAudit(group.id, ts, "group.updated");
+    await seedAudit(game.id, group.id, ts, "member.joined");
+    await seedAudit(game.id, group.id, ts, "member.left");
+    await seedAudit(game.id, group.id, ts, "role.created");
+    await seedAudit(game.id, group.id, ts, "permission.granted");
+    await seedAudit(game.id, group.id, ts, "group.updated");
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;
@@ -345,8 +351,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/membe
   it("preserves all 168 cells in row-major order even when only a few cells have data", async () => {
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");
-    await seedAudit(group.id, new Date("2026-01-07T14:30:00Z")); // Wed, 14
-    await seedAudit(group.id, new Date("2026-01-10T03:00:00Z")); // Sat, 3
+    await seedAudit(game.id, group.id, new Date("2026-01-07T14:30:00Z")); // Wed, 14
+    await seedAudit(game.id, group.id, new Date("2026-01-10T03:00:00Z")); // Sat, 3
 
     const res = await getActivity(game.id);
     const body = (await res.json()) as WireAdminMemberActivity;

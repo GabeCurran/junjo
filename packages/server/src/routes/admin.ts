@@ -187,8 +187,10 @@ export interface WireAdminAuditEntry {
   action: string;
   gameId: string;
   gameName: string;
-  groupId: string;
-  groupName: string;
+  // Null for game-scoped events (e.g. game.user.banned). When null,
+  // groupName is null and groupSoftDeleted is false.
+  groupId: string | null;
+  groupName: string | null;
   groupSoftDeleted: boolean;
   actorUserId: string | null;
   targetId: string | null;
@@ -202,21 +204,22 @@ export interface WireAdminAuditPage {
 
 // Mirrors the `include` shape so the serializer can take a typed
 // parameter and the call site stays honest about requested fields.
+// `group` is optional because game-scoped events have a null groupId
+// and the relation walk returns null in that case.
 type AdminAuditRow = AuditEntry & {
-  group: Pick<Group, "name" | "gameId" | "softDeletedAt"> & {
-    game: Pick<Game, "name">;
-  };
+  game: Pick<Game, "name">;
+  group: Pick<Group, "name" | "softDeletedAt"> | null;
 };
 
 export function serializeAdminAuditEntry(row: AdminAuditRow): WireAdminAuditEntry {
   return {
     id: row.id,
     action: row.action,
-    gameId: row.group.gameId,
-    gameName: row.group.game.name,
+    gameId: row.gameId,
+    gameName: row.game.name,
     groupId: row.groupId,
-    groupName: row.group.name,
-    groupSoftDeleted: row.group.softDeletedAt !== null,
+    groupName: row.group?.name ?? null,
+    groupSoftDeleted: row.group?.softDeletedAt != null,
     actorUserId: row.actorUserId,
     targetId: row.targetId,
     payload: (row.payload ?? {}) as Record<string, unknown>,
@@ -244,14 +247,8 @@ export function listRecentAuditHandler(prisma: PrismaClient): Handler {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit,
       include: {
-        group: {
-          select: {
-            name: true,
-            gameId: true,
-            softDeletedAt: true,
-            game: { select: { name: true } },
-          },
-        },
+        game: { select: { name: true } },
+        group: { select: { name: true, softDeletedAt: true } },
       },
     });
 
@@ -975,6 +972,7 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.kicked",
@@ -1060,6 +1058,7 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
       if (metadataChanged) {
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: group.id,
             actorUserId: null,
             action: "member.metadata.updated",
@@ -1074,6 +1073,7 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
       if (notesChanged) {
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: group.id,
             actorUserId: null,
             action: "member.notes.updated",
@@ -1167,6 +1167,7 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
       if (existing) auditPayload.before = { grant: existing.grant };
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "permission.override.set",
@@ -1220,6 +1221,7 @@ export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient):
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "permission.override.cleared",
@@ -1312,6 +1314,7 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "member.invited",
@@ -1486,6 +1489,7 @@ export function createAdminGroupRoleHandler(prisma: PrismaClient, hub: EventHub)
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: "role.created",
@@ -1575,6 +1579,7 @@ export function updateAdminRoleHandler(prisma: PrismaClient): Handler {
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: existing.groupId,
           actorUserId: null,
           action: "role.updated",
@@ -1612,6 +1617,7 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
       await tx.role.delete({ where: { id: existing.id } });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: existing.groupId,
           actorUserId: null,
           action: "role.deleted",
@@ -1687,6 +1693,7 @@ export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: Event
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: role.groupId,
           actorUserId: null,
           action: "permission.granted",
@@ -1740,6 +1747,7 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: role.groupId,
           actorUserId: null,
           action: "permission.revoked",
@@ -1896,8 +1904,12 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
     if (before) createdAtFilter.lt = new Date(before);
     if (since) createdAtFilter.gte = new Date(since);
 
+    // Filter on the denormalized AuditEntry.gameId so game-scoped rows
+    // (groupId=null) appear in the per-game admin feed alongside per-
+    // group rows. The prior `group: { gameId }` join would have hidden
+    // the null-groupId rows.
     const where: Prisma.AuditEntryWhereInput = {
-      group: { gameId },
+      gameId,
       ...(before || since ? { createdAt: createdAtFilter } : {}),
       ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
       ...(actorUserId ? { actorUserId } : {}),
@@ -1909,14 +1921,8 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
       include: {
-        group: {
-          select: {
-            name: true,
-            gameId: true,
-            softDeletedAt: true,
-            game: { select: { name: true } },
-          },
-        },
+        game: { select: { name: true } },
+        group: { select: { name: true, softDeletedAt: true } },
       },
     });
     const hasMore = rows.length > limit;
@@ -2003,6 +2009,7 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
         if (existing) auditPayload.before = { type: existing.type };
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: dir.aId,
             actorUserId: null,
             action: "group.relationship.set",
@@ -2077,6 +2084,7 @@ export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Ev
         });
         await tx.auditEntry.create({
           data: {
+            gameId,
             groupId: dir.aId,
             actorUserId: null,
             action: "group.relationship.cleared",
@@ -2222,6 +2230,7 @@ export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub):
       });
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: group.id,
           actorUserId: null,
           action: parentGroupId === null ? "group.parent.cleared" : "group.parent.set",

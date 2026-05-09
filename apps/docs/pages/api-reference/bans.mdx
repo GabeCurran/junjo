@@ -28,7 +28,7 @@ Create or replace a game-level ban for an external user id. Idempotent
 on a still-active ban (returns the existing row); replaces an expired
 ban with a fresh one.
 
-**Body** (`.strict` — unknown keys 400)
+**Body** (`.strict`, unknown keys 400)
 
 ```json
 {

@@ -304,4 +304,32 @@ describe.skipIf(!TEST_DATABASE_URL)("Game bans (/v1/bans)", () => {
       expect(r2.status).toBe(201);
     });
   });
+
+  describe("Audit trail (game-scoped)", () => {
+    it("writes a game.user.banned AuditEntry with groupId=null", async () => {
+      await postBan({ userId: "alice", reason: "cheating" });
+      const entries = await prisma.auditEntry.findMany({
+        where: { gameId, action: "game.user.banned" },
+      });
+      expect(entries).toHaveLength(1);
+      const entry = entries[0];
+      if (!entry) throw new Error("expected a game.user.banned entry");
+      expect(entry.groupId).toBeNull();
+      expect(entry.targetId).toBe("alice");
+      const payload = entry.payload as { reason?: string; expiresAt?: string | null };
+      expect(payload.reason).toBe("cheating");
+      expect(payload.expiresAt).toBeNull();
+    });
+
+    it("writes a game.user.unbanned AuditEntry on delete", async () => {
+      await postBan({ userId: "alice" });
+      await deleteBan("alice");
+      const entries = await prisma.auditEntry.findMany({
+        where: { gameId, action: "game.user.unbanned" },
+      });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.groupId).toBeNull();
+      expect(entries[0]?.targetId).toBe("alice");
+    });
+  });
 });

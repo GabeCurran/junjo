@@ -58,6 +58,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/audit", () => {
   ) {
     return prisma.auditEntry.create({
       data: {
+        gameId,
         groupId,
         action: overrides.action ?? "group.created",
         actorUserId: overrides.actorUserId ?? null,

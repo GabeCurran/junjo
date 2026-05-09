@@ -180,6 +180,7 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
 
       await tx.auditEntry.create({
         data: {
+          gameId,
           groupId: invitation.groupId,
           actorUserId: junjoUserId,
           action: "member.joined",

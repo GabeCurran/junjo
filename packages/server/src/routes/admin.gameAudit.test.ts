@@ -72,6 +72,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   }
 
   async function seedAudit(
+    gameId: string,
     groupId: string,
     overrides: Partial<{
       action: string;
@@ -83,6 +84,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   ) {
     return prisma.auditEntry.create({
       data: {
+        gameId,
         groupId,
         action: overrides.action ?? "group.created",
         actorUserId: overrides.actorUserId ?? null,
@@ -113,8 +115,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const seed = await seedGroup("Alpha", "Guild Alpha");
     const t0 = new Date("2026-04-01T00:00:00Z");
     const t1 = new Date("2026-04-02T00:00:00Z");
-    await seedAudit(seed.groupId, { action: "group.created", createdAt: t0 });
-    await seedAudit(seed.groupId, {
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", createdAt: t0 });
+    await seedAudit(seed.gameId, seed.groupId, {
       action: "member.invited",
       createdAt: t1,
       targetId: "user_alice",
@@ -141,9 +143,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   it("scopes results to the requested game (cross-game exclusion)", async () => {
     const a = await seedGroup("Alpha", "g1");
     const b = await seedGroup("Beta", "g2");
-    await seedAudit(a.groupId, { action: "group.created" });
-    await seedAudit(b.groupId, { action: "group.created" });
-    await seedAudit(b.groupId, { action: "group.updated" });
+    await seedAudit(a.gameId, a.groupId, { action: "group.created" });
+    await seedAudit(b.gameId, b.groupId, { action: "group.created" });
+    await seedAudit(b.gameId, b.groupId, { action: "group.updated" });
 
     const res = await listAudit(a.gameId);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -158,9 +160,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const g2 = await seedGroup("Alpha", "g2", { gameId: game.id });
     const g3 = await seedGroup("Alpha", "g3", { gameId: game.id });
     const t = (i: number) => new Date(Date.UTC(2026, 0, 1 + i));
-    await seedAudit(g1.groupId, { action: "group.created", createdAt: t(0) });
-    await seedAudit(g2.groupId, { action: "group.created", createdAt: t(1) });
-    await seedAudit(g3.groupId, { action: "member.invited", createdAt: t(2) });
+    await seedAudit(g1.gameId, g1.groupId, { action: "group.created", createdAt: t(0) });
+    await seedAudit(g2.gameId, g2.groupId, { action: "group.created", createdAt: t(1) });
+    await seedAudit(g3.gameId, g3.groupId, { action: "member.invited", createdAt: t(2) });
 
     const res = await listAudit(game.id);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -174,8 +176,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const dead = await seedGroup("Alpha", "dead", { gameId: game.id, softDeleted: true });
     const tA = new Date("2026-04-01T00:00:00Z");
     const tB = new Date("2026-04-02T00:00:00Z");
-    await seedAudit(live.groupId, { action: "group.created", createdAt: tA });
-    await seedAudit(dead.groupId, { action: "group.deleted", createdAt: tB });
+    await seedAudit(live.gameId, live.groupId, { action: "group.created", createdAt: tA });
+    await seedAudit(dead.gameId, dead.groupId, { action: "group.deleted", createdAt: tB });
 
     const res = await listAudit(game.id);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -191,9 +193,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const tA = new Date("2026-04-01T00:00:00Z");
     const tB = new Date("2026-04-02T00:00:00Z");
     const tC = new Date("2026-04-03T00:00:00Z");
-    await seedAudit(seed.groupId, { action: "group.created", createdAt: tA });
-    await seedAudit(seed.groupId, { action: "group.updated", createdAt: tB });
-    await seedAudit(seed.groupId, { action: "member.invited", createdAt: tC });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", createdAt: tA });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated", createdAt: tB });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited", createdAt: tC });
 
     const res = await listAudit(seed.gameId, `before=${encodeURIComponent(tC.toISOString())}`);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -205,9 +207,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const tA = new Date("2026-04-01T00:00:00Z");
     const tB = new Date("2026-04-02T00:00:00Z");
     const tC = new Date("2026-04-03T00:00:00Z");
-    await seedAudit(seed.groupId, { action: "group.created", createdAt: tA });
-    await seedAudit(seed.groupId, { action: "group.updated", createdAt: tB });
-    await seedAudit(seed.groupId, { action: "member.invited", createdAt: tC });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", createdAt: tA });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated", createdAt: tB });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited", createdAt: tC });
 
     const res = await listAudit(seed.gameId, `since=${encodeURIComponent(tB.toISOString())}`);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -220,10 +222,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const tB = new Date("2026-04-02T00:00:00Z");
     const tC = new Date("2026-04-03T00:00:00Z");
     const tD = new Date("2026-04-04T00:00:00Z");
-    await seedAudit(seed.groupId, { action: "group.created", createdAt: tA });
-    await seedAudit(seed.groupId, { action: "group.updated", createdAt: tB });
-    await seedAudit(seed.groupId, { action: "member.invited", createdAt: tC });
-    await seedAudit(seed.groupId, { action: "role.created", createdAt: tD });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", createdAt: tA });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated", createdAt: tB });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited", createdAt: tC });
+    await seedAudit(seed.gameId, seed.groupId, { action: "role.created", createdAt: tD });
 
     const res = await listAudit(
       seed.gameId,
@@ -235,9 +237,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
 
   it("filters by a single `actions` value", async () => {
     const seed = await seedGroup("Alpha", "g1");
-    await seedAudit(seed.groupId, { action: "group.created" });
-    await seedAudit(seed.groupId, { action: "group.updated" });
-    await seedAudit(seed.groupId, { action: "member.invited" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited" });
 
     const res = await listAudit(seed.gameId, "actions=group.updated");
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -246,10 +248,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
 
   it("filters by multiple `actions` values (OR semantics)", async () => {
     const seed = await seedGroup("Alpha", "g1");
-    await seedAudit(seed.groupId, { action: "group.created" });
-    await seedAudit(seed.groupId, { action: "group.updated" });
-    await seedAudit(seed.groupId, { action: "member.invited" });
-    await seedAudit(seed.groupId, { action: "role.created" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "role.created" });
 
     const res = await listAudit(seed.gameId, "actions=group.created&actions=role.created");
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -261,10 +263,10 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const seed = await seedGroup("Alpha", "g1");
     const alice = await seedJunjoUser();
     const bob = await seedJunjoUser();
-    await seedAudit(seed.groupId, { action: "member.joined", actorUserId: alice.id });
-    await seedAudit(seed.groupId, { action: "member.left", actorUserId: alice.id });
-    await seedAudit(seed.groupId, { action: "member.left", actorUserId: bob.id });
-    await seedAudit(seed.groupId, { action: "group.created", actorUserId: null });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.joined", actorUserId: alice.id });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.left", actorUserId: alice.id });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.left", actorUserId: bob.id });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", actorUserId: null });
 
     const res = await listAudit(seed.gameId, `actorUserId=${alice.id}`);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -276,9 +278,12 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
 
   it("filters by `targetId` (exact match)", async () => {
     const seed = await seedGroup("Alpha", "g1");
-    await seedAudit(seed.groupId, { action: "member.invited", targetId: "user_alice" });
-    await seedAudit(seed.groupId, { action: "member.invited", targetId: "user_bob" });
-    await seedAudit(seed.groupId, { action: "group.created", targetId: null });
+    await seedAudit(seed.gameId, seed.groupId, {
+      action: "member.invited",
+      targetId: "user_alice",
+    });
+    await seedAudit(seed.gameId, seed.groupId, { action: "member.invited", targetId: "user_bob" });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.created", targetId: null });
 
     const res = await listAudit(seed.gameId, "targetId=user_alice");
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -294,28 +299,28 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const tB = new Date("2026-04-02T00:00:00Z");
     const tC = new Date("2026-04-03T00:00:00Z");
     // matches: in date range, action match, actor match, target match
-    await seedAudit(seed.groupId, {
+    await seedAudit(seed.gameId, seed.groupId, {
       action: "member.invited",
       createdAt: tB,
       actorUserId: alice.id,
       targetId: "user_target",
     });
     // out of date range
-    await seedAudit(seed.groupId, {
+    await seedAudit(seed.gameId, seed.groupId, {
       action: "member.invited",
       createdAt: new Date("2026-03-01T00:00:00Z"),
       actorUserId: alice.id,
       targetId: "user_target",
     });
     // wrong actor
-    await seedAudit(seed.groupId, {
+    await seedAudit(seed.gameId, seed.groupId, {
       action: "member.invited",
       createdAt: tB,
       actorUserId: other.id,
       targetId: "user_target",
     });
     // wrong action
-    await seedAudit(seed.groupId, {
+    await seedAudit(seed.gameId, seed.groupId, {
       action: "group.updated",
       createdAt: tB,
       actorUserId: alice.id,
@@ -340,7 +345,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   it("paginates via limit + nextCursor (consumer feeds nextCursor back as `before`)", async () => {
     const seed = await seedGroup("Alpha", "g1");
     for (let i = 0; i < 5; i++) {
-      await seedAudit(seed.groupId, {
+      await seedAudit(seed.gameId, seed.groupId, {
         action: "group.updated",
         createdAt: new Date(Date.UTC(2026, 0, 1 + i)),
       });
@@ -375,7 +380,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   it("uses default limit of 50 when no limit query supplied", async () => {
     const seed = await seedGroup("Alpha", "g1");
     for (let i = 0; i < 60; i++) {
-      await seedAudit(seed.groupId, {
+      await seedAudit(seed.gameId, seed.groupId, {
         action: "group.updated",
         createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
       });
@@ -395,7 +400,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
       reason: "renamed for clarity",
       counts: { added: 3, removed: 2 },
     };
-    await seedAudit(seed.groupId, { action: "group.updated", payload });
+    await seedAudit(seed.gameId, seed.groupId, { action: "group.updated", payload });
 
     const res = await listAudit(seed.gameId);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -503,7 +508,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const group = await prisma.group.create({
       data: { gameId: game.id, kind: "guild", name: "g", visibility: "invite-only" },
     });
-    await seedAudit(group.id, { action: "group.created" });
+    await seedAudit(game.id, group.id, { action: "group.created" });
     const res = await listAudit(encodeURIComponent(game.id));
     expect(res.status).toBe(200);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -513,9 +518,18 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
   it("preserves `(createdAt desc, id desc)` ordering across same-millisecond rows", async () => {
     const seed = await seedGroup("Alpha", "g1");
     const sameTime = new Date("2026-04-01T00:00:00Z");
-    const a = await seedAudit(seed.groupId, { action: "group.created", createdAt: sameTime });
-    const b = await seedAudit(seed.groupId, { action: "group.updated", createdAt: sameTime });
-    const c = await seedAudit(seed.groupId, { action: "member.invited", createdAt: sameTime });
+    const a = await seedAudit(seed.gameId, seed.groupId, {
+      action: "group.created",
+      createdAt: sameTime,
+    });
+    const b = await seedAudit(seed.gameId, seed.groupId, {
+      action: "group.updated",
+      createdAt: sameTime,
+    });
+    const c = await seedAudit(seed.gameId, seed.groupId, {
+      action: "member.invited",
+      createdAt: sameTime,
+    });
 
     const res = await listAudit(seed.gameId);
     const body = (await res.json()) as WireAdminGameAuditPage;
@@ -523,5 +537,41 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     // Sort by id desc within the same timestamp.
     const sortedIds = [a.id, b.id, c.id].sort().reverse();
     expect(body.items.map((i) => i.id)).toEqual(sortedIds);
+  });
+
+  it("includes game-scoped events (groupId=null) alongside per-group rows", async () => {
+    // Game-scoped events (e.g. game.user.banned) live with groupId=null
+    // and only the new gameId column to associate them with the game;
+    // they should appear in the per-game admin feed.
+    const game = await createGame("Alpha", prisma);
+    const grp = await seedGroup("Alpha", "g1", { gameId: game.id });
+    await seedAudit(grp.gameId, grp.groupId, {
+      action: "group.created",
+      createdAt: new Date("2026-04-01T00:00:00Z"),
+    });
+    // Insert a game-scoped audit row directly (mirrors what the bans
+    // router writes).
+    await prisma.auditEntry.create({
+      data: {
+        gameId: game.id,
+        groupId: null,
+        actorUserId: null,
+        action: "game.user.banned",
+        targetId: "alice",
+        payload: { reason: "cheating", expiresAt: null },
+        createdAt: new Date("2026-04-02T00:00:00Z"),
+      },
+    });
+
+    const res = await listAudit(game.id);
+    const body = (await res.json()) as WireAdminGameAuditPage;
+    expect(body.items.map((i) => i.action)).toEqual(["game.user.banned", "group.created"]);
+    const banItem = body.items[0];
+    expect(banItem?.groupId).toBeNull();
+    expect(banItem?.groupName).toBeNull();
+    expect(banItem?.groupSoftDeleted).toBe(false);
+    expect(banItem?.gameId).toBe(game.id);
+    expect(banItem?.gameName).toBe("Alpha");
+    expect(banItem?.targetId).toBe("alice");
   });
 });
