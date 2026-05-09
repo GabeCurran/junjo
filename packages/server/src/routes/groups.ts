@@ -1085,6 +1085,20 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           } as Prisma.InputJsonValue,
         },
       });
+      // BanHistory append: structured ban-only timeline, distinct
+      // from the audit row above and from GroupMember (current state).
+      await tx.banHistory.create({
+        data: {
+          gameId,
+          junjoUserId,
+          scope: "group",
+          groupId: group.id,
+          kind: "set",
+          reason: reasonValue,
+          expiresAt: expiresAtValue,
+          actorJunjoUserId: null,
+        },
+      });
       return member;
     });
 
@@ -1135,6 +1149,18 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           action: "member.unbanned",
           targetId: userId,
           payload: { memberId: result.id } as Prisma.InputJsonValue,
+        },
+      });
+      await tx.banHistory.create({
+        data: {
+          gameId,
+          junjoUserId,
+          scope: "group",
+          groupId: group.id,
+          kind: "lifted",
+          reason: null,
+          expiresAt: null,
+          actorJunjoUserId: null,
         },
       });
       return result;

@@ -111,6 +111,21 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
           } as Prisma.InputJsonValue,
         },
       });
+      // BanHistory append: structured ban-only timeline. Distinct from
+      // the audit row above (which is the generic event log) and from
+      // GameBan (which only carries current state).
+      await tx.banHistory.create({
+        data: {
+          gameId,
+          junjoUserId,
+          scope: "game",
+          groupId: null,
+          kind: "set",
+          reason: reasonValue,
+          expiresAt: expiresAtValue,
+          actorJunjoUserId: null,
+        },
+      });
       return result;
     });
 
@@ -148,6 +163,18 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
           action: "game.user.unbanned",
           targetId: userId,
           payload: { gameBanId: existing.id } as Prisma.InputJsonValue,
+        },
+      });
+      await tx.banHistory.create({
+        data: {
+          gameId,
+          junjoUserId,
+          scope: "game",
+          groupId: null,
+          kind: "lifted",
+          reason: null,
+          expiresAt: null,
+          actorJunjoUserId: null,
         },
       });
     });

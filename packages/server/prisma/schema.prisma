@@ -38,6 +38,7 @@ model Game {
   friendTags         FriendTag[]
   userVisibilities   UserVisibility[]
   gameBans           GameBan[]
+  banHistory         BanHistory[]
   auditEntries       AuditEntry[]
 
   @@index([networkId])
@@ -71,6 +72,7 @@ model JunjoUser {
   friendTags         FriendTag[]
   userVisibilities   UserVisibility[]
   gameBans           GameBan[]
+  banHistory         BanHistory[]
 }
 
 // Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
@@ -122,6 +124,7 @@ model Group {
   roles        Role[]
   invitations  Invitation[]
   auditEntries AuditEntry[]
+  banHistory   BanHistory[]
   relsAsA      GroupRelationship[] @relation("RelGroupA")
   relsAsB      GroupRelationship[] @relation("RelGroupB")
 
@@ -512,4 +515,48 @@ model GameBan {
   @@unique([gameId, junjoUserId])
   @@index([gameId, expiresAt])
   @@index([junjoUserId])
+}
+
+// Append-only ledger of every ban event (set + lift, group + game).
+// Distinct from AuditEntry: AuditEntry is the generic per-game / per-
+// group event log (where bans show up alongside everything else);
+// BanHistory is a structured ban-only timeline keyed by (junjoUserId,
+// gameId) so "show me this user's ban history" is a single indexed
+// query instead of a JSON-payload scan. Lifecycle: every set/lift on
+// either surface (per-group via groups.ban, game-wide via /v1/bans)
+// writes one row here. Re-bans don't overwrite predecessors -- the
+// row from the prior ban survives so the timeline reads cleanly.
+model BanHistory {
+  id            String    @id @default(cuid())
+  gameId        String
+  game          Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  // The party affected. References JunjoUser; the dev's external id
+  // can be resolved via ExternalIdentity at read time.
+  junjoUserId   String
+  junjoUser     JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  // "game" for /v1/bans rows (gameId only); "group" for groups.ban
+  // rows (groupId set).
+  scope         String
+  // Set on group-scope rows; null on game-scope rows. Cascades when
+  // the group is hard-deleted (preserves the timeline otherwise).
+  groupId       String?
+  group         Group?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  // "set" for ban issued; "lifted" for ban removed (manual unban or
+  // expiry-based lift recorded by an operator).
+  kind          String
+  // Snapshot of the ban's reason at the time of the event; null on
+  // lifts and on bans issued without a reason.
+  reason        String?
+  // Snapshot of the ban's expiry at the time of the event; null on
+  // lifts and on permanent bans.
+  expiresAt     DateTime?
+  eventAt       DateTime  @default(now())
+  // Resolved actor JunjoUser id when the dev's auth adapter is wired;
+  // null otherwise (mirrors AuditEntry.actorUserId).
+  actorJunjoUserId String?
+
+  // "show me this user's ban history in this game"
+  @@index([gameId, junjoUserId, eventAt(sort: Desc)])
+  // "show me every ban event in this game in time order"
+  @@index([gameId, eventAt(sort: Desc)])
 }
