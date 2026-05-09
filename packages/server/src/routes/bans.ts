@@ -1,11 +1,11 @@
 import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent } from "@junjo/shared";
-import type { GameBan, Prisma, PrismaClient } from "@prisma/client";
+import type { BanHistory, GameBan, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { dispatchEvent } from "../events.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
-import { createGameBanBody, listGameBansQuery } from "./bans.schema.js";
+import { createGameBanBody, listBanHistoryQuery, listGameBansQuery } from "./bans.schema.js";
 import { batchLoadExternalUserIds } from "./members.js";
 
 export interface WireGameBan {
@@ -32,6 +32,38 @@ export function serializeGameBan(
     expiresAt: ban.expiresAt ? ban.expiresAt.toISOString() : null,
     reason: ban.reason,
     bannedBy: externalActorUserId,
+  };
+}
+
+export interface WireBanHistoryEntry {
+  id: string;
+  gameId: string;
+  userId: string;
+  scope: "game" | "group";
+  groupId: string | null;
+  kind: "set" | "lifted";
+  reason: string | null;
+  expiresAt: string | null;
+  eventAt: string;
+  actorUserId: string | null;
+}
+
+export function serializeBanHistoryEntry(
+  row: BanHistory,
+  externalUserId: string,
+  externalActorUserId: string | null = null,
+): WireBanHistoryEntry {
+  return {
+    id: row.id,
+    gameId: row.gameId,
+    userId: externalUserId,
+    scope: row.scope as "game" | "group",
+    groupId: row.groupId,
+    kind: row.kind as "set" | "lifted",
+    reason: row.reason,
+    expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+    eventAt: row.eventAt.toISOString(),
+    actorUserId: externalActorUserId,
   };
 }
 
@@ -260,6 +292,104 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
         }
         return serializeGameBan(row, ext, null);
       }),
+      nextCursor,
+    });
+  });
+
+  // GET /v1/bans/:userId
+  // Single active game-level ban for the user. 404 when no row exists,
+  // when the user has never been seen in this game, OR when the row
+  // exists but its expiresAt has elapsed (lazy expiry: same contract as
+  // the ban-check enforcement). Use GET /v1/bans?includeExpired=true to
+  // see the underlying row in that case.
+  r.get("/:userId", async (c) => {
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("ban");
+    const ban = await prisma.gameBan.findUnique({
+      where: { gameId_junjoUserId: { gameId, junjoUserId } },
+    });
+    if (!ban) throw Errors.notFound("ban");
+    const isActive = ban.expiresAt === null || ban.expiresAt > new Date();
+    if (!isActive) throw Errors.notFound("ban");
+    return c.json(serializeGameBan(ban, userId, null));
+  });
+
+  // GET /v1/bans/:userId/history
+  // Append-only ban-event timeline for one user in this game. Includes
+  // both game-scope and group-scope rows by default. ?scope filters to
+  // one surface; ?groupId narrows to one group (and forces scope=group).
+  r.get("/:userId/history", async (c) => {
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const parsed = listBanHistoryQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
+      scope: c.req.query("scope"),
+      groupId: c.req.query("groupId"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor, scope, groupId } = parsed.data;
+    if (groupId && scope === "game") {
+      throw Errors.badRequest("scope=game is incompatible with a groupId filter");
+    }
+    const effectiveScope = groupId ? "group" : scope;
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    // No identity = no history. Distinct from "user has identity but
+    // no events" (which returns an empty page).
+    if (!junjoUserId) {
+      return c.json({ items: [] as WireBanHistoryEntry[], nextCursor: null });
+    }
+
+    let cursorRow: { id: string; eventAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.banHistory.findFirst({
+        where: { id: cursor, gameId, junjoUserId },
+        select: { id: true, eventAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const conditions: Prisma.BanHistoryWhereInput[] = [];
+    if (effectiveScope) conditions.push({ scope: effectiveScope });
+    if (groupId) conditions.push({ groupId });
+    if (cursorRow) {
+      conditions.push({
+        OR: [
+          { eventAt: { lt: cursorRow.eventAt } },
+          { eventAt: cursorRow.eventAt, id: { lt: cursorRow.id } },
+        ],
+      });
+    }
+
+    const where: Prisma.BanHistoryWhereInput = {
+      gameId,
+      junjoUserId,
+      ...(conditions.length > 0 ? { AND: conditions } : {}),
+    };
+
+    const rows = await prisma.banHistory.findMany({
+      where,
+      orderBy: [{ eventAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
+
+    return c.json({
+      items: sliced.map((row) => serializeBanHistoryEntry(row, userId, null)),
       nextCursor,
     });
   });

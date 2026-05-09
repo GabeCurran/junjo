@@ -36,3 +36,17 @@ export const listGameBansQuery = z.object({
 });
 
 export type ListGameBansQuery = z.infer<typeof listGameBansQuery>;
+
+// GET /v1/bans/:userId/history
+// Newest-first cursor pagination on (eventAt DESC, id DESC). Optional
+// scope / groupId filters narrow the timeline to one surface.
+export const listBanHistoryQuery = z.object({
+  limit: pageLimit(50),
+  cursor: z.string().min(1).optional(),
+  scope: z.enum(["game", "group"]).optional(),
+  // When set, scope is forced to "group" implicitly. Mismatched
+  // scope=game + groupId returns 400.
+  groupId: z.string().min(1).optional(),
+});
+
+export type ListBanHistoryQuery = z.infer<typeof listBanHistoryQuery>;

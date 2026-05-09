@@ -121,7 +121,7 @@ export class Junjo {
 
 export { AuditApi } from "./audit.js";
 export { BansApi } from "./bans.js";
-export type { CreateBanInput, ListBansOptions } from "./bans.js";
+export type { CreateBanInput, ListBansOptions, ListBanHistoryOptions } from "./bans.js";
 export { JunjoError } from "./errors.js";
 export { FriendsApi } from "./friends.js";
 export type {
@@ -141,6 +141,8 @@ export type { SubscribeOptions, Subscription } from "./groups.js";
 export { InvitationsApi } from "./invitations.js";
 export type { ListInvitationsOptions } from "./invitations.js";
 export { MembersApi } from "./members.js";
+export type { ListMembersOptions } from "./members.js";
+export { paginate } from "./pagination.js";
 export { RolesApi } from "./roles.js";
 export {
   WebhookEndpointsApi,

@@ -21,6 +21,7 @@ import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent, parseSSEFrame } from "./events.js";
 import type { HttpClient } from "./http.js";
 import { type WireMember, deserializeMember } from "./members.js";
+import { paginate } from "./pagination.js";
 
 export interface SubscribeOptions {
   // Notified when a streaming error occurs after the connection is open
@@ -176,6 +177,14 @@ export class GroupsApi {
       items: wire.items.map(deserializeGroup),
       nextCursor: wire.nextCursor,
     };
+  }
+
+  // Async-iterator wrapper over `list(...)` that walks every page until
+  // `nextCursor` is null. Use when you genuinely need every group --
+  // prefer `list(...)` with explicit pagination for UI surfaces. The
+  // underlying server still caps `limit` at JUNJO_MAX_PAGE_SIZE.
+  listAll(opts?: { limit?: number; gameId?: GameId; viewer?: UserId }): AsyncGenerator<Group> {
+    return paginate((cursor) => this.list({ ...opts, cursor }));
   }
 
   async update(id: GroupId, input: UpdateGroupInput): Promise<Group> {

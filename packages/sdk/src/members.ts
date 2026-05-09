@@ -14,6 +14,7 @@ import type {
 } from "@junjo/shared";
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import { paginate } from "./pagination.js";
 
 export interface WireMember {
   id: string;
@@ -65,6 +66,13 @@ export function deserializeMemberPermissionOverride(
   };
 }
 
+export interface ListMembersOptions extends PageOptions {
+  // Filter to one or more statuses. Omit for all statuses (the default).
+  // Common shapes: ["active"] for "show me current members",
+  // ["banned"] for the moderation panel.
+  status?: MemberStatus[];
+}
+
 export class MembersApi {
   constructor(private readonly http: HttpClient) {}
 
@@ -90,10 +98,20 @@ export class MembersApi {
     }
   }
 
-  async list(groupId: GroupId, opts?: PageOptions): Promise<Page<Member>> {
+  // Async-iterator wrapper over `list(...)`. Walks every page until
+  // `nextCursor` is null. Combine with `status` to iterate all banned
+  // members in a group, all kicked members, etc.
+  listAll(groupId: GroupId, opts?: Omit<ListMembersOptions, "cursor">): AsyncGenerator<Member> {
+    return paginate((cursor) => this.list(groupId, { ...opts, cursor }));
+  }
+
+  async list(groupId: GroupId, opts?: ListMembersOptions): Promise<Page<Member>> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
+    if (opts?.status !== undefined && opts.status.length > 0) {
+      params.set("status", opts.status.join(","));
+    }
     const qs = params.toString();
     const base = `/v1/groups/${encodeURIComponent(groupId)}/members`;
     const path = qs ? `${base}?${qs}` : base;

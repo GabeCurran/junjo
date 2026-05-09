@@ -332,4 +332,165 @@ describe.skipIf(!TEST_DATABASE_URL)("Game bans (/v1/bans)", () => {
       expect(entries[0]?.targetId).toBe("alice");
     });
   });
+
+  describe("GET /v1/bans/:userId", () => {
+    function getBan(userId: string) {
+      return app.request(`/v1/bans/${encodeURIComponent(userId)}`, {
+        headers: { authorization: authHeader },
+      });
+    }
+
+    it("returns the active ban for a user", async () => {
+      await postBan({ userId: "alice", reason: "cheating" });
+      const res = await getBan("alice");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { userId: string; reason: string | null };
+      expect(body.userId).toBe("alice");
+      expect(body.reason).toBe("cheating");
+    });
+
+    it("404s when the user has never been seen", async () => {
+      const res = await getBan("ghost");
+      expect(res.status).toBe(404);
+    });
+
+    it("404s when the user is known but not banned", async () => {
+      await postBan({ userId: "alice" });
+      await deleteBan("alice");
+      const res = await getBan("alice");
+      expect(res.status).toBe(404);
+    });
+
+    it("404s when the ban has lazy-expired", async () => {
+      await postBan({
+        userId: "alice",
+        expiresAt: new Date(Date.now() + 200).toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 250));
+      const res = await getBan("alice");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("GET /v1/bans/:userId/history", () => {
+    function getHistory(userId: string, query = "") {
+      const path = query
+        ? `/v1/bans/${encodeURIComponent(userId)}/history?${query}`
+        : `/v1/bans/${encodeURIComponent(userId)}/history`;
+      return app.request(path, { headers: { authorization: authHeader } });
+    }
+
+    it("returns set + lifted rows newest-first", async () => {
+      await postBan({ userId: "alice", reason: "first" });
+      await deleteBan("alice");
+      await postBan({ userId: "alice", reason: "second" });
+      const res = await getHistory("alice");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        items: { kind: string; reason: string | null; scope: string }[];
+      };
+      expect(body.items).toHaveLength(3);
+      expect(body.items[0]?.kind).toBe("set");
+      expect(body.items[0]?.reason).toBe("second");
+      expect(body.items[1]?.kind).toBe("lifted");
+      expect(body.items[2]?.kind).toBe("set");
+      expect(body.items[2]?.reason).toBe("first");
+      expect(body.items.every((i) => i.scope === "game")).toBe(true);
+    });
+
+    it("returns an empty page for an unknown user (no 404)", async () => {
+      const res = await getHistory("ghost");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { items: unknown[]; nextCursor: string | null };
+      expect(body.items).toEqual([]);
+      expect(body.nextCursor).toBeNull();
+    });
+
+    it("filters by scope=game", async () => {
+      await postBan({ userId: "alice" });
+      const res = await getHistory("alice", "scope=game");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { items: { scope: string }[] };
+      expect(body.items.every((i) => i.scope === "game")).toBe(true);
+    });
+
+    it("rejects scope=game + groupId combo with 400", async () => {
+      const res = await getHistory("alice", "scope=game&groupId=abc");
+      expect(res.status).toBe(400);
+    });
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("Members ?status= filter", () => {
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+  let groupId: string;
+
+  beforeAll(() => {
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "GameBan", "Invitation", "AuditEntry", "GroupMember", "ExternalIdentity", "JunjoUser", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+    const group = await prisma.group.create({
+      data: { gameId, kind: "guild", name: "G", visibility: "invite-only", metadata: {} },
+    });
+    groupId = group.id;
+
+    // Seed 4 members in 4 different states.
+    for (const [userId, status] of [
+      ["alice", "active"],
+      ["bob", "left"],
+      ["carol", "kicked"],
+      ["dan", "banned"],
+    ] as const) {
+      const ju = await prisma.junjoUser.create({ data: {} });
+      await prisma.externalIdentity.create({
+        data: { gameId, externalUserId: userId, junjoUserId: ju.id },
+      });
+      await prisma.groupMember.create({
+        data: { groupId: group.id, junjoUserId: ju.id, status },
+      });
+    }
+  });
+
+  function listMembers(query = "") {
+    const path = query
+      ? `/v1/groups/${encodeURIComponent(groupId)}/members?${query}`
+      : `/v1/groups/${encodeURIComponent(groupId)}/members`;
+    return app.request(path, { headers: { authorization: authHeader } });
+  }
+
+  it("returns every status when no filter is supplied", async () => {
+    const res = await listMembers();
+    const body = (await res.json()) as { items: unknown[] };
+    expect(body.items).toHaveLength(4);
+  });
+
+  it("filters to a single status", async () => {
+    const res = await listMembers("status=banned");
+    const body = (await res.json()) as { items: { userId: string; status: string }[] };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]?.userId).toBe("dan");
+    expect(body.items[0]?.status).toBe("banned");
+  });
+
+  it("filters to a comma-separated subset", async () => {
+    const res = await listMembers("status=kicked,banned");
+    const body = (await res.json()) as { items: { status: string }[] };
+    expect(body.items).toHaveLength(2);
+    expect(new Set(body.items.map((i) => i.status))).toEqual(new Set(["kicked", "banned"]));
+  });
+
+  it("rejects an unknown status with 400", async () => {
+    const res = await listMembers("status=ghost");
+    expect(res.status).toBe(400);
+  });
 });

@@ -104,6 +104,30 @@ export interface Ban {
   bannedBy: UserId | null;
 }
 
+// Append-only ban-event record. One row per set/lift on either surface
+// (game-wide or per-group). The structured timeline keyed by
+// (gameId, userId) for "show me this user's ban history" without
+// scanning AuditEntry payloads. Returned by `bans.history(userId)`.
+export interface BanHistoryEntry {
+  id: string;
+  gameId: GameId;
+  userId: UserId;
+  // "game" rows have groupId=null; "group" rows have groupId set.
+  scope: "game" | "group";
+  groupId: GroupId | null;
+  // "set" = ban issued. "lifted" = ban removed (manual unban; the
+  // server does not write a row for lazy expiry, only for explicit
+  // operator action).
+  kind: "set" | "lifted";
+  // Snapshot at the moment of the event; null on lifts and on bans
+  // issued without a reason / with no expiry.
+  reason: string | null;
+  expiresAt: Date | null;
+  eventAt: Date;
+  // Resolved actor external user id; null when issued server-side.
+  actorUserId: UserId | null;
+}
+
 // =====================================================================
 // Member
 // =====================================================================

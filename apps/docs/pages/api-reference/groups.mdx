@@ -755,6 +755,30 @@ Filter via `?actions=group.passcode.set,group.passcode.cleared` on
 the `/admin/audit` endpoint to see every passcode change for a game
 without scanning `group.updated` payloads.
 
+### Rate limiting
+
+Two in-process token buckets fire **before** scrypt verify, so a
+brute-forcer cannot burn server CPU:
+
+| Bucket | Cap | Purpose |
+|--------|-----|---------|
+| per-(group, userId) | 5 attempts/minute, burst 5 | Bounds a single user's attempt rate against one group. |
+| per-group | 30 attempts/minute, burst 30 | Bounds total fanout across rotating userIds (the per-user bucket alone wouldn't catch a userId-rotating attacker). |
+
+Either limit being exhausted returns `429 rate_limit_exceeded` with a
+`Retry-After` header. Buckets are per-process (not shared across
+horizontally-scaled instances); a multi-process deployment gets
+proportionally higher effective ceilings.
+
+### PINs
+
+A "PIN" is just a numeric passcode. The 4-128 character bound on
+`passcode` accepts `"1234"`, `"00000"`, etc., so consumers wanting a
+keypad UX can pass digits straight through `groups.join({ passcode:
+"1234" })`. There is no separate PIN concept on the Junjo side -- the
+audit, rate-limiting, and storage all funnel through the single
+passcode primitive.
+
 ## `GET /v1/groups/:id/members/:userId`
 
 Fetches a single member by the dev's external user id. Scoped to the calling game.
@@ -795,6 +819,7 @@ Lists the members of a group with cursor-based pagination. Returns rows in every
 |-------|------|---------|-------|
 | `limit` | integer | 50 | 1 to 100. |
 | `cursor` | string | none | The id of the last item from the previous page; the route looks it up to position the next page. |
+| `status` | string | none | Comma-separated subset of `active`, `invited`, `left`, `kicked`, `banned`. Omit for every status. Use `?status=banned` to drive a moderation list, `?status=active,invited` to drive an active-roster UI. |
 
 ### Response
 
@@ -804,7 +829,7 @@ Lists the members of a group with cursor-based pagination. Returns rows in every
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `limit` out of range, or `cursor` does not point at a member of this group. |
+| `bad_request` | 400 | `limit` out of range, `cursor` does not point at a member of this group, or `status` contains an unknown value. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 

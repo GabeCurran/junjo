@@ -209,4 +209,62 @@ describe.skipIf(!TEST_DATABASE_URL)("Group passcode", () => {
       expect(res.status).toBe(201);
     });
   });
+
+  describe("rate limiting", () => {
+    let groupId: string;
+    beforeEach(async () => {
+      const res = await createGroup({
+        kind: "room",
+        name: "Locked",
+        visibility: "public",
+        passcode: "right-passcode",
+      });
+      groupId = ((await res.json()) as { id: string }).id;
+    });
+
+    it("429s after 5 wrong attempts from the same userId in one minute", async () => {
+      // Per-(group, userId) bucket is configured at burst=5.
+      for (let i = 0; i < 5; i++) {
+        const res = await joinGroup(groupId, { userId: "alice", passcode: "wrong" });
+        expect(res.status).toBe(403);
+      }
+      const res = await joinGroup(groupId, { userId: "alice", passcode: "wrong" });
+      expect(res.status).toBe(429);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("rate_limit_exceeded");
+      expect(res.headers.get("retry-after")).not.toBeNull();
+    });
+
+    it("eventually 429s the per-group cap when attempts fan out across userIds", async () => {
+      // Per-group bucket is configured at burst=30, perMinute=30 (refill
+      // rate of 0.5/sec). scrypt verify is intentionally slow, so the
+      // per-call latency lets a small amount of refill happen while the
+      // test runs. Spam well past `burst + expected_refill_during_test`
+      // and assert that SOMEWHERE in the back half a 429 surfaces. This
+      // test would be tighter with an injectable clock; rather than wire
+      // one through groupsRouter for now, just spam.
+      let saw429 = false;
+      for (let i = 0; i < 80; i++) {
+        const res = await joinGroup(groupId, { userId: `u${i}`, passcode: "wrong" });
+        if (res.status === 429) {
+          saw429 = true;
+          break;
+        }
+        expect(res.status).toBe(403);
+      }
+      expect(saw429).toBe(true);
+    }, 30000);
+
+    it("does not rate-limit groups without a passcode", async () => {
+      const openRes = await createGroup({ kind: "room", name: "Open", visibility: "public" });
+      const openId = ((await openRes.json()) as { id: string }).id;
+      // 6 distinct users joining successfully would bust the per-(group,
+      // userId) cap if it applied; but it shouldn't, since there's no
+      // passcode on this group.
+      for (let i = 0; i < 6; i++) {
+        const res = await joinGroup(openId, { userId: `u${i}` });
+        expect(res.status).toBe(201);
+      }
+    });
+  });
 });

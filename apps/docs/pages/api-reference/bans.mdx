@@ -112,6 +112,91 @@ List active game-level bans for the calling game, newest-first
 }
 ```
 
+## `GET /v1/bans/:userId`
+
+Fetch the current active game-level ban for a user. Returns `404
+not_found` when no row exists, when the user has never been seen in
+this game, OR when the row exists but its `expiresAt` is in the past
+(lazy expiry; same semantics as the runtime ban check). Use `GET
+/v1/bans?includeExpired=true` to surface the underlying row in that
+last case.
+
+**Response** `200 OK` with the same `Ban` shape as the create response.
+
+**SDK**
+
+```ts
+const ban = await junjo.bans.get(userId); // Ban | null
+```
+
+## `GET /v1/bans/:userId/history`
+
+Append-only ban-event timeline for a user in this game. Returns rows
+from both surfaces (game-wide and per-group) by default. Newest-first,
+cursor-paginated. Each row is a structured snapshot of one set/lift
+event; predecessors are not overwritten by re-bans, so the timeline
+reads cleanly across multiple bans.
+
+**Query parameters**
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | 50 | Capped by `JUNJO_MAX_PAGE_SIZE`. |
+| `cursor` | string | none | The `nextCursor` from a prior response. |
+| `scope` | `"game"` / `"group"` | both | Filter to one ban surface. |
+| `groupId` | string | none | Narrow to one group's events. Forces `scope=group` implicitly; combining with `scope=game` returns 400. |
+
+**Response** `200 OK` with `Page<BanHistoryEntry>`:
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "gameId": "ckggg...",
+      "userId": "user_alice",
+      "scope": "group",
+      "groupId": "ckrrr...",
+      "kind": "set",
+      "reason": "trolling",
+      "expiresAt": null,
+      "eventAt": "2026-05-09T18:00:00.000Z",
+      "actorUserId": null
+    },
+    {
+      "id": "ckyyy...",
+      "gameId": "ckggg...",
+      "userId": "user_alice",
+      "scope": "game",
+      "groupId": null,
+      "kind": "lifted",
+      "reason": null,
+      "expiresAt": null,
+      "eventAt": "2026-05-08T12:00:00.000Z",
+      "actorUserId": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+The server writes one BanHistory row per explicit operator action;
+**lazy-expired bans do not generate a "lifted" row** (no actor took
+the action). Use `GET /v1/bans?includeExpired=true` for the
+"currently-stored ban that has elapsed" view.
+
+**SDK**
+
+```ts
+const page = await junjo.bans.history(userId, { limit: 50 });
+const groupOnly = await junjo.bans.history(userId, { groupId });
+
+// Async iterator over every page
+for await (const event of junjo.bans.historyAll(userId)) {
+  console.log(event.scope, event.kind, event.eventAt);
+}
+```
+
 ## SDK
 
 ```ts
@@ -119,6 +204,12 @@ List active game-level bans for the calling game, newest-first
 await junjo.bans.add({ userId, reason: "cheating", expiresAt: new Date("...") });
 await junjo.bans.remove(userId);
 const page = await junjo.bans.list({ limit: 50, includeExpired: false });
+const ban = await junjo.bans.get(userId);                       // Ban | null
+const history = await junjo.bans.history(userId, { limit: 50 }); // Page<BanHistoryEntry>
+
+// Async-iterator helpers (walk every page)
+for await (const ban of junjo.bans.listAll()) { /* ... */ }
+for await (const event of junjo.bans.historyAll(userId)) { /* ... */ }
 
 // Per-group (see Groups reference)
 await junjo.groups.ban(groupId, userId, { reason: "trolling" });

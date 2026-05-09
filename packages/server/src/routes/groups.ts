@@ -29,6 +29,7 @@ import {
   toPublicRole,
 } from "../events.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { RateLimiter } from "../middleware/rateLimit.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { listAuditForGroup } from "./audit.js";
@@ -139,7 +140,22 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
   };
 }
 
+// Passcode attempt limiters. Tight per-(group, userId) bucket for
+// fairness (alice can't try 50 passcodes in a minute) plus a per-group
+// fanout cap (total attempts on this room across every userId capped,
+// to bound scrypt CPU cost during a brute-force fan-out). Both fire
+// BEFORE scrypt verify so a hostile caller cannot burn server CPU.
+// In-memory + per-process by design (matches the existing API-key
+// limiter); a multi-process deploy gets per-process limits, which is
+// already enough headroom that a determined attacker would need to
+// distribute across many processes to materially raise the ceiling.
+const PASSCODE_ATTEMPTS_PER_GROUP_USER = { perMinute: 5, burst: 5 };
+const PASSCODE_ATTEMPTS_PER_GROUP = { perMinute: 30, burst: 30 };
+
 export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
+  const passcodeUserLimiter = new RateLimiter(PASSCODE_ATTEMPTS_PER_GROUP_USER);
+  const passcodeGroupLimiter = new RateLimiter(PASSCODE_ATTEMPTS_PER_GROUP);
+
   const r = new Hono();
 
   r.get("/", async (c) => {
@@ -784,6 +800,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const parsed = listMembersQuery.safeParse({
       limit: c.req.query("limit"),
       cursor: c.req.query("cursor"),
+      status: c.req.query("status"),
     });
     if (!parsed.success) {
       const issues = parsed.error.issues
@@ -791,7 +808,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid query");
     }
-    const { limit, cursor } = parsed.data;
+    const { limit, cursor, status } = parsed.data;
 
     let cursorRow: { id: string; joinedAt: Date } | null = null;
     if (cursor) {
@@ -805,6 +822,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const where: Prisma.GroupMemberWhereInput = {
       groupId: group.id,
+      ...(status && status.length > 0 ? { status: { in: status } } : {}),
       ...(cursorRow
         ? {
             OR: [
@@ -902,6 +920,25 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     // leaking "user exists" information through identity creation.
     if (group.passcodeHash) {
       if (!passcode) throw Errors.passcodeRequired();
+      // Two-bucket rate limit BEFORE scrypt verify. The per-(group,
+      // userId) bucket bounds a single user's attempt rate; the
+      // per-group bucket bounds total fanout across rotating userIds.
+      // Buckets consume regardless of result, so successful joins
+      // still count -- fine because the cap is generous enough that a
+      // legitimate join (one attempt) is well below it.
+      const userKey = `${group.id}:${userId}`;
+      const groupKey = group.id;
+      const userResult = passcodeUserLimiter.consume(userKey);
+      const groupResult = passcodeGroupLimiter.consume(groupKey);
+      if (!userResult.allowed || !groupResult.allowed) {
+        const retryAfter = Math.max(
+          userResult.retryAfterSeconds ?? 0,
+          groupResult.retryAfterSeconds ?? 0,
+          1,
+        );
+        c.header("Retry-After", String(retryAfter));
+        throw Errors.rateLimitExceeded(`too many passcode attempts; retry after ${retryAfter}s`);
+      }
       const ok = await verifySecret(passcode, group.passcodeHash);
       if (!ok) throw Errors.passcodeInvalid();
     }
