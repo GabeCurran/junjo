@@ -42,7 +42,14 @@ export const listAdminGroupsQuery = z.object({
   order: z.enum(ADMIN_GROUP_SORT_ORDERS).default("desc"),
 });
 
-export const ADMIN_MEMBER_STATUSES = ["active", "left", "kicked", "invited", "all"] as const;
+export const ADMIN_MEMBER_STATUSES = [
+  "active",
+  "left",
+  "kicked",
+  "invited",
+  "banned",
+  "all",
+] as const;
 
 export const listAdminGroupMembersQuery = z.object({
   limit: pageLimit(50),

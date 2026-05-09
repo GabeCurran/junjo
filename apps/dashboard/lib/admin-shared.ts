@@ -117,7 +117,7 @@ export interface FetchAdminGroupsParams {
   order?: AdminGroupOrder;
 }
 
-export type AdminMemberStatus = "active" | "left" | "kicked" | "invited";
+export type AdminMemberStatus = "active" | "left" | "kicked" | "invited" | "banned";
 export type AdminMemberStatusFilter = AdminMemberStatus | "all";
 
 export const ADMIN_MEMBER_STATUSES: readonly AdminMemberStatus[] = [
@@ -125,12 +125,14 @@ export const ADMIN_MEMBER_STATUSES: readonly AdminMemberStatus[] = [
   "left",
   "kicked",
   "invited",
+  "banned",
 ];
 export const ADMIN_MEMBER_STATUS_FILTERS: readonly AdminMemberStatusFilter[] = [
   "active",
   "left",
   "kicked",
   "invited",
+  "banned",
   "all",
 ];
 export const ADMIN_MEMBERS_PAGE_SIZE_OPTIONS: readonly number[] = [10, 25, 50, 100];
