@@ -285,6 +285,39 @@ export class GroupsApi {
     return deserializeMember(wire);
   }
 
+  // Per-group ban. Distinct from kick: the banned user cannot rejoin
+  // via public-join or invitation accept; the routes return 403 with
+  // `code: "banned"`. `expiresAt` enables time-bounded bans (omit /
+  // null = permanent). Use `client.bans.add(...)` for game-wide bans.
+  async ban(
+    groupId: GroupId,
+    userId: UserId,
+    opts?: { reason?: string | null; expiresAt?: Date | string | null },
+  ): Promise<Member> {
+    const body: Record<string, unknown> = {};
+    if (opts?.reason !== undefined) body.reason = opts.reason;
+    if (opts?.expiresAt !== undefined) {
+      body.expiresAt =
+        opts.expiresAt === null
+          ? null
+          : opts.expiresAt instanceof Date
+            ? opts.expiresAt.toISOString()
+            : opts.expiresAt;
+    }
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
+      body,
+    );
+    return deserializeMember(wire);
+  }
+
+  async unban(groupId: GroupId, userId: UserId): Promise<Member> {
+    const wire = await this.http.delete<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
+    );
+    return deserializeMember(wire);
+  }
+
   // ------ Real-time ------
 
   // Resolves after the server has accepted the connection, so 401 / 404

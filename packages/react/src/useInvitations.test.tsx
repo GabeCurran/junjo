@@ -426,6 +426,7 @@ describe("useInvitations", () => {
           notesPublic: null,
           notesPrivate: null,
           joinedAt: new Date("2026-04-29T00:00:00.000Z"),
+          bannedUntil: null,
         },
       });
     });
@@ -467,6 +468,7 @@ describe("useInvitations", () => {
           notesPublic: null,
           notesPrivate: null,
           joinedAt: occurredAt,
+          bannedUntil: null,
         },
       });
     });
@@ -508,6 +510,7 @@ describe("useInvitations", () => {
           notesPublic: null,
           notesPrivate: null,
           joinedAt: new Date(),
+          bannedUntil: null,
         },
       });
     });
@@ -545,6 +548,7 @@ describe("useInvitations", () => {
           notesPublic: null,
           notesPrivate: null,
           joinedAt: new Date(),
+          bannedUntil: null,
         },
       });
     });

@@ -949,6 +949,7 @@ interface WireMemberSnapshot {
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: string;
+  bannedUntil: string | null;
 }
 
 const memberFixture: WireMemberSnapshot = {
@@ -961,6 +962,7 @@ const memberFixture: WireMemberSnapshot = {
   notesPublic: null,
   notesPrivate: null,
   joinedAt: "2026-04-28T06:00:00.000Z",
+  bannedUntil: null,
 };
 
 function emptyResponse(status: number): Response {
@@ -1328,6 +1330,122 @@ describe("groups.kick", () => {
       code: "not_found",
       status: 404,
     });
+  });
+});
+
+describe("groups.ban / groups.unban", () => {
+  const bannedFixture = { ...memberFixture, status: "banned" };
+  const leftFixture = { ...memberFixture, status: "left" };
+
+  it("POSTs /v1/groups/:id/members/:userId/ban with reason + expiresAt", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members/user_alice/ban");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ reason: "trolling", expiresAt: "2026-06-01T00:00:00.000Z" });
+      return jsonResponse(bannedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const member = await junjo.groups.ban("grp_1" as GroupId, "user_alice" as UserId, {
+      reason: "trolling",
+      expiresAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+    expect(member.status).toBe("banned");
+  });
+
+  it("POSTs an empty body when no opts supplied", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({});
+      return jsonResponse(bannedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.groups.ban("grp_1" as GroupId, "user_alice" as UserId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards an ISO-string expiresAt verbatim (no re-parsing)", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload.expiresAt).toBe("2026-06-01T00:00:00.000Z");
+      return jsonResponse(bannedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.groups.ban("grp_1" as GroupId, "user_alice" as UserId, {
+      expiresAt: "2026-06-01T00:00:00.000Z",
+    });
+  });
+
+  it("forwards explicit null expiresAt to clear a prior expiry", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ expiresAt: null });
+      return jsonResponse(bannedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.groups.ban("grp_1" as GroupId, "user_alice" as UserId, { expiresAt: null });
+  });
+
+  it("DELETEs /v1/groups/:id/members/:userId/ban for unban", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members/user_alice/ban");
+      return jsonResponse(leftFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const member = await junjo.groups.unban("grp_1" as GroupId, "user_alice" as UserId);
+    expect(member.status).toBe("left");
+  });
+
+  it("URL-encodes the group id and user id on ban", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members/weird%2Fuser/ban");
+      return jsonResponse(bannedFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await junjo.groups.ban("has/slash" as GroupId, "weird/user" as UserId);
+  });
+
+  it("propagates the server's `banned` error code on enforcement-time 403", async () => {
+    // groups.ban itself doesn't 403, but groups.join after a ban does. Cover
+    // that round-trip here too -- verifies the SDK preserves the new code
+    // unchanged for consumer-side discrimination.
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "banned", status: 403, message: "user is banned from this group" }, 403),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      junjo.groups.join("grp_1" as GroupId, "user_alice" as UserId),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "banned", status: 403 });
   });
 });
 

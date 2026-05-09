@@ -69,6 +69,7 @@ export function toPublicMember(
     notesPublic: member.notesPublic,
     notesPrivate: member.notesPrivate,
     joinedAt: member.joinedAt,
+    bannedUntil: member.bannedUntil,
   };
 }
 

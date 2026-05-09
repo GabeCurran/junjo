@@ -27,6 +27,7 @@ function fakeEvent(groupId: string, id = "evt_1"): MemberJoinedEvent {
       notesPublic: null,
       notesPrivate: null,
       joinedAt: new Date(0),
+      bannedUntil: null,
     },
   };
 }

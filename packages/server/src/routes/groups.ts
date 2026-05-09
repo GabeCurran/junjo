@@ -4,9 +4,11 @@ import type {
   GroupId,
   GroupRelationshipChangedEvent,
   GroupUpdatedEvent,
+  MemberBannedEvent,
   MemberInvitedEvent,
   MemberJoinedEvent,
   MemberLeftEvent,
+  MemberUnbannedEvent,
   RoleChangedEvent,
   RoleCreatedEvent,
   RoleId,
@@ -14,6 +16,7 @@ import type {
 } from "@junjo/shared";
 import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
+import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import {
@@ -30,6 +33,7 @@ import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { listAuditForGroup } from "./audit.js";
 import {
   MAX_PARENT_DEPTH,
+  banMemberBody,
   bulkInviteQuery,
   clearRelationshipQuery,
   createGroupBody,
@@ -830,6 +834,12 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
 
+    // Game-level + per-group ban check before any state mutation. Both
+    // bans return 403 banned with a clear message; the user is not
+    // told which scope blocked them beyond what the message says.
+    const banState = await checkBanState(prisma, gameId, junjoUserId, group.id);
+    if (banState.banned) throw Errors.banned(banErrorMessage(banState));
+
     const member = await prisma.$transaction(async (tx) => {
       const existing = await tx.groupMember.findUnique({
         where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
@@ -839,7 +849,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       const result = existing
         ? await tx.groupMember.update({
             where: { id: existing.id },
-            data: { status: "active", leftAt: null },
+            // Reactivate from left/kicked. bannedUntil is cleared
+            // defensively even though the ban check above already
+            // rejects banned rows (state hygiene).
+            data: { status: "active", leftAt: null, bannedUntil: null },
           })
         : await tx.groupMember.create({
             data: { groupId: group.id, junjoUserId, status: "active" },
@@ -996,6 +1009,136 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(serializeMember(updated, userId, roleIds));
   });
 
+  // Per-group ban. Distinct from kick: kicked members can rejoin via
+  // public-join / invitation accept (with the codex change in ba473eb),
+  // banned members cannot. The /join and /invitations/:code/accept
+  // routes consult `checkBanState` and 403 with `code: "banned"`.
+  // Optional `expiresAt` enables timeouts; null = permanent.
+  r.post("/:id/members/:userId/ban", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = banMemberBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const reasonValue = parsed.data.reason ?? null;
+    const expiresAtValue = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    // Auto-create the JunjoUser + ExternalIdentity if the dev hasn't
+    // seen this user before. Mirrors the kick semantics in spirit but
+    // takes the upsert path so a moderator can preemptively ban a user
+    // who hasn't joined yet.
+    const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.groupMember.findUnique({
+        where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+      });
+      const member = existing
+        ? await tx.groupMember.update({
+            where: { id: existing.id },
+            data: {
+              status: "banned",
+              bannedUntil: expiresAtValue,
+              leftAt: existing.leftAt ?? new Date(),
+            },
+          })
+        : await tx.groupMember.create({
+            data: {
+              groupId: group.id,
+              junjoUserId,
+              status: "banned",
+              bannedUntil: expiresAtValue,
+              leftAt: new Date(),
+            },
+          });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.banned",
+          targetId: userId,
+          payload: {
+            memberId: member.id,
+            reason: reasonValue,
+            bannedUntil: expiresAtValue ? expiresAtValue.toISOString() : null,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return member;
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, result.id);
+    await dispatchEvent<MemberBannedEvent>(prisma, hub, {
+      type: "member.banned",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+      reason: reasonValue,
+      bannedUntil: expiresAtValue,
+    });
+    return c.json(serializeMember(result, userId, roleIds));
+  });
+
+  // Reverse a per-group ban. Flips the row to `status="left"` so the
+  // membership history stays intact (matches the kick / leave audit
+  // shape; the user can be re-invited normally afterward). 404s when
+  // the row doesn't exist or isn't currently banned -- callers needing
+  // idempotency should check first.
+  r.delete("/:id/members/:userId/ban", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("ban");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+    });
+    if (!member || member.status !== "banned") throw Errors.notFound("ban");
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.groupMember.update({
+        where: { id: member.id },
+        data: { status: "left", bannedUntil: null },
+      });
+      await tx.auditEntry.create({
+        data: {
+          groupId: group.id,
+          actorUserId: null,
+          action: "member.unbanned",
+          targetId: userId,
+          payload: { memberId: result.id } as Prisma.InputJsonValue,
+        },
+      });
+      return result;
+    });
+
+    const roleIds = await loadMemberRoleIds(prisma, updated.id);
+    await dispatchEvent<MemberUnbannedEvent>(prisma, hub, {
+      type: "member.unbanned",
+      gameId: gameId as GameId,
+      groupId: group.id as GroupId,
+      userId: userId as UserId,
+    });
+    return c.json(serializeMember(updated, userId, roleIds));
+  });
+
   // Metadata replaces wholesale and is treated as a change whenever
   // supplied (jsonb may not preserve key order, so a deep-equal check
   // would be unreliable). Notes are diffed per-field; a notes-only PATCH
@@ -1144,6 +1287,35 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const activeJunjoUserIds = new Set(activeMembers.map((m) => m.junjoUserId));
 
     const now = new Date();
+
+    // Batch-load both ban surfaces for the unique users in this batch.
+    // Lazy expiry: any row whose expiry is in the past is ignored.
+    const gameBans =
+      junjoUserIds.length === 0
+        ? []
+        : await prisma.gameBan.findMany({
+            where: {
+              gameId,
+              junjoUserId: { in: junjoUserIds },
+              OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+            },
+            select: { junjoUserId: true },
+          });
+    const gameBannedJunjoUserIds = new Set(gameBans.map((b) => b.junjoUserId));
+    const groupBans =
+      junjoUserIds.length === 0
+        ? []
+        : await prisma.groupMember.findMany({
+            where: {
+              groupId: group.id,
+              junjoUserId: { in: junjoUserIds },
+              status: "banned",
+              OR: [{ bannedUntil: null }, { bannedUntil: { gt: now } }],
+            },
+            select: { junjoUserId: true },
+          });
+    const groupBannedJunjoUserIds = new Set(groupBans.map((b) => b.junjoUserId));
+
     const pendingInvites = await prisma.invitation.findMany({
       where: {
         groupId: group.id,
@@ -1169,6 +1341,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       const junjoUserId = externalToJunjo.get(row.userId);
       if (junjoUserId && activeJunjoUserIds.has(junjoUserId)) {
         skipped++;
+        continue;
+      }
+      // Banned users surface as per-row errors (loud, not silent
+      // skips) so the operator knows the invite was rejected for a
+      // real moderation reason rather than dropped quietly.
+      if (junjoUserId && gameBannedJunjoUserIds.has(junjoUserId)) {
+        errorList.push({ row: row.row, reason: "user is banned from this game" });
+        continue;
+      }
+      if (junjoUserId && groupBannedJunjoUserIds.has(junjoUserId)) {
+        errorList.push({ row: row.row, reason: "user is banned from this group" });
         continue;
       }
       if (pendingTargets.has(row.userId)) {

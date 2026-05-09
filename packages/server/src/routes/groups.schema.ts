@@ -66,6 +66,28 @@ export const kickMemberBody = z
 
 export type KickMemberBody = z.infer<typeof kickMemberBody>;
 
+// Per-group ban. Mirrors `kickMemberBody` for `reason`; adds optional
+// `expiresAt` for time-bounded bans (omit / null = permanent). The
+// validator rejects past timestamps to catch typos client-side; lazy
+// expiry on read still treats already-elapsed values as not-banned for
+// rows that pre-date this validation.
+export const banMemberBody = z
+  .object({
+    reason: z.string().max(500).nullable().optional(),
+    expiresAt: z
+      .string()
+      .min(1)
+      .refine((s) => !Number.isNaN(Date.parse(s)), {
+        message: "expiresAt must be an ISO 8601 date",
+      })
+      .nullable()
+      .optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export type BanMemberBody = z.infer<typeof banMemberBody>;
+
 export const bulkInviteQuery = z.object({
   roleId: z.string().min(1).optional(),
 });

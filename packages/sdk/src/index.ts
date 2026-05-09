@@ -8,6 +8,7 @@ import type {
   UserId,
 } from "@junjo/shared";
 import { AuditApi } from "./audit.js";
+import { BansApi } from "./bans.js";
 import { JunjoError } from "./errors.js";
 import { FriendsApi } from "./friends.js";
 import { GroupsApi } from "./groups.js";
@@ -53,6 +54,7 @@ export class Junjo {
   readonly audit: AuditApi;
   readonly webhooks: WebhooksApi;
   readonly friends: FriendsApi;
+  readonly bans: BansApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
 
@@ -72,6 +74,7 @@ export class Junjo {
     this.audit = new AuditApi(this.http);
     this.webhooks = new WebhooksApi(this.http);
     this.friends = new FriendsApi(this.http);
+    this.bans = new BansApi(this.http);
     this.authAdapter = config.authAdapter;
   }
 
@@ -117,6 +120,8 @@ export class Junjo {
 // =====================================================================
 
 export { AuditApi } from "./audit.js";
+export { BansApi } from "./bans.js";
+export type { CreateBanInput, ListBansOptions } from "./bans.js";
 export { JunjoError } from "./errors.js";
 export { FriendsApi } from "./friends.js";
 export type {
@@ -157,6 +162,7 @@ export type {
   AuditAction,
   AuditEntry,
   AuthAdapter,
+  Ban,
   CreateWebhookEndpointInput,
   Group,
   GroupId,

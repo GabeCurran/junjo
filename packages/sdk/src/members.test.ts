@@ -12,6 +12,7 @@ interface WireMemberSnapshot {
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: string;
+  bannedUntil: string | null;
 }
 
 const memberFixture: WireMemberSnapshot = {
@@ -24,6 +25,7 @@ const memberFixture: WireMemberSnapshot = {
   notesPublic: null,
   notesPrivate: null,
   joinedAt: "2026-04-28T05:00:00.000Z",
+  bannedUntil: null,
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

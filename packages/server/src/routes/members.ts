@@ -67,6 +67,7 @@ export interface WireMember {
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: string;
+  bannedUntil: string | null;
 }
 
 // Wire `userId` is the dev's external id; the caller looks it up via
@@ -86,6 +87,7 @@ export function serializeMember(
     notesPublic: member.notesPublic,
     notesPrivate: member.notesPrivate,
     joinedAt: member.joinedAt.toISOString(),
+    bannedUntil: member.bannedUntil ? member.bannedUntil.toISOString() : null,
   };
 }
 

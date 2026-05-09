@@ -60,6 +60,7 @@ function makeMemberJoinedEvent(gameId: string, groupId: string): MemberJoinedEve
       notesPublic: null,
       notesPrivate: null,
       joinedAt: new Date("2026-04-28T12:00:00.000Z"),
+      bannedUntil: null,
     },
   };
 }

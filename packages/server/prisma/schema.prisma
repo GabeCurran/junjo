@@ -37,6 +37,7 @@ model Game {
   userRelationships  UserRelationship[]
   friendTags         FriendTag[]
   userVisibilities   UserVisibility[]
+  gameBans           GameBan[]
 
   @@index([networkId])
 }
@@ -68,6 +69,7 @@ model JunjoUser {
   userRelsAsTarget   UserRelationship[] @relation("UserRelTarget")
   friendTags         FriendTag[]
   userVisibilities   UserVisibility[]
+  gameBans           GameBan[]
 }
 
 // Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
@@ -138,13 +140,17 @@ model GroupMember {
   junjoUserId String
   junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
 
-  status       String // "active" | "invited" | "left" | "kicked"
+  status       String // "active" | "invited" | "left" | "kicked" | "banned"
   metadata     Json    @default("{}")
   notesPublic  String?
   notesPrivate String?
 
   joinedAt DateTime  @default(now())
   leftAt   DateTime?
+  // Only meaningful when status="banned". Null = permanent ban; a value
+  // in the past is treated as expired at read time (lazy expiry, no
+  // sweeper). Cleared whenever the row transitions back to active.
+  bannedUntil DateTime?
 
   // Multi-role per member (TERA-style). The join table sits below.
   memberRoles         MemberRole[]
@@ -471,4 +477,31 @@ model WebhookDelivery {
 
   @@index([status, nextAttemptAt])
   @@index([webhookEndpointId, createdAt])
+}
+
+// =====================================================================
+// Bans (game-scoped)
+// =====================================================================
+
+// Game-wide ban applied across every group in the game. Per-group bans
+// are expressed as `GroupMember.status = "banned"` instead. The two
+// composes: enforcement sites check game-ban first, then group-ban.
+// `expiresAt` enables time-bounded bans (lazy expiry: read paths treat
+// an expired ban as not-banned; no background sweeper).
+model GameBan {
+  id             String    @id @default(cuid())
+  gameId         String
+  game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId    String
+  junjoUser      JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  bannedAt       DateTime  @default(now())
+  expiresAt      DateTime? // null = permanent
+  reason         String?
+  // Resolved actor JunjoUser id; null when issued by server-side admin
+  // with no auth-adapter actor wired (parallels AuditEntry.actorUserId).
+  bannedByUserId String?
+
+  @@unique([gameId, junjoUserId])
+  @@index([gameId, expiresAt])
+  @@index([junjoUserId])
 }

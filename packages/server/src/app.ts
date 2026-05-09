@@ -48,6 +48,7 @@ import {
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
 } from "./routes/admin.js";
+import { bansRouter } from "./routes/bans.js";
 import { subscribeEventsHandler } from "./routes/events.js";
 import {
   createFriendTagHandler,
@@ -352,6 +353,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));
+  v1.route("/bans", bansRouter(prisma, hub));
   v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
   v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma, hub));
   v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));

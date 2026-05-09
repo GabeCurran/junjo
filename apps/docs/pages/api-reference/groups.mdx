@@ -638,6 +638,66 @@ For an idempotent call (member already kicked, or in `left`/`invited` state) the
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
+## Per-group bans
+
+Distinct from kick: a kicked member can rejoin via the public-join or
+invitation-accept flow; a banned member cannot. Per-group bans live as
+`GroupMember.status = "banned"` with optional `bannedUntil` (lazy
+expiry: read paths treat an expired value as not-banned).
+
+For game-wide bans that apply across every group in the game, see the
+[Bans reference](/api-reference/bans).
+
+### `POST /v1/groups/:id/members/:userId/ban`
+
+**Body**
+
+```json
+{
+  "reason": "trolling",
+  "expiresAt": "2026-06-01T00:00:00.000Z"
+}
+```
+
+Both fields optional; omit / `null` for a permanent ban with no
+recorded reason. The handler auto-creates a `JunjoUser` +
+`ExternalIdentity` if the user has never been seen, so a moderator can
+preemptively ban a user who hasn't joined.
+
+Writes a `member.banned` audit entry with `{ memberId, reason, bannedUntil }`
+and fires the `member.banned` webhook event with `{ userId, reason, bannedUntil }`.
+
+**Response** `200 OK` with the post-state `Member` body. `status` is
+`"banned"`, `bannedUntil` is the configured expiry (or `null`).
+
+### `DELETE /v1/groups/:id/members/:userId/ban`
+
+Lift a per-group ban. Reverts the row to `status = "left"` and clears
+`bannedUntil`. The membership history is preserved (the user can be
+re-invited normally afterward).
+
+Writes a `member.unbanned` audit entry; fires the `member.unbanned`
+webhook event.
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Unknown group, or the user has no `GroupMember` row, or the row is not currently banned. |
+
+### Enforcement on join / invite-accept
+
+`POST /v1/groups/:id/join` and `POST /v1/invitations/:code/accept`
+both check the ban state before any state mutation:
+
+```json
+{ "code": "banned", "status": 403, "message": "user is banned from this group" }
+```
+
+`POST /v1/groups/:id/bulk-invite` surfaces banned users as per-row
+errors (`{ row, reason: "user is banned from this group" }`) rather
+than silent skips, so the operator sees the moderation outcome.
+
 ## `GET /v1/groups/:id/members/:userId`
 
 Fetches a single member by the dev's external user id. Scoped to the calling game.

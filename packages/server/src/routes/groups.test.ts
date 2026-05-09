@@ -5517,3 +5517,235 @@ describe.skipIf(!TEST_DATABASE_URL)("Page-size cap (JUNJO_MAX_PAGE_SIZE)", () =>
     expect(res.status).toBe(400);
   });
 });
+
+describe.skipIf(!TEST_DATABASE_URL)("Ban enforcement and lifecycle", () => {
+  let app: Hono;
+  let authHeader: string;
+  let gameId: string;
+
+  beforeAll(() => {
+    app = createApp({ prisma });
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "GameBan", "Invitation", "AuditEntry", "MemberRole", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE',
+    );
+    const game = await createGame("Test Game", prisma);
+    gameId = game.id;
+    const seeded = await createApiKey(game.id, prisma);
+    authHeader = `Bearer ${seeded.raw.full}`;
+  });
+
+  async function makeGroup(visibility: "public" | "invite-only" | "secret", name: string) {
+    return prisma.group.create({
+      data: { gameId, kind: "guild", name, visibility, metadata: {} },
+    });
+  }
+
+  async function makeInvitation(groupId: string, code: string, targetUserId?: string) {
+    return prisma.invitation.create({
+      data: {
+        groupId,
+        code,
+        targetUserId: targetUserId ?? null,
+      },
+    });
+  }
+
+  function banMember(groupId: string, userId: string, body: unknown = {}) {
+    return app.request(`/v1/groups/${groupId}/members/${encodeURIComponent(userId)}/ban`, {
+      method: "POST",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function unbanMember(groupId: string, userId: string) {
+    return app.request(`/v1/groups/${groupId}/members/${encodeURIComponent(userId)}/ban`, {
+      method: "DELETE",
+      headers: { authorization: authHeader },
+    });
+  }
+
+  function joinGroup(groupId: string, userId: string) {
+    return app.request(`/v1/groups/${groupId}/join`, {
+      method: "POST",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  function acceptInvite(code: string, userId: string) {
+    return app.request(`/v1/invitations/${code}/accept`, {
+      method: "POST",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  describe("POST /v1/groups/:id/members/:userId/ban", () => {
+    it("flips an existing member to status=banned with a reason", async () => {
+      const pub = await makeGroup("public", "p");
+      // Seed an active member.
+      await joinGroup(pub.id, "alice");
+
+      const res = await banMember(pub.id, "alice", { reason: "trolling" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; bannedUntil: string | null };
+      expect(body.status).toBe("banned");
+      expect(body.bannedUntil).toBeNull();
+
+      const audit = await prisma.auditEntry.findFirst({
+        where: { groupId: pub.id, action: "member.banned" },
+      });
+      expect(audit).not.toBeNull();
+      expect((audit?.payload as { reason?: string }).reason).toBe("trolling");
+    });
+
+    it("creates a placeholder banned row for a user who's never joined (preemptive ban)", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await banMember(pub.id, "newcomer");
+      expect(res.status).toBe(200);
+
+      const stored = await prisma.groupMember.findFirst({
+        where: { groupId: pub.id },
+        include: { junjoUser: { include: { externalIdentities: true } } },
+      });
+      expect(stored?.status).toBe("banned");
+      expect(stored?.junjoUser.externalIdentities[0]?.externalUserId).toBe("newcomer");
+    });
+
+    it("accepts an ISO expiresAt and stores it as bannedUntil", async () => {
+      const pub = await makeGroup("public", "p");
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const res = await banMember(pub.id, "alice", { expiresAt: future });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { bannedUntil: string };
+      expect(body.bannedUntil).toBe(future);
+    });
+
+    it("rejects a malformed expiresAt with 400", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await banMember(pub.id, "alice", { expiresAt: "not-a-date" });
+      expect(res.status).toBe(400);
+    });
+
+    it("404s on unknown group", async () => {
+      const res = await banMember("ck_nope", "alice");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("DELETE /v1/groups/:id/members/:userId/ban (unban)", () => {
+    it("reverts a banned row back to status=left and clears bannedUntil", async () => {
+      const pub = await makeGroup("public", "p");
+      await banMember(pub.id, "alice", { expiresAt: new Date(Date.now() + 60_000).toISOString() });
+
+      const res = await unbanMember(pub.id, "alice");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; bannedUntil: string | null };
+      expect(body.status).toBe("left");
+      expect(body.bannedUntil).toBeNull();
+
+      const audit = await prisma.auditEntry.findFirst({
+        where: { groupId: pub.id, action: "member.unbanned" },
+      });
+      expect(audit).not.toBeNull();
+    });
+
+    it("404s when the row exists but isn't banned", async () => {
+      const pub = await makeGroup("public", "p");
+      await joinGroup(pub.id, "alice");
+      const res = await unbanMember(pub.id, "alice");
+      expect(res.status).toBe(404);
+    });
+
+    it("404s when the user has no row at all", async () => {
+      const pub = await makeGroup("public", "p");
+      const res = await unbanMember(pub.id, "ghost");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("Public-join enforcement", () => {
+    it("rejects a banned user with 403 banned", async () => {
+      const pub = await makeGroup("public", "p");
+      await banMember(pub.id, "alice");
+      const res = await joinGroup(pub.id, "alice");
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("banned");
+    });
+
+    it("allows a previously-banned user to join after their ban expires (lazy expiry)", async () => {
+      const pub = await makeGroup("public", "p");
+      // Backdate the expiry so the row already counts as expired.
+      await banMember(pub.id, "alice", { expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      // Manually rewrite bannedUntil into the past to simulate the expiry.
+      await prisma.groupMember.updateMany({
+        where: { groupId: pub.id },
+        data: { bannedUntil: new Date(Date.now() - 1000) },
+      });
+      const res = await joinGroup(pub.id, "alice");
+      expect(res.status).toBe(201);
+    });
+
+    it("allows a user to join after the ban is explicitly lifted", async () => {
+      const pub = await makeGroup("public", "p");
+      await banMember(pub.id, "alice");
+      await unbanMember(pub.id, "alice");
+      const res = await joinGroup(pub.id, "alice");
+      expect(res.status).toBe(201);
+    });
+  });
+
+  describe("Invitation-accept enforcement", () => {
+    it("rejects a per-group banned user with 403 banned", async () => {
+      const inv = await makeGroup("invite-only", "i");
+      await banMember(inv.id, "alice");
+      const invitation = await makeInvitation(inv.id, "code_alice_____x");
+
+      const res = await acceptInvite(invitation.code, "alice");
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("banned");
+    });
+
+    it("rejects a game-banned user even on a group they've never been in", async () => {
+      const a = await makeGroup("invite-only", "a");
+      const invitation = await makeInvitation(a.id, "code_alice_____y");
+      // Game-ban via the route to exercise the same path Reibu would.
+      const banRes = await app.request("/v1/bans", {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify({ userId: "alice" }),
+      });
+      expect(banRes.status).toBe(201);
+
+      const res = await acceptInvite(invitation.code, "alice");
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("Bulk-invite enforcement", () => {
+    it("surfaces a banned user as a per-row error and skips them", async () => {
+      const grp = await makeGroup("invite-only", "g");
+      await banMember(grp.id, "alice");
+
+      const csv = "alice\nbob\n";
+      const res = await app.request(`/v1/groups/${grp.id}/bulk-invite`, {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "text/plain" },
+        body: csv,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        invited: number;
+        errors: Array<{ row: number; reason: string }>;
+      };
+      expect(body.invited).toBe(1); // bob got invited
+      expect(body.errors).toContainEqual({ row: 1, reason: "user is banned from this group" });
+    });
+  });
+});

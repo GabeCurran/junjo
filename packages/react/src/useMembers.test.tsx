@@ -67,6 +67,7 @@ function makeMember(userId: string, overrides: Partial<Member> = {}): Member {
     notesPublic: null,
     notesPrivate: null,
     joinedAt: new Date("2026-04-28T00:00:00.000Z"),
+    bannedUntil: null,
     ...overrides,
   };
 }

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { GameId, GroupId, MemberJoinedEvent, UserId } from "@junjo/shared";
 import type { Invitation, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
+import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { dispatchEvent, toPublicMember } from "../events.js";
@@ -144,6 +145,12 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
 
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
 
+    // Game-level + per-group ban check before any state mutation. A
+    // banned user cannot redeem an invitation, regardless of whether
+    // the invite was open-code or direct-target.
+    const banState = await checkBanState(prisma, gameId, junjoUserId, invitation.groupId);
+    if (banState.banned) throw Errors.banned(banErrorMessage(banState));
+
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.groupMember.findUnique({
         where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
@@ -153,7 +160,10 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       const member = existing
         ? await tx.groupMember.update({
             where: { id: existing.id },
-            data: { status: "active", leftAt: null },
+            // Reactivate from left/kicked. bannedUntil clears
+            // defensively even though the ban check above rejects
+            // banned rows (state hygiene).
+            data: { status: "active", leftAt: null, bannedUntil: null },
           })
         : await tx.groupMember.create({
             data: {

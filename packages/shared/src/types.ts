@@ -73,10 +73,31 @@ export interface UpdateGroupInput {
 }
 
 // =====================================================================
+// Bans (game-scoped)
+// =====================================================================
+
+// Game-wide ban applied across every group in the game. Per-group bans
+// live as `Member.status = "banned"` instead.
+export interface Ban {
+  id: string;
+  gameId: GameId;
+  // The dev's external user id (the one their auth provider returns),
+  // not the internal JunjoUser id. Same convention as Member.userId.
+  userId: UserId;
+  bannedAt: Date;
+  // Null = permanent. A value in the past means the ban has lapsed
+  // (lazy expiry; the server does not auto-clean expired rows).
+  expiresAt: Date | null;
+  reason: string | null;
+  // Resolved actor external user id; null when issued server-side.
+  bannedBy: UserId | null;
+}
+
+// =====================================================================
 // Member
 // =====================================================================
 
-export type MemberStatus = "active" | "invited" | "left" | "kicked";
+export type MemberStatus = "active" | "invited" | "left" | "kicked" | "banned";
 
 export type MemberMetadata = Record<string, unknown>;
 
@@ -92,6 +113,10 @@ export interface Member {
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: Date;
+  // Only meaningful when status="banned". Null = permanent ban; an ISO
+  // timestamp in the past means the ban has lapsed (lazy expiry, server
+  // does not auto-flip status). Always null for non-banned members.
+  bannedUntil: Date | null;
 }
 
 export interface SetMemberNotesInput {
@@ -380,10 +405,41 @@ export interface FriendRemovedEvent extends UserEventBase {
   otherJunjoUserId: string;
 }
 
+// Group-scoped ban events. Fire when a moderator flips a member to
+// status="banned" / unbans them via the per-group ban endpoints.
+export interface MemberBannedEvent extends GroupEventBase {
+  type: "member.banned";
+  userId: UserId;
+  reason: string | null;
+  // Null = permanent. ISO timestamp = lazy-expiry deadline.
+  bannedUntil: Date | null;
+}
+
+export interface MemberUnbannedEvent extends GroupEventBase {
+  type: "member.unbanned";
+  userId: UserId;
+}
+
+// Game-scoped ban events. No groupId; route through webhook delivery
+// only (SSE is per-group; same precedent as friend events).
+export interface GameUserBannedEvent extends UserEventBase {
+  type: "game.user.banned";
+  junjoUserId: string;
+  reason: string | null;
+  expiresAt: Date | null;
+}
+
+export interface GameUserUnbannedEvent extends UserEventBase {
+  type: "game.user.unbanned";
+  junjoUserId: string;
+}
+
 export type JunjoEvent =
   | MemberJoinedEvent
   | MemberLeftEvent
   | MemberInvitedEvent
+  | MemberBannedEvent
+  | MemberUnbannedEvent
   | RoleCreatedEvent
   | RoleChangedEvent
   | RoleDeletedEvent
@@ -394,7 +450,9 @@ export type JunjoEvent =
   | GroupRelationshipChangedEvent
   | FriendRequestSentEvent
   | FriendRequestAcceptedEvent
-  | FriendRemovedEvent;
+  | FriendRemovedEvent
+  | GameUserBannedEvent
+  | GameUserUnbannedEvent;
 
 export type JunjoEventType = JunjoEvent["type"];
 

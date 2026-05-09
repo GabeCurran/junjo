@@ -25,6 +25,7 @@ export interface WireMember {
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: string;
+  bannedUntil: string | null;
 }
 
 export function deserializeMember(w: WireMember): Member {
@@ -38,6 +39,7 @@ export function deserializeMember(w: WireMember): Member {
     notesPublic: w.notesPublic,
     notesPrivate: w.notesPrivate,
     joinedAt: new Date(w.joinedAt),
+    bannedUntil: w.bannedUntil === null ? null : new Date(w.bannedUntil),
   };
 }
 

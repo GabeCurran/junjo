@@ -1,0 +1,130 @@
+# Bans
+
+Two distinct ban surfaces: **game-level** (covered here, applies across
+every group in the game) and **per-group** (covered in
+[Groups](/api-reference/groups#per-group-bans), applies to one group).
+Both surfaces enforce at the same join-and-accept paths
+(`POST /v1/groups/:id/join`, `POST /v1/invitations/:code/accept`,
+`POST /v1/groups/:id/bulk-invite`); the game-level check fires first,
+then the per-group check.
+
+Both support optional `expiresAt` for time-bounded bans. Expiry is
+**lazy**: the server does not auto-clean expired rows; read paths
+ignore them. A row whose `expiresAt` has passed appears as not-banned
+to the enforcement check, and the operator can either let it sit or
+delete it via the unban route.
+
+When an enforcement site rejects a banned user it returns:
+
+```json
+{ "code": "banned", "status": 403, "message": "user is banned from this game" }
+```
+
+The message reflects the broader scope (game wins on tie).
+
+## `POST /v1/bans`
+
+Create or replace a game-level ban for an external user id. Idempotent
+on a still-active ban (returns the existing row); replaces an expired
+ban with a fresh one.
+
+**Body** (`.strict` — unknown keys 400)
+
+```json
+{
+  "userId": "user_alice",
+  "reason": "cheating",
+  "expiresAt": "2026-06-01T00:00:00.000Z"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | The dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). Auto-creates the JunjoUser + ExternalIdentity if the user has never been seen in this game (preemptive ban is fine). |
+| `reason` | no | Free-form text up to 500 chars, or `null`. Surfaces in the dashboard. |
+| `expiresAt` | no | ISO 8601 timestamp. Omit / `null` for a permanent ban. Past timestamps are accepted but treated as expired (lazy expiry). |
+
+**Behavior**
+
+- New ban: creates a `GameBan` row with `bannedAt = now()`.
+- Re-banning a user with an already-active ban: keeps the original
+  `bannedAt` (timeline reads cleanly), updates `reason` / `expiresAt`.
+- Re-banning a user whose previous ban expired: refreshes `bannedAt`
+  to now (counts as a fresh ban event).
+
+Fires the `game.user.banned` webhook event with `{ junjoUserId, reason, expiresAt }`.
+Game-level events do **not** route through SSE (SSE is per-group).
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "ckxxx...",
+  "gameId": "ckyyy...",
+  "userId": "user_alice",
+  "bannedAt": "2026-05-09T17:00:00.000Z",
+  "expiresAt": "2026-06-01T00:00:00.000Z",
+  "reason": "cheating",
+  "bannedBy": null
+}
+```
+
+## `DELETE /v1/bans/:userId`
+
+Remove a game-level ban. `204 No Content` on success. Fires the
+`game.user.unbanned` webhook event.
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No active ban for that user in the calling game (also when the user has never been seen). |
+
+## `GET /v1/bans`
+
+List active game-level bans for the calling game, newest-first
+(`bannedAt DESC, id DESC`). Cursor pagination.
+
+**Query parameters**
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | 50 | Capped by `JUNJO_MAX_PAGE_SIZE` (default 100). |
+| `cursor` | string | none | The `nextCursor` from a prior response. |
+| `includeExpired` | `"true"` / `"false"` | `false` | When true, also returns rows whose `expiresAt` is in the past. |
+
+**Response** `200 OK` with `Page<Ban>`:
+
+```json
+{
+  "items": [
+    {
+      "id": "ckxxx...",
+      "gameId": "ckyyy...",
+      "userId": "user_alice",
+      "bannedAt": "2026-05-09T17:00:00.000Z",
+      "expiresAt": null,
+      "reason": "cheating",
+      "bannedBy": null
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+## SDK
+
+```ts
+// Game-level
+await junjo.bans.add({ userId, reason: "cheating", expiresAt: new Date("...") });
+await junjo.bans.remove(userId);
+const page = await junjo.bans.list({ limit: 50, includeExpired: false });
+
+// Per-group (see Groups reference)
+await junjo.groups.ban(groupId, userId, { reason: "trolling" });
+await junjo.groups.unban(groupId, userId);
+```
+
+A 403 from any join / invite-accept call surfaces as a `JunjoError`
+with `code === "banned"` so the consumer can discriminate from other
+permission-denied conditions.

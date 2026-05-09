@@ -36,4 +36,5 @@ export const Errors = {
     new JunjoError("parent_cycle", 400, msg),
   rateLimitExceeded: (msg = "rate limit exceeded") =>
     new JunjoError("rate_limit_exceeded", 429, msg),
+  banned: (msg = "user is banned") => new JunjoError("banned", 403, msg),
 };
