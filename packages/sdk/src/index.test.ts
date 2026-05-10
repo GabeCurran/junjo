@@ -64,3 +64,48 @@ describe("Junjo.whoami", () => {
     await expect(junjo.whoami("any.token")).rejects.toThrow("upstream verifier exploded");
   });
 });
+
+describe("Junjo apiKey shape validation", () => {
+  it("throws when apiKey is missing", () => {
+    expect(
+      () =>
+        new Junjo({
+          apiKey: "" as unknown as string,
+          fetch: vi.fn() as unknown as typeof fetch,
+        }),
+    ).toThrow(/missing apiKey/);
+  });
+
+  it("throws a specific error when an admin token (jadm_*) is passed by mistake", () => {
+    expect(
+      () =>
+        new Junjo({
+          apiKey: "jadm_d6f863cd5cf220b06773b57ecb5ea75a118bff3f92f581bbce515a70cb14b62a",
+          fetch: vi.fn() as unknown as typeof fetch,
+        }),
+    ).toThrow(/cross-game admin token/);
+  });
+
+  it("accepts a real per-game key shape (jk_<prefix>.<secret>) without warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      () =>
+        new Junjo({
+          apiKey: "jk_kzPNEgg-rEY5nGHF.vYJ-girvGuJfwkO4vM4jwT7stXHFxsbhRrpIYqfsWJY",
+          fetch: vi.fn() as unknown as typeof fetch,
+        }),
+    ).not.toThrow();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("attaches code='invalid_config' on the thrown JunjoError", () => {
+    try {
+      new Junjo({ apiKey: "jadm_xxx", fetch: vi.fn() as unknown as typeof fetch });
+      expect.fail("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(JunjoError);
+      expect((err as JunjoError).code).toBe("invalid_config");
+    }
+  });
+});

@@ -36,6 +36,41 @@ export interface JunjoConfig {
 
 const DEFAULT_BASE_URL = "https://api.junjo.io";
 
+// Per-game API keys are issued by the server in the shape `jk_<prefix>.<secret>`.
+// The cross-game admin token (`jadm_<random>`) is a separate, narrower
+// credential that ONLY gates /v1/admin/*; sending it as the SDK apiKey
+// surfaces server-side as the cryptic "malformed API key". Catch the
+// known confusion at construction time so the developer gets a useful
+// message before any network round-trip.
+const API_KEY_SHAPE = /^jk_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+let warnedNonStandardKeyShape = false;
+
+function validateApiKeyShape(apiKey: unknown): void {
+  if (typeof apiKey !== "string" || apiKey.length === 0) {
+    throw new JunjoError(
+      "missing apiKey: pass a per-game API key to `new Junjo({ apiKey })`",
+      "invalid_config",
+    );
+  }
+  if (apiKey.startsWith("jadm_")) {
+    throw new JunjoError(
+      "apiKey looks like a cross-game admin token (jadm_*); the SDK needs a per-game API key (jk_<prefix>.<secret>). Mint one via POST /v1/admin/games/:gameId/api-keys.",
+      "invalid_config",
+    );
+  }
+  // Non-conforming strings might be valid in tests / forward-compat
+  // contexts, so warn once instead of throwing -- the server is still
+  // the source of truth and will reject genuinely-bad keys with 401.
+  if (!API_KEY_SHAPE.test(apiKey) && !warnedNonStandardKeyShape) {
+    warnedNonStandardKeyShape = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[junjo-sdk] apiKey does not match the expected jk_<prefix>.<secret> shape; the server may reject it as malformed. Pass a per-game key minted via /v1/admin/games/:gameId/api-keys.",
+    );
+  }
+}
+
 // =====================================================================
 // Top-level client
 // =====================================================================
@@ -59,6 +94,7 @@ export class Junjo {
   private readonly authAdapter: AuthAdapter | undefined;
 
   constructor(config: JunjoConfig) {
+    validateApiKeyShape(config.apiKey);
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
     const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
     this.http = new HttpClient({
