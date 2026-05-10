@@ -24,11 +24,13 @@
 .env.*
 !.env.example
 
-# Sibling apps + tools NOT shipped by this image
-apps
+# Sibling tools / examples / top-level docs NOT shipped by any image.
+# `apps/` is NOT excluded -- the unified Dockerfile builds dashboard
+# and docs from there based on the WORKSPACE build arg.
 examples
 tools
-docs
+# Top-level docs/ folder (not apps/docs which is the Nextra app).
+/docs
 
 # Prisma migrations history is kept (under packages/server/prisma); the
 # local migration_lock dev artifact stays too -- Prisma needs it.
