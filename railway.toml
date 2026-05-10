@@ -1,0 +1,24 @@
+# Railway deploy config for the Junjo server. Generic -- a fresh project
+# can `railway up` against this with only DATABASE_URL + JUNJO_ADMIN_TOKEN
+# set on the service. See .env.example for the full env surface.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Apply Prisma migrations on cold boot before the server starts. If
+# migrations fail the deploy fails fast (Railway treats a non-zero exit
+# during start as a deploy failure and rolls back).
+startCommand = "npx prisma migrate deploy --schema packages/server/prisma/schema.prisma && node packages/server/dist/index.js"
+
+# /healthz is wired in packages/server/src/app.ts and exercises the DB +
+# webhook worker. 300s gives the migration step room on a cold deploy.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 300
+
+# Restart on crash with backoff. Prevents a tight loop if a config var
+# is misset (e.g. unreachable DATABASE_URL) -- Railway will surface the
+# error in the deploy log instead of burning resources.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

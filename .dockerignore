@@ -1,0 +1,52 @@
+# Keep the build context lean. The Dockerfile only consumes the server +
+# shared workspaces; everything below is either dev tooling, build
+# artifacts (regenerated inside the image), or sibling apps we don't
+# ship as part of the server image.
+
+# Dependencies + build artifacts (regenerated in-image)
+**/node_modules
+**/dist
+**/build
+**/out
+**/.next
+**/.turbo
+**/.swc
+**/.rollup.cache
+**/*.tsbuildinfo
+
+# Test + coverage
+**/coverage
+**/.nyc_output
+**/bench-results
+
+# Local env files (server reads env from Railway, not files)
+.env
+.env.*
+!.env.example
+
+# Sibling apps + tools NOT shipped by this image
+apps
+examples
+tools
+docs
+
+# Prisma migrations history is kept (under packages/server/prisma); the
+# local migration_lock dev artifact stays too -- Prisma needs it.
+
+# IDE / VCS noise
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Loop / scratch infra (local-only)
+.loop
+PROMPT.txt
+CONTRIBUTING.md
+SECURITY.md
+README.md
+LICENSE
+biome.json
+scripts
+.claude
