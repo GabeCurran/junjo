@@ -41,6 +41,9 @@ WORKDIR /app
 
 RUN apk add --no-cache openssl
 
+# bash so the start command can use && + diagnostic echos.
+RUN apk add --no-cache bash
+
 ENV NODE_ENV=production
 # PORT is overridden by Railway at runtime; the server reads $PORT and
 # falls back to 8787 (see env.ts). EXPOSE is a documentation hint -- it
@@ -61,7 +64,8 @@ COPY --from=builder /app/packages/server/dist ./packages/server/dist
 COPY --from=builder /app/packages/server/prisma ./packages/server/prisma
 COPY --from=builder /app/packages/server/package.json ./packages/server/package.json
 
-# Start command lives in railway.toml so this image is reusable across
-# orchestrators. Default CMD is a sanity check that surfaces a clear
-# error if someone runs the image without overriding the command.
-CMD ["node", "-e", "console.error('No start command set. Use: npx prisma migrate deploy --schema packages/server/prisma/schema.prisma && node packages/server/dist/index.js'); process.exit(1)"]
+# Default CMD: apply migrations then start the server. railway.toml can
+# override via `startCommand`, but baking it here keeps the image
+# self-sufficient for any orchestrator. Diagnostic echos surface the
+# failure step in the deploy log if either command exits non-zero.
+CMD ["bash", "-c", "set -e; echo '[boot] applying migrations'; npx prisma migrate deploy --schema packages/server/prisma/schema.prisma; echo '[boot] migrations done; starting server'; exec node packages/server/dist/index.js"]
