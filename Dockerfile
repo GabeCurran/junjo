@@ -48,19 +48,18 @@ ENV NODE_ENV=production
 ENV PORT=8787
 EXPOSE 8787
 
-# Copy the entire built workspace tree. Includes node_modules with the
-# generated Prisma client (.prisma/client) and the shared dist, both of
-# which the server imports at runtime.
+# Copy the built workspace tree. npm workspaces hoist deps to the root
+# /app/node_modules, including the generated Prisma client at
+# .prisma/client + @prisma/client, so we don't copy per-workspace
+# node_modules (they don't exist in the builder when everything hoists).
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/package-lock.json ./package-lock.json
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
-COPY --from=builder /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=builder /app/packages/server/dist ./packages/server/dist
 COPY --from=builder /app/packages/server/prisma ./packages/server/prisma
 COPY --from=builder /app/packages/server/package.json ./packages/server/package.json
-COPY --from=builder /app/packages/server/node_modules ./packages/server/node_modules
 
 # Start command lives in railway.toml so this image is reusable across
 # orchestrators. Default CMD is a sanity check that surfaces a clear
