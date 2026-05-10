@@ -1,6 +1,15 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import type { ReactNode } from "react";
 
+// Every dashboard page reads runtime env (JUNJO_BASE_URL, JUNJO_ADMIN_TOKEN,
+// JUNJO_ADMIN_API_KEY) via loadDashboardEnv(). With Next's default
+// auto-static-detection, the home page would render at build time when
+// those vars aren't yet injected by the orchestrator, baking a
+// "JUNJO_ADMIN_API_KEY: Required" error into the static HTML that
+// ISR-revalidates only every 60s. Forcing dynamic on the layout makes
+// every dashboard route render per-request against the live env.
+export const dynamic = "force-dynamic";
+
 import { CurrentGameProvider } from "../../components/dashboard/current-game-context";
 import { MobileNav } from "../../components/dashboard/mobile-nav";
 import { SidebarBrand, SidebarNav } from "../../components/dashboard/sidebar-nav";
