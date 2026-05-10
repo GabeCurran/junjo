@@ -2,7 +2,10 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // /healthz is excluded so the orchestrator's healthcheck can reach it
+  // without credentials. Everything else (including the rest of the
+  // dashboard surface) still goes through the basic-auth gate below.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
 };
 
 const REALM = "Junjo Dashboard";
