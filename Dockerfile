@@ -24,7 +24,10 @@ COPY packages/server/prisma packages/server/prisma
 # `npm ci --workspaces` would also walk apps/* and tools/* per the root
 # workspaces glob, which we don't ship. The two scoped --workspace flags
 # limit install to the runtime graph and skip dashboard/docs/screenshots.
-RUN npm ci --workspace @junjo/shared --workspace @junjo/server --include-workspace-root
+# --include=dev is required because Railway sets NODE_ENV=production at
+# build time, which would otherwise make npm skip devDependencies (and
+# we need the `prisma` CLI from devDeps for migrate deploy at runtime).
+RUN npm ci --workspace @junjo/shared --workspace @junjo/server --include-workspace-root --include=dev
 
 # Now bring in source for the two workspaces we actually build.
 COPY packages/shared packages/shared
@@ -64,8 +67,9 @@ COPY --from=builder /app/packages/server/dist ./packages/server/dist
 COPY --from=builder /app/packages/server/prisma ./packages/server/prisma
 COPY --from=builder /app/packages/server/package.json ./packages/server/package.json
 
-# Default CMD: apply migrations then start the server. railway.toml can
-# override via `startCommand`, but baking it here keeps the image
-# self-sufficient for any orchestrator. Diagnostic echos surface the
-# failure step in the deploy log if either command exits non-zero.
-CMD ["bash", "-c", "set -e; echo '[boot] applying migrations'; npx prisma migrate deploy --schema packages/server/prisma/schema.prisma; echo '[boot] migrations done; starting server'; exec node packages/server/dist/index.js"]
+# Default CMD: apply migrations then start the server. Diagnostic echos
+# go to stderr (>&2) AND stdout so they survive any logger config; pino
+# in Junjo writes to stdout but won't appear until the server actually
+# boots. railway.toml's startCommand intentionally does NOT override
+# this -- if it does, none of these echos surface.
+CMD ["bash", "-c", "echo '[boot] container started, node='$(node --version) >&2; echo '[boot] checking prisma availability' >&2; ls -la node_modules/.bin/prisma >&2 || echo '[boot] prisma binary missing!' >&2; echo '[boot] applying migrations' >&2; npx prisma migrate deploy --schema packages/server/prisma/schema.prisma 2>&1; rc=$?; echo '[boot] migrate exit='$rc >&2; if [ $rc -ne 0 ]; then exit $rc; fi; echo '[boot] starting server on PORT='$PORT >&2; exec node packages/server/dist/index.js"]

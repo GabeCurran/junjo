@@ -7,10 +7,9 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Apply Prisma migrations on cold boot before the server starts. If
-# migrations fail the deploy fails fast (Railway treats a non-zero exit
-# during start as a deploy failure and rolls back).
-startCommand = "npx prisma migrate deploy --schema packages/server/prisma/schema.prisma && node packages/server/dist/index.js"
+# startCommand is intentionally NOT set: the Dockerfile CMD wraps the
+# real start with diagnostic echos. Setting a startCommand here would
+# override CMD and silence those echos.
 
 # /healthz is wired in packages/server/src/app.ts and exercises the DB +
 # webhook worker. 300s gives the migration step room on a cold deploy.
