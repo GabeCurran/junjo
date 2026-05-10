@@ -5669,6 +5669,91 @@ describe.skipIf(!TEST_DATABASE_URL)("Ban enforcement and lifecycle", () => {
     });
   });
 
+  describe("GET /v1/groups/:id/bans/history", () => {
+    function getGroupHistory(groupId: string, query = "") {
+      const path = query
+        ? `/v1/groups/${encodeURIComponent(groupId)}/bans/history?${query}`
+        : `/v1/groups/${encodeURIComponent(groupId)}/bans/history`;
+      return app.request(path, { headers: { authorization: authHeader } });
+    }
+
+    it("returns every set/lift on this group across all users, newest-first", async () => {
+      const pub = await makeGroup("public", "p");
+      await banMember(pub.id, "alice");
+      await banMember(pub.id, "bob");
+      await unbanMember(pub.id, "alice");
+
+      const res = await getGroupHistory(pub.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        items: { kind: string; userId: string; scope: string; groupId: string | null }[];
+      };
+      expect(body.items).toHaveLength(3);
+      expect(body.items[0]?.kind).toBe("lifted");
+      expect(body.items[0]?.userId).toBe("alice");
+      expect(body.items[1]?.kind).toBe("set");
+      expect(body.items[1]?.userId).toBe("bob");
+      expect(body.items[2]?.kind).toBe("set");
+      expect(body.items[2]?.userId).toBe("alice");
+      expect(body.items.every((i) => i.scope === "group" && i.groupId === pub.id)).toBe(true);
+    });
+
+    it("does NOT include game-wide ban events even when they affect this group", async () => {
+      const pub = await makeGroup("public", "p");
+      await prisma.banHistory.create({
+        data: {
+          gameId,
+          junjoUserId: (await prisma.junjoUser.create({ data: {} })).id,
+          scope: "game",
+          groupId: null,
+          kind: "set",
+          reason: "game-wide",
+          expiresAt: null,
+          actorJunjoUserId: null,
+        },
+      });
+      const res = await getGroupHistory(pub.id);
+      const body = (await res.json()) as { items: unknown[] };
+      expect(body.items).toEqual([]);
+    });
+
+    it("404s for a group in a different game", async () => {
+      const otherGame = await createGame("other", prisma);
+      const otherGroup = await prisma.group.create({
+        data: {
+          gameId: otherGame.id,
+          kind: "guild",
+          name: "x",
+          visibility: "public",
+          metadata: {},
+        },
+      });
+      const res = await getGroupHistory(otherGroup.id);
+      expect(res.status).toBe(404);
+    });
+
+    it("paginates via cursor", async () => {
+      const pub = await makeGroup("public", "p");
+      for (let i = 0; i < 5; i++) await banMember(pub.id, `u${i}`);
+
+      const res1 = await getGroupHistory(pub.id, "limit=3");
+      const body1 = (await res1.json()) as {
+        items: { id: string }[];
+        nextCursor: string | null;
+      };
+      expect(body1.items).toHaveLength(3);
+      expect(body1.nextCursor).not.toBeNull();
+
+      const res2 = await getGroupHistory(pub.id, `limit=3&cursor=${body1.nextCursor}`);
+      const body2 = (await res2.json()) as {
+        items: { id: string }[];
+        nextCursor: string | null;
+      };
+      expect(body2.items).toHaveLength(2);
+      expect(body2.nextCursor).toBeNull();
+    });
+  });
+
   describe("Public-join enforcement", () => {
     it("rejects a banned user with 403 banned", async () => {
       const pub = await makeGroup("public", "p");

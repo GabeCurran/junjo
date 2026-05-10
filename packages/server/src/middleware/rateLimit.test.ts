@@ -93,6 +93,48 @@ describe("RateLimiter", () => {
     const result = limiter.consume("k");
     expect(result.allowed).toBe(false);
   });
+
+  describe("bucket eviction", () => {
+    it("evicts fully-refilled buckets once size hits the threshold", () => {
+      let now = 0;
+      const limiter = new RateLimiter({ perMinute: 60, burst: 5 }, () => now, {
+        evictionThreshold: 3,
+      });
+      // Touch 3 distinct keys to seed buckets at burst-1=4 tokens each.
+      limiter.consume("idle-a");
+      limiter.consume("idle-b");
+      limiter.consume("idle-c");
+      expect(limiter.size()).toBe(3);
+      // Skip forward enough that all three buckets refill to capacity.
+      // refill rate = 1/sec, so 5s gets every bucket back to burst.
+      now += 5_000;
+      // The next consume triggers a sweep BEFORE inserting "fresh".
+      limiter.consume("fresh");
+      // The three idle buckets were fully refilled and got evicted; the
+      // newly-inserted "fresh" bucket survives.
+      expect(limiter.size()).toBe(1);
+    });
+
+    it("does not evict partially-drained buckets even when over threshold", () => {
+      let now = 0;
+      const limiter = new RateLimiter({ perMinute: 60, burst: 5 }, () => now, {
+        evictionThreshold: 2,
+      });
+      // Drain one bucket: 5 consumes -> bucket sitting at 0 tokens.
+      for (let i = 0; i < 5; i++) limiter.consume("hot");
+      // Seed a second bucket so size hits the threshold.
+      limiter.consume("warm");
+      expect(limiter.size()).toBe(2);
+      // Inserting a third key triggers the sweep. Only ~0.1s have
+      // elapsed in fake time -- neither existing bucket has refilled
+      // back to burst, so neither should be evicted.
+      now += 100;
+      limiter.consume("new");
+      expect(limiter.size()).toBe(3);
+      // Confirm "hot" still remembers it was drained: should reject.
+      expect(limiter.consume("hot").allowed).toBe(false);
+    });
+  });
 });
 
 describe("buildRateLimiter", () => {

@@ -51,6 +51,27 @@ export const ADMIN_MEMBER_STATUSES = [
   "all",
 ] as const;
 
+// Mirrors `updateGroupBody` (per-game PATCH); admins can mutate the
+// same fields plus everything the per-game key can do.
+const ADMIN_GROUP_VISIBILITY = ["public", "invite-only", "secret"] as const;
+const adminPasscodeString = z.string().min(4).max(128);
+
+export const updateAdminGroupBody = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    visibility: z.enum(ADMIN_GROUP_VISIBILITY).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    defaultRoleId: z.string().min(1).nullable().optional(),
+    // String = set/replace; null = clear; omit = leave untouched.
+    passcode: adminPasscodeString.nullable().optional(),
+  })
+  .strict()
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: "at least one field is required",
+  });
+
+export type UpdateAdminGroupBody = z.infer<typeof updateAdminGroupBody>;
+
 export const listAdminGroupMembersQuery = z.object({
   limit: pageLimit(50),
   offset: z.coerce.number().int().min(0).default(0),

@@ -17,19 +17,37 @@ export interface ConsumeResult {
   retryAfterSeconds?: number;
 }
 
+// Map size at which the next consume() triggers a sweep. Sized so the
+// sweep cost (one map iteration) is amortized across thousands of
+// allowed requests, and so the steady-state map fits comfortably in
+// memory even when keys are user-controlled (e.g. the passcode limiter
+// keys on `${groupId}:${userId}` -- bounded by total joining users
+// across all gated groups in this process).
+const DEFAULT_BUCKET_EVICTION_THRESHOLD = 10_000;
+
 export class RateLimiter {
   private readonly buckets = new Map<string, BucketState>();
   private readonly tokensPerMs: number;
+  private readonly evictionThreshold: number;
 
   constructor(
     private readonly config: RateLimitConfig,
     private readonly now: () => number = () => Date.now(),
+    opts?: { evictionThreshold?: number },
   ) {
     this.tokensPerMs = config.perMinute / 60_000;
+    this.evictionThreshold = opts?.evictionThreshold ?? DEFAULT_BUCKET_EVICTION_THRESHOLD;
   }
 
   consume(key: string): ConsumeResult {
     const nowMs = this.now();
+    // Amortized sweep before insert keeps the map bounded under
+    // adversarial input. Evicts buckets whose tokens have refilled
+    // back to `burst` -- those are equivalent to "no bucket exists"
+    // (next consume would create a fresh one in the same state).
+    if (this.buckets.size >= this.evictionThreshold) {
+      this.evictRefilledBuckets(nowMs);
+    }
     const bucket = this.buckets.get(key);
     if (!bucket) {
       this.buckets.set(key, { tokens: this.config.burst - 1, lastRefillMs: nowMs });
@@ -48,6 +66,22 @@ export class RateLimiter {
     bucket.tokens = refilled - 1;
     bucket.lastRefillMs = nowMs;
     return { allowed: true };
+  }
+
+  // Walks the map and removes buckets whose tokens have refilled to
+  // capacity at `nowMs`. Safe because a fully-refilled bucket is
+  // observationally identical to a missing bucket -- the next consume
+  // for that key creates a fresh one with `burst-1` tokens, same as
+  // it would have done after evicting and re-inserting. O(n) over the
+  // map size; only fires when `size >= evictionThreshold`.
+  private evictRefilledBuckets(nowMs: number): void {
+    for (const [key, bucket] of this.buckets) {
+      const elapsedMs = Math.max(0, nowMs - bucket.lastRefillMs);
+      const refilled = bucket.tokens + elapsedMs * this.tokensPerMs;
+      if (refilled >= this.config.burst) {
+        this.buckets.delete(key);
+      }
+    }
   }
 
   size(): number {

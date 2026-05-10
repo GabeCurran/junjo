@@ -34,7 +34,7 @@ import type {
   Role,
 } from "@prisma/client";
 import type { Handler } from "hono";
-import { generateApiKey } from "../apiKey.js";
+import { generateApiKey, hashSecret } from "../apiKey.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import {
@@ -77,6 +77,7 @@ import {
   listAdminGroupsQuery,
   listRecentAuditQuery,
   memberActivityQuery,
+  updateAdminGroupBody,
 } from "./admin.schema.js";
 import { serializeAuditEntry } from "./audit.js";
 import type { WireAuditEntry } from "./audit.js";
@@ -485,6 +486,7 @@ export interface WireAdminGroup {
   defaultRoleId: string | null;
   parentGroupId: string | null;
   memberCount: number;
+  hasPasscode: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -506,6 +508,8 @@ function toWireAdminGroup(row: Group, memberCount: number): WireAdminGroup {
     defaultRoleId: row.defaultRoleId,
     parentGroupId: row.parentGroupId,
     memberCount,
+    // Presence-only; the hash itself never leaves the server.
+    hasPasscode: row.passcodeHash !== null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -2254,6 +2258,132 @@ export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub):
       group: toPublicGroup(updated, memberCount),
     });
     return c.json<WireAdminGroup>(toWireAdminGroup(updated, memberCount));
+  };
+}
+
+// Admin counterpart to the per-game `PATCH /v1/groups/:id`. Same field
+// set (name, visibility, metadata, defaultRoleId, passcode), same audit
+// shape (group.updated row + a dedicated group.passcode.set/cleared row
+// when the passcode transitions), and the same group.updated webhook
+// fires so SSE subscribers see the change regardless of whether the
+// edit came from a per-game key or the admin dashboard.
+export function updateAdminGroupHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = updateAdminGroupBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const body = parsed.data;
+
+    // Hash outside the transaction (scrypt is intentionally slow).
+    const newPasscodeHash =
+      body.passcode === undefined
+        ? undefined
+        : body.passcode === null
+          ? null
+          : await hashSecret(body.passcode);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const existing = await tx.group.findFirst({
+        where: { id: groupId, gameId, softDeletedAt: null },
+      });
+      if (!existing) throw Errors.notFound("group");
+
+      const before: Record<string, unknown> = {};
+      const after: Record<string, unknown> = {};
+      const data: Prisma.GroupUpdateInput = {};
+      let passcodeTransition: "set" | "cleared" | "rotated" | null = null;
+
+      if (body.name !== undefined && body.name !== existing.name) {
+        before.name = existing.name;
+        after.name = body.name;
+        data.name = body.name;
+      }
+      if (body.visibility !== undefined && body.visibility !== existing.visibility) {
+        before.visibility = existing.visibility;
+        after.visibility = body.visibility;
+        data.visibility = body.visibility;
+      }
+      if (body.metadata !== undefined) {
+        before.metadata = (existing.metadata ?? {}) as Prisma.InputJsonValue;
+        after.metadata = body.metadata;
+        data.metadata = body.metadata as Prisma.InputJsonValue;
+      }
+      if (body.defaultRoleId !== undefined && body.defaultRoleId !== existing.defaultRoleId) {
+        before.defaultRoleId = existing.defaultRoleId;
+        after.defaultRoleId = body.defaultRoleId;
+        data.defaultRoleId = body.defaultRoleId;
+      }
+      if (newPasscodeHash !== undefined) {
+        const hadPasscode = existing.passcodeHash !== null;
+        const willHavePasscode = newPasscodeHash !== null;
+        if (hadPasscode || willHavePasscode) {
+          before.hasPasscode = hadPasscode;
+          after.hasPasscode = willHavePasscode;
+          data.passcodeHash = newPasscodeHash;
+          data.passcodeSetAt = willHavePasscode ? new Date() : null;
+          passcodeTransition = willHavePasscode ? (hadPasscode ? "rotated" : "set") : "cleared";
+        }
+      }
+
+      if (Object.keys(data).length === 0) {
+        return { row: existing, changed: false };
+      }
+
+      const result = await tx.group.update({
+        where: { id: existing.id },
+        data,
+      });
+
+      await tx.auditEntry.create({
+        data: {
+          gameId,
+          groupId: result.id,
+          actorUserId: null,
+          action: "group.updated",
+          targetId: result.id,
+          payload: { before, after } as Prisma.InputJsonValue,
+        },
+      });
+
+      if (passcodeTransition) {
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: result.id,
+            actorUserId: null,
+            action:
+              passcodeTransition === "cleared" ? "group.passcode.cleared" : "group.passcode.set",
+            targetId: result.id,
+            payload: { transition: passcodeTransition } as Prisma.InputJsonValue,
+          },
+        });
+      }
+
+      return { row: result, changed: true };
+    });
+
+    const memberCount = await prisma.groupMember.count({
+      where: { groupId: updated.row.id, status: "active" },
+    });
+    if (updated.changed) {
+      await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
+        type: "group.updated",
+        gameId: gameId as GameId,
+        groupId: updated.row.id as GroupId,
+        group: toPublicGroup(updated.row, memberCount),
+      });
+    }
+    return c.json<WireAdminGroup>(toWireAdminGroup(updated.row, memberCount));
   };
 }
 

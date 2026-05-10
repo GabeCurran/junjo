@@ -45,6 +45,7 @@ import {
   setAdminGroupParentHandler,
   setAdminGroupRelationshipHandler,
   setAdminMemberPermissionOverrideHandler,
+  updateAdminGroupHandler,
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
 } from "./routes/admin.js";
@@ -198,6 +199,11 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups/:groupId",
     adminAuthMiddleware(opts.adminToken),
     getAdminGroupHandler(prisma),
+  );
+  v1.patch(
+    "/admin/games/:gameId/groups/:groupId",
+    adminAuthMiddleware(opts.adminToken),
+    updateAdminGroupHandler(prisma, hub),
   );
   v1.get(
     "/admin/games/:gameId/groups/:groupId/members",

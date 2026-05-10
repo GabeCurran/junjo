@@ -1,4 +1,5 @@
 import type {
+  BanHistoryEntry,
   CreateGroupInput,
   CreateInvitationInput,
   GameId,
@@ -17,6 +18,7 @@ import type {
   UpdateGroupInput,
   UserId,
 } from "@junjo/shared";
+import { type WireBanHistoryEntry, deserializeBanHistoryEntry } from "./bans.js";
 import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent, parseSSEFrame } from "./events.js";
 import type { HttpClient } from "./http.js";
@@ -307,7 +309,12 @@ export class GroupsApi {
   async ban(
     groupId: GroupId,
     userId: UserId,
-    opts?: { reason?: string | null; expiresAt?: Date | string | null },
+    opts?: {
+      reason?: string | null;
+      expiresAt?: Date | string | null;
+      // Optional moderator attribution (mirrors `bans.add`).
+      actorUserId?: UserId;
+    },
   ): Promise<Member> {
     const body: Record<string, unknown> = {};
     if (opts?.reason !== undefined) body.reason = opts.reason;
@@ -319,6 +326,7 @@ export class GroupsApi {
             ? opts.expiresAt.toISOString()
             : opts.expiresAt;
     }
+    if (opts?.actorUserId !== undefined) body.actorUserId = opts.actorUserId;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
       body,
@@ -326,11 +334,36 @@ export class GroupsApi {
     return deserializeMember(wire);
   }
 
-  async unban(groupId: GroupId, userId: UserId): Promise<Member> {
+  async unban(groupId: GroupId, userId: UserId, opts?: { actorUserId?: UserId }): Promise<Member> {
     const wire = await this.http.delete<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
+      opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined,
     );
     return deserializeMember(wire);
+  }
+
+  // Group-scoped ban-event timeline: every set/lift on this group
+  // across all users, newest-first. Game-wide bans are NOT included
+  // (use `client.bans.history(userId)` for that). Cursor-paginated.
+  async banHistory(groupId: GroupId, opts?: PageOptions): Promise<Page<BanHistoryEntry>> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
+    const qs = params.toString();
+    const base = `/v1/groups/${encodeURIComponent(groupId)}/bans/history`;
+    const path = qs ? `${base}?${qs}` : base;
+    const wire = await this.http.get<{
+      items: WireBanHistoryEntry[];
+      nextCursor: string | null;
+    }>(path);
+    return {
+      items: wire.items.map(deserializeBanHistoryEntry),
+      nextCursor: wire.nextCursor,
+    };
+  }
+
+  banHistoryAll(groupId: GroupId, opts?: { limit?: number }): AsyncGenerator<BanHistoryEntry> {
+    return paginate((cursor) => this.banHistory(groupId, { ...opts, cursor }));
   }
 
   // ------ Real-time ------

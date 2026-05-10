@@ -33,7 +33,7 @@ function deserializeBan(w: WireGameBan): Ban {
   };
 }
 
-interface WireBanHistoryEntry {
+export interface WireBanHistoryEntry {
   id: string;
   gameId: string;
   userId: string;
@@ -46,7 +46,7 @@ interface WireBanHistoryEntry {
   actorUserId: string | null;
 }
 
-function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEntry {
+export function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEntry {
   return {
     id: w.id,
     gameId: w.gameId as GameId,
@@ -71,6 +71,11 @@ export interface CreateBanInput {
   // permanent. Lazy expiry on read; the server does not auto-clean
   // expired rows.
   expiresAt?: Date | string | null;
+  // Optional moderator attribution. The dev's external user id of the
+  // operator pressing the ban button. Auto-creates a JunjoUser if the
+  // actor hasn't been seen in this game (mirrors the target user).
+  // Surfaces back as `Ban.bannedBy` and on audit / BanHistory rows.
+  actorUserId?: UserId;
 }
 
 export interface ListBansOptions extends PageOptions {
@@ -129,12 +134,16 @@ export class BansApi {
             ? input.expiresAt.toISOString()
             : input.expiresAt;
     }
+    if (input.actorUserId !== undefined) body.actorUserId = input.actorUserId;
     const wire = await this.http.post<WireGameBan>("/v1/bans", body);
     return deserializeBan(wire);
   }
 
-  async remove(userId: UserId): Promise<void> {
-    await this.http.delete<unknown>(`/v1/bans/${encodeURIComponent(userId)}`);
+  async remove(userId: UserId, opts?: { actorUserId?: UserId }): Promise<void> {
+    await this.http.delete<unknown>(
+      `/v1/bans/${encodeURIComponent(userId)}`,
+      opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined,
+    );
   }
 
   // Fetch the current active game-level ban for a user. Returns null

@@ -10,19 +10,21 @@ export const PASSCODE_MIN_LENGTH = 4;
 export const PASSCODE_MAX_LENGTH = 128;
 const passcodeString = z.string().min(PASSCODE_MIN_LENGTH).max(PASSCODE_MAX_LENGTH);
 
-export const createGroupBody = z.object({
-  kind: z.string().min(1).max(64),
-  name: z.string().min(1).max(120),
-  visibility: z.enum(VISIBILITY).optional(),
-  metadata: z.record(z.unknown()).optional(),
-  defaultRoleId: z.string().min(1).optional(),
-  // Same external-userId validation as joinGroupBody.
-  creatorUserId: z.string().min(1).optional(),
-  // Optional shared-secret join gate. Omitted = no passcode; a string
-  // hashes + stores. `null` is rejected on create (use omit instead);
-  // null is only meaningful on update for clearing.
-  passcode: passcodeString.optional(),
-});
+export const createGroupBody = z
+  .object({
+    kind: z.string().min(1).max(64),
+    name: z.string().min(1).max(120),
+    visibility: z.enum(VISIBILITY).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    defaultRoleId: z.string().min(1).optional(),
+    // Same external-userId validation as joinGroupBody.
+    creatorUserId: z.string().min(1).optional(),
+    // Optional shared-secret join gate. Omitted = no passcode; a string
+    // hashes + stores. `null` is rejected on create (use omit instead);
+    // null is only meaningful on update for clearing.
+    passcode: passcodeString.optional(),
+  })
+  .strict();
 
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
 
@@ -63,6 +65,7 @@ export const updateGroupBody = z
     // Omit to leave the existing passcode (if any) untouched.
     passcode: passcodeString.nullable().optional(),
   })
+  .strict()
   .refine((d) => Object.values(d).some((v) => v !== undefined), {
     message: "at least one field is required",
   });
@@ -88,7 +91,8 @@ export type KickMemberBody = z.infer<typeof kickMemberBody>;
 // `expiresAt` for time-bounded bans (omit / null = permanent). The
 // validator rejects past timestamps to catch typos client-side; lazy
 // expiry on read still treats already-elapsed values as not-banned for
-// rows that pre-date this validation.
+// rows that pre-date this validation. Optional `actorUserId` attributes
+// the action to a specific moderator (mirrors `createGameBanBody`).
 export const banMemberBody = z
   .object({
     reason: z.string().max(500).nullable().optional(),
@@ -100,11 +104,22 @@ export const banMemberBody = z
       })
       .nullable()
       .optional(),
+    actorUserId: z.string().min(1).optional(),
   })
   .optional()
   .transform((b) => b ?? {});
 
 export type BanMemberBody = z.infer<typeof banMemberBody>;
+
+// Per-group unban. Body is genuinely optional (no actor = null actor).
+export const unbanMemberBody = z
+  .object({
+    actorUserId: z.string().min(1).optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export type UnbanMemberBody = z.infer<typeof unbanMemberBody>;
 
 export const bulkInviteQuery = z.object({
   roleId: z.string().min(1).optional(),

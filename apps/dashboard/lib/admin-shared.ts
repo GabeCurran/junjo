@@ -97,6 +97,7 @@ export interface AdminGroup {
   defaultRoleId: string | null;
   parentGroupId: string | null;
   memberCount: number;
+  hasPasscode: boolean;
   createdAt: string;
   updatedAt: string;
 }

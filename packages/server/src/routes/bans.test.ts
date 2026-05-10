@@ -419,6 +419,79 @@ describe.skipIf(!TEST_DATABASE_URL)("Game bans (/v1/bans)", () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe("Actor attribution (actorUserId)", () => {
+    function getHistory(userId: string) {
+      return app.request(`/v1/bans/${encodeURIComponent(userId)}/history`, {
+        headers: { authorization: authHeader },
+      });
+    }
+
+    it("populates GameBan.bannedByUserId, BanHistory.actorJunjoUserId, AuditEntry.actorUserId", async () => {
+      await postBan({ userId: "alice", reason: "cheating", actorUserId: "mod_bob" });
+
+      const ban = await prisma.gameBan.findFirstOrThrow({ where: { gameId } });
+      expect(ban.bannedByUserId).not.toBeNull();
+
+      const history = await prisma.banHistory.findFirstOrThrow({
+        where: { gameId, kind: "set" },
+      });
+      expect(history.actorJunjoUserId).toBe(ban.bannedByUserId);
+
+      const audit = await prisma.auditEntry.findFirstOrThrow({
+        where: { gameId, action: "game.user.banned" },
+      });
+      expect(audit.actorUserId).toBe(ban.bannedByUserId);
+    });
+
+    it("returns the actor external id back via Ban.bannedBy", async () => {
+      const res = await postBan({ userId: "alice", actorUserId: "mod_bob" });
+      const body = (await res.json()) as { bannedBy: string | null };
+      expect(body.bannedBy).toBe("mod_bob");
+    });
+
+    it("the history endpoint surfaces actorUserId per row", async () => {
+      await postBan({ userId: "alice", actorUserId: "mod_bob" });
+      await deleteBan("alice");
+      const res = await getHistory("alice");
+      const body = (await res.json()) as {
+        items: { kind: string; actorUserId: string | null }[];
+      };
+      // Newest first: lifted (no actor), then set (actor=mod_bob).
+      expect(body.items[0]?.kind).toBe("lifted");
+      expect(body.items[0]?.actorUserId).toBeNull();
+      expect(body.items[1]?.kind).toBe("set");
+      expect(body.items[1]?.actorUserId).toBe("mod_bob");
+    });
+
+    it("auto-creates a JunjoUser for the actor if unknown", async () => {
+      await postBan({ userId: "alice", actorUserId: "brand_new_mod" });
+      const ext = await prisma.externalIdentity.findFirstOrThrow({
+        where: { gameId, externalUserId: "brand_new_mod" },
+      });
+      expect(ext.junjoUserId).not.toBeNull();
+    });
+
+    it("DELETE /v1/bans/:userId attributes the unban via body.actorUserId", async () => {
+      await postBan({ userId: "alice", actorUserId: "mod_bob" });
+      // Unban with a different moderator.
+      await app.request("/v1/bans/alice", {
+        method: "DELETE",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify({ actorUserId: "mod_carol" }),
+      });
+
+      const liftedHistory = await prisma.banHistory.findFirstOrThrow({
+        where: { gameId, kind: "lifted" },
+      });
+      expect(liftedHistory.actorJunjoUserId).not.toBeNull();
+
+      const liftedAudit = await prisma.auditEntry.findFirstOrThrow({
+        where: { gameId, action: "game.user.unbanned" },
+      });
+      expect(liftedAudit.actorUserId).toBe(liftedHistory.actorJunjoUserId);
+    });
+  });
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("Members ?status= filter", () => {

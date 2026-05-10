@@ -43,6 +43,7 @@ ban with a fresh one.
 | `userId` | yes | The dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). Auto-creates the JunjoUser + ExternalIdentity if the user has never been seen in this game (preemptive ban is fine). |
 | `reason` | no | Free-form text up to 500 chars, or `null`. Surfaces in the dashboard. |
 | `expiresAt` | no | ISO 8601 timestamp. Omit / `null` for a permanent ban. Past timestamps are accepted but treated as expired (lazy expiry). |
+| `actorUserId` | no | External user id of the moderator pressing the ban button. When supplied, populates `GameBan.bannedByUserId`, the `game.user.banned` audit row's `actorUserId`, and the BanHistory row's actor. Auto-creates a JunjoUser for the actor if unknown. The response's `bannedBy` field returns this same external id. |
 
 **Behavior**
 

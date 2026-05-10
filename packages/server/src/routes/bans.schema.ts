@@ -17,10 +17,28 @@ export const createGameBanBody = z
       })
       .nullable()
       .optional(),
+    // Optional moderator attribution. The dev's external user id of
+    // whoever pressed the ban button. Stored on GameBan.bannedByUserId
+    // and surfaced in the audit / BanHistory rows. Auto-creates a
+    // JunjoUser + ExternalIdentity for the actor if unknown (mirrors
+    // the target-user upsert).
+    actorUserId: z.string().min(1).optional(),
   })
   .strict();
 
 export type CreateGameBanBody = z.infer<typeof createGameBanBody>;
+
+// DELETE /v1/bans/:userId. Body is optional; only present when the
+// caller wants to attribute the unban to a specific moderator.
+export const deleteGameBanBody = z
+  .object({
+    actorUserId: z.string().min(1).optional(),
+  })
+  .strict()
+  .optional()
+  .transform((b) => b ?? {});
+
+export type DeleteGameBanBody = z.infer<typeof deleteGameBanBody>;
 
 // GET /v1/bans
 export const listGameBansQuery = z.object({
@@ -50,3 +68,15 @@ export const listBanHistoryQuery = z.object({
 });
 
 export type ListBanHistoryQuery = z.infer<typeof listBanHistoryQuery>;
+
+// GET /v1/groups/:id/bans/history. Group-scoped: only returns rows
+// with scope="group" + groupId=this group. Game-wide bans are NOT
+// included (they apply to every group identically; consumers wanting
+// the full picture for a user query /v1/bans/:userId/history with
+// ?groupId=... or omit groupId for both scopes).
+export const listGroupBanHistoryQuery = z.object({
+  limit: pageLimit(50),
+  cursor: z.string().min(1).optional(),
+});
+
+export type ListGroupBanHistoryQuery = z.infer<typeof listGroupBanHistoryQuery>;

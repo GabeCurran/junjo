@@ -33,6 +33,8 @@ import { RateLimiter } from "../middleware/rateLimit.js";
 import { permissionCache } from "../permissionCache.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { listAuditForGroup } from "./audit.js";
+import { serializeBanHistoryEntry } from "./bans.js";
+import { listGroupBanHistoryQuery } from "./bans.schema.js";
 import {
   MAX_PARENT_DEPTH,
   banMemberBody,
@@ -45,6 +47,7 @@ import {
   listGroupsQuery,
   setParentBody,
   setRelationshipBody,
+  unbanMemberBody,
   updateGroupBody,
   viewerQuery,
 } from "./groups.schema.js";
@@ -1142,6 +1145,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     }
     const reasonValue = parsed.data.reason ?? null;
     const expiresAtValue = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
+    const actorExternalId = parsed.data.actorUserId ?? null;
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1153,6 +1157,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     // takes the upsert path so a moderator can preemptively ban a user
     // who hasn't joined yet.
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
+    const actorJunjoUserId = actorExternalId
+      ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
+      : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.groupMember.findUnique({
@@ -1180,7 +1187,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         data: {
           gameId,
           groupId: group.id,
-          actorUserId: null,
+          actorUserId: actorJunjoUserId,
           action: "member.banned",
           targetId: userId,
           payload: {
@@ -1201,7 +1208,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           kind: "set",
           reason: reasonValue,
           expiresAt: expiresAtValue,
-          actorJunjoUserId: null,
+          actorJunjoUserId,
         },
       });
       return member;
@@ -1229,6 +1236,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const userId = c.req.param("userId");
     const gameId = c.var.gameId;
 
+    const json = await c.req.json().catch(() => null);
+    const parsed = unbanMemberBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const actorExternalId = parsed.data.actorUserId ?? null;
+
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
     });
@@ -1241,6 +1258,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member || member.status !== "banned") throw Errors.notFound("ban");
 
+    const actorJunjoUserId = actorExternalId
+      ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
+      : null;
+
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.groupMember.update({
         where: { id: member.id },
@@ -1250,7 +1271,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         data: {
           gameId,
           groupId: group.id,
-          actorUserId: null,
+          actorUserId: actorJunjoUserId,
           action: "member.unbanned",
           targetId: userId,
           payload: { memberId: result.id } as Prisma.InputJsonValue,
@@ -1265,7 +1286,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           kind: "lifted",
           reason: null,
           expiresAt: null,
-          actorJunjoUserId: null,
+          actorJunjoUserId,
         },
       });
       return result;
@@ -1279,6 +1300,91 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       userId: userId as UserId,
     });
     return c.json(serializeMember(updated, userId, roleIds));
+  });
+
+  // GET /v1/groups/:id/bans/history
+  // Group-scoped ban-event timeline. Returns every set/lift on this
+  // group across all users, newest-first. Excludes game-scope rows;
+  // consumers wanting "this user's full ban story across game + group"
+  // should use /v1/bans/:userId/history. Cursor pagination on
+  // (eventAt DESC, id DESC).
+  r.get("/:id/bans/history", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    const parsed = listGroupBanHistoryQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
+    });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor } = parsed.data;
+
+    let cursorRow: { id: string; eventAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.banHistory.findFirst({
+        where: { id: cursor, gameId, groupId: group.id, scope: "group" },
+        select: { id: true, eventAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const where: Prisma.BanHistoryWhereInput = {
+      gameId,
+      groupId: group.id,
+      scope: "group",
+      ...(cursorRow
+        ? {
+            OR: [
+              { eventAt: { lt: cursorRow.eventAt } },
+              { eventAt: cursorRow.eventAt, id: { lt: cursorRow.id } },
+            ],
+          }
+        : {}),
+    };
+
+    const rows = await prisma.banHistory.findMany({
+      where,
+      orderBy: [{ eventAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const lastItem = sliced[sliced.length - 1];
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
+
+    // Batch-resolve every junjoUserId we'll surface (targets + actors).
+    const junjoUserIds = new Set<string>();
+    for (const row of sliced) {
+      junjoUserIds.add(row.junjoUserId);
+      if (row.actorJunjoUserId) junjoUserIds.add(row.actorJunjoUserId);
+    }
+    const externalMap =
+      junjoUserIds.size > 0
+        ? await batchLoadExternalUserIds(prisma, gameId, [...junjoUserIds])
+        : new Map<string, string>();
+
+    return c.json({
+      items: sliced.map((row) => {
+        const targetExt = externalMap.get(row.junjoUserId) ?? row.junjoUserId;
+        const actorExt = row.actorJunjoUserId
+          ? (externalMap.get(row.actorJunjoUserId) ?? null)
+          : null;
+        return serializeBanHistoryEntry(row, targetExt, actorExt);
+      }),
+      nextCursor,
+    });
   });
 
   // Metadata replaces wholesale and is treated as a change whenever

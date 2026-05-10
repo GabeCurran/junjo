@@ -131,7 +131,10 @@ export class HttpClient {
     return this.request<T>("PUT", path, body, opts);
   }
 
-  delete<T>(path: string, opts?: RequestOptions): Promise<T> {
-    return this.request<T>("DELETE", path, undefined, opts);
+  // Body is optional and uncommon for DELETE, but valid HTTP/1.1.
+  // Used by `bans.remove(userId, { actorUserId })` to attribute the
+  // unban without inventing a separate query-param surface.
+  delete<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
+    return this.request<T>("DELETE", path, body, opts);
   }
 }
