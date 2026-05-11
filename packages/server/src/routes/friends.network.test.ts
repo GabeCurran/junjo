@@ -47,8 +47,23 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
-    return (await prisma.junjoUser.create({ data: {} })).id;
+  // Creates a JunjoUser and an ExternalIdentity mapping that points
+  // the same cuid to itself in every supplied game. Mirrors how a
+  // network-spanning consumer (one auth provider, multiple games on
+  // the same Junjo deployment) would pre-provision a user across the
+  // games it owns. Under the external-id contract, friends handlers
+  // resolve external -> internal per-game; sharing the same cuid as
+  // both keeps the resolved junjoUserId identical across games and
+  // lets scope=network queries find friendship rows written in any
+  // sibling game.
+  async function makeUser(gameIds: string[] = []): Promise<string> {
+    const u = await prisma.junjoUser.create({ data: {} });
+    for (const gameId of gameIds) {
+      await prisma.externalIdentity.create({
+        data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+      });
+    }
+    return u.id;
   }
 
   function authHeaders(apiKey: string): Record<string, string> {
@@ -103,8 +118,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
   it("scope=network on both: a friendship in game A is visible from game B (shared networkId)", async () => {
     const a = await setupGame("A", { networkId: "studio", scope: "network" });
     const b = await setupGame("B", { networkId: "studio", scope: "network" });
-    const u1 = await makeUser();
-    const u2 = await makeUser();
+    const u1 = await makeUser([a.gameId, b.gameId]);
+    const u2 = await makeUser([a.gameId, b.gameId]);
     await makeFriendship(a.apiKey, u1, u2);
 
     const fromB = (await (
@@ -120,8 +135,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
   it("different networkId stays isolated even when both opt into scope=network", async () => {
     const a = await setupGame("A", { networkId: "studio-1", scope: "network" });
     const c = await setupGame("C", { networkId: "studio-2", scope: "network" });
-    const u1 = await makeUser();
-    const u2 = await makeUser();
+    const u1 = await makeUser([a.gameId, c.gameId]);
+    const u2 = await makeUser([a.gameId, c.gameId]);
     await makeFriendship(a.apiKey, u1, u2);
 
     const fromC = (await (
@@ -136,8 +151,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
   it("flipping scope back to per-game narrows visibility but does not drop data", async () => {
     const a = await setupGame("A", { networkId: "studio", scope: "network" });
     const b = await setupGame("B", { networkId: "studio", scope: "network" });
-    const u1 = await makeUser();
-    const u2 = await makeUser();
+    const u1 = await makeUser([a.gameId, b.gameId]);
+    const u2 = await makeUser([a.gameId, b.gameId]);
     await makeFriendship(a.apiKey, u1, u2);
 
     // Flip B back to per-game.
@@ -169,8 +184,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
     // as already friends.
     const a = await setupGame("A", { networkId: "studio", scope: "network" });
     const b = await setupGame("B", { networkId: "studio", scope: "network" });
-    const u1 = await makeUser();
-    const u2 = await makeUser();
+    const u1 = await makeUser([a.gameId, b.gameId]);
+    const u2 = await makeUser([a.gameId, b.gameId]);
     await makeFriendship(a.apiKey, u1, u2);
 
     const dup = await app.request(`/v1/users/${u1}/friend-requests`, {
@@ -184,8 +199,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
   it("scope=network: a block in sibling game prevents friend request in this game (silent 404)", async () => {
     const a = await setupGame("A", { networkId: "studio", scope: "network" });
     const b = await setupGame("B", { networkId: "studio", scope: "network" });
-    const u1 = await makeUser();
-    const u2 = await makeUser();
+    const u1 = await makeUser([a.gameId, b.gameId]);
+    const u2 = await makeUser([a.gameId, b.gameId]);
     // u2 blocks u1 in game A
     await app.request(`/v1/users/${u2}/blocks`, {
       method: "POST",

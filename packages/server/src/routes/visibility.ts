@@ -3,11 +3,20 @@
 // `config.friends.visibility.default` when no row exists. Writes
 // validate against `config.friends.visibility.allowed`.
 //
+// Identity contract: path param `:userId` is the EXTERNAL user id;
+// resolved to `JunjoUser.id` via findOrCreateJunjoUser (set) or
+// findJunjoUserId (get). The wire `junjoUserId` field on the response
+// echoes the external id supplied by the caller for round-trip parity
+// (the field name is historical; see `friends.ts` header).
+//
 // Enforcement on read paths is admin-bypassed in V1 because the only
 // caller principal is the per-game API key (always admin-class). The
-// `viewerJunjoUserId` query parameter on `GET /v1/users/:userId/friends`
-// lets the dashboard simulate a player-perspective lookup; when supplied,
+// `viewer` query parameter on `GET /v1/users/:userId/friends` lets
+// the dashboard simulate a player-perspective lookup; when supplied,
 // the server applies the visibility rules. Without it, admin sees all.
+// `canViewFriendsList` takes internal JunjoUser ids (resolved by the
+// list handler before calling) so this helper stays decoupled from
+// the external-id resolution path.
 
 import type { FriendsListVisibility, GameConfig } from "@junjo/shared";
 import type { PrismaClient, UserVisibility } from "@prisma/client";
@@ -16,6 +25,7 @@ import { z } from "zod";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { friendsListVisibilitySchema } from "../config/schema.js";
 import { Errors } from "../errors.js";
+import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 
 // =====================================================================
 // Wire shapes
@@ -39,13 +49,13 @@ const setVisibilityBody = z
 
 function toWire(
   gameId: string,
-  junjoUserId: string,
+  externalUserId: string,
   row: UserVisibility | null,
   config: GameConfig,
 ): WireUserVisibility {
   return {
     gameId,
-    junjoUserId,
+    junjoUserId: externalUserId,
     friendsListVisibility:
       (row?.friendsListVisibility as FriendsListVisibility) ?? config.friends.visibility.default,
     allowed: config.friends.visibility.allowed,
@@ -66,8 +76,14 @@ export function getUserVisibilityHandler(prisma: PrismaClient): Handler {
     const { config } = await loadGameConfig(prisma, gameId);
     if (!config.friends.enabled) throw Errors.notFound("resource");
 
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      // Never-seen user: surface the game default without writing a row.
+      return c.json<WireUserVisibility>(toWire(gameId, userId, null, config));
+    }
+
     const row = await prisma.userVisibility.findUnique({
-      where: { gameId_junjoUserId: { gameId, junjoUserId: userId } },
+      where: { gameId_junjoUserId: { gameId, junjoUserId: actorJid } },
     });
     return c.json<WireUserVisibility>(toWire(gameId, userId, row, config));
   };
@@ -100,18 +116,14 @@ export function setUserVisibilityHandler(prisma: PrismaClient): Handler {
       );
     }
 
-    // Confirm the user exists; the upsert would otherwise silently
-    // create rows for non-existent JunjoUsers (the FK would reject it,
-    // but the error surface would be a noisy 500 instead of a clean 404).
-    const exists = await prisma.junjoUser.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    });
-    if (!exists) throw Errors.notFound("user");
+    // Auto-vivify the JunjoUser on first reference so the upsert
+    // below has a valid FK target. Matches the auto-create pattern
+    // on every other write path.
+    const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
 
     const row = await prisma.userVisibility.upsert({
-      where: { gameId_junjoUserId: { gameId, junjoUserId: userId } },
-      create: { gameId, junjoUserId: userId, friendsListVisibility: requested },
+      where: { gameId_junjoUserId: { gameId, junjoUserId: actorJid } },
+      create: { gameId, junjoUserId: actorJid, friendsListVisibility: requested },
       update: { friendsListVisibility: requested },
     });
     return c.json<WireUserVisibility>(toWire(gameId, userId, row, config));
@@ -130,6 +142,9 @@ export function setUserVisibilityHandler(prisma: PrismaClient): Handler {
 //   - target's visibility is "friends-only" AND viewer is a confirmed
 //     friend within the visible scope
 // Returns false on "private" + non-self viewer.
+//
+// Takes internal `JunjoUser.id` values; the list handler resolves
+// external ids to junjo ids before calling.
 export async function canViewFriendsList(
   prisma: PrismaClient,
   visibleGameIds: string[],

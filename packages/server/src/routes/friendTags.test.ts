@@ -45,8 +45,12 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
-    return (await prisma.junjoUser.create({ data: {} })).id;
+  async function makeUser(gameId: string): Promise<string> {
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+    });
+    return u.id;
   }
 
   function authHeaders(apiKey: string): Record<string, string> {
@@ -77,7 +81,7 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
 
   it("POST creates a tag", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -92,8 +96,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("POST without color works (defaults to null)", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -105,8 +109,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("POST rejects invalid color", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -116,8 +120,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("POST rejects duplicate tag name within same user/game", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -132,8 +136,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("GET lists my tags sorted by name", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     for (const name of ["Coworkers", "Close", "Guildmates"]) {
       await app.request(`/v1/users/${a}/friend-tags`, {
         method: "POST",
@@ -150,8 +154,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("PATCH updates name and color", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const created = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -171,8 +175,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
 
   it("DELETE removes the tag and its joins (cascade)", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     const created = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
@@ -198,7 +202,7 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   it("PATCH/DELETE on a tag from a different game returns 404", async () => {
     const game1 = await setupGame();
     const game2 = await setupGame();
-    const a = await makeUser();
+    const a = await makeUser(game1.gameId);
     const created = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(game1.apiKey),
@@ -223,8 +227,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   // -----------------------------------------------------------------
 
   it("friends.tags.enabled=false returns 404 on every tag route", async () => {
-    const { apiKey } = await setupGame({ friends: { tags: { enabled: false } } });
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { tags: { enabled: false } } });
+    const a = await makeUser(gameId);
     const post = await app.request(`/v1/users/${a}/friend-tags`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -239,8 +243,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("friends.tags.maxPerUser caps tag creation", async () => {
-    const { apiKey } = await setupGame({ friends: { tags: { maxPerUser: 2 } } });
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { tags: { maxPerUser: 2 } } });
+    const a = await makeUser(gameId);
     for (const name of ["a", "b"]) {
       const ok = await app.request(`/v1/users/${a}/friend-tags`, {
         method: "POST",
@@ -262,9 +266,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   // -----------------------------------------------------------------
 
   it("PUT /tags assigns the tag set to a friend", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     const t1 = (await (
       await app.request(`/v1/users/${a}/friend-tags`, {
@@ -294,9 +298,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   });
 
   it("PUT /tags with an empty array clears all tags from the friend", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     const tag = (await (
       await app.request(`/v1/users/${a}/friend-tags`, {
@@ -323,8 +327,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   it("PUT /tags rejects tags from a different game", async () => {
     const game1 = await setupGame();
     const game2 = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(game1.gameId);
+    const b = await makeUser(game1.gameId);
     await makeFriendship(game1.apiKey, a, b);
     const foreignTag = (await (
       await app.request(`/v1/users/${a}/friend-tags`, {
@@ -346,10 +350,10 @@ describe.skipIf(!TEST_DATABASE_URL)("friend tag CRUD + tag filtering", () => {
   // -----------------------------------------------------------------
 
   it("GET /friends?tagId=X filters to friends with that tag", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     await makeFriendship(apiKey, a, c);
     const tag = (await (

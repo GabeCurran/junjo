@@ -41,8 +41,12 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
-    return (await prisma.junjoUser.create({ data: {} })).id;
+  async function makeUser(gameId: string): Promise<string> {
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+    });
+    return u.id;
   }
 
   function authHeaders(apiKey: string): Record<string, string> {
@@ -68,8 +72,8 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   }
 
   it("returns no suggestions when the user has no friends", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/suggestions`, {
       method: "GET",
       headers: authHeaders(apiKey),
@@ -84,14 +88,14 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
     // f is friends with b -> 1 mutual.
     // g is friends with c, d -> 2 mutuals.
     // Expected order: e (3), g (2), f (1).
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
-    const d = await makeUser();
-    const e = await makeUser();
-    const f = await makeUser();
-    const g = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
+    const d = await makeUser(gameId);
+    const e = await makeUser(gameId);
+    const f = await makeUser(gameId);
+    const g = await makeUser(gameId);
 
     for (const friendId of [b, c, d]) {
       await makeFriendship(apiKey, a, friendId);
@@ -122,10 +126,10 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("excludes existing friends and self", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     await makeFriendship(apiKey, a, c);
     await makeFriendship(apiKey, b, c);
@@ -141,10 +145,10 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("excludes blocked users in either direction", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser(); // candidate via mutual b
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId); // candidate via mutual b
     await makeFriendship(apiKey, a, b);
     await makeFriendship(apiKey, b, c);
     // a blocks c -> c should not appear as a suggestion.
@@ -162,11 +166,11 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("respects friends.discovery.minMutuals", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 2 } } });
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
-    const d = await makeUser(); // 1 mutual via b -> below threshold
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 2 } } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
+    const d = await makeUser(gameId); // 1 mutual via b -> below threshold
     await makeFriendship(apiKey, a, b);
     await makeFriendship(apiKey, a, c);
     await makeFriendship(apiKey, b, d);
@@ -180,8 +184,8 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("friends.discovery.enabled=false returns 404", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { enabled: false } } });
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { enabled: false } } });
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/suggestions`, {
       method: "GET",
       headers: authHeaders(apiKey),
@@ -190,8 +194,8 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("friends.enabled=false returns 404", async () => {
-    const { apiKey } = await setupGame({ friends: { enabled: false } });
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { enabled: false } });
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/suggestions`, {
       method: "GET",
       headers: authHeaders(apiKey),
@@ -200,14 +204,14 @@ describe.skipIf(!TEST_DATABASE_URL)("mutual-friend suggestions", () => {
   });
 
   it("respects ?limit=N", async () => {
-    const { apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { discovery: { minMutuals: 1 } } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     // Create 5 friends-of-b who are not a's friends.
     const candidates: string[] = [];
     for (let i = 0; i < 5; i++) {
-      const u = await makeUser();
+      const u = await makeUser(gameId);
       await makeFriendship(apiKey, b, u);
       candidates.push(u);
     }

@@ -56,8 +56,12 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
-    return (await prisma.junjoUser.create({ data: {} })).id;
+  async function makeUser(gameId: string): Promise<string> {
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+    });
+    return u.id;
   }
 
   function authHeaders(apiKey: string): Record<string, string> {
@@ -69,8 +73,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
 
   it("POST friend-request fires friend.request.sent (carries actor + target + requestId)", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -91,9 +95,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
   });
 
   it("POST accept fires friend.request.accepted with the relationship snapshot", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -119,9 +123,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
   });
 
   it("POST friend-request with requestsRequired=false fires friend.request.accepted only (no .sent)", async () => {
-    const { apiKey } = await setupGame({ friends: { requestsRequired: false } });
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { requestsRequired: false } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -131,10 +135,10 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
     expect(captured[0]?.type).toBe("friend.request.accepted");
   });
 
-  it("POST decline fires NO event (privacy: silent decline)", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+  it("POST decline fires friend.request.declined", async () => {
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -147,13 +151,20 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
       method: "POST",
       headers: authHeaders(apiKey),
     });
-    expect(captured).toHaveLength(0);
+    expect(captured).toHaveLength(1);
+    const evt = captured[0];
+    expect(evt?.type).toBe("friend.request.declined");
+    if (evt?.type === "friend.request.declined") {
+      expect(evt.requestId).toBe(req.id);
+      expect(evt.actorJunjoUserId).toBe(a);
+      expect(evt.targetJunjoUserId).toBe(b);
+    }
   });
 
   it("DELETE unfriend fires friend.removed", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -179,16 +190,22 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
     }
   });
 
-  it("POST block fires NO event (privacy: silent block)", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+  it("POST block fires friend.blocked", async () => {
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/blocks`, {
       method: "POST",
       headers: authHeaders(apiKey),
       body: JSON.stringify({ targetJunjoUserId: b }),
     });
-    expect(captured).toHaveLength(0);
+    expect(captured).toHaveLength(1);
+    const evt = captured[0];
+    expect(evt?.type).toBe("friend.blocked");
+    if (evt?.type === "friend.blocked") {
+      expect(evt.byJunjoUserId).toBe(a);
+      expect(evt.otherJunjoUserId).toBe(b);
+    }
   });
 
   it("friend events are durable (enqueued as webhook deliveries)", async () => {
@@ -203,8 +220,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
         format: "junjo",
       },
     });
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -219,15 +236,15 @@ describe.skipIf(!TEST_DATABASE_URL)("friend-event dispatch (webhook + SSE skip)"
   });
 
   it("friend events do not register on the SSE hub (no group context)", async () => {
-    const { apiKey } = await setupGame();
+    const { gameId, apiKey } = await setupGame();
     const groupId = "test-group" as never;
     let received = 0;
     hub.subscribe(groupId, () => {
       received += 1;
     });
 
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),

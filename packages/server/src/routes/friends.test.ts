@@ -52,8 +52,18 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
+  // Creates a JunjoUser and an ExternalIdentity in the calling game
+  // that maps `externalUserId = u.id` to the same cuid, so callers can
+  // pass the returned id as both the path-param external id (the new
+  // friends contract) and the internal `JunjoUser.id` (for direct DB
+  // assertions). Without this, `findOrCreateJunjoUser` inside the
+  // friends handlers would generate a SEPARATE JunjoUser cuid for the
+  // mapping and tests inspecting raw rows would fail to find them.
+  async function makeUser(gameId: string): Promise<string> {
     const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+    });
     return u.id;
   }
 
@@ -70,8 +80,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
 
   it("POST /v1/users/:userId/friend-requests creates a pending request by default", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
 
     const res = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
@@ -87,9 +97,61 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
     expect(body.request?.gameId).toBe(gameId);
   });
 
+  it("POST auto-vivifies both caller and target when neither has been seen yet", async () => {
+    const { gameId, apiKey } = await setupGame();
+    // Skip makeUser: invent two external ids that have never been
+    // seen by the server. Mirrors how a consumer (Reibu, Roblox game
+    // server, etc.) calls the friend-request route with their own
+    // cuid before the user has touched any group / invite path that
+    // would have auto-vivified them. Under the external-id contract
+    // the handler creates a JunjoUser + ExternalIdentity for each id
+    // and stores the UserRelationship row against the resolved
+    // junjoUserIds.
+    const a = `cuid_fresh_caller_${Date.now()}`;
+    const b = `cuid_fresh_target_${Date.now()}_b`;
+
+    const preCount = await prisma.externalIdentity.count({
+      where: { gameId, externalUserId: { in: [a, b] } },
+    });
+    expect(preCount).toBe(0);
+
+    const res = await app.request(`/v1/users/${a}/friend-requests`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: b }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as WireFriendRequestSendResult;
+    // Wire echoes the external ids the caller supplied, even though
+    // the DB stores resolved junjoUserIds internally.
+    expect(body.request?.actorJunjoUserId).toBe(a);
+    expect(body.request?.targetJunjoUserId).toBe(b);
+
+    // Post-state: both ExternalIdentity mappings exist and a single
+    // pending UserRelationship row connects the resolved junjoUserIds.
+    const mappings = await prisma.externalIdentity.findMany({
+      where: { gameId, externalUserId: { in: [a, b] } },
+      select: { externalUserId: true, junjoUserId: true },
+    });
+    expect(mappings).toHaveLength(2);
+    const aJid = mappings.find((m) => m.externalUserId === a)?.junjoUserId;
+    const bJid = mappings.find((m) => m.externalUserId === b)?.junjoUserId;
+    expect(aJid).toBeDefined();
+    expect(bJid).toBeDefined();
+    const rel = await prisma.userRelationship.findFirst({
+      where: {
+        gameId,
+        actorJunjoUserId: aJid,
+        targetJunjoUserId: bJid,
+        type: "request",
+      },
+    });
+    expect(rel).not.toBeNull();
+  });
+
   it("POST rejects sending to yourself", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -99,9 +161,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("POST rejects when an inbound pending request already exists from the target", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     // a -> b
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
@@ -118,10 +180,10 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("GET /v1/users/:userId/friend-requests returns inbound + outbound by default", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -144,10 +206,10 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("GET supports direction=in and direction=out filters", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -184,8 +246,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
 
   it("POST /v1/friend-requests/:id/accept promotes the request and creates the mirror row", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -224,8 +286,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   it("POST accept rejects requests from a different game (cross-game leak guard)", async () => {
     const game1 = await setupGame();
     const game2 = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(game1.gameId);
+    const b = await makeUser(game1.gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(game1.apiKey),
@@ -246,8 +308,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
 
   it("POST decline deletes the request without creating a friendship", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -266,8 +328,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
 
   it("DELETE friend-request cancels (sender's outbound)", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -289,10 +351,10 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   // -----------------------------------------------------------------
 
   it("GET /v1/users/:userId/friends lists accepted friendships from that user's POV", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
 
     for (const target of [b, c]) {
       const sent = await app.request(`/v1/users/${a}/friend-requests`, {
@@ -319,8 +381,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
 
   it("DELETE /v1/users/:userId/friends/:otherUserId removes both rows", async () => {
     const { gameId, apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -345,9 +407,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("DELETE on a non-existent friendship returns 404", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/${b}`, {
       method: "DELETE",
       headers: authHeaders(apiKey),
@@ -360,9 +422,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   // -----------------------------------------------------------------
 
   it("friends.enabled=false returns 404 on every friends route", async () => {
-    const { apiKey } = await setupGame({ friends: { enabled: false } });
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame({ friends: { enabled: false } });
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     for (const path of [`/v1/users/${a}/friend-requests`, `/v1/users/${a}/friends`]) {
       const res = await app.request(path, { method: "GET", headers: authHeaders(apiKey) });
       expect(res.status).toBe(404);
@@ -379,8 +441,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
     const { gameId, apiKey } = await setupGame({
       friends: { requestsRequired: false },
     });
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -402,11 +464,11 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("friends.maxFriends caps the third friendship", async () => {
-    const { apiKey } = await setupGame({
+    const { gameId, apiKey } = await setupGame({
       friends: { requestsRequired: false, maxFriends: 2 },
     });
-    const a = await makeUser();
-    const targets = [await makeUser(), await makeUser(), await makeUser()];
+    const a = await makeUser(gameId);
+    const targets = [await makeUser(gameId), await makeUser(gameId), await makeUser(gameId)];
     for (let i = 0; i < 2; i++) {
       const ok = await app.request(`/v1/users/${a}/friend-requests`, {
         method: "POST",
@@ -424,12 +486,12 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("friends.maxPendingRequests caps the next outbound request", async () => {
-    const { apiKey } = await setupGame({
+    const { gameId, apiKey } = await setupGame({
       friends: { maxPendingRequests: 1 },
     });
-    const a = await makeUser();
-    const t1 = await makeUser();
-    const t2 = await makeUser();
+    const a = await makeUser(gameId);
+    const t1 = await makeUser(gameId);
+    const t2 = await makeUser(gameId);
     const ok = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -456,14 +518,14 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
     const res = await app.request(`/v1/users/${viewerUserId}/friends/${otherUserId}/relationship`, {
       headers: authHeaders(apiKey),
     });
-    const body = await res.json();
+    const body = (await res.json()) as { state: string; since: string | null };
     return { status: res.status, body };
   }
 
   it("getRelationship returns 'none' for unrelated users", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const r = await getRelationship(apiKey, a, b);
     expect(r.status).toBe(200);
     expect(r.body.state).toBe("none");
@@ -471,9 +533,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship returns 'friends' after a request is accepted", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const sent = await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -493,9 +555,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship distinguishes outgoing vs incoming requests by viewer", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/friend-requests`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -508,9 +570,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship surfaces 'blocked_by_me' vs 'blocked_by_them'", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/blocks`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -523,9 +585,9 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship: viewer-side block wins when both have blocked", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await app.request(`/v1/users/${a}/blocks`, {
       method: "POST",
       headers: authHeaders(apiKey),
@@ -543,8 +605,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship rejects same-id probe with 400", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/${a}/relationship`, {
       headers: authHeaders(apiKey),
     });
@@ -552,11 +614,11 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
   });
 
   it("getRelationship 404s when friends.enabled = false", async () => {
-    const { apiKey } = await setupGame({
+    const { gameId, apiKey } = await setupGame({
       friends: { enabled: false, scope: "game" },
     });
-    const a = await makeUser();
-    const b = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/friends/${b}/relationship`, {
       headers: authHeaders(apiKey),
     });

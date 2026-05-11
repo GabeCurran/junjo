@@ -2,9 +2,21 @@
 // gated). Every handler reads the game's resolved GameConfig first and
 // 404s on `friends.enabled = false` so feature absence is invisible.
 //
-// Block routes, webhook events, and scope=network query expansion land
-// in the next commit. This file deliberately handles only the local
-// (per-game scope) request/accept/decline/cancel/list/unfriend flow.
+// Identity contract (matches the rest of the Junjo server): path params
+// and body fields named `userId` / `targetJunjoUserId` / `viewerUserId`
+// / `otherUserId` carry the dev's EXTERNAL user id (Clerk sub, Supabase
+// uuid, Reibu cuid, Roblox UserId-as-string, etc.). Each handler
+// resolves the external id to the internal `JunjoUser.id` via
+// `findOrCreateJunjoUser` (for write paths that should auto-vivify a
+// missing user) or `findJunjoUserId` (for read paths that should
+// surface "no relationship" without writing anything). All DB queries
+// and writes use the resolved internal cuid; wire output and event
+// payloads translate back to the external id so consumers see the
+// same value they sent in. This matches the auto-vivify-on-first-
+// reference behavior of groups, invitations, leave, kick, ban, etc.
+// The wire field names retain their `*JunjoUserId` form for backwards
+// compatibility with existing consumers, but the VALUES are external
+// ids in v1.
 
 import type {
   FriendBlockedEvent,
@@ -24,6 +36,7 @@ import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { dispatchEvent } from "../events.js";
+import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 import {
   addBlockBody,
   listBlocksQuery,
@@ -31,6 +44,7 @@ import {
   listFriendsQuery,
   sendFriendRequestBody,
 } from "./friends.schema.js";
+import { batchLoadExternalUserIds } from "./members.js";
 import { canViewFriendsList } from "./visibility.js";
 
 // =====================================================================
@@ -74,21 +88,34 @@ export interface WireFriendshipList {
   nextCursor: string | null;
 }
 
-function toWireRequest(row: UserRelationship): WireFriendRequest {
+// Externals map: junjoUserId -> externalUserId. Built from a batch
+// lookup over the calling game's ExternalIdentity rows. A junjoUserId
+// with no mapping in the calling game falls back to the raw cuid (the
+// wire field is documented as opaque-to-consumer; this is the safest
+// fallback for cross-network rows where the sibling game's mapping is
+// not visible).
+function externalOr(externals: Map<string, string>, junjoUserId: string): string {
+  return externals.get(junjoUserId) ?? junjoUserId;
+}
+
+function toWireRequest(row: UserRelationship, externals: Map<string, string>): WireFriendRequest {
   return {
     id: row.id,
     gameId: row.gameId,
-    actorJunjoUserId: row.actorJunjoUserId,
-    targetJunjoUserId: row.targetJunjoUserId,
+    actorJunjoUserId: externalOr(externals, row.actorJunjoUserId),
+    targetJunjoUserId: externalOr(externals, row.targetJunjoUserId),
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-function toWireFriendshipFromActorPOV(row: UserRelationship): WireFriendship {
+function toWireFriendshipFromActorPOV(
+  row: UserRelationship,
+  externals: Map<string, string>,
+): WireFriendship {
   return {
     id: row.id,
     gameId: row.gameId,
-    junjoUserId: row.targetJunjoUserId,
+    junjoUserId: externalOr(externals, row.targetJunjoUserId),
     since: (row.respondedAt ?? row.createdAt).toISOString(),
   };
 }
@@ -97,12 +124,20 @@ function toWireFriendshipFromActorPOV(row: UserRelationship): WireFriendship {
 // Helpers
 // =====================================================================
 
-async function ensureUserExists(prisma: PrismaClient, junjoUserId: string): Promise<void> {
-  const user = await prisma.junjoUser.findUnique({
-    where: { id: junjoUserId },
-    select: { id: true },
-  });
-  if (!user) throw Errors.notFound("user");
+// Batch-load externals for every (actor, target) pair touched by a
+// page of relationship rows. Uses the calling game's mapping table.
+async function externalsForRows(
+  prisma: PrismaClient,
+  gameId: string,
+  rows: UserRelationship[],
+): Promise<Map<string, string>> {
+  const ids = new Set<string>();
+  for (const r of rows) {
+    ids.add(r.actorJunjoUserId);
+    ids.add(r.targetJunjoUserId);
+  }
+  if (ids.size === 0) return new Map();
+  return batchLoadExternalUserIds(prisma, gameId, [...ids]);
 }
 
 // Scope-aware lookups: under scope="network" the friend / pending /
@@ -197,8 +232,11 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     const config = loaded.config;
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    await ensureUserExists(prisma, userId);
-    await ensureUserExists(prisma, targetJunjoUserId);
+    // Resolve external ids to internal JunjoUser cuids, auto-creating
+    // both rows if absent. Mirrors how groups.create / invitations.accept
+    // / leave / ban / kick auto-vivify on first reference.
+    const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
+    const targetJid = await findOrCreateJunjoUser(prisma, gameId, targetJunjoUserId);
 
     // Block guard, scope-aware. A block in any sibling game in the
     // network silently rejects the request (404).
@@ -207,8 +245,8 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
         gameId: { in: visibleGameIds },
         type: "blocked",
         OR: [
-          { actorJunjoUserId: userId, targetJunjoUserId },
-          { actorJunjoUserId: targetJunjoUserId, targetJunjoUserId: userId },
+          { actorJunjoUserId: actorJid, targetJunjoUserId: targetJid },
+          { actorJunjoUserId: targetJid, targetJunjoUserId: actorJid },
         ],
       },
       select: { id: true },
@@ -217,20 +255,15 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
 
     // Existence guards span the visible scope so a duplicate friendship
     // cannot be created from a sibling game in the same network.
-    const existingForward = await existingFriendship(
-      prisma,
-      visibleGameIds,
-      userId,
-      targetJunjoUserId,
-    );
+    const existingForward = await existingFriendship(prisma, visibleGameIds, actorJid, targetJid);
     if (existingForward) {
       throw Errors.badRequest("already friends");
     }
     const existingOutboundReq = await existingPendingRequest(
       prisma,
       visibleGameIds,
-      userId,
-      targetJunjoUserId,
+      actorJid,
+      targetJid,
     );
     if (existingOutboundReq) {
       throw Errors.badRequest("a pending friend request already exists");
@@ -238,21 +271,21 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     const existingInboundReq = await existingPendingRequest(
       prisma,
       visibleGameIds,
-      targetJunjoUserId,
-      userId,
+      targetJid,
+      actorJid,
     );
     if (existingInboundReq) {
       throw Errors.badRequest("a pending friend request from this user already exists; accept it");
     }
 
-    await assertCapsBeforeWrite(prisma, visibleGameIds, userId, config.friends, "request");
+    await assertCapsBeforeWrite(prisma, visibleGameIds, actorJid, config.friends, "request");
 
     if (config.friends.requestsRequired) {
       const row = await prisma.userRelationship.create({
         data: {
           gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId,
+          actorJunjoUserId: actorJid,
+          targetJunjoUserId: targetJid,
           type: "request",
         },
       });
@@ -263,8 +296,12 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
         actorJunjoUserId: userId,
         targetJunjoUserId,
       });
+      const externals = new Map<string, string>([
+        [actorJid, userId],
+        [targetJid, targetJunjoUserId],
+      ]);
       return c.json<WireFriendRequestSendResult>(
-        { status: "pending", request: toWireRequest(row) },
+        { status: "pending", request: toWireRequest(row, externals) },
         201,
       );
     }
@@ -275,7 +312,7 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     const targetFriends = await prisma.userRelationship.count({
       where: {
         gameId: { in: visibleGameIds },
-        actorJunjoUserId: targetJunjoUserId,
+        actorJunjoUserId: targetJid,
         type: "friend",
       },
     });
@@ -290,8 +327,8 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
       prisma.userRelationship.create({
         data: {
           gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId,
+          actorJunjoUserId: actorJid,
+          targetJunjoUserId: targetJid,
           type: "friend",
           respondedAt: now,
         },
@@ -299,8 +336,8 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
       prisma.userRelationship.create({
         data: {
           gameId,
-          actorJunjoUserId: targetJunjoUserId,
-          targetJunjoUserId: userId,
+          actorJunjoUserId: targetJid,
+          targetJunjoUserId: actorJid,
           type: "friend",
           respondedAt: now,
         },
@@ -316,8 +353,12 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
       targetJunjoUserId,
       respondedAt: now,
     });
+    const externals = new Map<string, string>([
+      [actorJid, userId],
+      [targetJid, targetJunjoUserId],
+    ]);
     return c.json<WireFriendRequestSendResult>(
-      { status: "auto-accepted", friendship: toWireFriendshipFromActorPOV(actorRow) },
+      { status: "auto-accepted", friendship: toWireFriendshipFromActorPOV(actorRow, externals) },
       201,
     );
   };
@@ -337,24 +378,40 @@ export function listFriendRequestsHandler(prisma: PrismaClient): Handler {
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
+    // Read-only resolve: a never-seen user has no requests by definition.
+    // Skip the write that findOrCreate would do and return empty.
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      return c.json<WireFriendRequestList>({ inbound: [], outbound: [] });
+    }
+
     const inbound =
       direction === "out"
         ? []
         : await prisma.userRelationship.findMany({
-            where: { gameId: { in: visibleGameIds }, targetJunjoUserId: userId, type: "request" },
+            where: {
+              gameId: { in: visibleGameIds },
+              targetJunjoUserId: actorJid,
+              type: "request",
+            },
             orderBy: { createdAt: "desc" },
           });
     const outbound =
       direction === "in"
         ? []
         : await prisma.userRelationship.findMany({
-            where: { gameId: { in: visibleGameIds }, actorJunjoUserId: userId, type: "request" },
+            where: {
+              gameId: { in: visibleGameIds },
+              actorJunjoUserId: actorJid,
+              type: "request",
+            },
             orderBy: { createdAt: "desc" },
           });
 
+    const externals = await externalsForRows(prisma, gameId, [...inbound, ...outbound]);
     return c.json<WireFriendRequestList>({
-      inbound: inbound.map(toWireRequest),
-      outbound: outbound.map(toWireRequest),
+      inbound: inbound.map((r) => toWireRequest(r, externals)),
+      outbound: outbound.map((r) => toWireRequest(r, externals)),
     });
   };
 }
@@ -425,6 +482,15 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
       }),
     ]);
 
+    // Translate the request's stored JunjoUser cuids back to external
+    // ids for the wire response and the dispatched event. Looks up
+    // mappings in the request's originating game (not necessarily the
+    // calling game; matters under scope=network).
+    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
+      request.actorJunjoUserId,
+      request.targetJunjoUserId,
+    ]);
+
     // Fires under the request's originating gameId so webhook
     // subscribers in that game see the lifecycle they originally saw
     // start.
@@ -432,12 +498,12 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
       type: "friend.request.accepted",
       gameId: request.gameId as GameId,
       relationshipId: promotedSender.id,
-      actorJunjoUserId: request.actorJunjoUserId,
-      targetJunjoUserId: request.targetJunjoUserId,
+      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
+      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
       respondedAt: now,
     });
 
-    return c.json<WireFriendship>(toWireFriendshipFromActorPOV(promotedSender));
+    return c.json<WireFriendship>(toWireFriendshipFromActorPOV(promotedSender, externals));
   };
 }
 
@@ -474,12 +540,16 @@ export function declineFriendRequestHandler(prisma: PrismaClient, hub: EventHub)
 
     const request = await deletePendingRequest(prisma, visibleGameIds, id);
 
+    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
+      request.actorJunjoUserId,
+      request.targetJunjoUserId,
+    ]);
     await dispatchEvent<FriendRequestDeclinedEvent>(prisma, hub, {
       type: "friend.request.declined",
       gameId: request.gameId as GameId,
       requestId: request.id,
-      actorJunjoUserId: request.actorJunjoUserId,
-      targetJunjoUserId: request.targetJunjoUserId,
+      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
+      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
     });
     return c.body(null, 204);
   };
@@ -499,12 +569,16 @@ export function cancelFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
 
     const request = await deletePendingRequest(prisma, visibleGameIds, id);
 
+    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
+      request.actorJunjoUserId,
+      request.targetJunjoUserId,
+    ]);
     await dispatchEvent<FriendRequestCancelledEvent>(prisma, hub, {
       type: "friend.request.cancelled",
       gameId: request.gameId as GameId,
       requestId: request.id,
-      actorJunjoUserId: request.actorJunjoUserId,
-      targetJunjoUserId: request.targetJunjoUserId,
+      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
+      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
     });
     return c.body(null, 204);
   };
@@ -531,14 +605,29 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     }
     const visibleGameIds = useTagFilter ? [gameId] : await gameIdsInScope(prisma, loaded);
 
-    // Visibility enforcement. Bypassed when no `viewer` is supplied
-    // (admin caller); applied when the dashboard provides one.
+    // Read-only resolve. Unseen users have no friendships; return an
+    // empty page without writing an ExternalIdentity row.
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      return c.json<WireFriendshipList>({ items: [], nextCursor: null });
+    }
+    // Resolve viewer if supplied. An unseen viewer falls through to
+    // the public/private-visibility check (with a sentinel that won't
+    // match any junjoUserId) rather than 404-ing -- a public profile
+    // should still be visible to a not-yet-onboarded viewer. Without
+    // a `viewer` param the caller is treated as admin (bypass).
+    let viewerJid: string | null = null;
+    if (viewer !== undefined) {
+      const resolved = await findJunjoUserId(prisma, gameId, viewer);
+      viewerJid = resolved ?? "__junjo_unseen_viewer__";
+    }
+
     const allowed = await canViewFriendsList(
       prisma,
       visibleGameIds,
       loaded.config,
-      userId,
-      viewer ?? null,
+      actorJid,
+      viewerJid,
     );
     if (!allowed) throw Errors.notFound("user");
 
@@ -549,7 +638,7 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     const rows = await prisma.userRelationship.findMany({
       where: {
         gameId: { in: visibleGameIds },
-        actorJunjoUserId: userId,
+        actorJunjoUserId: actorJid,
         type: "friend",
         ...(useTagFilter
           ? {
@@ -573,7 +662,9 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     });
 
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map(toWireFriendshipFromActorPOV);
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const externals = await externalsForRows(prisma, gameId, page);
+    const items = page.map((r) => toWireFriendshipFromActorPOV(r, externals));
     const last = hasMore ? rows[limit - 1] : null;
     const nextCursor = last?.respondedAt ? formatCursor(last.respondedAt, last.id) : null;
 
@@ -593,7 +684,11 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const forward = await existingFriendship(prisma, visibleGameIds, userId, otherUserId);
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    const otherJid = await findJunjoUserId(prisma, gameId, otherUserId);
+    if (!actorJid || !otherJid) throw Errors.notFound("friendship");
+
+    const forward = await existingFriendship(prisma, visibleGameIds, actorJid, otherJid);
     if (!forward) throw Errors.notFound("friendship");
 
     // Delete both rows in one transaction. Both rows scope to the
@@ -603,16 +698,16 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
       prisma.userRelationship.deleteMany({
         where: {
           gameId: forward.gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId: otherUserId,
+          actorJunjoUserId: actorJid,
+          targetJunjoUserId: otherJid,
           type: "friend",
         },
       }),
       prisma.userRelationship.deleteMany({
         where: {
           gameId: forward.gameId,
-          actorJunjoUserId: otherUserId,
-          targetJunjoUserId: userId,
+          actorJunjoUserId: otherJid,
+          targetJunjoUserId: actorJid,
           type: "friend",
         },
       }),
@@ -656,6 +751,15 @@ export function getRelationshipHandler(prisma: PrismaClient): Handler {
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
+    // Either party never-seen → no rows possible → "none". Read-only
+    // resolve so the relationship probe doesn't accidentally auto-
+    // vivify users that were only profile-views.
+    const viewerJid = await findJunjoUserId(prisma, gameId, viewerUserId);
+    const otherJid = await findJunjoUserId(prisma, gameId, otherUserId);
+    if (!viewerJid || !otherJid) {
+      return c.json<WireFriendshipRelationship>({ state: "none", since: null });
+    }
+
     // One query pulls every relationship row in either direction across
     // the visible scope. Caller is per-game API key (trusted backend),
     // so no per-end-user visibility check beyond scope.
@@ -663,14 +767,14 @@ export function getRelationshipHandler(prisma: PrismaClient): Handler {
       where: {
         gameId: { in: visibleGameIds },
         OR: [
-          { actorJunjoUserId: viewerUserId, targetJunjoUserId: otherUserId },
-          { actorJunjoUserId: otherUserId, targetJunjoUserId: viewerUserId },
+          { actorJunjoUserId: viewerJid, targetJunjoUserId: otherJid },
+          { actorJunjoUserId: otherJid, targetJunjoUserId: viewerJid },
         ],
       },
       orderBy: { createdAt: "desc" },
     });
 
-    const result = resolveRelationship(viewerUserId, otherUserId, rows);
+    const result = resolveRelationship(viewerJid, otherJid, rows);
     return c.json<WireFriendshipRelationship>({
       state: result.state,
       since: result.since ? result.since.toISOString() : null,
@@ -762,11 +866,11 @@ export interface WireBlockList {
   items: WireBlock[];
 }
 
-function toWireBlockFromActorPOV(row: UserRelationship): WireBlock {
+function toWireBlockFromActorPOV(row: UserRelationship, externals: Map<string, string>): WireBlock {
   return {
     id: row.id,
     gameId: row.gameId,
-    junjoUserId: row.targetJunjoUserId,
+    junjoUserId: externalOr(externals, row.targetJunjoUserId),
     blockedAt: row.createdAt.toISOString(),
   };
 }
@@ -790,8 +894,12 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
     if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    await ensureUserExists(prisma, userId);
-    await ensureUserExists(prisma, targetJunjoUserId);
+    const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
+    const targetJid = await findOrCreateJunjoUser(prisma, gameId, targetJunjoUserId);
+    const externals = new Map<string, string>([
+      [actorJid, userId],
+      [targetJid, targetJunjoUserId],
+    ]);
 
     // Idempotent across the visible scope: a sibling-game block of the
     // same target returns its row instead of creating a duplicate.
@@ -800,13 +908,13 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
     const existing = await prisma.userRelationship.findFirst({
       where: {
         gameId: { in: visibleGameIds },
-        actorJunjoUserId: userId,
-        targetJunjoUserId,
+        actorJunjoUserId: actorJid,
+        targetJunjoUserId: targetJid,
         type: "blocked",
       },
     });
     if (existing) {
-      return c.json<WireBlock>(toWireBlockFromActorPOV(existing));
+      return c.json<WireBlock>(toWireBlockFromActorPOV(existing, externals));
     }
 
     // Cleanup deletes spans the visible scope (a friendship from a
@@ -815,8 +923,8 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
       prisma.userRelationship.create({
         data: {
           gameId,
-          actorJunjoUserId: userId,
-          targetJunjoUserId,
+          actorJunjoUserId: actorJid,
+          targetJunjoUserId: targetJid,
           type: "blocked",
         },
       }),
@@ -825,8 +933,8 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
           gameId: { in: visibleGameIds },
           type: { in: ["friend", "request"] },
           OR: [
-            { actorJunjoUserId: userId, targetJunjoUserId },
-            { actorJunjoUserId: targetJunjoUserId, targetJunjoUserId: userId },
+            { actorJunjoUserId: actorJid, targetJunjoUserId: targetJid },
+            { actorJunjoUserId: targetJid, targetJunjoUserId: actorJid },
           ],
         },
       }),
@@ -839,7 +947,7 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
       otherJunjoUserId: targetJunjoUserId,
     });
 
-    return c.json<WireBlock>(toWireBlockFromActorPOV(block), 201);
+    return c.json<WireBlock>(toWireBlockFromActorPOV(block, externals), 201);
   };
 }
 
@@ -855,13 +963,17 @@ export function removeBlockHandler(prisma: PrismaClient, hub: EventHub): Handler
     if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    const otherJid = await findJunjoUserId(prisma, gameId, otherUserId);
+    if (!actorJid || !otherJid) throw Errors.notFound("block");
+
     // Find the block row across the visible scope; deletion targets
     // the row by primary key so it removes the originating-game row.
     const existing = await prisma.userRelationship.findFirst({
       where: {
         gameId: { in: visibleGameIds },
-        actorJunjoUserId: userId,
-        targetJunjoUserId: otherUserId,
+        actorJunjoUserId: actorJid,
+        targetJunjoUserId: otherJid,
         type: "blocked",
       },
     });
@@ -896,11 +1008,17 @@ export function listBlocksHandler(prisma: PrismaClient): Handler {
     if (!loaded.config.blocks.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      return c.json<WireBlockList>({ items: [] });
+    }
+
     const rows = await prisma.userRelationship.findMany({
-      where: { gameId: { in: visibleGameIds }, actorJunjoUserId: userId, type: "blocked" },
+      where: { gameId: { in: visibleGameIds }, actorJunjoUserId: actorJid, type: "blocked" },
       orderBy: { createdAt: "desc" },
       take: limit,
     });
-    return c.json<WireBlockList>({ items: rows.map(toWireBlockFromActorPOV) });
+    const externals = await externalsForRows(prisma, gameId, rows);
+    return c.json<WireBlockList>({ items: rows.map((r) => toWireBlockFromActorPOV(r, externals)) });
   };
 }

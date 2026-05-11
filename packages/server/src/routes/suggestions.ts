@@ -2,6 +2,14 @@
 // `friends.discovery.minMutuals` mutual friends with :userId, excluding
 // existing friends and anyone blocked in either direction.
 //
+// Identity contract: path param `:userId` is the EXTERNAL user id;
+// resolved to `JunjoUser.id` via `findJunjoUserId` (read-only — an
+// unseen user has no friends and therefore no suggestions, returns
+// empty without writing). The wire `junjoUserId` and
+// `sampleMutualJunjoUserIds` fields are translated from internal cuids
+// back to external ids via a batch lookup against the calling game's
+// ExternalIdentity table.
+//
 // One $queryRaw per request joins the UserRelationship table against
 // itself twice (me -> my friends -> their friends), groups by candidate,
 // and orders by mutual count desc. Bounded to the visible scope so
@@ -13,6 +21,8 @@ import type { Handler } from "hono";
 import { z } from "zod";
 import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
+import { findJunjoUserId } from "../identity.js";
+import { batchLoadExternalUserIds } from "./members.js";
 
 // =====================================================================
 // Wire shape
@@ -56,13 +66,18 @@ export function listFriendSuggestionsHandler(prisma: PrismaClient): Handler {
     const minMutuals = loaded.config.friends.discovery.minMutuals;
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      return c.json<WireFriendSuggestionList>({ items: [] });
+    }
+
     // The query: candidate users C such that
     //   - At least `minMutuals` distinct users F exist where:
-    //     - userId is friends with F (forward row exists)
+    //     - actorJid is friends with F (forward row exists)
     //     - F is friends with C (forward row exists)
-    //   - C is NOT userId itself
-    //   - C is NOT already a friend of userId
-    //   - No block exists in either direction between userId and C
+    //   - C is NOT actorJid itself
+    //   - C is NOT already a friend of actorJid
+    //   - No block exists in either direction between actorJid and C
     //
     // sample_mutual_ids picks up to 5 distinct F values per candidate
     // for the dashboard's "you know A, B, +N others" affordance.
@@ -79,7 +94,7 @@ export function listFriendSuggestionsHandler(prisma: PrismaClient): Handler {
         my_friends AS (
           SELECT DISTINCT "targetJunjoUserId" AS friend_id
           FROM "UserRelationship"
-          WHERE "actorJunjoUserId" = ${userId}
+          WHERE "actorJunjoUserId" = ${actorJid}
             AND "type" = 'friend'
             AND "gameId" IN (SELECT gid FROM visible_games)
         ),
@@ -91,16 +106,16 @@ export function listFriendSuggestionsHandler(prisma: PrismaClient): Handler {
           WHERE fof."type" = 'friend'
             AND fof."gameId" IN (SELECT gid FROM visible_games)
             AND fof."actorJunjoUserId" IN (SELECT friend_id FROM my_friends)
-            AND fof."targetJunjoUserId" <> ${userId}
+            AND fof."targetJunjoUserId" <> ${actorJid}
             AND fof."targetJunjoUserId" NOT IN (SELECT friend_id FROM my_friends)
             AND NOT EXISTS (
               SELECT 1 FROM "UserRelationship" b
               WHERE b."type" = 'blocked'
                 AND b."gameId" IN (SELECT gid FROM visible_games)
                 AND (
-                  (b."actorJunjoUserId" = ${userId} AND b."targetJunjoUserId" = fof."targetJunjoUserId")
+                  (b."actorJunjoUserId" = ${actorJid} AND b."targetJunjoUserId" = fof."targetJunjoUserId")
                   OR
-                  (b."targetJunjoUserId" = ${userId} AND b."actorJunjoUserId" = fof."targetJunjoUserId")
+                  (b."targetJunjoUserId" = ${actorJid} AND b."actorJunjoUserId" = fof."targetJunjoUserId")
                 )
             )
         )
@@ -116,10 +131,21 @@ export function listFriendSuggestionsHandler(prisma: PrismaClient): Handler {
       `,
     );
 
+    // Translate every junjoUserId surfaced in the response (candidates
+    // + sample mutuals) back to the external id in the calling game.
+    const allJids = new Set<string>();
+    for (const r of rows) {
+      allJids.add(r.candidate_id);
+      for (const m of r.sample_mutual_ids ?? []) allJids.add(m);
+    }
+    const externals =
+      allJids.size > 0 ? await batchLoadExternalUserIds(prisma, gameId, [...allJids]) : new Map();
+    const ext = (j: string): string => externals.get(j) ?? j;
+
     const items: WireFriendSuggestion[] = rows.map((r) => ({
-      junjoUserId: r.candidate_id,
+      junjoUserId: ext(r.candidate_id),
       mutualCount: Number(r.mutual_count),
-      sampleMutualJunjoUserIds: r.sample_mutual_ids ?? [],
+      sampleMutualJunjoUserIds: (r.sample_mutual_ids ?? []).map(ext),
     }));
     return c.json<WireFriendSuggestionList>({ items });
   };

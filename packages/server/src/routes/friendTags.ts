@@ -3,6 +3,12 @@
 // friend rows. Tags only attach to the OWNER-side friend row, so each
 // party tags friendships independently.
 //
+// Identity contract: path params `:userId` / `:otherUserId` are
+// EXTERNAL user ids (see `friends.ts` header). Each handler resolves
+// to internal `JunjoUser.id` via `findOrCreateJunjoUser` (writes) or
+// `findJunjoUserId` (reads). Wire output's `junjoUserId` field carries
+// the external id even though the field name is historical.
+//
 // Scope semantics: tags do NOT scope-expand under friends.scope=
 // "network". A tag created in game A is invisible from game B even if
 // they share a networkId. Tagging a friend whose row originated in a
@@ -14,11 +20,13 @@ import type { FriendTag, PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
+import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 import {
   createFriendTagBody,
   setFriendTagsBody,
   updateFriendTagBody,
 } from "./friendTags.schema.js";
+import { batchLoadExternalUserIds } from "./members.js";
 
 // =====================================================================
 // Wire shapes
@@ -42,11 +50,11 @@ export interface WireFriendTagAssignment {
   tagIds: string[];
 }
 
-function toWire(row: FriendTag): WireFriendTag {
+function toWire(row: FriendTag, externalUserId: string): WireFriendTag {
   return {
     id: row.id,
     gameId: row.gameId,
-    junjoUserId: row.junjoUserId,
+    junjoUserId: externalUserId,
     name: row.name,
     color: row.color,
     createdAt: row.createdAt.toISOString(),
@@ -86,11 +94,16 @@ export function listFriendTagsHandler(prisma: PrismaClient): Handler {
       throw Errors.notFound("resource");
     }
 
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    if (!actorJid) {
+      return c.json<WireFriendTagList>({ items: [] });
+    }
+
     const tags = await prisma.friendTag.findMany({
-      where: { gameId, junjoUserId: userId },
+      where: { gameId, junjoUserId: actorJid },
       orderBy: [{ name: "asc" }],
     });
-    return c.json<WireFriendTagList>({ items: tags.map(toWire) });
+    return c.json<WireFriendTagList>({ items: tags.map((t) => toWire(t, userId)) });
   };
 }
 
@@ -115,9 +128,11 @@ export function createFriendTagHandler(prisma: PrismaClient): Handler {
       throw Errors.notFound("resource");
     }
 
+    const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
+
     // Cap check: how many tags does this user already have in this game?
     const existing = await prisma.friendTag.count({
-      where: { gameId, junjoUserId: userId },
+      where: { gameId, junjoUserId: actorJid },
     });
     if (existing >= config.friends.tags.maxPerUser) {
       throw Errors.badRequest(`tag cap reached (${config.friends.tags.maxPerUser})`);
@@ -129,12 +144,12 @@ export function createFriendTagHandler(prisma: PrismaClient): Handler {
       const tag = await prisma.friendTag.create({
         data: {
           gameId,
-          junjoUserId: userId,
+          junjoUserId: actorJid,
           name: parsed.data.name,
           color: parsed.data.color ?? null,
         },
       });
-      return c.json<WireFriendTag>(toWire(tag), 201);
+      return c.json<WireFriendTag>(toWire(tag, userId), 201);
     } catch (err) {
       if (
         err &&
@@ -179,7 +194,12 @@ export function updateFriendTagHandler(prisma: PrismaClient): Handler {
 
     try {
       const updated = await prisma.friendTag.update({ where: { id }, data });
-      return c.json<WireFriendTag>(toWire(updated));
+      // Translate the owner's internal id back to the external form so
+      // the response matches what the caller would have sent to create
+      // / list this tag.
+      const externals = await batchLoadExternalUserIds(prisma, gameId, [updated.junjoUserId]);
+      const ownerExternalId = externals.get(updated.junjoUserId) ?? updated.junjoUserId;
+      return c.json<WireFriendTag>(toWire(updated, ownerExternalId));
     } catch (err) {
       if (
         err &&
@@ -233,7 +253,11 @@ export function setFriendTagsHandler(prisma: PrismaClient): Handler {
       throw Errors.notFound("resource");
     }
 
-    const friendship = await findOwnerFriendship(prisma, gameId, userId, otherUserId);
+    const actorJid = await findJunjoUserId(prisma, gameId, userId);
+    const otherJid = await findJunjoUserId(prisma, gameId, otherUserId);
+    if (!actorJid || !otherJid) throw Errors.notFound("friendship");
+
+    const friendship = await findOwnerFriendship(prisma, gameId, actorJid, otherJid);
     if (!friendship) throw Errors.notFound("friendship");
 
     // Validate every requested tag exists and belongs to this user in
@@ -241,7 +265,7 @@ export function setFriendTagsHandler(prisma: PrismaClient): Handler {
     // not allowed; cross-network tagging is a v2+ feature.
     if (requestedTagIds.length > 0) {
       const owned = await prisma.friendTag.findMany({
-        where: { id: { in: requestedTagIds }, gameId, junjoUserId: userId },
+        where: { id: { in: requestedTagIds }, gameId, junjoUserId: actorJid },
         select: { id: true },
       });
       if (owned.length !== requestedTagIds.length) {

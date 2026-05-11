@@ -45,8 +45,12 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
     return { gameId: game.id, apiKey: raw.full };
   }
 
-  async function makeUser(): Promise<string> {
-    return (await prisma.junjoUser.create({ data: {} })).id;
+  async function makeUser(gameId: string): Promise<string> {
+    const u = await prisma.junjoUser.create({ data: {} });
+    await prisma.externalIdentity.create({
+      data: { gameId, externalUserId: u.id, junjoUserId: u.id },
+    });
+    return u.id;
   }
 
   function authHeaders(apiKey: string): Record<string, string> {
@@ -76,8 +80,8 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   // -----------------------------------------------------------------
 
   it("GET returns the default when no row exists", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/visibility`, {
       method: "GET",
       headers: authHeaders(apiKey),
@@ -89,8 +93,8 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("PATCH stores the value and GET returns it", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
     const patched = await app.request(`/v1/users/${a}/visibility`, {
       method: "PATCH",
       headers: authHeaders(apiKey),
@@ -103,10 +107,10 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("PATCH rejects values outside config.friends.visibility.allowed", async () => {
-    const { apiKey } = await setupGame({
+    const { gameId, apiKey } = await setupGame({
       friends: { visibility: { allowed: ["private"], default: "private" } },
     });
-    const a = await makeUser();
+    const a = await makeUser(gameId);
     const res = await app.request(`/v1/users/${a}/visibility`, {
       method: "PATCH",
       headers: authHeaders(apiKey),
@@ -115,14 +119,24 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
     expect(res.status).toBe(400);
   });
 
-  it("PATCH 404s for an unknown user", async () => {
+  it("PATCH auto-vivifies a not-yet-seen user", async () => {
+    // Under the external-id contract, visibility writes upsert both
+    // the ExternalIdentity mapping and the UserVisibility row in one
+    // call. The dev's backend can pre-create visibility settings for
+    // users it has provisioned in its own DB but who have not yet
+    // touched any Junjo write path. Matches the auto-vivify behavior
+    // of every other write-path on Junjo (groups, invitations, bans,
+    // friend-requests).
     const { apiKey } = await setupGame();
-    const res = await app.request("/v1/users/does-not-exist/visibility", {
+    const res = await app.request("/v1/users/cuid_fresh_user/visibility", {
       method: "PATCH",
       headers: authHeaders(apiKey),
       body: JSON.stringify({ friendsListVisibility: "friends-only" }),
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { junjoUserId: string; friendsListVisibility: string };
+    expect(body.junjoUserId).toBe("cuid_fresh_user");
+    expect(body.friendsListVisibility).toBe("friends-only");
   });
 
   // -----------------------------------------------------------------
@@ -130,9 +144,9 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   // -----------------------------------------------------------------
 
   it("admin (no viewer) sees a private user's friend list", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     // a is "private" (default).
     const res = await app.request(`/v1/users/${a}/friends`, {
@@ -145,10 +159,10 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("non-friend viewer 404s on a private user's friend list", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const c = await makeUser(); // c is the snooping viewer
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const c = await makeUser(gameId); // c is the snooping viewer
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     // a is private.
     const res = await app.request(`/v1/users/${a}/friends?viewer=${c}`, {
@@ -159,9 +173,9 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("the user themselves can always see their own list", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     const res = await app.request(`/v1/users/${a}/friends?viewer=${a}`, {
       method: "GET",
@@ -171,14 +185,14 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("public visibility lets anyone see", async () => {
-    const { apiKey } = await setupGame({
+    const { gameId, apiKey } = await setupGame({
       friends: {
         visibility: { allowed: ["private", "friends-only", "public"], default: "private" },
       },
     });
-    const a = await makeUser();
-    const b = await makeUser();
-    const c = await makeUser();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
+    const c = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     await app.request(`/v1/users/${a}/visibility`, {
       method: "PATCH",
@@ -193,9 +207,9 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
   });
 
   it("friends-only visibility lets confirmed friends see", async () => {
-    const { apiKey } = await setupGame();
-    const a = await makeUser();
-    const b = await makeUser();
+    const { gameId, apiKey } = await setupGame();
+    const a = await makeUser(gameId);
+    const b = await makeUser(gameId);
     await makeFriendship(apiKey, a, b);
     await app.request(`/v1/users/${a}/visibility`, {
       method: "PATCH",
@@ -210,7 +224,7 @@ describe.skipIf(!TEST_DATABASE_URL)("user visibility setting + enforcement", () 
     expect(okRes.status).toBe(200);
 
     // c is a stranger; should not see.
-    const c = await makeUser();
+    const c = await makeUser(gameId);
     const blockedRes = await app.request(`/v1/users/${a}/friends?viewer=${c}`, {
       method: "GET",
       headers: authHeaders(apiKey),
