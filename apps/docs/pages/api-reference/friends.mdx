@@ -6,6 +6,24 @@ configuration; a game can disable the whole subsystem, individual
 features, or constrain the menu of allowed values for user-facing
 options.
 
+## User-id contract
+
+Path params and body fields named `userId`, `targetJunjoUserId`,
+`viewerUserId`, `otherUserId`, and the wire fields `actorJunjoUserId`
+/ `targetJunjoUserId` / `junjoUserId` carry your application's
+EXTERNAL user id (the same string you pass to `groups.create`,
+`groups.kick`, etc.) — typically your auth provider's subject (Clerk
+sub, Supabase uuid) or your own user-table cuid. The server resolves
+the external id to the internal `JunjoUser.id` via the same
+`findOrCreateJunjoUser` helper every other Junjo write-path uses;
+unseen users are auto-vivified on first reference.
+
+The wire field names keep their historical `*JunjoUserId` form for
+backwards compatibility, but the values you send and receive are
+external ids. A friend request you send with `targetJunjoUserId:
+"clerk_user_abc"` returns `request.targetJunjoUserId: "clerk_user_abc"`
+verbatim.
+
 ## Configuration
 
 Each `Game` row carries a JSON `config` column with a `friends` branch.
@@ -72,6 +90,10 @@ Send a friend request from `:userId` to a target.
 
 **Behavior**
 
+- Both `:userId` and `targetJunjoUserId` are external user ids
+  (see [User-id contract](#user-id-contract)). Either party can be
+  not-yet-seen by the server; the handler auto-vivifies via the
+  shared `findOrCreateJunjoUser` helper before writing.
 - 404 when `friends.enabled = false`, or when either party has blocked
   the other (silent, for both blocker and blockee).
 - 400 when already friends, when a request is pending in either
@@ -97,13 +119,14 @@ timestamp) and creates the mirror row. Fires
 
 ### `POST /v1/friend-requests/:id/decline`
 
-Silently deletes the request row. **No event fires** (privacy: the
-sender is not notified of decline).
+Deletes the request row. Fires `friend.request.declined` to the
+original sender so their client can drop the outbound row from the UI.
 
 ### `DELETE /v1/friend-requests/:id`
 
-Same handler as decline. Used by the original sender to cancel an
-outbound pending request.
+Used by the original sender to cancel their own outbound pending
+request. Distinct route from decline; fires `friend.request.cancelled`
+to the original target so their client can drop the inbound row.
 
 ## Friendships
 
@@ -125,6 +148,41 @@ Removes both rows of the friendship in one transaction. Fires
 `friend.removed` to the OTHER party (the user who triggered the
 removal already knows).
 
+### `GET /v1/users/:viewerUserId/friends/:otherUserId/relationship`
+
+Single-pair viewer-perspective probe. Returns the relationship
+between `viewerUserId` and `otherUserId` from `viewerUserId`'s point
+of view in one round trip, instead of paging through `/friends`.
+
+```json
+{ "state": "friends", "since": "2026-03-12T14:22:03.000Z" }
+```
+
+`state` is one of:
+
+| state | meaning | `since` |
+|-------|---------|---------|
+| `friends` | mutual friendship exists | friendship start (`respondedAt`) |
+| `request_outgoing` | viewer sent a request, awaiting response | request `createdAt` |
+| `request_incoming` | other sent a request to viewer, awaiting | request `createdAt` |
+| `blocked_by_me` | viewer has blocked other | block `createdAt` |
+| `blocked_by_them` | other has blocked viewer | block `createdAt` |
+| `none` | no relationship in the visible scope | `null` |
+
+**Priority** (when multiple row types coexist, viewer-side wins):
+viewer-side block → other-side block → friendship → pending request
+→ none. The viewer-side block takes precedence on the both-blocked
+edge case so the viewer's UI shows the block they can act on.
+
+The visible scope follows the calling game's `friends.scope`
+(`per-game` reads only the calling game; `network` reads every game
+in the same network).
+
+| code | status | when |
+|------|--------|------|
+| `bad_request` | 400 | `viewerUserId === otherUserId` |
+| `not_found` | 404 | `friends.enabled = false` for the calling game |
+
 ## Blocks
 
 ### `POST /v1/users/:userId/blocks`
@@ -134,6 +192,10 @@ in either direction AND any pending requests in either direction (one
 transaction). Idempotent: re-blocking the same user returns the
 existing row.
 
+Both `:userId` and `targetJunjoUserId` are external user ids; both
+are auto-vivified on first reference, so a moderator can pre-emptively
+block a user the system has not yet seen.
+
 ### `DELETE /v1/users/:userId/blocks/:otherUserId`
 
 Removes the block.
@@ -142,8 +204,11 @@ Removes the block.
 
 Lists `:userId`'s outbound blocks.
 
-Blocks intentionally fire **no events** (privacy: the blocked party
-is not notified).
+`POST /blocks` fires `friend.blocked`; `DELETE /blocks/:otherUserId`
+fires `friend.unblocked`. Both carry `byJunjoUserId` (the actor) and
+`otherJunjoUserId` (the target). Consumers typically suppress any
+in-app notification to the blocked party — that policy lives in your
+webhook handler, not in Junjo.
 
 ## Tags
 
@@ -237,15 +302,19 @@ Enforcement on `GET /v1/users/:userId/friends` runs only when a
 
 ## Webhook events
 
-Three `JunjoEvent` types fire from this subsystem:
+Seven `JunjoEvent` types fire from this subsystem:
 
-| event | fires to | conditions |
-|-------|----------|------------|
-| `friend.request.sent` | target | `requestsRequired = true`, on POST request |
-| `friend.request.accepted` | original sender (or both, when auto-accepted) | on accept, or on auto-accept POST |
-| `friend.removed` | the other party | on unfriend |
+| event | when | payload notes |
+|-------|------|---------------|
+| `friend.request.sent` | `requestsRequired = true`, on `POST /friend-requests` | `actorJunjoUserId` = sender, `targetJunjoUserId` = recipient |
+| `friend.request.accepted` | on `POST /accept`, or on auto-accept `POST` (when `requestsRequired = false`) | `actorJunjoUserId` = original sender, `targetJunjoUserId` = accepter, `respondedAt` |
+| `friend.request.declined` | on `POST /decline` | same actor/target as the original request (so consumers know who declined whom) |
+| `friend.request.cancelled` | on `DELETE /friend-requests/:id` (sender retracts) | same actor/target as the original request |
+| `friend.removed` | on `DELETE /friends/:otherUserId` | `removedByJunjoUserId` (the unfriender), `otherJunjoUserId` (the one removed) |
+| `friend.blocked` | on `POST /blocks` | `byJunjoUserId` (the actor), `otherJunjoUserId` (the target) |
+| `friend.unblocked` | on `DELETE /blocks/:otherUserId` | `byJunjoUserId`, `otherJunjoUserId` |
 
-Decline and block fire **no events**, by design.
-
-Friend events have no `groupId` and are not delivered over the per-group
-SSE stream. Webhook delivery is the V1 transport for them.
+All seven are user-scoped (`UserEventBase`): no `groupId`, not
+delivered over the per-group SSE stream. Webhook delivery is the
+transport. Consumers that need real-time UI updates should re-broadcast
+these events to the relevant user's session(s) on their own bus.

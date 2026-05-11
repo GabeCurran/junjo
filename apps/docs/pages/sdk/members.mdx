@@ -67,7 +67,7 @@ do {
 } while (cursor);
 ```
 
-V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the caller filters client-side. A `?status=` filter can land later as an additive change.
+Defaults to returning members in every status (`active`, `invited`, `left`, `kicked`, `banned`). Pass `status: ["active"]` to filter server-side.
 
 ### Options
 
@@ -75,6 +75,7 @@ V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the 
 |-------|------|---------|-------|
 | `limit` | number | `50` | 1-100 inclusive. |
 | `cursor` | string | undefined | The `nextCursor` from a previous `list` call. |
+| `status` | `MemberStatus[]` | `undefined` (all) | Server-side filter. Common shapes: `["active"]` for current members, `["banned"]` for the moderation panel, `["active","invited"]` for "reachable" rows. Sent to the server as a comma-separated query param. |
 
 ### Returns
 
@@ -96,6 +97,18 @@ V1 returns members in every status (`active`, `left`, `kicked`, `invited`); the 
 ### See also
 
 - [`GET /v1/groups/:id/members`](/api-reference/groups) - the underlying HTTP route.
+
+## `listAll(groupId, opts?)`
+
+Async-iterator wrapper over `list(...)`. Walks every page until `nextCursor` is `null`, yielding one `Member` at a time. Combine with `status` to iterate every banned member, every kicked member, etc., without managing cursors by hand.
+
+```ts
+for await (const m of junjo.members.listAll("grp_xyz" as GroupId, { status: ["banned"] })) {
+  console.log(m.userId, m.bannedUntil);
+}
+```
+
+Accepts the same options as `list` except `cursor` (the iterator manages cursors internally). Errors from the underlying `list` calls propagate out of the loop.
 
 ## `listForUser(userId, opts?)`
 
@@ -248,7 +261,7 @@ A member with no overrides returns `[]`.
 
 - [`GET /v1/groups/:id/members/:userId/permissions`](/api-reference/groups) - the underlying HTTP route.
 
-## `assignRole(groupId, userId, roleId)`
+## `assignRole(groupId, userId, roleId, opts?)`
 
 Assigns a role to a member. Returns the updated `Member`. Idempotent: assigning a role the member already has returns the unchanged member.
 
@@ -257,13 +270,16 @@ const updated = await junjo.members.assignRole(
   "grp_xyz" as GroupId,
   "user_alice" as UserId,
   "role_officer" as RoleId,
+  { actorUserId: "user_mod_jane" as UserId },
 );
 updated.roles; // includes "role_officer"
 ```
 
 The role must belong to the same group as the member. Passing a role id that exists in a different group throws `JunjoError` with code `role_group_mismatch` (status 400). Passing a role id that does not exist at all throws `not_found` (status 404).
 
-A member in any status (`active`, `left`, `kicked`, `invited`) can have roles assigned; the SDK does not gate on `status`. Whether to assign roles to non-active members is a product call left to the caller.
+A member in any status (`active`, `left`, `kicked`, `invited`, `banned`) can have roles assigned; the SDK does not gate on `status`. Whether to assign roles to non-active members is a product call left to the caller.
+
+`opts.actorUserId` is an optional external user id for the moderator performing the assignment. When supplied, it populates the audit entry's `actorUserId` and the `role.changed` event payload's `actorUserId`. Omit for unattributed / server-side calls; both fields stay `null`.
 
 ### Errors
 
@@ -277,7 +293,7 @@ A member in any status (`active`, `left`, `kicked`, `invited`) can have roles as
 
 - [`POST /v1/groups/:id/members/:userId/roles/:roleId`](/api-reference/groups) - the underlying HTTP route.
 
-## `removeRole(groupId, userId, roleId)`
+## `removeRole(groupId, userId, roleId, opts?)`
 
 Removes a role from a member. Returns the updated `Member`. Idempotent: if the member does not have the role assigned (whether the role exists in another group, exists but is unassigned, or does not exist at all) returns the unchanged member.
 
@@ -286,11 +302,14 @@ const updated = await junjo.members.removeRole(
   "grp_xyz" as GroupId,
   "user_alice" as UserId,
   "role_officer" as RoleId,
+  { actorUserId: "user_mod_jane" as UserId },
 );
 updated.roles; // does not include "role_officer"
 ```
 
 Other role assignments on the same member are preserved.
+
+`opts.actorUserId` mirrors [`assignRole`](#assignrolegroupid-userid-roleid-opts): populates the audit entry and the `role.changed` event when supplied.
 
 ### Errors
 

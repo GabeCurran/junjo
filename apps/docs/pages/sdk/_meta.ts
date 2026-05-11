@@ -5,6 +5,8 @@ export default {
   members: "members",
   roles: "roles",
   permissions: "permissions",
+  friends: "friends",
+  bans: "bans",
   audit: "audit",
   webhooks: "webhooks",
 };

@@ -692,6 +692,42 @@ webhook event.
 |------|--------|------|
 | `not_found` | 404 | Unknown group, or the user has no `GroupMember` row, or the row is not currently banned. |
 
+### `GET /v1/groups/:id/bans/history`
+
+Append-only timeline of every per-group ban transition (`set` and
+`lifted`) on this group, newest-first. Spans every user — use
+`/v1/bans/:userId/history` ([Bans reference](/api-reference/bans))
+for a single user's full timeline across game and group scopes.
+
+Cursor pagination on `(eventAt DESC, id DESC)`; `?limit=N` defaults to 50.
+
+```json
+{
+  "items": [
+    {
+      "id": "banh_clxxx...",
+      "gameId": "game_abc",
+      "userId": "user_alpha",
+      "scope": "group",
+      "groupId": "grp_qrs",
+      "kind": "set",
+      "reason": "trolling",
+      "expiresAt": "2026-06-01T00:00:00.000Z",
+      "eventAt": "2026-05-09T18:22:03.000Z",
+      "actorUserId": "user_mod_jane"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `kind` | `"set" \| "lifted"` | One row per transition. A re-ban after a lift produces another `set` row. |
+| `userId`, `actorUserId` | string | External user ids (the dev-supplied form). `actorUserId` is `null` when the moderator was not supplied on the ban / unban call. |
+| `groupId` | string | Always set on this endpoint (game-scoped rows are excluded). |
+| `reason`, `expiresAt` | string \| null | Reflect the values at transition time; later edits to the live ban produce new rows. |
+
 ### Enforcement on join / invite-accept
 
 `POST /v1/groups/:id/join` and `POST /v1/invitations/:code/accept`
@@ -805,7 +841,7 @@ The response includes members in any status (`active`, `left`, `kicked`, `invite
 
 ## `GET /v1/groups/:id/members`
 
-Lists the members of a group with cursor-based pagination. Returns rows in every status; the caller filters client-side. (V1 does not yet expose a `?status=` filter; that can land as an additive change.)
+Lists the members of a group with cursor-based pagination. Defaults to returning rows in every status (`active`, `invited`, `left`, `kicked`, `banned`). Pass `?status=active` or a comma-separated subset (`?status=active,banned`) to filter server-side.
 
 ### Path parameters
 
@@ -885,7 +921,7 @@ Up to two entries are written, both with `actorUserId` set to `null` (V1 has no 
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
-## POST /v1/groups/:id/bulk-invite
+## `POST /v1/groups/:id/bulk-invite`
 
 Creates many open-code invitations at once. Body is plain text: one trimmed, non-empty line per target external user id.
 
@@ -964,7 +1000,15 @@ Assigns a role to a member. Idempotent: assigning a role the member already has 
 
 ### Request
 
-No body. The route ignores any body that is sent.
+Body is optional. An empty body, `{}`, or `{ "actorUserId": "user_mod_jane" }` are all accepted.
+
+```json
+{ "actorUserId": "user_mod_jane" }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `actorUserId` | no | The external user id of the moderator performing the assignment. Populates the audit entry's `actorUserId` and the `role.changed` event payload's `actorUserId`. Omit (or send `null`) for server-side / unattributed calls; both leave `actorUserId` as `null`. |
 
 ### Response
 
@@ -977,10 +1021,12 @@ No body. The route ignores any body that is sent.
 | `action` | `role.assigned` |
 | `groupId` | the group id |
 | `targetId` | the external user id |
-| `actorUserId` | `null` |
+| `actorUserId` | the resolved `actorUserId` (internal `JunjoUser.id`) when supplied, else `null` |
 | `payload` | `{ memberId, roleId }` |
 
 A no-op (the role was already assigned) does not write an audit entry.
+
+The matching `role.changed` SSE / webhook event carries `actorUserId: UserId | null` (the external id this time, mirroring the request body field).
 
 ### Errors
 
@@ -998,6 +1044,10 @@ Removes a role from a member. Idempotent: if the member does not have the role a
 
 Same as `POST /v1/groups/:id/members/:userId/roles/:roleId`.
 
+### Request
+
+Body is optional and matches the POST: `{ "actorUserId"?: string }`. Populates the audit entry and the `role.changed` event payload when supplied.
+
 ### Response
 
 `200 OK` with the post-state `Member` body. `roles` excludes the removed role id; other role assignments are preserved.
@@ -1009,7 +1059,7 @@ Same as `POST /v1/groups/:id/members/:userId/roles/:roleId`.
 | `action` | `role.unassigned` |
 | `groupId` | the group id |
 | `targetId` | the external user id |
-| `actorUserId` | `null` |
+| `actorUserId` | the resolved `actorUserId` when supplied, else `null` |
 | `payload` | `{ memberId, roleId }` |
 
 A no-op (the role was not assigned) does not write an audit entry.

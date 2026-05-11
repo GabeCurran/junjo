@@ -113,6 +113,18 @@ do {
 
 - [`GET /v1/groups`](/api-reference/groups) - the underlying HTTP route.
 
+## `listAll(opts?)`
+
+Async-iterator wrapper over `list(...)`. Walks every page until `nextCursor` is `null`, yielding one `Group` at a time. Use when you actually want to iterate the full set; for paged UIs use `list` directly.
+
+```ts
+for await (const group of junjo.groups.listAll({ limit: 100 })) {
+  console.log(group.name);
+}
+```
+
+Accepts the same options as `list` except `cursor` (the iterator manages cursors internally). HTTP errors from the underlying `list` calls propagate out of the loop.
+
 ## `update(id, input)`
 
 Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
@@ -428,6 +440,8 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
 
+For the inverse — having a user join a group that allows public-join — use `junjo.groups.join(groupId, userId, { passcode? })`. It returns the newly-active `Member` and honors any configured passcode gate; the route is rate-limited on per-IP and per-game incorrect attempts. Game and group ban checks both run before the join succeeds (a banned user receives `403 banned`).
+
 ```ts
 const member = await junjo.groups.leave("grp_xyz" as GroupId, "user_alice" as UserId);
 member.status;  // "left"
@@ -494,6 +508,103 @@ member.status; // "kicked"
 ### See also
 
 - [`POST /v1/groups/:id/members/:userId/kick`](/api-reference/groups) - the underlying HTTP route.
+
+## `ban(groupId, userId, opts?)`
+
+Per-group ban. Distinct from `kick`: the banned user is rejected with `403 banned` from `groups.join` and `acceptInvitation` until the ban is lifted (explicitly or via `expiresAt` elapsing). For game-wide bans that apply across every group in the game, use [`junjo.bans.add`](/sdk/bans).
+
+```ts
+const banned = await junjo.groups.ban(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  {
+    reason: "trolling",
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    actorUserId: "user_mod_jane" as UserId,
+  },
+);
+banned.status; // "banned"
+banned.bannedUntil; // Date | null
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group. |
+| `userId` | `UserId` | The user to ban. The handler upserts an `ExternalIdentity` if the user has never been seen, so you can pre-emptively ban. |
+| `opts.reason` | string \| null | Optional. Up to 500 characters. Lands on the audit entry and the `member.banned` event payload. |
+| `opts.expiresAt` | Date \| string \| null | Optional. ISO string or `Date`. Omit / `null` for a permanent ban. Lazy expiry: read paths treat an elapsed value as not-banned without firing an `unbanned` event. |
+| `opts.actorUserId` | `UserId` | Optional moderator attribution. Populates the audit `actorUserId` and is surfaced on the ban-history timeline. |
+
+### Returns
+
+`Member` with `status: "banned"` and `bannedUntil` set (or `null` for permanent).
+
+### See also
+
+- [`POST /v1/groups/:id/members/:userId/ban`](/api-reference/groups#post-v1groupsidmembersuseridban) - the underlying HTTP route.
+- [`junjo.bans.add`](/sdk/bans) - game-wide ban across every group.
+
+## `unban(groupId, userId, opts?)`
+
+Lift a per-group ban. Reverts the row to `status = "left"` and clears `bannedUntil`; the membership history is preserved (the user can be re-invited normally afterward).
+
+```ts
+const restored = await junjo.groups.unban(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { actorUserId: "user_mod_jane" as UserId },
+);
+restored.status; // "left"
+```
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group. |
+| `userId` | `UserId` | The banned user. |
+| `opts.actorUserId` | `UserId` | Optional moderator attribution. Populates the audit `actorUserId` and the ban-history timeline. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Unknown group, or no `GroupMember` row for the user, or the row is not currently banned. |
+
+## `banHistory(groupId, opts?)`
+
+Append-only timeline of every per-group ban transition (`set` and `lifted`) for this group across every user, newest-first. Cursor-paginated.
+
+```ts
+const page = await junjo.groups.banHistory("grp_xyz" as GroupId, { limit: 50 });
+for (const entry of page.items) {
+  console.log(entry.kind, entry.userId, entry.eventAt, entry.reason);
+}
+```
+
+### Returns
+
+`Page<BanHistoryEntry>` where each entry carries:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `kind` | `"set" \| "lifted"` | One row per transition. A re-ban after a lift produces another `set` row. |
+| `userId` | `UserId` | External user id of the banned user. |
+| `actorUserId` | `UserId \| null` | External user id of the moderator who issued the transition, when supplied. |
+| `scope` | `"group"` | Always `"group"` on this method. Use `junjo.bans.history` for a user's full timeline across both game and group scopes. |
+| `reason`, `expiresAt`, `eventAt` | string \| null / Date | Snapshot at transition time. |
+
+## `banHistoryAll(groupId, opts?)`
+
+Async-iterator wrapper over `banHistory`, mirroring the relationship between `listAll` and `list`.
+
+```ts
+for await (const entry of junjo.groups.banHistoryAll("grp_xyz" as GroupId)) {
+  // ...
+}
+```
 
 ## `bulkInvite(groupId, csv, opts?)`
 

@@ -1,0 +1,173 @@
+# bans
+
+Methods on `junjo.bans`. Game-level bans apply across every group in
+the game: a banned user cannot accept invitations or public-join any
+group in the game while the ban is active.
+
+For per-group bans (scoped to one group, leaves the user reachable
+elsewhere in the game), see [`junjo.groups.ban`](/sdk/groups#bangroupid-userid-opts).
+The two compose: enforcement on the server checks game-level first,
+then per-group.
+
+## `add(input)`
+
+Bans a user across every group in the calling game.
+
+```ts
+const ban = await junjo.bans.add({
+  userId: "user_alice" as UserId,
+  reason: "harassment across multiple rooms",
+  expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  actorUserId: "user_mod_jane" as UserId,
+});
+ban.bannedAt;   // Date
+ban.expiresAt;  // Date | null
+```
+
+### Input
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | `UserId` | External user id of the user to ban. The handler upserts an `ExternalIdentity` if the user has never been seen, so you can pre-emptively ban. |
+| `reason` | string \| null | Optional. Lands on audit, the dashboard, and the ban-history timeline. |
+| `expiresAt` | `Date \| string \| null` | Optional ISO timestamp or `Date` for time-bounded bans. Omit / `null` for a permanent ban. Lazy expiry: read paths treat an elapsed value as not-banned, no event fires on expiry. |
+| `actorUserId` | `UserId` | Optional moderator attribution. Surfaces as `Ban.bannedBy` and on the ban-history timeline. Auto-creates a `JunjoUser` for the actor if unseen. |
+
+### Returns
+
+`Ban`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Ban row id. |
+| `gameId` | `GameId` | Always the calling game. |
+| `userId` | `UserId` | Banned user's external id. |
+| `bannedAt` | `Date` | When the ban was issued. Re-banning after an expired ban refreshes this; re-banning an already-active row returns the existing row unchanged. |
+| `expiresAt` | `Date \| null` | `null` for permanent. |
+| `reason` | string \| null | |
+| `bannedBy` | `UserId \| null` | Actor at issue time. |
+
+Idempotent on a still-active ban for the same user — returns the
+existing row. Replacing an expired ban with a fresh one writes a new
+row with the supplied fields.
+
+Fires `game.user.banned` (webhook only — no `groupId`, not delivered
+over SSE).
+
+## `remove(userId, opts?)`
+
+Lift the active game-level ban for `userId`. The row stays in the
+database but `bannedAt`/`expiresAt` are no longer enforced by the
+runtime ban-check; it's listed only on `history(...)`.
+
+```ts
+await junjo.bans.remove("user_alice" as UserId, {
+  actorUserId: "user_mod_jane" as UserId,
+});
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | `UserId` | Banned user's external id. |
+| `opts.actorUserId` | `UserId` | Optional moderator attribution. Lands on the audit entry and the ban-history `lifted` row. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No active game-level ban for this user. |
+
+Fires `game.user.unbanned` (webhook only).
+
+## `get(userId)`
+
+Fetch the current active game-level ban for a user. Returns `Ban` or
+`null`. Returns `null` for: never-banned users, lifted bans, and
+expired bans (lazy expiry — the row may still exist in `history`).
+
+```ts
+const ban = await junjo.bans.get("user_alice" as UserId);
+if (ban) {
+  console.log(`Banned until ${ban.expiresAt ?? "forever"}`);
+}
+```
+
+## `list(opts?)`
+
+Cursor-paginated list of every active game-level ban. By default
+excludes expired rows; pass `includeExpired: true` to surface them
+(useful for moderation dashboards that show recently-expired bans).
+
+```ts
+const page = await junjo.bans.list({ limit: 50 });
+for (const b of page.items) {
+  console.log(b.userId, b.reason, b.expiresAt);
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `limit` | number | 1-100. Defaults to 50. |
+| `cursor` | string | The `nextCursor` from a previous call. |
+| `includeExpired` | boolean | Defaults to `false`. When `true`, also returns rows whose `expiresAt` is in the past. The runtime ban-check still ignores those. |
+
+## `listAll(opts?)`
+
+Async-iterator wrapper over `list`. Accepts the same options minus
+`cursor`.
+
+```ts
+for await (const ban of junjo.bans.listAll({ includeExpired: true })) {
+  // ...
+}
+```
+
+## `history(userId, opts?)`
+
+Append-only ban-event timeline for `userId` in the calling game.
+Includes both game-scope and per-group-scope rows by default,
+newest-first. Filter with `scope` or narrow to a single group with
+`groupId`.
+
+```ts
+const page = await junjo.bans.history("user_alice" as UserId, {
+  scope: "group",
+  limit: 50,
+});
+for (const entry of page.items) {
+  console.log(entry.kind, entry.eventAt, entry.scope, entry.groupId);
+}
+```
+
+### Options
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `limit` | number | 1-100. Defaults to 50. |
+| `cursor` | string | The `nextCursor` from a previous call. |
+| `scope` | `"game" \| "group"` | Filter to one ban surface. Omit for both. Forced to `"group"` when `groupId` is supplied; passing `groupId` together with `scope: "game"` is a `400`. |
+| `groupId` | `GroupId` | Restrict to one group's history. Implies `scope: "group"`. |
+
+### Returns
+
+`Page<BanHistoryEntry>`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `kind` | `"set" \| "lifted"` | One row per transition. |
+| `scope` | `"game" \| "group"` | Which surface the row was written for. |
+| `groupId` | `GroupId \| null` | Set on `scope: "group"` rows, `null` on game-scope rows. |
+| `actorUserId` | `UserId \| null` | The moderator at transition time, when supplied. |
+| `reason`, `expiresAt`, `eventAt` | string \| null / Date | Snapshot at transition time. |
+
+## `historyAll(userId, opts?)`
+
+Async-iterator wrapper over `history`. Accepts the same options minus `cursor`.
+
+---
+
+## See also
+
+- [Bans API reference](/api-reference/bans) - HTTP routes, enforcement semantics, error envelope details.
+- [`junjo.groups.ban`](/sdk/groups#bangroupid-userid-opts) - per-group bans (scoped to one group).
+- [`junjo.groups.banHistory`](/sdk/groups#banhistorygroupid-opts) - per-group ban timeline (every user, one group).

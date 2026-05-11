@@ -295,6 +295,84 @@ Returns a single game with the same shape as the list endpoint. The dashboard us
 | `not_found` | 404 | No game with the supplied id exists. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## `GET /v1/admin/games/:gameId/config`
+
+Returns the per-game JSON `config` blob, fully resolved against the
+default `GameConfig` (so the response always carries every branch,
+even ones the operator has never set). Backs the dashboard's game
+settings page.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id`. |
+
+### Response
+
+`200 OK` with body:
+
+```json
+{
+  "gameId": "game_clxxx...",
+  "config": {
+    "friends": { "enabled": true, "scope": "per-game", "requestsRequired": true, "maxFriends": 1000, "...": "..." },
+    "blocks": { "enabled": true }
+  },
+  "networkId": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | Echoed from the path. |
+| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the schema. |
+| `networkId` | string \| null | The network the game belongs to, when `friends.scope = "network"`. Null for standalone games. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `PATCH /v1/admin/games/:gameId/config`
+
+Partial update. Supply `config` and/or `networkId`; at least one is
+required. Within `config`, the body is deep-merged against the stored
+value branch-by-branch, so a body of
+`{ "config": { "friends": { "maxFriends": 500 } } }` only changes
+`maxFriends` and leaves every other friends-branch field untouched.
+
+### Body
+
+```jsonc
+{
+  "config": {
+    "friends": { "enabled": false }   // any subset of GameConfig
+  },
+  "networkId": "net_abc"              // or null to remove
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `config` | PartialGameConfig | at least one of `config` / `networkId` | Any subset of the fully-resolved `GameConfig` shape. Deep-merged. Pass `null` for a branch to clear back to default. |
+| `networkId` | string \| null | at least one of `config` / `networkId` | Sets or clears the network membership. |
+
+### Response
+
+`200 OK` with the same `WireAdminGameConfig` shape as the GET above,
+reflecting the post-merge state.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed JSON; body missing both `config` and `networkId`; validation failure on the merged config (e.g. `friends.maxFriends < 0`). |
+| `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
 ## `GET /v1/admin/games/:gameId/api-keys`
 
 Lists every API key for a game, active and revoked. The dashboard renders revoked keys with a badge so operators can audit history without losing them from the view.

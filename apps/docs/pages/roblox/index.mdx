@@ -24,6 +24,7 @@ The package is distributed as a Roblox model (`.rbxm`) on each GitHub release an
 | `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | Permission check helpers. |
 | `Junjo.RobloxUserIdAdapter(opts?)` | Built-in user-id adapter for Roblox `Player` instances. |
 | `groups.subscribe` (SSE) and `webhooks:verify` / `:middleware` (receiver-side) | not planned for V1. Roblox `HttpService` does not stream, and a Roblox game server cannot expose an HTTP endpoint to receive webhooks. The `MessagingService`-backed replacement for real-time is deferred post-V1. |
+| `junjo.friends` (per-user social graph) and `junjo.bans` (game-wide bans) | TS-only for now. Use the TS SDK on your dev backend or call the REST routes directly from Roblox via `junjo.http:get/:post`. Native Luau wrappers will land when there is concrete Roblox demand. |
 
 ## Construct a client
 

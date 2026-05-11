@@ -69,10 +69,12 @@ The server emits an event after every mutation that changes a group's externally
 | `POST /v1/invitations/:code/accept` | `member.joined` | The `member` payload carries the newly-active row. |
 | `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
 | `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
+| `POST /v1/groups/:id/members/:userId/ban` | `member.banned` | Carries `userId`, `reason`, `bannedUntil` (null = permanent). Idempotent re-ban with identical expiry emits nothing; changing the expiry re-emits. |
+| `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event — read paths just stop treating the row as banned. Calls on non-banned members 404. |
 | `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
 | `DELETE /v1/roles/:id` | `role.deleted` | |
-| `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Idempotent calls (already assigned) emit nothing. |
-| `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Idempotent calls emit nothing. |
+| `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls (already assigned) emit nothing. |
+| `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls emit nothing. |
 | `POST /v1/roles/:id/permissions` | `permission.granted` | Idempotent calls (already granted) emit nothing. |
 | `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` | Idempotent calls emit nothing. |
 | `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
@@ -87,6 +89,15 @@ The following mutations do **not** publish events:
 - `POST /v1/invitations/:code/decline`, `DELETE /v1/invitations/:code` - no event for invitation decline / revoke.
 
 A future minor-version bump may add events for these cases without breaking the existing union.
+
+### Events not delivered over SSE
+
+SSE is per-group. User-scoped events (no `groupId`) are delivered over [webhooks](/api-reference/webhooks) only:
+
+- `friend.request.sent`, `friend.request.accepted`, `friend.request.declined`, `friend.request.cancelled`, `friend.removed`, `friend.blocked`, `friend.unblocked`
+- `game.user.banned`, `game.user.unbanned`
+
+Subscribe to these via webhook endpoints rather than `/v1/events/:groupId`.
 
 ### Errors
 
