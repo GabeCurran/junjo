@@ -12,7 +12,7 @@ Path params and body fields named `userId`, `targetJunjoUserId`,
 `viewerUserId`, `otherUserId`, and the wire fields `actorJunjoUserId`
 / `targetJunjoUserId` / `junjoUserId` carry your application's
 EXTERNAL user id (the same string you pass to `groups.create`,
-`groups.kick`, etc.) — typically your auth provider's subject (Clerk
+`groups.kick`, etc.) -- typically your auth provider's subject (Clerk
 sub, Supabase uuid) or your own user-table cuid. The server resolves
 the external id to the internal `JunjoUser.id` via the same
 `findOrCreateJunjoUser` helper every other Junjo write-path uses;
@@ -207,7 +207,7 @@ Lists `:userId`'s outbound blocks.
 `POST /blocks` fires `friend.blocked`; `DELETE /blocks/:otherUserId`
 fires `friend.unblocked`. Both carry `byJunjoUserId` (the actor) and
 `otherJunjoUserId` (the target). Consumers typically suppress any
-in-app notification to the blocked party — that policy lives in your
+in-app notification to the blocked party -- that policy lives in your
 webhook handler, not in Junjo.
 
 ## Tags

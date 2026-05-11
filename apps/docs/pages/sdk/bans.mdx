@@ -47,11 +47,11 @@ ban.expiresAt;  // Date | null
 | `reason` | string \| null | |
 | `bannedBy` | `UserId \| null` | Actor at issue time. |
 
-Idempotent on a still-active ban for the same user — returns the
+Idempotent on a still-active ban for the same user -- returns the
 existing row. Replacing an expired ban with a fresh one writes a new
 row with the supplied fields.
 
-Fires `game.user.banned` (webhook only — no `groupId`, not delivered
+Fires `game.user.banned` (webhook only -- no `groupId`, not delivered
 over SSE).
 
 ## `remove(userId, opts?)`
@@ -83,7 +83,7 @@ Fires `game.user.unbanned` (webhook only).
 
 Fetch the current active game-level ban for a user. Returns `Ban` or
 `null`. Returns `null` for: never-banned users, lifted bans, and
-expired bans (lazy expiry — the row may still exist in `history`).
+expired bans (lazy expiry -- the row may still exist in `history`).
 
 ```ts
 const ban = await junjo.bans.get("user_alice" as UserId);

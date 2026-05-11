@@ -4,10 +4,10 @@ Methods on `junjo.friends`. The friends subsystem covers per-user
 social graph operations: requests, friendships, blocks, tags, mutual
 suggestions, and visibility. Sub-namespaces group related calls:
 
-- [`junjo.friends.requests`](#junjofriendsrequests) — request lifecycle
-- [`junjo.friends.blocks`](#junjofriendsblocks) — outbound blocks
-- [`junjo.friends.tags`](#junjofriendstags) — per-user friend-list labels
-- [`junjo.friends.visibility`](#junjofriendsvisibility) — who can see whose list
+- [`junjo.friends.requests`](#junjofriendsrequests) -- request lifecycle
+- [`junjo.friends.blocks`](#junjofriendsblocks) -- outbound blocks
+- [`junjo.friends.tags`](#junjofriendstags) -- per-user friend-list labels
+- [`junjo.friends.visibility`](#junjofriendsvisibility) -- who can see whose list
 
 Top-level methods on `junjo.friends` cover the friendship list itself
 and the single-pair relationship probe.
@@ -17,13 +17,13 @@ Every route is gated by the per-game [Friends configuration](/api-reference/frie
 ## User-id contract
 
 Every `userId` / `targetJunjoUserId` / `viewerUserId` argument on this
-namespace is your application's EXTERNAL user id — the same string
+namespace is your application's EXTERNAL user id -- the same string
 you pass to `junjo.groups.create`, `junjo.groups.kick`, etc. (your
 Clerk sub, Supabase uuid, your own cuid, whatever). The server
 resolves the external id to its internal `JunjoUser.id` via the same
 `findOrCreateJunjoUser` helper every other write-path uses; unseen
 users are auto-vivified on first reference. Wire fields named
-`*JunjoUserId` carry the external value verbatim on the way back —
+`*JunjoUserId` carry the external value verbatim on the way back --
 the names are historical, not a contract change.
 
 ## `list(userId, opts?)`
@@ -82,7 +82,7 @@ await junjo.friends.remove("user_alice" as UserId, "user_bob" as UserId);
 ## `getRelationship(viewerUserId, otherUserId)`
 
 Single-pair viewer-perspective probe. Returns the relationship between
-the two users from `viewerUserId`'s point of view in one round trip —
+the two users from `viewerUserId`'s point of view in one round trip --
 use this on a profile view to render a FriendButton without paging
 through `list`.
 
@@ -179,7 +179,7 @@ if (result.status === "pending") {
 }
 ```
 
-The target id is a `JunjoUser.id`, not the dev's external user id —
+The target id is a `JunjoUser.id`, not the dev's external user id --
 this is the cross-game identifier the server assigns when the user
 first authenticates. Look it up via the response from any membership
 or identity-aware route, or via the admin `/v1/users/:junjoUserId/games`
@@ -230,7 +230,7 @@ own webhook handler.
 ## `junjo.friends.tags`
 
 Per-(user, game) labels for organizing one's own friend list. Tags
-are private to the owner — only the user that created the tag sees it
+are private to the owner -- only the user that created the tag sees it
 applied. Tags only attach to the owner-side friend row, so each party
 in a friendship can tag independently.
 
@@ -291,9 +291,9 @@ await junjo.friends.visibility.set("user_alice" as UserId, "friends-only");
 
 Values:
 
-- `"private"` — only the owner + admin can list this user's friends.
-- `"friends-only"` — confirmed friends can also see.
-- `"public"` — any caller can see (subject to the calling game's `allowed` list).
+- `"private"` -- only the owner + admin can list this user's friends.
+- `"friends-only"` -- confirmed friends can also see.
+- `"public"` -- any caller can see (subject to the calling game's `allowed` list).
 
 Validates against `config.friends.visibility.allowed`. Enforcement
 on `list` only runs when the caller supplies a `viewer` (admin
@@ -304,7 +304,7 @@ callers bypass).
 ## Webhook events
 
 Seven `UserEventBase` events fire from this subsystem. None carry a
-`groupId`, so SSE doesn't deliver them — subscribe via [webhooks](/api-reference/webhooks):
+`groupId`, so SSE doesn't deliver them -- subscribe via [webhooks](/api-reference/webhooks):
 
 | event | when | payload |
 |-------|------|---------|

@@ -22,7 +22,14 @@ const FORBIDDEN = [
 ];
 
 // Skip these tracked paths entirely.
-const SKIP_FILES = new Set(["scripts/check-style.mjs", "package-lock.json"]);
+// `check-commit-msg.mjs` is skipped because its job is to reject these
+// characters in commit messages, which forces it to embed them in its
+// regex literals.
+const SKIP_FILES = new Set([
+  "scripts/check-style.mjs",
+  "scripts/check-commit-msg.mjs",
+  "package-lock.json",
+]);
 
 // Skip these extensions (binary or auto-generated).
 const SKIP_EXTS = new Set([

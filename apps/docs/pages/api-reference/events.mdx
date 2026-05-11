@@ -70,7 +70,7 @@ The server emits an event after every mutation that changes a group's externally
 | `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
 | `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
 | `POST /v1/groups/:id/members/:userId/ban` | `member.banned` | Carries `userId`, `reason`, `bannedUntil` (null = permanent). Idempotent re-ban with identical expiry emits nothing; changing the expiry re-emits. |
-| `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event — read paths just stop treating the row as banned. Calls on non-banned members 404. |
+| `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event -- read paths just stop treating the row as banned. Calls on non-banned members 404. |
 | `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
 | `DELETE /v1/roles/:id` | `role.deleted` | |
 | `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls (already assigned) emit nothing. |

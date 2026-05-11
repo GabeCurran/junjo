@@ -3,7 +3,7 @@
 // existing friends and anyone blocked in either direction.
 //
 // Identity contract: path param `:userId` is the EXTERNAL user id;
-// resolved to `JunjoUser.id` via `findJunjoUserId` (read-only — an
+// resolved to `JunjoUser.id` via `findJunjoUserId` (read-only -- an
 // unseen user has no friends and therefore no suggestions, returns
 // empty without writing). The wire `junjoUserId` and
 // `sampleMutualJunjoUserIds` fields are translated from internal cuids

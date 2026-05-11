@@ -440,7 +440,7 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
 
-For the inverse — having a user join a group that allows public-join — use `junjo.groups.join(groupId, userId, { passcode? })`. It returns the newly-active `Member` and honors any configured passcode gate; the route is rate-limited on per-IP and per-game incorrect attempts. Game and group ban checks both run before the join succeeds (a banned user receives `403 banned`).
+For the inverse -- having a user join a group that allows public-join -- use `junjo.groups.join(groupId, userId, { passcode? })`. It returns the newly-active `Member` and honors any configured passcode gate; the route is rate-limited on per-IP and per-game incorrect attempts. Game and group ban checks both run before the join succeeds (a banned user receives `403 banned`).
 
 ```ts
 const member = await junjo.groups.leave("grp_xyz" as GroupId, "user_alice" as UserId);
