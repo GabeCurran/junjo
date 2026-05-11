@@ -53,6 +53,10 @@ interface WireRoleChangedEvent extends WireEventBase {
   userId: string;
   added: string[];
   removed: string[];
+  // External id of the moderator who performed the assign / unassign,
+  // when supplied on the request body. Null for legacy callers and
+  // server-side admin paths that don't attribute an actor.
+  actorUserId: string | null;
 }
 
 interface WireRoleDeletedEvent extends WireEventBase {
@@ -144,6 +148,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         userId: w.userId as UserId,
         added: w.added.map((r) => r as RoleId),
         removed: w.removed.map((r) => r as RoleId),
+        actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
       };
     case "role.deleted":
       return {
