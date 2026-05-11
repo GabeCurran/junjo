@@ -443,4 +443,123 @@ describe.skipIf(!TEST_DATABASE_URL)("friend request and friendship routes", () =
     });
     expect(blocked.status).toBe(400);
   });
+
+  // -----------------------------------------------------------------
+  // getRelationship (single-pair viewer-perspective probe)
+  // -----------------------------------------------------------------
+
+  async function getRelationship(
+    apiKey: string,
+    viewerUserId: string,
+    otherUserId: string,
+  ): Promise<{ status: number; body: { state: string; since: string | null } }> {
+    const res = await app.request(`/v1/users/${viewerUserId}/friends/${otherUserId}/relationship`, {
+      headers: authHeaders(apiKey),
+    });
+    const body = await res.json();
+    return { status: res.status, body };
+  }
+
+  it("getRelationship returns 'none' for unrelated users", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const b = await makeUser();
+    const r = await getRelationship(apiKey, a, b);
+    expect(r.status).toBe(200);
+    expect(r.body.state).toBe("none");
+    expect(r.body.since).toBeNull();
+  });
+
+  it("getRelationship returns 'friends' after a request is accepted", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const b = await makeUser();
+    const sent = await app.request(`/v1/users/${a}/friend-requests`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: b }),
+    });
+    const sentBody = (await sent.json()) as WireFriendRequestSendResult;
+    const reqId = sentBody.request?.id;
+    if (!reqId) throw new Error("expected request id");
+    await app.request(`/v1/friend-requests/${reqId}/accept`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+    });
+
+    const r = await getRelationship(apiKey, a, b);
+    expect(r.body.state).toBe("friends");
+    expect(r.body.since).not.toBeNull();
+  });
+
+  it("getRelationship distinguishes outgoing vs incoming requests by viewer", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const b = await makeUser();
+    await app.request(`/v1/users/${a}/friend-requests`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: b }),
+    });
+    const fromA = await getRelationship(apiKey, a, b);
+    expect(fromA.body.state).toBe("request_outgoing");
+    const fromB = await getRelationship(apiKey, b, a);
+    expect(fromB.body.state).toBe("request_incoming");
+  });
+
+  it("getRelationship surfaces 'blocked_by_me' vs 'blocked_by_them'", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const b = await makeUser();
+    await app.request(`/v1/users/${a}/blocks`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: b }),
+    });
+    const fromA = await getRelationship(apiKey, a, b);
+    expect(fromA.body.state).toBe("blocked_by_me");
+    const fromB = await getRelationship(apiKey, b, a);
+    expect(fromB.body.state).toBe("blocked_by_them");
+  });
+
+  it("getRelationship: viewer-side block wins when both have blocked", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const b = await makeUser();
+    await app.request(`/v1/users/${a}/blocks`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: b }),
+    });
+    await app.request(`/v1/users/${b}/blocks`, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ targetJunjoUserId: a }),
+    });
+    const fromA = await getRelationship(apiKey, a, b);
+    expect(fromA.body.state).toBe("blocked_by_me");
+    const fromB = await getRelationship(apiKey, b, a);
+    expect(fromB.body.state).toBe("blocked_by_me");
+  });
+
+  it("getRelationship rejects same-id probe with 400", async () => {
+    const { apiKey } = await setupGame();
+    const a = await makeUser();
+    const res = await app.request(`/v1/users/${a}/friends/${a}/relationship`, {
+      headers: authHeaders(apiKey),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("getRelationship 404s when friends.enabled = false", async () => {
+    const { apiKey } = await setupGame({
+      friends: { enabled: false, scope: "game" },
+    });
+    const a = await makeUser();
+    const b = await makeUser();
+    const res = await app.request(`/v1/users/${a}/friends/${b}/relationship`, {
+      headers: authHeaders(apiKey),
+    });
+    expect(res.status).toBe(404);
+  });
 });

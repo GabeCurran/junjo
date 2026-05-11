@@ -45,6 +45,7 @@ import {
   kickMemberBody,
   leaveGroupBody,
   listGroupsQuery,
+  roleAssignBody,
   setParentBody,
   setRelationshipBody,
   unbanMemberBody,
@@ -1670,6 +1671,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const roleId = c.req.param("roleId");
     const gameId = c.var.gameId;
 
+    const json = await c.req.json().catch(() => null);
+    const parsed = roleAssignBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const actorExternalId = parsed.data.actorUserId ?? null;
+
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
     });
@@ -1697,6 +1708,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       return c.json(serializeMember(member, userId, roleIds));
     }
 
+    const actorJunjoUserId = actorExternalId
+      ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
+      : null;
+
     await prisma.$transaction(async (tx) => {
       await tx.memberRole.create({
         data: { groupMemberId: member.id, roleId: role.id },
@@ -1705,7 +1720,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         data: {
           gameId,
           groupId: group.id,
-          actorUserId: null,
+          actorUserId: actorJunjoUserId,
           action: "role.assigned",
           targetId: userId,
           payload: {
@@ -1724,6 +1739,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       userId: userId as UserId,
       added: [role.id as RoleId],
       removed: [],
+      actorUserId: (actorExternalId as UserId | null) ?? null,
     });
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
@@ -1737,6 +1753,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const userId = c.req.param("userId");
     const roleId = c.req.param("roleId");
     const gameId = c.var.gameId;
+
+    const json = await c.req.json().catch(() => null);
+    const parsed = roleAssignBody.safeParse(json ?? undefined);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const actorExternalId = parsed.data.actorUserId ?? null;
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1758,6 +1784,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       return c.json(serializeMember(member, userId, roleIds));
     }
 
+    const actorJunjoUserId = actorExternalId
+      ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
+      : null;
+
     await prisma.$transaction(async (tx) => {
       await tx.memberRole.delete({
         where: { groupMemberId_roleId: { groupMemberId: member.id, roleId } },
@@ -1766,7 +1796,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         data: {
           gameId,
           groupId: group.id,
-          actorUserId: null,
+          actorUserId: actorJunjoUserId,
           action: "role.unassigned",
           targetId: userId,
           payload: {
@@ -1785,6 +1815,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       userId: userId as UserId,
       added: [],
       removed: [roleId as RoleId],
+      actorUserId: (actorExternalId as UserId | null) ?? null,
     });
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);

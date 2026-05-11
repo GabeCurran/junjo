@@ -155,16 +155,30 @@ export class MembersApi {
     return deserializeMember(wire);
   }
 
-  async assignRole(groupId: GroupId, userId: UserId, roleId: RoleId): Promise<Member> {
+  async assignRole(
+    groupId: GroupId,
+    userId: UserId,
+    roleId: RoleId,
+    opts?: { actorUserId?: UserId },
+  ): Promise<Member> {
+    const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+      body,
     );
     return deserializeMember(wire);
   }
 
-  async removeRole(groupId: GroupId, userId: UserId, roleId: RoleId): Promise<Member> {
+  async removeRole(
+    groupId: GroupId,
+    userId: UserId,
+    roleId: RoleId,
+    opts?: { actorUserId?: UserId },
+  ): Promise<Member> {
+    const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.delete<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+      body,
     );
     return deserializeMember(wire);
   }

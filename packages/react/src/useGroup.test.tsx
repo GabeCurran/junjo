@@ -363,6 +363,7 @@ describe("useGroup", () => {
         userId: member.userId,
         added: ["role_three" as RoleId],
         removed: ["role_one" as RoleId],
+        actorUserId: null,
       });
     });
 
@@ -391,6 +392,7 @@ describe("useGroup", () => {
         userId: "user_unknown" as UserId,
         added: ["role_x" as RoleId],
         removed: [],
+        actorUserId: null,
       });
     });
 

@@ -5,8 +5,13 @@
 // Mirrors the server routes in packages/server/src/routes/{friends,
 // friendTags,visibility,suggestions}.ts.
 
-import type { FriendsListVisibility } from "@junjo/shared";
+import type { FriendsListVisibility, FriendshipRelationship, FriendshipState } from "@junjo/shared";
 import type { HttpClient } from "./http.js";
+
+interface WireFriendshipRelationship {
+  state: FriendshipState;
+  since: string | null;
+}
 
 // =====================================================================
 // Wire shapes (mirror the server's wire types)
@@ -351,6 +356,26 @@ export class FriendsApi {
     await this.http.delete<unknown>(
       `/v1/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(otherUserId)}`,
     );
+  }
+
+  // Single-pair viewer-perspective relationship probe. Use on a profile
+  // view to render a FriendButton in one round-trip instead of paging
+  // through list(). Returns "none" when no relationship exists.
+  // Priority order baked into the resolver: blocks (viewer-side wins
+  // on both-blocked edge), friendship, pending request, none.
+  async getRelationship(
+    viewerUserId: string,
+    otherUserId: string,
+  ): Promise<FriendshipRelationship> {
+    const wire = await this.http.get<WireFriendshipRelationship>(
+      `/v1/users/${encodeURIComponent(viewerUserId)}/friends/${encodeURIComponent(
+        otherUserId,
+      )}/relationship`,
+    );
+    return {
+      state: wire.state,
+      since: wire.since === null ? undefined : new Date(wire.since),
+    };
   }
 
   async suggestions(userId: string, opts?: { limit?: number }): Promise<FriendSuggestion[]> {

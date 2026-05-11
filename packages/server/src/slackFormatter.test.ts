@@ -178,6 +178,7 @@ describe("formatJunjoEventForSlack", () => {
       userId: "user_a",
       added: ["role_x", "role_y"],
       removed: ["role_old"],
+      actorUserId: null,
     });
     const headers = blocksByType<SlackHeaderBlock>(out, "header");
     expect(headers[0]?.text.text).toBe("Role membership changed");
@@ -193,6 +194,7 @@ describe("formatJunjoEventForSlack", () => {
       userId: "user_a",
       added: [],
       removed: ["role_old"],
+      actorUserId: null,
     });
     const sections = blocksByType<SlackSectionBlock>(out, "section");
     expect(findField(sections[1], "Added")).toBe("(none)");
@@ -331,6 +333,7 @@ describe("formatJunjoEventForSlack", () => {
       userId: "user_a",
       added: longRoleList,
       removed: [],
+      actorUserId: null,
     });
     const sections = blocksByType<SlackSectionBlock>(out, "section");
     const added = sections[1]?.fields?.find((f) => f.text.startsWith("*Added*\n"));

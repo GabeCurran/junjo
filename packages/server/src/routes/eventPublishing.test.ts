@@ -376,6 +376,28 @@ describe.skipIf(!TEST_DATABASE_URL)("event publishing from mutation routes", () 
     expect(e.userId).toBe(externalUserId);
     expect(e.added).toEqual([role.id]);
     expect(e.removed).toEqual([]);
+    // Default-null actor when no body is supplied (legacy contract).
+    expect(e.actorUserId).toBeNull();
+  });
+
+  it("role.changed carries actorUserId when supplied in the body", async () => {
+    const group = await makeGroup();
+    const { externalUserId } = await makeMember(group.id);
+    const role = await makeRole(group.id);
+    const events = recorder(hub, group.id);
+
+    const res = await app.request(
+      `/v1/groups/${group.id}/members/${externalUserId}/roles/${role.id}`,
+      {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify({ actorUserId: "mod_bob" }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(events).toHaveLength(1);
+    const e = events[0] as RoleChangedEvent;
+    expect(e.actorUserId).toBe("mod_bob");
   });
 
   it("DELETE /v1/groups/:id/members/:userId/roles/:roleId publishes role.changed (removed)", async () => {

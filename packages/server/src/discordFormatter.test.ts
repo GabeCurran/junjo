@@ -150,6 +150,7 @@ describe("formatJunjoEventForDiscord", () => {
       userId: "user_a",
       added: ["role_x", "role_y"],
       removed: ["role_old"],
+      actorUserId: null,
     });
     const embed = out.embeds[0];
     expect(embed?.title).toBe("Role membership changed");
@@ -166,6 +167,7 @@ describe("formatJunjoEventForDiscord", () => {
       userId: "user_a",
       added: [],
       removed: ["role_old"],
+      actorUserId: null,
     });
     const fields = out.embeds[0]?.fields ?? [];
     expect(fields.find((f) => f.name === "Added")?.value).toBe("(none)");
@@ -309,6 +311,7 @@ describe("formatJunjoEventForDiscord", () => {
       userId: "user_a",
       added: longRoleList,
       removed: [],
+      actorUserId: null,
     });
     const addedField = out.embeds[0]?.fields?.find((f) => f.name === "Added");
     expect((addedField?.value.length ?? 0) <= 1024).toBe(true);

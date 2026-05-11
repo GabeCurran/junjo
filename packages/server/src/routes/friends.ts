@@ -7,9 +7,15 @@
 // (per-game scope) request/accept/decline/cancel/list/unfriend flow.
 
 import type {
+  FriendBlockedEvent,
   FriendRemovedEvent,
   FriendRequestAcceptedEvent,
+  FriendRequestCancelledEvent,
+  FriendRequestDeclinedEvent,
   FriendRequestSentEvent,
+  FriendUnblockedEvent,
+  FriendshipRelationship,
+  FriendshipState,
   GameId,
 } from "@junjo/shared";
 import type { PrismaClient, UserRelationship } from "@prisma/client";
@@ -435,7 +441,28 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
   };
 }
 
-export function declineFriendRequestHandler(prisma: PrismaClient): Handler {
+// Shared deletion path for decline + cancel. Returns the deleted
+// request row so the route handler can dispatch the appropriate event
+// with the (sender, target) ids preserved.
+async function deletePendingRequest(
+  prisma: PrismaClient,
+  visibleGameIds: string[],
+  id: string,
+): Promise<UserRelationship> {
+  const request = await prisma.userRelationship.findUnique({ where: { id } });
+  if (!request || !visibleGameIds.includes(request.gameId) || request.type !== "request") {
+    throw Errors.notFound("friend request");
+  }
+  await prisma.userRelationship.delete({ where: { id } });
+  return request;
+}
+
+// POST /v1/friend-requests/:id/decline -- the recipient rejects.
+// The URL path disambiguates this from cancel (decline is the
+// recipient saying no; cancel is the sender retracting their own
+// request). Fires `friend.request.declined` with the participant
+// ids preserved from the original request row.
+export function declineFriendRequestHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const id = c.req.param("id");
     if (!id) throw Errors.badRequest("id is required");
@@ -445,23 +472,42 @@ export function declineFriendRequestHandler(prisma: PrismaClient): Handler {
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const request = await prisma.userRelationship.findUnique({ where: { id } });
-    if (!request || !visibleGameIds.includes(request.gameId) || request.type !== "request") {
-      throw Errors.notFound("friend request");
-    }
-    await prisma.userRelationship.delete({ where: { id } });
+    const request = await deletePendingRequest(prisma, visibleGameIds, id);
+
+    await dispatchEvent<FriendRequestDeclinedEvent>(prisma, hub, {
+      type: "friend.request.declined",
+      gameId: request.gameId as GameId,
+      requestId: request.id,
+      actorJunjoUserId: request.actorJunjoUserId,
+      targetJunjoUserId: request.targetJunjoUserId,
+    });
     return c.body(null, 204);
   };
 }
 
-export function cancelFriendRequestHandler(prisma: PrismaClient): Handler {
-  // Same wire path as decline (DELETE /v1/friend-requests/:id); the
-  // outbound sender's "I changed my mind" flow. Distinguished from
-  // decline by who is calling: V1 has no per-user auth so the handler
-  // accepts either party deleting a pending request. The dashboard's
-  // UX surfaces them as separate affordances; the wire-level result is
-  // identical.
-  return declineFriendRequestHandler(prisma);
+// DELETE /v1/friend-requests/:id -- the original sender retracts.
+// Distinct route from decline; fires `friend.request.cancelled`.
+export function cancelFriendRequestHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const id = c.req.param("id");
+    if (!id) throw Errors.badRequest("id is required");
+
+    const gameId = c.var.gameId;
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
+
+    const request = await deletePendingRequest(prisma, visibleGameIds, id);
+
+    await dispatchEvent<FriendRequestCancelledEvent>(prisma, hub, {
+      type: "friend.request.cancelled",
+      gameId: request.gameId as GameId,
+      requestId: request.id,
+      actorJunjoUserId: request.actorJunjoUserId,
+      targetJunjoUserId: request.targetJunjoUserId,
+    });
+    return c.body(null, 204);
+  };
 }
 
 export function listFriendsHandler(prisma: PrismaClient): Handler {
@@ -586,6 +632,101 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
   };
 }
 
+export interface WireFriendshipRelationship {
+  state: FriendshipState;
+  since: string | null;
+}
+
+// GET /v1/users/:viewerUserId/friends/:otherUserId/relationship
+// Single-pair viewer-perspective probe. Priority: blocks first
+// (viewer-side block wins on the both-blocked edge case), then
+// friendship, then pending request direction, then "none".
+export function getRelationshipHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const viewerUserId = c.req.param("viewerUserId");
+    const otherUserId = c.req.param("otherUserId");
+    if (!viewerUserId) throw Errors.badRequest("viewerUserId is required");
+    if (!otherUserId) throw Errors.badRequest("otherUserId is required");
+    if (viewerUserId === otherUserId) {
+      throw Errors.badRequest("viewerUserId and otherUserId must differ");
+    }
+
+    const gameId = c.var.gameId;
+    const loaded = await loadGameConfig(prisma, gameId);
+    if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
+    const visibleGameIds = await gameIdsInScope(prisma, loaded);
+
+    // One query pulls every relationship row in either direction across
+    // the visible scope. Caller is per-game API key (trusted backend),
+    // so no per-end-user visibility check beyond scope.
+    const rows = await prisma.userRelationship.findMany({
+      where: {
+        gameId: { in: visibleGameIds },
+        OR: [
+          { actorJunjoUserId: viewerUserId, targetJunjoUserId: otherUserId },
+          { actorJunjoUserId: otherUserId, targetJunjoUserId: viewerUserId },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const result = resolveRelationship(viewerUserId, otherUserId, rows);
+    return c.json<WireFriendshipRelationship>({
+      state: result.state,
+      since: result.since ? result.since.toISOString() : null,
+    });
+  };
+}
+
+function resolveRelationship(
+  viewer: string,
+  other: string,
+  rows: UserRelationship[],
+): FriendshipRelationship {
+  let viewerBlocksOther: UserRelationship | null = null;
+  let otherBlocksViewer: UserRelationship | null = null;
+  let friendRow: UserRelationship | null = null;
+  let outgoingRequest: UserRelationship | null = null;
+  let incomingRequest: UserRelationship | null = null;
+
+  for (const row of rows) {
+    const fromViewer = row.actorJunjoUserId === viewer && row.targetJunjoUserId === other;
+    const fromOther = row.actorJunjoUserId === other && row.targetJunjoUserId === viewer;
+    if (row.type === "blocked") {
+      if (fromViewer) viewerBlocksOther = row;
+      else if (fromOther) otherBlocksViewer = row;
+    } else if (row.type === "friend") {
+      // Either direction's row is fine; the friendship is symmetric.
+      // Prefer the row whose actor is the viewer for stable `since`
+      // semantics; fall back otherwise.
+      if (fromViewer || !friendRow) friendRow = row;
+    } else if (row.type === "request") {
+      if (fromViewer) outgoingRequest = row;
+      else if (fromOther) incomingRequest = row;
+    }
+  }
+
+  // Priority: viewer's block wins on the both-blocked edge case so the
+  // viewer's UI shows the block they can act on.
+  if (viewerBlocksOther) {
+    return { state: "blocked_by_me", since: viewerBlocksOther.createdAt };
+  }
+  if (otherBlocksViewer) {
+    return { state: "blocked_by_them", since: otherBlocksViewer.createdAt };
+  }
+  if (friendRow) {
+    const since = friendRow.respondedAt ?? friendRow.createdAt;
+    return { state: "friends", since };
+  }
+  if (outgoingRequest) {
+    return { state: "request_outgoing", since: outgoingRequest.createdAt };
+  }
+  if (incomingRequest) {
+    return { state: "request_incoming", since: incomingRequest.createdAt };
+  }
+  return { state: "none" };
+}
+
 // =====================================================================
 // Cursor encoding (private)
 // =====================================================================
@@ -630,7 +771,7 @@ function toWireBlockFromActorPOV(row: UserRelationship): WireBlock {
   };
 }
 
-export function addBlockHandler(prisma: PrismaClient): Handler {
+export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const userId = c.req.param("userId");
     if (!userId) throw Errors.badRequest("userId is required");
@@ -654,6 +795,8 @@ export function addBlockHandler(prisma: PrismaClient): Handler {
 
     // Idempotent across the visible scope: a sibling-game block of the
     // same target returns its row instead of creating a duplicate.
+    // Idempotent calls do NOT re-fire the event (the state has not
+    // changed for downstream subscribers).
     const existing = await prisma.userRelationship.findFirst({
       where: {
         gameId: { in: visibleGameIds },
@@ -689,11 +832,18 @@ export function addBlockHandler(prisma: PrismaClient): Handler {
       }),
     ]);
 
+    await dispatchEvent<FriendBlockedEvent>(prisma, hub, {
+      type: "friend.blocked",
+      gameId: gameId as GameId,
+      byJunjoUserId: userId,
+      otherJunjoUserId: targetJunjoUserId,
+    });
+
     return c.json<WireBlock>(toWireBlockFromActorPOV(block), 201);
   };
 }
 
-export function removeBlockHandler(prisma: PrismaClient): Handler {
+export function removeBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const userId = c.req.param("userId");
     const otherUserId = c.req.param("otherUserId");
@@ -718,6 +868,17 @@ export function removeBlockHandler(prisma: PrismaClient): Handler {
     if (!existing) throw Errors.notFound("block");
 
     await prisma.userRelationship.delete({ where: { id: existing.id } });
+
+    // Fires under the block's originating gameId so the webhook
+    // subscribers in that game see the lifecycle close where it
+    // started (mirrors friend.removed under scope=network).
+    await dispatchEvent<FriendUnblockedEvent>(prisma, hub, {
+      type: "friend.unblocked",
+      gameId: existing.gameId as GameId,
+      byJunjoUserId: userId,
+      otherJunjoUserId: otherUserId,
+    });
+
     return c.body(null, 204);
   };
 }

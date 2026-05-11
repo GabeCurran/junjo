@@ -63,6 +63,7 @@ import {
   addBlockHandler,
   cancelFriendRequestHandler,
   declineFriendRequestHandler,
+  getRelationshipHandler,
   listBlocksHandler,
   listFriendRequestsHandler,
   listFriendsHandler,
@@ -374,12 +375,13 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));
   v1.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));
   v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma, hub));
-  v1.post("/friend-requests/:id/decline", declineFriendRequestHandler(prisma));
-  v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma));
+  v1.post("/friend-requests/:id/decline", declineFriendRequestHandler(prisma, hub));
+  v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma, hub));
   v1.get("/users/:userId/friends", listFriendsHandler(prisma));
+  v1.get("/users/:viewerUserId/friends/:otherUserId/relationship", getRelationshipHandler(prisma));
   v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma, hub));
-  v1.post("/users/:userId/blocks", addBlockHandler(prisma));
-  v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma));
+  v1.post("/users/:userId/blocks", addBlockHandler(prisma, hub));
+  v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma, hub));
   v1.get("/users/:userId/blocks", listBlocksHandler(prisma));
   v1.get("/users/:userId/friend-tags", listFriendTagsHandler(prisma));
   v1.post("/users/:userId/friend-tags", createFriendTagHandler(prisma));

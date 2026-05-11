@@ -121,6 +121,18 @@ export const unbanMemberBody = z
 
 export type UnbanMemberBody = z.infer<typeof unbanMemberBody>;
 
+// Role assign / unassign. Body is fully optional; supplying
+// `actorUserId` attributes the action in audit + the role.changed
+// event. Mirrors the ban / unban actor pattern.
+export const roleAssignBody = z
+  .object({
+    actorUserId: z.string().min(1).optional(),
+  })
+  .optional()
+  .transform((b) => b ?? {});
+
+export type RoleAssignBody = z.infer<typeof roleAssignBody>;
+
 export const bulkInviteQuery = z.object({
   roleId: z.string().min(1).optional(),
 });

@@ -382,6 +382,12 @@ export interface RoleChangedEvent extends GroupEventBase {
   userId: UserId;
   added: RoleId[];
   removed: RoleId[];
+  // External id of the operator who performed the assign / unassign.
+  // Null when the change was made via a per-game API key with no
+  // explicit actor body (legacy callers and server-side admin paths).
+  // Populated when the caller supplies `actorUserId` on the role
+  // assign / unassign request.
+  actorUserId: UserId | null;
 }
 
 export interface RoleDeletedEvent extends GroupEventBase {
@@ -416,11 +422,11 @@ export interface GroupRelationshipChangedEvent extends GroupEventBase {
   relationship: GroupRelationship | null; // null = cleared
 }
 
-// User-scoped friend events. No `groupId`. The accepted-event fires
-// only to the original sender (the accepter does not need to be told
-// they accepted). The removed-event fires only to the OTHER party
-// (the user who triggered the removal already knows). The decline-
-// path is intentionally silent (no event); same for blocks.
+// User-scoped friend events. No `groupId`. All friend events route
+// through webhook delivery only (SSE is per-group). Field convention
+// across the request lifecycle: `actorJunjoUserId` is always the
+// ORIGINAL sender of the request, `targetJunjoUserId` is always the
+// original target. The event type tells you who took the action.
 export interface FriendRequestSentEvent extends UserEventBase {
   type: "friend.request.sent";
   requestId: string;
@@ -438,12 +444,78 @@ export interface FriendRequestAcceptedEvent extends UserEventBase {
   respondedAt: Date;
 }
 
+// Fires when the recipient explicitly declines a pending request. The
+// handler can only emit this when the caller supplies `actorUserId` on
+// the DELETE body and that actor matches the recipient; without an
+// actor, the path stays silent (legacy contract).
+export interface FriendRequestDeclinedEvent extends UserEventBase {
+  type: "friend.request.declined";
+  requestId: string;
+  // The original sender (and who receives this event).
+  actorJunjoUserId: string;
+  // The recipient who declined.
+  targetJunjoUserId: string;
+}
+
+// Fires when the original sender cancels their own outbound request.
+// Same actor-required contract as declined.
+export interface FriendRequestCancelledEvent extends UserEventBase {
+  type: "friend.request.cancelled";
+  requestId: string;
+  // The original sender (who cancelled).
+  actorJunjoUserId: string;
+  // The original target (who is being told the request is gone).
+  targetJunjoUserId: string;
+}
+
 export interface FriendRemovedEvent extends UserEventBase {
   type: "friend.removed";
   // The party who initiated the removal.
   removedByJunjoUserId: string;
   // The party who was removed (and who receives this event).
   otherJunjoUserId: string;
+}
+
+export interface FriendBlockedEvent extends UserEventBase {
+  type: "friend.blocked";
+  // The user who initiated the block.
+  byJunjoUserId: string;
+  // The user who was blocked.
+  otherJunjoUserId: string;
+}
+
+export interface FriendUnblockedEvent extends UserEventBase {
+  type: "friend.unblocked";
+  byJunjoUserId: string;
+  otherJunjoUserId: string;
+}
+
+// =====================================================================
+// Friendship state (single-pair probe)
+// =====================================================================
+
+// The viewer-perspective relationship state between two users.
+// "friends": there is a mutual friendship.
+// "request_outgoing": viewer has sent a request to other, awaiting.
+// "request_incoming": other has sent a request to viewer, awaiting.
+// "blocked_by_me": viewer has blocked other.
+// "blocked_by_them": other has blocked viewer.
+// "none": no relationship.
+export type FriendshipState =
+  | "friends"
+  | "request_outgoing"
+  | "request_incoming"
+  | "blocked_by_me"
+  | "blocked_by_them"
+  | "none";
+
+export interface FriendshipRelationship {
+  state: FriendshipState;
+  // friends: friendship start (respondedAt).
+  // request_*: when the request was sent (createdAt).
+  // blocked_*: when the block happened (createdAt).
+  // none: undefined.
+  since?: Date;
 }
 
 // Group-scoped ban events. Fire when a moderator flips a member to
@@ -491,7 +563,11 @@ export type JunjoEvent =
   | GroupRelationshipChangedEvent
   | FriendRequestSentEvent
   | FriendRequestAcceptedEvent
+  | FriendRequestDeclinedEvent
+  | FriendRequestCancelledEvent
   | FriendRemovedEvent
+  | FriendBlockedEvent
+  | FriendUnblockedEvent
   | GameUserBannedEvent
   | GameUserUnbannedEvent;
 
