@@ -2415,7 +2415,9 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     const group = await prisma.group.create({
       data: { gameId: game.id, kind: "guild", name: "g1", visibility: "invite-only" },
     });
-    const res = await listFetch(game.id, group.id, "?status=banned");
+    // `banned` used to be unknown here; the bans rollout added it to
+    // ADMIN_MEMBER_STATUSES, so pick a truly unknown value instead.
+    const res = await listFetch(game.id, group.id, "?status=gibberish");
     expect(res.status).toBe(400);
   });
 
