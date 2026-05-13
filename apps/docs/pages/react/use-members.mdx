@@ -61,9 +61,9 @@ interface UseMembersResult {
 
 ## Status filter
 
-The `status` option defaults to `"active"`, which is the dominant case (a roster panel that should not show ex-members). The other valid values are `"active"`, `"left"`, `"kicked"`, `"invited"`, or `"all"`.
+The `status` option defaults to `"active"`, which is the dominant case (a roster panel that should not show ex-members). The other valid values are `"active"`, `"invited"`, `"left"`, `"kicked"`, `"banned"`, or `"all"`.
 
-The filter is applied client-side after the server returns each page. The server does not currently narrow by status, so a heavily-filtered group (e.g. one `active` member out of 1000 historical) may need several `fetchMore` calls to surface them. This is acceptable for V1 because the dominant use case is the active filter and active members are usually the majority.
+The filter is applied client-side after the server returns each page. The underlying server route at `GET /v1/groups/:id/members` DOES support a `?status=` query param ([see API reference](/api-reference/groups#get-v1groupsidmembers)), but this hook currently does not forward it -- a future minor version will, eliminating wasted bandwidth on rows the UI immediately discards. Until then, a heavily-filtered group (e.g. one `active` member out of 1000 historical) may need several `fetchMore` calls to surface them; this is acceptable for the dominant use case because active members are usually the majority.
 
 Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands) but does NOT re-open the SSE subscription.
 
