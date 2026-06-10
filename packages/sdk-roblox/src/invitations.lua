@@ -1,8 +1,14 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.X)` types
+-- and the metatable-OOP idiom below need the Roblox definition files to
+-- pass strict analysis, which CI cannot run yet. Public signatures
+-- carry annotations regardless.
+--
 -- Invitations namespace. Mirrors the TypeScript SDK's `junjo.invitations`
 -- surface (list, get-by-code, revoke). Accept / decline live on
 -- `junjo.groups` to match the TS SDK shape.
 
-local JunjoError = require(script.Parent.JunjoError)
+local tryGet = require(script.Parent.TryGet)
 
 local Invitations = {}
 Invitations.__index = Invitations
@@ -13,20 +19,10 @@ function Invitations.new(http)
 	return self
 end
 
-local function tryGet(http, path)
-	local ok, result = pcall(function()
-		return http:get(path)
-	end)
-	if ok then
-		return result
-	end
-	if JunjoError.is(result) and result.code == "not_found" then
-		return nil
-	end
-	error(result, 0)
-end
-
-function Invitations:list(groupId, opts)
+function Invitations:list(
+	groupId: string,
+	opts: { limit: number?, cursor: string?, includeExpired: boolean?, includeUsed: boolean? }?
+)
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))
@@ -47,11 +43,11 @@ function Invitations:list(groupId, opts)
 	return self._http:get(path)
 end
 
-function Invitations:get(code)
+function Invitations:get(code: string)
 	return tryGet(self._http, "/v1/invitations/" .. self._http:encode(code))
 end
 
-function Invitations:revoke(code)
+function Invitations:revoke(code: string)
 	self._http:delete("/v1/invitations/" .. self._http:encode(code))
 end
 

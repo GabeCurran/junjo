@@ -1,3 +1,9 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.X)` types
+-- and the metatable-OOP idiom below need the Roblox definition files to
+-- pass strict analysis, which CI cannot run yet. Public signatures
+-- carry annotations regardless.
+--
 -- Groups namespace. Mirrors the TypeScript SDK's `junjo.groups` surface
 -- (groups CRUD, membership operations, group relationships, sub-group
 -- hierarchy). The TS SDK's `subscribe` (SSE stream) is intentionally
@@ -12,46 +18,34 @@
 
 local JunjoError = require(script.Parent.JunjoError)
 local Null = require(script.Parent.Null)
+local tryGet = require(script.Parent.TryGet)
 
 local Groups = {}
 Groups.__index = Groups
 
-function Groups.new(http, inviteBaseUrl)
+function Groups.new(http, inviteBaseUrl: string)
 	local self = setmetatable({}, Groups)
 	self._http = http
 	self._inviteBaseUrl = inviteBaseUrl
 	return self
 end
 
--- Catch a "not_found" JunjoError and translate it to nil (matches the
--- TypeScript SDK's `Promise<X | null>` shape for single-row lookups).
--- Other errors re-throw verbatim.
-local function tryGet(http, path)
-	local ok, result = pcall(function()
-		return http:get(path)
-	end)
-	if ok then
-		return result
-	end
-	if JunjoError.is(result) and result.code == "not_found" then
-		return nil
-	end
-	error(result, 0)
-end
-
 -- ============================================================
 -- CRUD
 -- ============================================================
 
-function Groups:create(input)
+function Groups:create(input: { [string]: any })
+	if input == nil then
+		JunjoError.raise("groups:create(input) requires an input table", "invalid_config", nil)
+	end
 	return self._http:post("/v1/groups", input)
 end
 
-function Groups:get(id)
+function Groups:get(id: string)
 	return tryGet(self._http, "/v1/groups/" .. self._http:encode(id))
 end
 
-function Groups:list(opts)
+function Groups:list(opts: { limit: number?, cursor: string?, gameId: string? }?)
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))
@@ -69,11 +63,14 @@ function Groups:list(opts)
 	return self._http:get(path)
 end
 
-function Groups:update(id, input)
+function Groups:update(id: string, input: { [string]: any })
+	if input == nil then
+		JunjoError.raise("groups:update(id, input) requires an input table", "invalid_config", nil)
+	end
 	return self._http:patch("/v1/groups/" .. self._http:encode(id), input)
 end
 
-function Groups:delete(id, opts)
+function Groups:delete(id: string, opts: { hard: boolean? }?)
 	local path = "/v1/groups/" .. self._http:encode(id)
 	if opts and opts.hard then
 		path = path .. "?hard=true"
@@ -81,7 +78,7 @@ function Groups:delete(id, opts)
 	self._http:delete(path)
 end
 
-function Groups:restore(id)
+function Groups:restore(id: string)
 	return self._http:post("/v1/groups/" .. self._http:encode(id) .. "/restore", nil)
 end
 
@@ -89,7 +86,7 @@ end
 -- Membership
 -- ============================================================
 
-function Groups:inviteByUserId(groupId, userId, opts)
+function Groups:inviteByUserId(groupId: string, userId: string, opts: { roleId: string? }?)
 	local body = { targetUserId = userId }
 	if opts and opts.roleId ~= nil then
 		body.roleId = opts.roleId
@@ -100,7 +97,7 @@ function Groups:inviteByUserId(groupId, userId, opts)
 	)
 end
 
-function Groups:inviteByCode(groupId, input)
+function Groups:inviteByCode(groupId: string, input: { roleId: string?, expiresIn: any? }?)
 	local body = {}
 	if input then
 		if input.roleId ~= nil then body.roleId = input.roleId end
@@ -112,7 +109,7 @@ function Groups:inviteByCode(groupId, input)
 	)
 end
 
-function Groups:inviteByLink(groupId, input)
+function Groups:inviteByLink(groupId: string, input: { roleId: string?, expiresIn: any? }?)
 	local invitation = self:inviteByCode(groupId, input)
 	local url = self._inviteBaseUrl .. "/invite/" .. self._http:encode(invitation.code)
 	return { invitation = invitation, url = url }
@@ -123,7 +120,7 @@ end
 -- `{ invited, skipped, errors }`. The TypeScript SDK accepts a
 -- `ReadableStream<Uint8Array>` body too; the Roblox version takes a
 -- string only since HttpService does not consume streams.
-function Groups:bulkInvite(groupId, csv, opts)
+function Groups:bulkInvite(groupId: string, csv: string, opts: { roleId: string? }?)
 	local path = "/v1/groups/" .. self._http:encode(groupId) .. "/bulk-invite"
 	if opts and opts.roleId ~= nil then
 		path = path .. "?roleId=" .. self._http:encode(opts.roleId)
@@ -131,14 +128,14 @@ function Groups:bulkInvite(groupId, csv, opts)
 	return self._http:postRaw(path, csv, "text/csv")
 end
 
-function Groups:acceptInvitation(code, userId)
+function Groups:acceptInvitation(code: string, userId: string)
 	return self._http:post(
 		"/v1/invitations/" .. self._http:encode(code) .. "/accept",
 		{ userId = userId }
 	)
 end
 
-function Groups:declineInvitation(code, opts)
+function Groups:declineInvitation(code: string, opts: { userId: string? }?)
 	local body = {}
 	if opts and opts.userId ~= nil then
 		body.userId = opts.userId
@@ -146,14 +143,14 @@ function Groups:declineInvitation(code, opts)
 	self._http:post("/v1/invitations/" .. self._http:encode(code) .. "/decline", body)
 end
 
-function Groups:leave(groupId, userId)
+function Groups:leave(groupId: string, userId: string)
 	return self._http:post(
 		"/v1/groups/" .. self._http:encode(groupId) .. "/leave",
 		{ userId = userId }
 	)
 end
 
-function Groups:kick(groupId, userId, opts)
+function Groups:kick(groupId: string, userId: string, opts: { reason: string? }?)
 	local body = {}
 	if opts and opts.reason ~= nil then
 		body.reason = opts.reason
@@ -169,7 +166,7 @@ end
 -- Group relationships
 -- ============================================================
 
-function Groups:setRelationship(groupAId, groupBId, relationshipType, opts)
+function Groups:setRelationship(groupAId: string, groupBId: string, relationshipType: string, opts: { mutual: boolean? }?)
 	local body = { type = relationshipType }
 	if opts and opts.mutual ~= nil then
 		body.mutual = opts.mutual
@@ -181,7 +178,7 @@ function Groups:setRelationship(groupAId, groupBId, relationshipType, opts)
 	)
 end
 
-function Groups:clearRelationship(groupAId, groupBId, opts)
+function Groups:clearRelationship(groupAId: string, groupBId: string, opts: { mutual: boolean? }?)
 	local path = "/v1/groups/" .. self._http:encode(groupAId)
 		.. "/relationships/" .. self._http:encode(groupBId)
 	if opts and opts.mutual then
@@ -190,7 +187,7 @@ function Groups:clearRelationship(groupAId, groupBId, opts)
 	self._http:delete(path)
 end
 
-function Groups:getRelationship(groupAId, groupBId)
+function Groups:getRelationship(groupAId: string, groupBId: string)
 	return tryGet(
 		self._http,
 		"/v1/groups/" .. self._http:encode(groupAId)
@@ -198,7 +195,7 @@ function Groups:getRelationship(groupAId, groupBId)
 	)
 end
 
-function Groups:listRelationships(groupId)
+function Groups:listRelationships(groupId: string)
 	return self._http:get(
 		"/v1/groups/" .. self._http:encode(groupId) .. "/relationships"
 	)
@@ -214,7 +211,7 @@ end
 -- plain nil values; the server requires the `parentGroupId` field to be
 -- present (as either a string or JSON null), so the SDK substitutes
 -- Null on the wire.
-function Groups:setParent(groupId, parentGroupId)
+function Groups:setParent(groupId: string, parentGroupId: any)
 	local value = parentGroupId
 	if value == nil then
 		value = Null
@@ -225,7 +222,7 @@ function Groups:setParent(groupId, parentGroupId)
 	)
 end
 
-function Groups:listChildren(groupId)
+function Groups:listChildren(groupId: string)
 	return self._http:get(
 		"/v1/groups/" .. self._http:encode(groupId) .. "/children"
 	)

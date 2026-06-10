@@ -1,9 +1,16 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.X)` types
+-- and the metatable-OOP idiom below need the Roblox definition files to
+-- pass strict analysis, which CI cannot run yet. Public signatures
+-- carry annotations regardless.
+--
 -- Members namespace. Mirrors the TypeScript SDK's `junjo.members`
 -- surface (member lookups + role / permission edits + metadata / notes
 -- mutations). Membership lifecycle (invite / accept / leave / kick) is
 -- exposed via `junjo.groups` to match the TS SDK shape.
 
 local JunjoError = require(script.Parent.JunjoError)
+local tryGet = require(script.Parent.TryGet)
 
 local Members = {}
 Members.__index = Members
@@ -14,20 +21,7 @@ function Members.new(http)
 	return self
 end
 
-local function tryGet(http, path)
-	local ok, result = pcall(function()
-		return http:get(path)
-	end)
-	if ok then
-		return result
-	end
-	if JunjoError.is(result) and result.code == "not_found" then
-		return nil
-	end
-	error(result, 0)
-end
-
-local function memberPath(self, groupId, userId)
+local function memberPath(self, groupId: string, userId: string): string
 	return "/v1/groups/" .. self._http:encode(groupId)
 		.. "/members/" .. self._http:encode(userId)
 end
@@ -36,15 +30,15 @@ end
 -- Lookups
 -- ============================================================
 
-function Members:get(groupId, userId)
+function Members:get(groupId: string, userId: string)
 	return tryGet(self._http, memberPath(self, groupId, userId))
 end
 
-function Members:getById(id)
+function Members:getById(id: string)
 	return tryGet(self._http, "/v1/members/" .. self._http:encode(id))
 end
 
-function Members:list(groupId, opts)
+function Members:list(groupId: string, opts: { limit: number?, cursor: string? }?)
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))
@@ -59,7 +53,7 @@ function Members:list(groupId, opts)
 	return self._http:get(path)
 end
 
-function Members:listForUser(userId, opts)
+function Members:listForUser(userId: string, opts: { gameId: string? }?)
 	local path = "/v1/users/" .. self._http:encode(userId) .. "/members"
 	if opts and opts.gameId ~= nil then
 		path = path .. "?gameId=" .. self._http:encode(opts.gameId)
@@ -71,13 +65,27 @@ end
 -- Metadata + notes
 -- ============================================================
 
-function Members:setMetadata(groupId, userId, metadata)
+function Members:setMetadata(groupId: string, userId: string, metadata: { [string]: any })
+	if metadata == nil then
+		JunjoError.raise(
+			"members:setMetadata(groupId, userId, metadata) requires a metadata table",
+			"invalid_config",
+			nil
+		)
+	end
 	return self._http:patch(memberPath(self, groupId, userId), { metadata = metadata })
 end
 
 -- Partial notes update. Pass `Junjo.Null` for either field to clear it
 -- on the server; omit a field (or set it to nil) to leave it unchanged.
-function Members:setNotes(groupId, userId, input)
+function Members:setNotes(groupId: string, userId: string, input: { notesPublic: any?, notesPrivate: any? })
+	if input == nil then
+		JunjoError.raise(
+			"members:setNotes(groupId, userId, input) requires an input table",
+			"invalid_config",
+			nil
+		)
+	end
 	local body = {}
 	if input.notesPublic ~= nil then body.notesPublic = input.notesPublic end
 	if input.notesPrivate ~= nil then body.notesPrivate = input.notesPrivate end
@@ -88,14 +96,14 @@ end
 -- Role assignment
 -- ============================================================
 
-function Members:assignRole(groupId, userId, roleId)
+function Members:assignRole(groupId: string, userId: string, roleId: string)
 	return self._http:post(
 		memberPath(self, groupId, userId) .. "/roles/" .. self._http:encode(roleId),
 		nil
 	)
 end
 
-function Members:removeRole(groupId, userId, roleId)
+function Members:removeRole(groupId: string, userId: string, roleId: string)
 	return self._http:delete(
 		memberPath(self, groupId, userId) .. "/roles/" .. self._http:encode(roleId)
 	)
@@ -105,20 +113,20 @@ end
 -- Permission overrides
 -- ============================================================
 
-function Members:overridePermission(groupId, userId, permission, grant)
+function Members:overridePermission(groupId: string, userId: string, permission: string, grant: boolean)
 	return self._http:post(
 		memberPath(self, groupId, userId) .. "/permissions/" .. self._http:encode(permission),
 		{ grant = grant }
 	)
 end
 
-function Members:clearPermissionOverride(groupId, userId, permission)
+function Members:clearPermissionOverride(groupId: string, userId: string, permission: string)
 	self._http:delete(
 		memberPath(self, groupId, userId) .. "/permissions/" .. self._http:encode(permission)
 	)
 end
 
-function Members:listPermissionOverrides(groupId, userId)
+function Members:listPermissionOverrides(groupId: string, userId: string)
 	return self._http:get(memberPath(self, groupId, userId) .. "/permissions")
 end
 

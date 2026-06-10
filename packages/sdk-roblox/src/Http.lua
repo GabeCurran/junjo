@@ -1,3 +1,9 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.X)` types
+-- and the metatable-OOP idiom below need the Roblox definition files to
+-- pass strict analysis, which CI cannot run yet. Public signatures
+-- carry annotations regardless.
+--
 -- Internal HTTP wrapper used by every Junjo namespace. Wraps Roblox's
 -- HttpService for outbound REST calls, JSON-encodes request bodies (with
 -- Junjo.Null substitution for explicit JSON null), parses JSON responses,
@@ -32,12 +38,23 @@ local function substituteNulls(value)
 	return copy
 end
 
-local function encodeJsonBody(httpService, body)
+local function encodeJsonBody(httpService, body): string?
 	if body == nil then
 		return nil
 	end
 	local prepared = substituteNulls(body)
-	local json = httpService:JSONEncode(prepared)
+	-- JSONEncode raises on values JSON cannot carry (functions, Instances,
+	-- mixed-key tables, ...). Surface that as an invalid_config JunjoError
+	-- before any network round-trip, mirroring the JSONDecode handling in
+	-- `send` below.
+	local ok, json = pcall(httpService.JSONEncode, httpService, prepared)
+	if not ok then
+		JunjoError.raise(
+			"request body was not JSON-encodable: " .. tostring(json),
+			"invalid_config",
+			nil
+		)
+	end
 	-- string.gsub returns (string, count); discard count via parens.
 	return (string.gsub(json, NULL_TOKEN_QUOTED, "null"))
 end
@@ -56,7 +73,13 @@ end
 local Http = {}
 Http.__index = Http
 
-function Http.new(opts)
+export type HttpOptions = {
+	apiKey: any, -- string or Secret userdata
+	baseUrl: string,
+	httpService: any,
+}
+
+function Http.new(opts: HttpOptions)
 	local self = setmetatable({}, Http)
 	-- apiKey may be a plain string OR a Roblox Secret userdata (returned
 	-- by HttpService:GetSecret). Concatenation works for both: string +
@@ -71,11 +94,11 @@ end
 -- URL-encode a single string, suitable for path segments and query
 -- values. Wraps HttpService:UrlEncode so namespace modules don't need
 -- to grab their own HttpService reference.
-function Http:encode(value)
+function Http:encode(value: any): string
 	return self._http:UrlEncode(tostring(value))
 end
 
-local function send(self, method, path, body, contentType)
+local function send(self, method: string, path: string, body: any, contentType: string?): any
 	local url = self._baseUrl .. path
 	local headers = {
 		Authorization = "Bearer " .. self._apiKey,
@@ -129,34 +152,34 @@ local function send(self, method, path, body, contentType)
 	return decoded
 end
 
-function Http:request(method, path, body)
+function Http:request(method: string, path: string, body: any): any
 	return send(self, method, path, body, nil)
 end
 
-function Http:get(path)
+function Http:get(path: string): any
 	return send(self, "GET", path, nil, nil)
 end
 
-function Http:post(path, body)
+function Http:post(path: string, body: any): any
 	return send(self, "POST", path, body, nil)
 end
 
 -- POST with an explicit content-type and a body that is sent verbatim
 -- (no JSON-encode, no Junjo.Null substitution). Used by groups.bulkInvite
 -- to deliver a CSV body.
-function Http:postRaw(path, body, contentType)
+function Http:postRaw(path: string, body: string, contentType: string): any
 	return send(self, "POST", path, body, contentType)
 end
 
-function Http:patch(path, body)
+function Http:patch(path: string, body: any): any
 	return send(self, "PATCH", path, body, nil)
 end
 
-function Http:put(path, body)
+function Http:put(path: string, body: any): any
 	return send(self, "PUT", path, body, nil)
 end
 
-function Http:delete(path)
+function Http:delete(path: string): any
 	return send(self, "DELETE", path, nil, nil)
 end
 

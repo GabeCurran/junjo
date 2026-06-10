@@ -1,3 +1,8 @@
+--!nonstrict
+-- Nonstrict, not strict: the metatable-OOP idiom below needs the Roblox
+-- definition files to pass strict analysis, which CI cannot run yet.
+-- Public signatures carry annotations regardless.
+--
 -- Audit namespace. Mirrors the TypeScript SDK's `junjo.audit` surface
 -- (a single `list(groupId, opts?)` method). Pagination is timestamp-
 -- based: the response carries a `nextCursor` ISO 8601 string; pass it
@@ -12,7 +17,7 @@ function Audit.new(http)
 	return self
 end
 
-function Audit:list(groupId, opts)
+function Audit:list(groupId: string, opts: { limit: number?, before: string?, actions: { string }? }?)
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))

@@ -1,3 +1,9 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.Parent.X)`
+-- types, the `game` global, and the metatable-OOP idiom below need the
+-- Roblox definition files to pass strict analysis, which CI cannot run
+-- yet. Public signatures carry annotations regardless.
+--
 -- RobloxUserIdAdapter: built-in adapter that resolves a Roblox UserId
 -- to the opaque-string user-id that Junjo persists per game. Roblox does
 -- not give the dev's backend a session token (the TS-SDK auth-adapter
@@ -29,7 +35,7 @@ local JunjoError = require(script.Parent.Parent.JunjoError)
 local RobloxUserIdAdapter = {}
 RobloxUserIdAdapter.__index = RobloxUserIdAdapter
 
-local function isPositiveInteger(value)
+local function isPositiveInteger(value: any): boolean
 	return type(value) == "number" and value > 0 and value % 1 == 0
 end
 
@@ -76,7 +82,7 @@ end
 --
 -- `players` - inject a fake `Players` service for testing. Defaults to
 -- `game:GetService("Players")`.
-local function new(opts)
+local function new(opts: { explicitUserId: any?, players: any? }?)
 	opts = opts or {}
 	if type(opts) ~= "table" then
 		JunjoError.raise(
@@ -129,7 +135,7 @@ end
 --
 -- An adapter constructed with `explicitUserId` returns that id on every
 -- call, ignoring the argument.
-function RobloxUserIdAdapter:resolve(value)
+function RobloxUserIdAdapter:resolve(value: any): string
 	if self._explicitUserId ~= nil then
 		return self._explicitUserId
 	end

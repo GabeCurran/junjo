@@ -1,3 +1,4 @@
+--!strict
 -- Sentinel for explicit JSON null inside request bodies. Lua's `nil`
 -- means "key absent" in tables, so a caller that needs to send
 -- `{ "defaultRoleId": null }` writes `{ defaultRoleId = Junjo.Null }`

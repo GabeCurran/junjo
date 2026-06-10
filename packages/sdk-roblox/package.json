@@ -1,7 +1,11 @@
 {
   "name": "@junjo/sdk-roblox-meta",
-  "version": "0.0.0",
-  "description": "Workspace placeholder. The real client is distributed as a Roblox model + GitHub release asset, not on npm. Source lives in src/Junjo.lua.",
+  "version": "0.1.0",
+  "description": "Workspace placeholder. The real client is distributed as a Roblox model + GitHub release asset, not on npm. Source lives in src/ (init.lua is the module root).",
   "license": "MIT",
-  "private": true
+  "private": true,
+  "scripts": {
+    "build:roblox": "rojo build default.project.json --output Junjo.rbxm",
+    "test": "node tests/run-if-lune.mjs"
+  }
 }

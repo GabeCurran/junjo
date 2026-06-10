@@ -1,0 +1,83 @@
+# Roblox SDK: Luau tests on every change, and a Junjo.rbxm model
+# attached to GitHub releases. The model is the distribution channel
+# for packages/sdk-roblox (it is not published to npm).
+name: Roblox SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/sdk-roblox/**"
+      - ".github/workflows/roblox-release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/sdk-roblox/**"
+      - ".github/workflows/roblox-release.yml"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  LUNE_VERSION: "0.10.4"
+  ROJO_VERSION: "7.5.1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install lune ${{ env.LUNE_VERSION }}
+        run: |
+          curl -sSfLo lune.zip "https://github.com/lune-org/lune/releases/download/v${LUNE_VERSION}/lune-${LUNE_VERSION}-linux-x86_64.zip"
+          unzip -o lune.zip lune
+          chmod +x lune
+          sudo mv lune /usr/local/bin/lune
+          lune --version
+
+      - name: Run Luau tests
+        working-directory: packages/sdk-roblox
+        run: lune run tests/run.luau
+
+  release:
+    if: github.event_name == 'release'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release upload needs write on the release's assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify Junjo.VERSION matches the release tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          # Tags look like sdk-roblox-v0.1.0 or v0.1.0; compare the
+          # numeric tail against the VERSION constant in init.lua.
+          TAG_VERSION="${TAG##*v}"
+          LUA_VERSION=$(grep -oP 'Junjo\.VERSION = "\K[0-9]+\.[0-9]+\.[0-9]+' packages/sdk-roblox/src/init.lua)
+          echo "tag=$TAG_VERSION init.lua=$LUA_VERSION"
+          if [ "$TAG_VERSION" != "$LUA_VERSION" ]; then
+            echo "Junjo.VERSION ($LUA_VERSION) does not match the release tag ($TAG_VERSION); bump src/init.lua before releasing."
+            exit 1
+          fi
+
+      - name: Install rojo ${{ env.ROJO_VERSION }}
+        run: |
+          curl -sSfLo rojo.zip "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/rojo-${ROJO_VERSION}-linux-x86_64.zip"
+          unzip -o rojo.zip rojo
+          chmod +x rojo
+          sudo mv rojo /usr/local/bin/rojo
+          rojo --version
+
+      - name: Build Junjo.rbxm
+        working-directory: packages/sdk-roblox
+        run: rojo build default.project.json --output Junjo.rbxm
+
+      - name: Attach Junjo.rbxm to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" packages/sdk-roblox/Junjo.rbxm --clobber

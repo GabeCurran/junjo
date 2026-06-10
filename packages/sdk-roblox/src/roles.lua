@@ -1,7 +1,14 @@
+--!nonstrict
+-- Nonstrict, not strict: cross-module `require(script.Parent.X)` types
+-- and the metatable-OOP idiom below need the Roblox definition files to
+-- pass strict analysis, which CI cannot run yet. Public signatures
+-- carry annotations regardless.
+--
 -- Roles namespace. Mirrors the TypeScript SDK's `junjo.roles` surface
 -- (role CRUD plus permission grant / revoke).
 
 local JunjoError = require(script.Parent.JunjoError)
+local tryGet = require(script.Parent.TryGet)
 
 local Roles = {}
 Roles.__index = Roles
@@ -10,19 +17,6 @@ function Roles.new(http)
 	local self = setmetatable({}, Roles)
 	self._http = http
 	return self
-end
-
-local function tryGet(http, path)
-	local ok, result = pcall(function()
-		return http:get(path)
-	end)
-	if ok then
-		return result
-	end
-	if JunjoError.is(result) and result.code == "not_found" then
-		return nil
-	end
-	error(result, 0)
 end
 
 -- Builds the create-role request body. Drops `permissions`: the
@@ -37,37 +31,43 @@ local function buildCreateBody(input)
 	return body
 end
 
-function Roles:create(groupId, input)
+function Roles:create(groupId: string, input: { name: string, priority: number, color: string?, isDefault: boolean? })
+	if input == nil then
+		JunjoError.raise("roles:create(groupId, input) requires an input table", "invalid_config", nil)
+	end
 	return self._http:post(
 		"/v1/groups/" .. self._http:encode(groupId) .. "/roles",
 		buildCreateBody(input)
 	)
 end
 
-function Roles:get(id)
+function Roles:get(id: string)
 	return tryGet(self._http, "/v1/roles/" .. self._http:encode(id))
 end
 
-function Roles:update(id, input)
+function Roles:update(id: string, input: { [string]: any })
+	if input == nil then
+		JunjoError.raise("roles:update(id, input) requires an input table", "invalid_config", nil)
+	end
 	return self._http:patch("/v1/roles/" .. self._http:encode(id), input)
 end
 
-function Roles:delete(id)
+function Roles:delete(id: string)
 	self._http:delete("/v1/roles/" .. self._http:encode(id))
 end
 
-function Roles:list(groupId)
+function Roles:list(groupId: string)
 	return self._http:get("/v1/groups/" .. self._http:encode(groupId) .. "/roles")
 end
 
-function Roles:grantPermission(roleId, permission)
+function Roles:grantPermission(roleId: string, permission: string)
 	return self._http:post(
 		"/v1/roles/" .. self._http:encode(roleId) .. "/permissions",
 		{ permission = permission }
 	)
 end
 
-function Roles:revokePermission(roleId, permission)
+function Roles:revokePermission(roleId: string, permission: string)
 	return self._http:delete(
 		"/v1/roles/" .. self._http:encode(roleId)
 			.. "/permissions/" .. self._http:encode(permission)
