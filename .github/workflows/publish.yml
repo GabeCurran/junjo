@@ -1,0 +1,49 @@
+# Publish packages to npm via changesets.
+#
+# MANUAL TRIGGER ONLY (workflow_dispatch). Nothing is published to npm yet
+# and the "junjo" npm name/scope could not be secured, so the final package
+# names are undecided. Until the scope/name decision is made and the names
+# are registered on npm, publishing must not be automated: unregistered
+# names are a dependency confusion risk (a third party could squat the
+# names and serve malicious packages to anyone installing them). Once the
+# names are secured, this trigger can be revisited.
+#
+# Requires the NPM_TOKEN repository secret. id-token: write enables npm
+# provenance attestation.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test
+
+      - name: Publish
+        run: npx changeset publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
