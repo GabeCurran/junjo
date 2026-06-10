@@ -13,6 +13,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent } from "./events.js";
 import type { HttpClient } from "./http.js";
+import { parseWireDate } from "./wire.js";
 
 // Must stay in sync with the signing layout in the server's
 // `webhookWorker.ts`; bumping one without the other breaks every
@@ -132,10 +133,24 @@ export async function verifyWebhook(
     throw new JunjoError(`missing ${TIMESTAMP_HEADER} header`, "webhook_timestamp_missing", 400);
   }
 
+  // The MAC is checked before the timestamp is even parsed: the
+  // signature covers `<timestamp>.<body>` as raw strings, so this needs
+  // no parsing, and it means unauthenticated senders get the same
+  // `webhook_invalid_signature` for every probe instead of an oracle on
+  // the receiver's clock and tolerance settings.
+  const body = bodyToString(rawBody);
+  const expected = await signWebhookBody(secret, body, timestampHeader);
+  if (!constantTimeEqual(signatureHeader, expected)) {
+    throw new JunjoError("webhook signature does not match", "webhook_invalid_signature", 400);
+  }
+
+  // Date.parse is lenient (it accepts more than ISO 8601), but the
+  // timestamp is already authenticated at this point; the server only
+  // ever signs ISO strings, so leniency here cannot loosen verification.
   const timestampMs = Date.parse(timestampHeader);
   if (Number.isNaN(timestampMs)) {
     throw new JunjoError(
-      `${TIMESTAMP_HEADER} is not a valid ISO 8601 timestamp`,
+      `${TIMESTAMP_HEADER} is not a valid timestamp`,
       "webhook_timestamp_invalid",
       400,
     );
@@ -148,12 +163,6 @@ export async function verifyWebhook(
       "webhook_timestamp_out_of_tolerance",
       400,
     );
-  }
-
-  const body = bodyToString(rawBody);
-  const expected = await signWebhookBody(secret, body, timestampHeader);
-  if (!constantTimeEqual(signatureHeader, expected)) {
-    throw new JunjoError("webhook signature does not match", "webhook_invalid_signature", 400);
   }
 
   let parsed: WireJunjoEvent;
@@ -194,8 +203,8 @@ function deserializeEndpoint(w: WireWebhookEndpoint): WebhookEndpoint {
     url: w.url,
     events: w.events as JunjoEventType[],
     format: w.format as WebhookEndpointFormat,
-    createdAt: new Date(w.createdAt),
-    disabledAt: w.disabledAt === null ? null : new Date(w.disabledAt),
+    createdAt: parseWireDate(w.createdAt, "createdAt"),
+    disabledAt: w.disabledAt === null ? null : parseWireDate(w.disabledAt, "disabledAt"),
   };
 }
 
@@ -270,8 +279,8 @@ export class WebhooksApi {
 
   // Express-compatible middleware. Mount AFTER `express.raw({ type: "application/json" })`
   // so `req.body` is a Buffer; the verified `JunjoEvent` replaces `req.body`
-  // before `next()` runs. On verification failure responds 400 with the
-  // JunjoError message and does not call `next()`.
+  // before `next()` runs. On verification failure responds 400 with a
+  // generic message plus the stable error code and does not call `next()`.
   middleware(secret: string, opts?: VerifyOptions): ExpressLikeMiddleware {
     return async (req, res, next) => {
       const body = readMiddlewareBody(req);
@@ -285,8 +294,12 @@ export class WebhooksApi {
       try {
         event = await verifyWebhook(body, req.headers, secret, opts);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "webhook verification failed";
-        res.status(400).send(message);
+        // Error messages can carry receiver internals (e.g. the tolerance
+        // window), so only the stable code is reflected to the sender.
+        // Full detail stays on the thrown JunjoError for direct verify()
+        // callers, who own both sides of the exchange.
+        const code = err instanceof JunjoError ? err.code : "webhook_verification_failed";
+        res.status(400).send(`webhook verification failed (${code})`);
         return;
       }
       req.body = event;

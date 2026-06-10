@@ -146,13 +146,36 @@ describe("verifyWebhook", () => {
     });
   });
 
-  it("throws webhook_timestamp_invalid on a malformed timestamp", async () => {
-    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
-    const tampered = { ...headers, "x-junjo-timestamp": "not-a-date" };
-    await expect(verifyWebhook(body, tampered, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
+  it("throws webhook_timestamp_invalid on a malformed but correctly signed timestamp", async () => {
+    // The timestamp is only parsed after the MAC passes, so reaching
+    // webhook_timestamp_invalid requires signing over the bad value.
+    const { body } = await buildSignedDelivery(sampleEvent, SECRET);
+    const sig = await signWebhookBody(SECRET, body, "not-a-date");
+    const headers = { "x-junjo-signature": sig, "x-junjo-timestamp": "not-a-date" };
+    await expect(verifyWebhook(body, headers, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
       code: "webhook_timestamp_invalid",
       status: 400,
     });
+  });
+
+  it("reports invalid_signature (not a timestamp error) when an unsigned timestamp is tampered", async () => {
+    // Ordering guarantee: unauthenticated senders learn nothing about
+    // the receiver's clock or tolerance settings.
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const tampered = { ...headers, "x-junjo-timestamp": "not-a-date" };
+    await expect(verifyWebhook(body, tampered, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
+      code: "webhook_invalid_signature",
+      status: 400,
+    });
+  });
+
+  it("reports invalid_signature before out-of-tolerance when both are wrong", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const tampered = { ...headers, "x-junjo-signature": "v1=deadbeef" };
+    const sixMinAfter = () => new Date("2026-04-28T05:06:31.000Z");
+    await expect(verifyWebhook(body, tampered, SECRET, { now: sixMinAfter })).rejects.toMatchObject(
+      { code: "webhook_invalid_signature", status: 400 },
+    );
   });
 
   it("throws webhook_timestamp_out_of_tolerance on a stale (replay) timestamp", async () => {
@@ -207,6 +230,54 @@ describe("verifyWebhook", () => {
     const tampered = { ...headers, "x-junjo-signature": "v1=garbage" };
     await expect(verifyWebhook(body, tampered, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
       code: "webhook_invalid_signature",
+      status: 400,
+    });
+  });
+
+  it("throws webhook_invalid_signature on a wrong scheme prefix with a correct MAC", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const v1Signature = headers["x-junjo-signature"] as string;
+    const tampered = { ...headers, "x-junjo-signature": v1Signature.replace(/^v1=/, "v2=") };
+    await expect(verifyWebhook(body, tampered, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
+      code: "webhook_invalid_signature",
+      status: 400,
+    });
+  });
+
+  it("rejects an array signature header whose first element is invalid (only [0] is read)", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const valid = headers["x-junjo-signature"] as string;
+    const arrayHeaders: Record<string, string[] | string | undefined> = {
+      "x-junjo-signature": ["v1=deadbeef", valid],
+      "x-junjo-timestamp": headers["x-junjo-timestamp"],
+    };
+    await expect(
+      verifyWebhook(body, arrayHeaders, SECRET, { now: FROZEN_NOW }),
+    ).rejects.toMatchObject({ code: "webhook_invalid_signature", status: 400 });
+  });
+
+  it("rejects an array signature header containing only invalid values", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const arrayHeaders: Record<string, string[] | string | undefined> = {
+      "x-junjo-signature": ["v1=deadbeef", "v1=garbage"],
+      "x-junjo-timestamp": headers["x-junjo-timestamp"],
+    };
+    await expect(
+      verifyWebhook(body, arrayHeaders, SECRET, { now: FROZEN_NOW }),
+    ).rejects.toMatchObject({ code: "webhook_invalid_signature", status: 400 });
+  });
+
+  it("throws unknown_event_type with status 400 on a correctly signed future event type", async () => {
+    const futureEvent = {
+      id: "evt_future",
+      type: "member.promoted",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "2026-04-28T05:00:00.000Z",
+    };
+    const { body, headers } = await buildSignedDelivery(futureEvent, SECRET);
+    await expect(verifyWebhook(body, headers, SECRET, { now: FROZEN_NOW })).rejects.toMatchObject({
+      code: "unknown_event_type",
       status: 400,
     });
   });
@@ -343,7 +414,10 @@ describe("WebhooksApi.middleware", () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(400);
     expect(typeof res.body).toBe("string");
-    expect(res.body).toMatch(/signature does not match/);
+    expect(res.body).toMatch(/webhook_invalid_signature/);
+    // The raw error message (and anything it embeds) must not reach the
+    // sender; only the generic text plus the stable code does.
+    expect(res.body).not.toMatch(/does not match/);
   });
 
   it("responds 400 when the request has no parseable body (raw middleware not mounted)", async () => {
@@ -360,7 +434,7 @@ describe("WebhooksApi.middleware", () => {
     expect(res.body).toMatch(/express\.raw/);
   });
 
-  it("responds 400 with the timestamp-out-of-tolerance message on replay", async () => {
+  it("responds 400 with the out-of-tolerance code (not the window value) on replay", async () => {
     const junjo = new Junjo({ apiKey: "x", fetch: vi.fn() as unknown as typeof fetch });
     const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
     const replayLater = () => new Date("2026-04-28T05:06:31.000Z");
@@ -373,7 +447,31 @@ describe("WebhooksApi.middleware", () => {
     await mw(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(400);
-    expect(res.body).toMatch(/tolerance window/);
+    expect(res.body).toMatch(/webhook_timestamp_out_of_tolerance/);
+    // The configured tolerance must not be reflected to the sender.
+    expect(res.body).not.toMatch(/\d+ms/);
+  });
+
+  it("responds 400 with the unknown_event_type code on a future event type", async () => {
+    const junjo = new Junjo({ apiKey: "x", fetch: vi.fn() as unknown as typeof fetch });
+    const futureEvent = {
+      id: "evt_future",
+      type: "member.promoted",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "2026-04-28T05:00:00.000Z",
+    };
+    const { body, headers } = await buildSignedDelivery(futureEvent, SECRET);
+    const mw = junjo.webhooks.middleware(SECRET, { now: FROZEN_NOW });
+
+    const req = { headers, body: new TextEncoder().encode(body), rawBody: undefined };
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await mw(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatch(/unknown_event_type/);
   });
 
   it("accepts a string body in req.body (legacy frameworks)", async () => {
