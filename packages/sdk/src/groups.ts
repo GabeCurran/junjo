@@ -20,10 +20,25 @@ import type {
 } from "@junjo/shared";
 import { type WireBanHistoryEntry, deserializeBanHistoryEntry } from "./bans.js";
 import { JunjoError } from "./errors.js";
-import { type WireJunjoEvent, deserializeEvent, parseSSEFrame } from "./events.js";
+import {
+  UNKNOWN_EVENT_TYPE,
+  type WireJunjoEvent,
+  deserializeEvent,
+  parseSSEFrame,
+} from "./events.js";
 import type { HttpClient } from "./http.js";
 import { type WireMember, deserializeMember } from "./members.js";
 import { paginate } from "./pagination.js";
+import { parseWireDate } from "./wire.js";
+
+// Cap on an unterminated SSE frame (in UTF-16 code units, roughly 1 MiB
+// of ASCII). Real Junjo events are a few KB; anything near this is a
+// broken or hostile stream.
+const MAX_SSE_BUFFER_CHARS = 1024 * 1024;
+
+// Blank line ending a frame: \n\n from the server, or \r\n\r\n (and
+// mixes) after a proxy normalizes line endings.
+const SSE_FRAME_DELIMITER = /\r?\n\r?\n/;
 
 export interface SubscribeOptions {
   // Notified when a streaming error occurs after the connection is open
@@ -49,7 +64,7 @@ export function deserializeGroupRelationship(w: WireGroupRelationship): GroupRel
     groupAId: w.groupAId as GroupId,
     groupBId: w.groupBId as GroupId,
     type: w.type,
-    since: new Date(w.since),
+    since: parseWireDate(w.since, "since"),
     setBy: w.setBy === null ? null : (w.setBy as UserId),
   };
 }
@@ -75,9 +90,9 @@ export function deserializeInvitation(w: WireInvitation): Invitation {
     roleId: w.roleId === null ? null : (w.roleId as RoleId),
     targetUserId: w.targetUserId === null ? null : (w.targetUserId as UserId),
     createdBy: w.createdBy === null ? null : (w.createdBy as UserId),
-    createdAt: new Date(w.createdAt),
-    expiresAt: w.expiresAt === null ? null : new Date(w.expiresAt),
-    usedAt: w.usedAt === null ? null : new Date(w.usedAt),
+    createdAt: parseWireDate(w.createdAt, "createdAt"),
+    expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
+    usedAt: w.usedAt === null ? null : parseWireDate(w.usedAt, "usedAt"),
     usedBy: w.usedBy === null ? null : (w.usedBy as UserId),
   };
 }
@@ -110,9 +125,10 @@ export function deserializeGroup(w: WireGroup): Group {
     parentGroupId: w.parentGroupId === null ? null : (w.parentGroupId as GroupId),
     memberCount: w.memberCount,
     hasPasscode: w.hasPasscode,
-    createdAt: new Date(w.createdAt),
-    updatedAt: new Date(w.updatedAt),
-    softDeletedAt: w.softDeletedAt === null ? null : new Date(w.softDeletedAt),
+    createdAt: parseWireDate(w.createdAt, "createdAt"),
+    updatedAt: parseWireDate(w.updatedAt, "updatedAt"),
+    softDeletedAt:
+      w.softDeletedAt === null ? null : parseWireDate(w.softDeletedAt, "softDeletedAt"),
   };
 }
 
@@ -407,21 +423,50 @@ export class GroupsApi {
           const { done, value } = await reader.read();
           if (done) break;
           if (value) buffer += decoder.decode(value, { stream: true });
-          let idx = buffer.indexOf("\n\n");
-          while (idx !== -1) {
-            const block = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
+          // A server (or middlebox) that never sends the frame delimiter
+          // would otherwise grow the buffer without bound; treat an
+          // over-long unterminated frame as a stream error.
+          if (buffer.length > MAX_SSE_BUFFER_CHARS) {
+            reportError(
+              new JunjoError(
+                `SSE frame exceeded ${MAX_SSE_BUFFER_CHARS} characters without a delimiter`,
+                "stream_overflow",
+              ),
+            );
+            return;
+          }
+          // Frames end at a blank line; tolerate CRLF-normalized
+          // streams by accepting \r\n\r\n (and mixes) as the delimiter.
+          let match = buffer.match(SSE_FRAME_DELIMITER);
+          while (match?.index !== undefined) {
+            const block = buffer.slice(0, match.index);
+            buffer = buffer.slice(match.index + match[0].length);
             const frame = parseSSEFrame(block);
             if (frame?.data !== undefined) {
+              let event: JunjoEvent | null = null;
               try {
                 const wire = JSON.parse(frame.data) as WireJunjoEvent;
-                handler(deserializeEvent(wire));
+                event = deserializeEvent(wire);
               } catch (err) {
-                reportError(err instanceof Error ? err : new Error(String(err)));
-                return;
+                if (err instanceof JunjoError && err.code === UNKNOWN_EVENT_TYPE) {
+                  // A newer server sent an event type this SDK predates;
+                  // skip the frame rather than killing the stream.
+                  event = null;
+                } else {
+                  reportError(err instanceof Error ? err : new Error(String(err)));
+                  return;
+                }
+              }
+              if (event !== null) {
+                try {
+                  handler(event);
+                } catch (err) {
+                  reportError(err instanceof Error ? err : new Error(String(err)));
+                  return;
+                }
               }
             }
-            idx = buffer.indexOf("\n\n");
+            match = buffer.match(SSE_FRAME_DELIMITER);
           }
         }
       } catch (err) {

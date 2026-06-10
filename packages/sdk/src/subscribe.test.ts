@@ -547,4 +547,104 @@ describe("groups.subscribe", () => {
     sub.close();
     ctrl.end();
   });
+
+  it("skips unknown event types and keeps the stream alive (forward compatibility)", async () => {
+    const { stream, ctrl } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    const events: JunjoEvent[] = [];
+    const errors: Error[] = [];
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, (e) => events.push(e), {
+      onError: (err) => errors.push(err),
+    });
+
+    ctrl.push(
+      frame({
+        event: "member.promoted",
+        id: "evt_future",
+        data: { ...baseEvent, id: "evt_future", type: "member.promoted", userId: "user_alice" },
+      }),
+    );
+    ctrl.push(
+      frame({
+        event: "group.deleted",
+        id: "evt_known",
+        data: { ...baseEvent, id: "evt_known", type: "group.deleted" },
+      }),
+    );
+
+    await flushMicrotasks();
+    expect(errors).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.id).toBe("evt_known");
+
+    sub.close();
+    ctrl.end();
+  });
+
+  it("closes with stream_overflow when an unterminated frame exceeds the buffer cap", async () => {
+    const { stream, ctrl } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    const errors: Error[] = [];
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, () => {}, {
+      onError: (err) => errors.push(err),
+    });
+
+    // No "\n\n" anywhere: a hostile or broken stream that never
+    // terminates its frame. Push past the 1 MiB cap in large chunks.
+    const chunk = "x".repeat(256 * 1024);
+    for (let i = 0; i < 5; i += 1) ctrl.push(chunk);
+
+    await flushMicrotasks(10);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(JunjoError);
+    expect((errors[0] as JunjoError).code).toBe("stream_overflow");
+
+    sub.close();
+    ctrl.end();
+  });
+
+  it("close() is idempotent: calling it twice neither throws nor double-aborts", async () => {
+    const { stream, ctrl } = createPushStream();
+    let abortCount = 0;
+    const fetchMock = makeFetch((req) => {
+      req.signal.addEventListener("abort", () => {
+        abortCount += 1;
+      });
+      return streamingResponse(stream);
+    });
+    const junjo = makeJunjo(fetchMock);
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, () => {});
+
+    expect(() => {
+      sub.close();
+      sub.close();
+    }).not.toThrow();
+    expect(abortCount).toBe(1);
+
+    ctrl.end();
+  });
+
+  it("parses frames from a CRLF-normalized stream", async () => {
+    const { stream, ctrl } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    const events: JunjoEvent[] = [];
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, (e) => events.push(e));
+
+    const data = JSON.stringify({ ...baseEvent, id: "evt_crlf", type: "group.deleted" });
+    ctrl.push(`event: group.deleted\r\ndata: ${data}\r\n\r\n`);
+
+    await flushMicrotasks();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.id).toBe("evt_crlf");
+
+    sub.close();
+    ctrl.end();
+  });
 });
