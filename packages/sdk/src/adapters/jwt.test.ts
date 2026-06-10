@@ -51,7 +51,10 @@ describe("jwtAdapter HS256", () => {
   });
 
   it("returns null when the secret does not match", async () => {
-    const adapter = jwtAdapter({ key: "different-secret-1234567890", algorithm: "HS256" });
+    const adapter = jwtAdapter({
+      key: "a-completely-different-hmac-secret-for-tests",
+      algorithm: "HS256",
+    });
     const token = await signHs256({ sub: "user_abc" });
     expect(await adapter.verifyToken(token)).toBeNull();
   });
@@ -274,5 +277,63 @@ describe("jwtAdapter configuration validation", () => {
       // biome-ignore lint/suspicious/noExplicitAny: testing a bad runtime value
       jwtAdapter({ key: HS256_SECRET, algorithm: "RS512" as any }),
     ).toThrow(JunjoError);
+  });
+
+  it("rejects an HS256 secret shorter than 32 bytes", () => {
+    const thirtyOneBytes = "a".repeat(31);
+    expect(() => jwtAdapter({ key: thirtyOneBytes, algorithm: "HS256" })).toThrow(
+      /at least 32 bytes/,
+    );
+  });
+
+  it("accepts an HS256 secret of exactly 32 bytes", () => {
+    const thirtyTwoBytes = "a".repeat(32);
+    expect(() => jwtAdapter({ key: thirtyTwoBytes, algorithm: "HS256" })).not.toThrow();
+  });
+
+  it("measures the HS256 minimum in UTF-8 bytes, not code units", () => {
+    // 16 two-byte characters: 16 code units but 32 UTF-8 bytes.
+    const sixteenTwoByteChars = "é".repeat(16);
+    expect(() => jwtAdapter({ key: sixteenTwoByteChars, algorithm: "HS256" })).not.toThrow();
+  });
+
+  it("does not enforce the 32-byte minimum on RS256/ES256 PEMs", async () => {
+    const { spki } = await generateAsymKey("RS256");
+    expect(() => jwtAdapter({ key: spki, algorithm: "RS256" })).not.toThrow();
+  });
+});
+
+describe("jwtAdapter key import failure handling", () => {
+  it("does not emit an unhandled rejection when constructed with a bad PEM and never used", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onRejection);
+    try {
+      jwtAdapter({
+        key: "-----BEGIN PUBLIC KEY-----\nnot-actually-base64\n-----END PUBLIC KEY-----",
+        algorithm: "RS256",
+      });
+      // The eager-import bug surfaced on the microtask queue; give it
+      // several macrotask turns to fire before asserting silence.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("throws the same JunjoError on every verifyToken call after a failed import", async () => {
+    const adapter = jwtAdapter({
+      key: "-----BEGIN PUBLIC KEY-----\nnot-actually-base64\n-----END PUBLIC KEY-----",
+      algorithm: "RS256",
+    });
+    await expect(adapter.verifyToken("any.token.here")).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+    await expect(adapter.verifyToken("any.token.here")).rejects.toMatchObject({
+      code: "invalid_config",
+    });
   });
 });

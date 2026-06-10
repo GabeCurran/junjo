@@ -23,6 +23,10 @@ export interface JwtAdapterOptions {
   clockToleranceSeconds?: number;
 }
 
+// HS256's security degrades directly with secret entropy; require at
+// least the hash's output size (256 bits), matching RFC 7518's minimum.
+const HS256_MIN_KEY_BYTES = 32;
+
 export function jwtAdapter(opts: JwtAdapterOptions): AuthAdapter {
   if (typeof opts.key !== "string" || opts.key.length === 0) {
     throw new JunjoError("jwtAdapter: `key` must be a non-empty string", "invalid_config");
@@ -33,18 +37,36 @@ export function jwtAdapter(opts: JwtAdapterOptions): AuthAdapter {
       "invalid_config",
     );
   }
+  if (
+    opts.algorithm === "HS256" &&
+    new TextEncoder().encode(opts.key).length < HS256_MIN_KEY_BYTES
+  ) {
+    throw new JunjoError(
+      `jwtAdapter: HS256 \`key\` must be at least ${HS256_MIN_KEY_BYTES} bytes (256 bits); generate one with \`openssl rand -base64 32\``,
+      "invalid_config",
+    );
+  }
 
   const userIdClaim = opts.userIdClaim ?? "sub";
-  const keyPromise = resolveVerificationKey(opts.algorithm, opts.key).catch((err: unknown) => {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new JunjoError(`jwtAdapter: failed to import key (${detail})`, "invalid_config");
-  });
+
+  // Imported lazily on first use and memoized. Importing eagerly would
+  // store a rejected promise that nothing has awaited yet, which Node
+  // treats as an unhandled rejection and kills the process on; a bad
+  // PEM should fail the verifyToken call, not the whole app.
+  let keyPromise: Promise<CryptoKey | Uint8Array> | undefined;
+  const importKey = (): Promise<CryptoKey | Uint8Array> => {
+    keyPromise ??= resolveVerificationKey(opts.algorithm, opts.key).catch((err: unknown) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new JunjoError(`jwtAdapter: failed to import key (${detail})`, "invalid_config");
+    });
+    return keyPromise;
+  };
 
   return {
     async verifyToken(token) {
       if (typeof token !== "string" || token.length === 0) return null;
 
-      const key = await keyPromise;
+      const key = await importKey();
       let payload: JWTPayload;
       try {
         const result = await jwtVerify(token, key, {
