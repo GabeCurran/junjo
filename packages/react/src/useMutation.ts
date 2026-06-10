@@ -2,6 +2,25 @@ import { type Reducer, useCallback, useEffect, useReducer, useRef } from "react"
 
 export type MutationStatus = "idle" | "pending" | "success" | "error";
 
+/**
+ * Options for {@link useMutation}.
+ *
+ * Callback semantics: onSuccess, onError, and onSettled fire for every
+ * mutation call, including superseded ones (an earlier mutate whose
+ * result lands after a later mutate started), while the hook's state
+ * reflects only the latest call. Order cache invalidation in callbacks
+ * with that in mind: a callback from a stale mutation still runs, so
+ * invalidations should be idempotent and safe to apply out of order.
+ *
+ * @example
+ * ```tsx
+ * const { invalidateGroup } = useInvalidatePermissions();
+ * const promote = useMutation({
+ *   mutationFn: (memberId: MemberId) => junjo.members.addRole(memberId, roleId),
+ *   onSuccess: () => invalidateGroup(groupId),
+ * });
+ * ```
+ */
 export interface UseMutationOptions<TData, TError = Error, TVariables = void, TContext = unknown> {
   mutationFn: (variables: TVariables) => Promise<TData>;
   onMutate?: (variables: TVariables) => TContext | Promise<TContext> | void | Promise<void>;
@@ -71,6 +90,10 @@ const initialState = <TData, TError>(): State<TData, TError> => ({
   error: null,
 });
 
+// Errors thrown by onSuccess/onError/onSettled are captured here so a
+// faulty callback cannot break the mutation state machine; status and
+// data/error always settle first. The success path rethrows a captured
+// callback error from mutateAsync after the state has been committed.
 async function safeCall<T>(callback: (() => Promise<T> | T) | undefined): Promise<unknown> {
   if (callback === undefined) return undefined;
   try {

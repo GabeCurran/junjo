@@ -418,6 +418,32 @@ describe("useMutation", () => {
     expect(result.current.data).toBe("ok");
   });
 
+  it("an onError callback that throws does not prevent status from reaching error", async () => {
+    const mutationError = new Error("boom");
+    const onError = vi.fn().mockRejectedValue(new Error("from-onError"));
+    const onSettled = vi.fn();
+    const mutationFn = vi.fn().mockRejectedValue(mutationError);
+
+    const { result } = renderHook(() =>
+      useMutation<string, Error, void>({ mutationFn, onError, onSettled }),
+    );
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.mutateAsync();
+      } catch (e) {
+        caught = e;
+      }
+    });
+
+    expect(caught).toBe(mutationError);
+    expect(result.current.status).toBe("error");
+    expect(result.current.error).toBe(mutationError);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith(undefined, mutationError, undefined, undefined);
+  });
+
   it("calls onSettled even if onSuccess throws", async () => {
     const handlerError = new Error("from-onSuccess");
     const onSuccess = vi.fn().mockRejectedValue(handlerError);

@@ -4,6 +4,8 @@ import type {
   FriendSuggestion,
   FriendTag,
   Friendship,
+  Junjo,
+  UserId,
   UserVisibilitySettings,
 } from "@junjo/sdk";
 import { useEffect, useRef, useState } from "react";
@@ -21,7 +23,7 @@ interface FetchState<T> {
   refetch: () => Promise<void>;
 }
 
-function useAsync<T>(loader: () => Promise<T>, depKey: string): FetchState<T> {
+function useAsync<T>(junjo: Junjo, loader: () => Promise<T>, depKey: string): FetchState<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -44,7 +46,9 @@ function useAsync<T>(loader: () => Promise<T>, depKey: string): FetchState<T> {
     }
   };
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch reads via ref; depKey is the canonical signal that a refetch is needed
+  // The client is a dep so a JunjoProvider client swap refetches
+  // against the new client instead of serving the old client's data.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch reads via ref; junjo + depKey are the canonical signals that a refetch is needed
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -64,7 +68,7 @@ function useAsync<T>(loader: () => Promise<T>, depKey: string): FetchState<T> {
     return () => {
       cancelled = true;
     };
-  }, [depKey]);
+  }, [junjo, depKey]);
 
   return { data, loading, error, refetch };
 }
@@ -76,7 +80,7 @@ function useAsync<T>(loader: () => Promise<T>, depKey: string): FetchState<T> {
 export interface UseFriendsOptions {
   limit?: number;
   tagId?: string;
-  viewer?: string;
+  viewer?: UserId;
 }
 
 export interface UseFriendsResult {
@@ -86,12 +90,20 @@ export interface UseFriendsResult {
   refetch: () => Promise<void>;
 }
 
-export function useFriends(userId: string, opts?: UseFriendsOptions): UseFriendsResult {
+/**
+ * Pagination model differs from useMembers/useInvitations on purpose:
+ * this hook fetches only the first page (up to `limit` items) and does
+ * not expose loadingMore/hasMore or accumulate pages. Pass a larger
+ * `limit` or page via the SDK's `friends.list` cursor directly when
+ * the full list is needed.
+ */
+export function useFriends(userId: UserId, opts?: UseFriendsOptions): UseFriendsResult {
   const junjo = useJunjo();
   const limit = opts?.limit;
   const tagId = opts?.tagId;
   const viewer = opts?.viewer;
   const state = useAsync(
+    junjo,
     () => junjo.friends.list(userId, { limit, tagId, viewer }).then((p) => p.items),
     `friends|${userId}|${limit ?? ""}|${tagId ?? ""}|${viewer ?? ""}`,
   );
@@ -120,13 +132,19 @@ export interface UseFriendRequestsResult {
 
 const EMPTY_REQUESTS: FriendRequestList = { inbound: [], outbound: [] };
 
+/**
+ * Unlike useMembers/useInvitations there is no loadingMore/hasMore:
+ * the friend-requests endpoint returns the full inbound/outbound set
+ * in one response, so no pagination state exists to expose.
+ */
 export function useFriendRequests(
-  userId: string,
+  userId: UserId,
   opts?: UseFriendRequestsOptions,
 ): UseFriendRequestsResult {
   const junjo = useJunjo();
   const direction = opts?.direction;
   const state = useAsync(
+    junjo,
     () => junjo.friends.requests.list(userId, { direction }),
     `friend-requests|${userId}|${direction ?? ""}`,
   );
@@ -154,12 +172,13 @@ export interface UseFriendSuggestionsResult {
 }
 
 export function useFriendSuggestions(
-  userId: string,
+  userId: UserId,
   opts?: UseFriendSuggestionsOptions,
 ): UseFriendSuggestionsResult {
   const junjo = useJunjo();
   const limit = opts?.limit;
   const state = useAsync(
+    junjo,
     () => junjo.friends.suggestions(userId, { limit }),
     `suggestions|${userId}|${limit ?? ""}`,
   );
@@ -182,9 +201,13 @@ export interface UseBlocklistResult {
   refetch: () => Promise<void>;
 }
 
-export function useBlocklist(userId: string): UseBlocklistResult {
+/**
+ * Unlike useMembers/useInvitations there is no loadingMore/hasMore:
+ * the blocks endpoint returns the full set in one response.
+ */
+export function useBlocklist(userId: UserId): UseBlocklistResult {
   const junjo = useJunjo();
-  const state = useAsync(() => junjo.friends.blocks.list(userId), `blocks|${userId}`);
+  const state = useAsync(junjo, () => junjo.friends.blocks.list(userId), `blocks|${userId}`);
   return {
     blocks: state.data ?? [],
     loading: state.loading,
@@ -204,9 +227,13 @@ export interface UseFriendTagsResult {
   refetch: () => Promise<void>;
 }
 
-export function useFriendTags(userId: string): UseFriendTagsResult {
+/**
+ * Unlike useMembers/useInvitations there is no loadingMore/hasMore:
+ * the friend-tags endpoint returns the full set in one response.
+ */
+export function useFriendTags(userId: UserId): UseFriendTagsResult {
   const junjo = useJunjo();
-  const state = useAsync(() => junjo.friends.tags.list(userId), `tags|${userId}`);
+  const state = useAsync(junjo, () => junjo.friends.tags.list(userId), `tags|${userId}`);
   return {
     tags: state.data ?? [],
     loading: state.loading,
@@ -226,9 +253,9 @@ export interface UseUserVisibilityResult {
   refetch: () => Promise<void>;
 }
 
-export function useUserVisibility(userId: string): UseUserVisibilityResult {
+export function useUserVisibility(userId: UserId): UseUserVisibilityResult {
   const junjo = useJunjo();
-  const state = useAsync(() => junjo.friends.visibility.get(userId), `visibility|${userId}`);
+  const state = useAsync(junjo, () => junjo.friends.visibility.get(userId), `visibility|${userId}`);
   return {
     visibility: state.data,
     loading: state.loading,

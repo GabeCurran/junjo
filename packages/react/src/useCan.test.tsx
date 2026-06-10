@@ -4,6 +4,7 @@ import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
+import { useInvalidatePermissions } from "./permissionCache.js";
 import { useCan } from "./useCan.js";
 
 const USER_ID = "user_a" as UserId;
@@ -250,6 +251,74 @@ describe("useCan", () => {
 
     await waitFor(() => expect(second.current).toBe(true));
     expect(h.can).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches after invalidateUser clears the cached value", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    const { result } = renderHook(
+      () => ({
+        allowed: useCan(USER_ID, GROUP_ID, PERMISSION),
+        invalidate: useInvalidatePermissions(),
+      }),
+      { wrapper: wrapper(h.client) },
+    );
+
+    await waitFor(() => expect(result.current.allowed).toBe(true));
+    expect(h.can).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.invalidate.invalidateUser(USER_ID);
+    });
+
+    await waitFor(() => expect(result.current.allowed).toBe(false));
+    expect(h.can).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches after a targeted invalidate of the exact triple", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const { result } = renderHook(
+      () => ({
+        allowed: useCan(USER_ID, GROUP_ID, PERMISSION),
+        invalidate: useInvalidatePermissions(),
+      }),
+      { wrapper: wrapper(h.client) },
+    );
+
+    await waitFor(() => expect(result.current.allowed).toBe(false));
+
+    act(() => {
+      result.current.invalidate.invalidate(USER_ID, GROUP_ID, PERMISSION);
+    });
+
+    await waitFor(() => expect(result.current.allowed).toBe(true));
+    expect(h.can).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refetch a consumer whose group was not invalidated", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+
+    const { result } = renderHook(
+      () => ({
+        allowed: useCan(USER_ID, GROUP_ID, PERMISSION),
+        invalidate: useInvalidatePermissions(),
+      }),
+      { wrapper: wrapper(h.client) },
+    );
+
+    await waitFor(() => expect(result.current.allowed).toBe(true));
+    expect(h.can).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.invalidate.invalidateGroup(ALT_GROUP_ID);
+    });
+
+    expect(result.current.allowed).toBe(true);
+    expect(h.can).toHaveBeenCalledTimes(1);
   });
 
   it("notifies all consumers of the same key when the request resolves", async () => {

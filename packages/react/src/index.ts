@@ -4,6 +4,8 @@ export { useJunjo } from "./useJunjo.js";
 export { useGroup } from "./useGroup.js";
 export type { GroupSnapshot, GroupUpdater, UseGroupResult } from "./useGroup.js";
 export { useCan } from "./useCan.js";
+export { useInvalidatePermissions } from "./permissionCache.js";
+export type { UseInvalidatePermissionsResult } from "./permissionCache.js";
 export { useMembers } from "./useMembers.js";
 export type {
   MemberUpdater,
@@ -26,3 +28,22 @@ export type {
   UseMutationOptions,
   UseMutationResult,
 } from "./useMutation.js";
+export {
+  useFriends,
+  useFriendRequests,
+  useFriendSuggestions,
+  useBlocklist,
+  useFriendTags,
+  useUserVisibility,
+} from "./useFriends.js";
+export type {
+  UseFriendsOptions,
+  UseFriendsResult,
+  UseFriendRequestsOptions,
+  UseFriendRequestsResult,
+  UseFriendSuggestionsOptions,
+  UseFriendSuggestionsResult,
+  UseBlocklistResult,
+  UseFriendTagsResult,
+  UseUserVisibilityResult,
+} from "./useFriends.js";
