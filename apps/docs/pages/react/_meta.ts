@@ -6,5 +6,11 @@ export default {
   "use-members": "useMembers",
   "use-invitations": "useInvitations",
   "use-audit-log": "useAuditLog",
+  "use-friends": "useFriends",
+  "use-friend-requests": "useFriendRequests",
+  "use-friend-suggestions": "useFriendSuggestions",
+  "use-blocklist": "useBlocklist",
+  "use-friend-tags": "useFriendTags",
+  "use-user-visibility": "useUserVisibility",
   "use-mutation": "useMutation",
 };

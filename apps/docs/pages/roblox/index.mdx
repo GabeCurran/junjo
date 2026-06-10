@@ -53,6 +53,27 @@ local junjo = Junjo.new({
 | `inviteBaseUrl` | no | Base URL used by `groups:inviteByLink`. Defaults to `baseUrl`. Trailing slashes are trimmed. |
 | `httpService` | no | Override the `HttpService` reference. Used to inject a fake during unit testing of higher-level wrappers; production reads `game:GetService("HttpService")`. |
 
+The constructor validates the key shape the same way the TypeScript SDK does: a cross-game admin token (`jadm_*`) raises `invalid_config` immediately, and a key that does not match the `jk_<prefix>.<secret>` shape logs a one-time warning (the server remains the source of truth and rejects genuinely bad keys with 401).
+
+`Junjo.VERSION` is a semver string (kept in sync with each release) you can log from your game for support and bug reports:
+
+```lua
+print("Junjo SDK " .. Junjo.VERSION)
+```
+
+## HTTP behavior
+
+Requests go through `HttpService:RequestAsync`, which has a fixed timeout of roughly 30 seconds and no configurable timeout option; a hung request yields the calling thread until Roblox gives up, so call Junjo from a dedicated thread (`task.spawn`) when latency would stall game logic. Roblox also enforces an HttpService budget of 500 requests per minute per server: when the API answers `429` (or HttpService raises after exhausting the budget), back off before retrying:
+
+```lua
+local ok, err = pcall(function()
+  return junjo.members:list(groupId, { limit = 50 })
+end)
+if not ok and Junjo.JunjoError.is(err) and err.status == 429 then
+  task.wait(5) -- back off, then retry once
+end
+```
+
 ## Errors
 
 Every method that talks to the server raises a `JunjoError`-shaped Lua error table when the response is non-2xx. Catch it with `pcall` and branch on `code`:
@@ -180,6 +201,7 @@ local result = junjo.groups:inviteByLink(groupId)     -- { invitation, url }
 junjo.groups:bulkInvite(groupId, "user_alpha\nuser_beta\n", { roleId = "member" })
 junjo.groups:acceptInvitation(invite.code, userId)
 junjo.groups:declineInvitation(invite.code)
+junjo.groups:declineInvitation(invite.code, { userId = userId }) -- attribute who declined
 junjo.groups:leave(groupId, userId)
 junjo.groups:kick(groupId, userId, { reason = "afk" })
 
@@ -266,7 +288,7 @@ Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `membe
 
 ## Manual verification
 
-The Roblox model is not built on every commit; the Luau code lands as source under `packages/sdk-roblox/src/` and is sync'd into Roblox Studio out-of-band. Until the harness can run Luau in CI, the following must be confirmed manually after each Roblox-touching iteration:
+A lune-based Luau suite (`packages/sdk-roblox/tests/`) runs in CI on every Roblox-touching change, covering construction and key validation, nil-input guards, URL encoding, `Junjo.Null` round-trips, and the HTTP error paths against a fake HttpService. The `Junjo.rbxm` model is built by rojo and attached to each GitHub release. What CI cannot exercise is the real Roblox environment, so the following still need a manual pass in Roblox Studio after substantial changes:
 
 - `Junjo.new({ apiKey = "..." })` constructs without error in Roblox Studio.
 - `junjo.groups:create({ kind = "guild", name = "Test" })` returns a parsed Lua table whose `id` is a string.

@@ -82,9 +82,12 @@ const junjo = new Junjo({
 });
 ```
 
+This pattern is for servers: Node processes, API routes, workers, anywhere `process.env.JUNJO_API_KEY` stays private. The key is a full-control secret, so browsers must never hold it (no `NEXT_PUBLIC_` / `VITE_` env vars). A browser client is constructed with `new Junjo({ proxy: true, baseUrl: "/api/junjo" })` and your backend injects the key while forwarding; see [JunjoProvider + useJunjo](/react/provider#browser-apps-proxy-mode) for the full proxy setup.
+
 | Option | Required | Notes |
 |--------|----------|-------|
-| `apiKey` | yes | The full `prefix.secret` string from the dashboard or `db:seed`. |
+| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string from the dashboard or `db:seed`. Server-side only. |
+| `proxy` | no | Browser mode: requests go to `baseUrl` (required) with no credential, and passing `apiKey` throws. Your backend injects the key. See [the React provider page](/react/provider#browser-apps-proxy-mode). |
 | `baseUrl` | no | Override the API root. Defaults to the cloud endpoint. Trailing slashes are stripped. |
 | `inviteBaseUrl` | no | Public URL prefix used by `inviteByLink` to build the share URL. Defaults to `baseUrl`. |
 | `authAdapter` | no | An [`AuthAdapter`](/auth) (Clerk, Supabase, JWT, or BYO). Server-to-server calls do not need one. |

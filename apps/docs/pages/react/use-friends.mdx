@@ -1,0 +1,121 @@
+# useFriends
+
+Returns a user's friend list. Fetch-on-mount and refetch-driven: friend events carry no `groupId`, so they do not flow over the per-group SSE channel (they fire as [webhooks](/api-reference/webhooks) instead), and the hook does not open a subscription.
+
+```tsx
+import { useFriends } from "@junjo/react";
+
+function FriendsPanel({ userId }: { userId: string }) {
+  const { friends, loading, error, refetch } = useFriends(userId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      <li>
+        <button type="button" onClick={() => void refetch()}>Refresh</button>
+      </li>
+      {friends.map((f) => (
+        <li key={f.id}>
+          {f.junjoUserId} (since {f.since.toLocaleDateString()})
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useFriends(userId: string, opts?: UseFriendsOptions): UseFriendsResult;
+
+interface UseFriendsOptions {
+  limit?: number;
+  tagId?: string;
+  viewer?: string;
+}
+
+interface UseFriendsResult {
+  friends: Friendship[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `friends` | The current page of `Friendship` rows (the OTHER party per row, sorted by `since` desc). `[]` until the first response lands. |
+| `loading` | `true` from mount until the first `friends.list` response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch with the current arguments. Returns a `Promise` that resolves when the response lands. |
+
+`userId` (like every user id on the friends hooks) is your application's external user id; see the [user-id contract](/sdk/friends#user-id-contract).
+
+## Options
+
+| Option | Type | Notes |
+|--------|------|-------|
+| `limit` | number | Page size, 1-100 (server default 50). The hook fetches a SINGLE page and discards `nextCursor`; for full pagination call `junjo.friends.list` / `listAll` through `useJunjo()` directly. |
+| `tagId` | string | Restrict to friends carrying this [tag](/react/use-friend-tags). Tags are per-game, so the result contracts to the calling game. |
+| `viewer` | string | Enforce [visibility rules](/sdk/friends#junjofriendsvisibility) from this viewer's perspective. Omitted, the call is admin-style and bypasses visibility. |
+
+**Proxy-mode note**: in a browser behind [proxy mode](/react/provider#browser-apps-proxy-mode), `viewer` is just a query param the browser chose to send, and `userId` is just a path segment. Your proxy must pin or validate both against the signed-in session; otherwise any visitor can read any user's friend list with admin-style access.
+
+## Shared fetch semantics
+
+All six friends hooks (`useFriends`, [`useFriendRequests`](/react/use-friend-requests), [`useFriendSuggestions`](/react/use-friend-suggestions), [`useBlocklist`](/react/use-blocklist), [`useFriendTags`](/react/use-friend-tags), [`useUserVisibility`](/react/use-user-visibility)) share one fetch engine:
+
+- **Argument changes refetch.** Changing `userId` or any option re-runs the fetch. The previous data stays visible while the new request is in flight (`loading` flips back to `true`) and is replaced when the response lands.
+- **`refetch` is not referentially stable.** It is recreated on every render, so do not put it in a `useEffect` dependency array; call it from event handlers or after mutations.
+- **Overlapping refetches are not deduplicated.** Two concurrent `refetch` calls both hit the network; the last response to resolve wins.
+- **Stale mount responses are dropped.** The effect-driven fetch ignores its response if the arguments changed or the component unmounted before it resolved.
+- **Mutations pair with `refetch`.** The friends hooks have no `applyOptimistic` helper in V1; mutate through `useJunjo()` and refetch on success:
+
+```tsx
+import { useFriends, useJunjo } from "@junjo/react";
+
+function UnfriendButton({ userId, otherUserId }: { userId: string; otherUserId: string }) {
+  const junjo = useJunjo();
+  const { refetch } = useFriends(userId);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        await junjo.friends.remove(userId, otherUserId);
+        await refetch();
+      }}
+    >
+      Unfriend
+    </button>
+  );
+}
+```
+
+## Errors
+
+The hook never throws; errors land in `result.error`. An initial fetch error leaves `friends: []` at `loading: false`. A `refetch` error keeps the previous data visible and sets `error`; calling `refetch` again clears it and retries. A `not_found` `JunjoError` here usually means `friends.enabled = false` for the calling game.
+
+If `useFriends` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.friends.list` directly on the instance (the hook unwraps the page's `items`):
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends, {
+  list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+});
+```
+
+### See also
+
+- [`junjo.friends`](/sdk/friends) - the underlying SDK namespace, including `getRelationship` for single-pair probes.

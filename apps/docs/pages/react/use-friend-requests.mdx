@@ -1,0 +1,104 @@
+# useFriendRequests
+
+Returns a user's pending friend requests, inbound and outbound. Fetch-on-mount and refetch-driven; request lifecycle events fire as [webhooks](/api-reference/webhooks), not SSE, so the hook does not open a subscription.
+
+```tsx
+import { useFriendRequests, useJunjo } from "@junjo/react";
+
+function RequestsInbox({ userId }: { userId: string }) {
+  const junjo = useJunjo();
+  const { requests, loading, error, refetch } = useFriendRequests(userId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {requests.inbound.map((r) => (
+        <li key={r.id}>
+          {r.actorJunjoUserId}
+          <button
+            type="button"
+            onClick={async () => {
+              await junjo.friends.requests.accept(r.id);
+              await refetch();
+            }}
+          >
+            Accept
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              await junjo.friends.requests.decline(r.id);
+              await refetch();
+            }}
+          >
+            Decline
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useFriendRequests(
+  userId: string,
+  opts?: UseFriendRequestsOptions,
+): UseFriendRequestsResult;
+
+interface UseFriendRequestsOptions {
+  direction?: "in" | "out" | "both";
+}
+
+interface UseFriendRequestsResult {
+  requests: FriendRequestList; // { inbound: FriendRequest[]; outbound: FriendRequest[] }
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `requests` | `{ inbound, outbound }` of pending `FriendRequest` rows. Both arrays are `[]` until the first response lands. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch with the current arguments. |
+
+## Direction filter
+
+`direction` defaults to `"both"` (the server default). `"in"` only populates `inbound`; `"out"` only populates `outbound`; the other array stays `[]`. Changing the option between renders re-runs the fetch.
+
+## Mutations
+
+The request lifecycle lives on [`junjo.friends.requests`](/sdk/friends#junjofriendsrequests): `send`, `accept`, `decline`, `cancel`. None of them mutate this hook's state directly; call `refetch` after each. Note that `send` can return `status: "auto-accepted"` when the game runs with `requestsRequired = false`, in which case the new row shows up in [`useFriends`](/react/use-friends) rather than here.
+
+The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Errors
+
+The hook never throws; errors land in `result.error`. An initial fetch error leaves both arrays empty at `loading: false`; a `refetch` error keeps the previous data and sets `error`. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.friends.requests.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends.requests, {
+  list: vi.fn().mockResolvedValue({ inbound: [], outbound: [] }),
+});
+```
+
+### See also
+
+- [`junjo.friends.requests`](/sdk/friends#junjofriendsrequests) - the underlying SDK namespace.

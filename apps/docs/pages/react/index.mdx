@@ -21,7 +21,22 @@ npm install @junjo/sdk @junjo/react
 | [`useMembers`](/react/use-members) | Paginated roster with status filter and live event updates. |
 | [`useInvitations`](/react/use-invitations) | Paginated invitation list with status filter and live event updates. |
 | [`useAuditLog`](/react/use-audit-log) | Paginated audit log with action filter; refetch-driven (no SSE subscription). |
+| [`useFriends`](/react/use-friends) | A user's friend list with tag filter and viewer-perspective visibility; refetch-driven. |
+| [`useFriendRequests`](/react/use-friend-requests) | Pending inbound + outbound friend requests; refetch-driven. |
+| [`useFriendSuggestions`](/react/use-friend-suggestions) | Ranked mutual-friend suggestions; refetch-driven. |
+| [`useBlocklist`](/react/use-blocklist) | A user's outbound blocks; refetch-driven. |
+| [`useFriendTags`](/react/use-friend-tags) | A user's private friend-list tags; refetch-driven. |
+| [`useUserVisibility`](/react/use-user-visibility) | A user's friends-list visibility setting; refetch-driven. |
 | [`useMutation`](/react/use-mutation) | Generic mutation primitive with `onMutate -> context -> onError` rollback hooks for optimistic updates. |
 | `applyOptimistic` on `useMembers` / `useInvitations` / `useGroup` | Each hook's result returns a snapshot + rollback helper that pairs with [`useMutation`](/react/use-mutation). |
 
 Wiring `JunjoProvider` once at your app's root is the only setup step you need.
+
+## Security
+
+The provider does not make the client safe by itself; construction does. The per-game `jk_` API key is a full-control secret, so a React tree needs one of two setups:
+
+- **Server context**: the tree runs only in a trusted server process. Construct with `apiKey: process.env.JUNJO_API_KEY`, a server-only variable. Never a `NEXT_PUBLIC_` / `VITE_` style variable: those are inlined into the client bundle at build time.
+- **Proxy mode** (browser apps, the normal case): construct with `new Junjo({ proxy: true, baseUrl: "/api/junjo" })`. The browser holds no credential; your backend forwards `/api/junjo/*` to the Junjo API, injects the key, and enforces per-user authorization as it forwards.
+
+Never embed a `jk_` key in a client bundle; every visitor can read it and gain full control of the game. [JunjoProvider + useJunjo](/react/provider) has the full story, including a copy-paste Next.js proxy handler.

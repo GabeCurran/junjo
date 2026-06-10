@@ -2,20 +2,28 @@
 
 Wires a `Junjo` client through React Context. Construct the client once at app startup and hand it to `<JunjoProvider client={client}>` near the root of your tree; every descendant then reaches it via `useJunjo()`.
 
+How you construct that client depends on where the tree runs. The per-game API key (`jk_<prefix>.<secret>`) is a full-control secret: it authorizes every read and every mutation on your game. It can live in a server process; it can never live in a browser bundle. Server-rendered trees construct with the key directly ([below](#junjoprovider)); browser apps use [proxy mode](#browser-apps-proxy-mode).
+
 ## `JunjoProvider`
 
 ```tsx
 import { Junjo } from "@junjo/sdk";
 import { JunjoProvider } from "@junjo/react";
 
+// JUNJO_API_KEY is a server-only environment variable.
+// NOT NEXT_PUBLIC_ -- see the warning below.
 const junjo = new Junjo({
-  apiKey: process.env.NEXT_PUBLIC_JUNJO_API_KEY!,
+  apiKey: process.env.JUNJO_API_KEY!,
 });
 
 export function App({ children }: { children: React.ReactNode }) {
   return <JunjoProvider client={junjo}>{children}</JunjoProvider>;
 }
 ```
+
+This construction is for trees that run in a trusted server context: server-only rendering, internal tools on a private network, tests. If the components calling Junjo hydrate in a visitor's browser, the bundler would have to embed the key for this code to run there, which leaks it. In that case construct with [proxy mode](#browser-apps-proxy-mode) instead.
+
+> **Never put the API key in a `NEXT_PUBLIC_` (or `VITE_`, or any other client-exposed) environment variable.** Next.js inlines every `NEXT_PUBLIC_` value into the JavaScript bundle at build time, so the key ships to every visitor and is readable in view-source, devtools, and the network tab. The `jk_` key is not a publishable key: anyone holding it has full control of your game. The SDK detects a `jk_` key being constructed while `window` exists and logs a console warning; treat that warning as a live leak - rotate the key and switch to proxy mode.
 
 ### Props
 
@@ -27,6 +35,85 @@ export function App({ children }: { children: React.ReactNode }) {
 The provider is a thin wrapper around `Context.Provider`; passing a different `client` to `JunjoProvider` re-renders consumers with the new instance. Nested providers shadow outer ones inside their subtree.
 
 Construct the client once and reuse it across renders. A fresh `new Junjo(...)` on every render allocates a new HTTP helper each time and defeats any future caching layer in `@junjo/react`.
+
+## Browser apps: proxy mode
+
+A browser client must hold no credential at all. Construct with `proxy: true` and point `baseUrl` at a route on your own backend:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+
+const junjo = new Junjo({
+  proxy: true,
+  baseUrl: "/api/junjo",
+});
+
+export function App({ children }: { children: React.ReactNode }) {
+  return <JunjoProvider client={junjo}>{children}</JunjoProvider>;
+}
+```
+
+In proxy mode the SDK sends every request to `baseUrl` with no `authorization` header. The constructor enforces the contract: passing an `apiKey` together with `proxy: true` throws `invalid_config` (the key would still ship to the browser), and omitting `baseUrl` throws as well (the default cloud endpoint would reject the unauthenticated requests).
+
+Your backend forwards `/api/junjo/*` to the Junjo API and injects the real key server-side. A minimal Next.js App Router handler:
+
+```ts
+// app/api/junjo/[...path]/route.ts
+const JUNJO_API = "https://api.junjo.io";
+
+async function forward(
+  req: Request,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
+  const { path } = await params;
+
+  // The jk_ key is full-control, so per-user authorization belongs HERE.
+  // Authenticate the visitor and forward only the routes (and user ids)
+  // they are allowed to touch; a proxy that forwards everything hands
+  // full control of the game to every visitor.
+  // if (!(await isAllowed(req, path))) return new Response(null, { status: 403 });
+
+  const search = new URL(req.url).search;
+  const upstream = await fetch(`${JUNJO_API}/${path.join("/")}${search}`, {
+    method: req.method,
+    headers: {
+      authorization: `Bearer ${process.env.JUNJO_API_KEY}`,
+      "content-type": req.headers.get("content-type") ?? "application/json",
+      accept: req.headers.get("accept") ?? "application/json",
+    },
+    body:
+      req.method === "GET" || req.method === "HEAD"
+        ? undefined
+        : await req.text(),
+  });
+
+  // Mirror the upstream response headers (content-type, cache-control,
+  // content-encoding...). Dropping cache-control in particular lets an
+  // intermediary cache the SSE response and break streaming. Strip only
+  // the hop-by-hop headers the runtime recomputes for the new response.
+  const headers = new Headers(upstream.headers);
+  for (const h of ["content-length", "connection", "keep-alive", "transfer-encoding"]) {
+    headers.delete(h);
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers,
+  });
+}
+
+export { forward as GET, forward as POST, forward as PUT, forward as PATCH, forward as DELETE };
+```
+
+Notes on the handler:
+
+- The SDK requests paths like `/v1/groups`, so with `baseUrl: "/api/junjo"` the handler receives `path = ["v1", "groups"]` and forwards to `https://api.junjo.io/v1/groups`. Query strings pass through via `search`.
+- Forwarding the `accept` header, mirroring the upstream response headers (especially `cache-control: no-cache`), and returning `upstream.body` unbuffered keeps `groups.subscribe` (SSE) working through the proxy, as long as your host supports streaming responses.
+- The `await req.text()` branch covers every non-GET method, including `DELETE` bodies (`bans.remove` attributes the unban through one).
+- The same shape works on any backend (Express, Fastify, a worker runtime). The contract is only: forward method, path, query, and body; inject `authorization: Bearer <key>`; stream the response back.
+
+The authorization comment is not optional homework. Because the `jk_` key bypasses per-user permission checks, the proxy is the layer that decides what the signed-in visitor may do: pin user-id path segments (and the `viewer` query param on friends routes) to the session's user, allowlist the routes your UI actually needs, and reject everything else.
 
 ## `useJunjo`
 

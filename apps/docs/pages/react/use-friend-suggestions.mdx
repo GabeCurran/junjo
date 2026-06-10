@@ -1,0 +1,87 @@
+# useFriendSuggestions
+
+Returns ranked mutual-friend suggestions for a user: candidates who share at least `friends.discovery.minMutuals` friends, excluding existing friends and anyone blocked in either direction. Fetch-on-mount and refetch-driven (no SSE subscription).
+
+```tsx
+import { useFriendSuggestions, useJunjo } from "@junjo/react";
+
+function PeopleYouMayKnow({ userId }: { userId: string }) {
+  const junjo = useJunjo();
+  const { suggestions, loading, error, refetch } = useFriendSuggestions(userId, { limit: 10 });
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {suggestions.map((s) => (
+        <li key={s.junjoUserId}>
+          {s.junjoUserId} ({s.mutualCount} mutuals)
+          <button
+            type="button"
+            onClick={async () => {
+              await junjo.friends.requests.send(userId, s.junjoUserId);
+              await refetch();
+            }}
+          >
+            Add friend
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useFriendSuggestions(
+  userId: string,
+  opts?: UseFriendSuggestionsOptions,
+): UseFriendSuggestionsResult;
+
+interface UseFriendSuggestionsOptions {
+  limit?: number;
+}
+
+interface UseFriendSuggestionsResult {
+  suggestions: FriendSuggestion[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `suggestions` | Ranked `FriendSuggestion` rows. Each carries `junjoUserId`, `mutualCount`, and up to five `sampleMutualJunjoUserIds` so the UI can render "you know A, B, +N others" without a follow-up fetch. `[]` until the first response lands. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch with the current arguments. |
+
+The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Errors
+
+The hook never throws; errors land in `result.error`. A `not_found` `JunjoError` means discovery is disabled for the calling game (`friends.discovery.enabled = false`); render the panel conditionally rather than retrying. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.friends.suggestions` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends, {
+  suggestions: vi.fn().mockResolvedValue([]),
+});
+```
+
+### See also
+
+- [`junjo.friends.suggestions`](/sdk/friends#suggestionsuserid-opts) - the underlying SDK method.

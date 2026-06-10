@@ -1,0 +1,96 @@
+# useUserVisibility
+
+Returns a user's friends-list visibility setting in the calling game, falling back to the game's configured default when the user has never set one. Fetch-on-mount and refetch-driven (no SSE subscription).
+
+```tsx
+import { useUserVisibility, useJunjo } from "@junjo/react";
+import type { FriendsListVisibility } from "@junjo/sdk";
+
+function VisibilityPicker({ userId }: { userId: string }) {
+  const junjo = useJunjo();
+  const { visibility, loading, error, refetch } = useUserVisibility(userId);
+  if (loading || !visibility) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <select
+      value={visibility.friendsListVisibility}
+      onChange={async (e) => {
+        await junjo.friends.visibility.set(userId, e.target.value as FriendsListVisibility);
+        await refetch();
+      }}
+    >
+      {visibility.allowed.map((v) => (
+        <option key={v} value={v}>
+          {v}
+        </option>
+      ))}
+    </select>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useUserVisibility(userId: string): UseUserVisibilityResult;
+
+interface UseUserVisibilityResult {
+  visibility: UserVisibilitySettings | null;
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `visibility` | The `UserVisibilitySettings` row, or `null` until the first response lands. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch. |
+
+`UserVisibilitySettings` fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `friendsListVisibility` | `"private" \| "friends-only" \| "public"` | The effective setting; the game's `friends.visibility.default` when the user never set one. |
+| `allowed` | `FriendsListVisibility[]` | The values this game permits, so the UI renders exactly the right options. |
+| `updatedAt` | `Date \| null` | `null` when the value is the game default rather than a user-set row. |
+
+## Mutations
+
+`junjo.friends.visibility.set(userId, value)` writes the setting and validates against the game's `allowed` list; call `refetch` afterwards. What each value means for who can list the user's friends is documented on the [SDK page](/sdk/friends#junjofriendsvisibility).
+
+The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.friends.visibility.get` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends.visibility, {
+  get: vi.fn().mockResolvedValue({
+    gameId: "game_1",
+    junjoUserId: "user_alice",
+    friendsListVisibility: "friends-only",
+    allowed: ["private", "friends-only", "public"],
+    updatedAt: null,
+  }),
+});
+```
+
+### See also
+
+- [`junjo.friends.visibility`](/sdk/friends#junjofriendsvisibility) - the underlying SDK namespace.

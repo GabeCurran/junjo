@@ -1,0 +1,86 @@
+# useFriendTags
+
+Returns a user's friend-list tags in the calling game, sorted by name. Tags are private to their owner: only the user that created a tag sees it applied. Fetch-on-mount and refetch-driven (no SSE subscription).
+
+```tsx
+import { useFriendTags, useJunjo } from "@junjo/react";
+
+function TagManager({ userId }: { userId: string }) {
+  const junjo = useJunjo();
+  const { tags, loading, error, refetch } = useFriendTags(userId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      <li>
+        <button
+          type="button"
+          onClick={async () => {
+            await junjo.friends.tags.create(userId, { name: "Close friends", color: "#ff5050" });
+            await refetch();
+          }}
+        >
+          New tag
+        </button>
+      </li>
+      {tags.map((t) => (
+        <li key={t.id} style={{ color: t.color ?? undefined }}>
+          {t.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useFriendTags(userId: string): UseFriendTagsResult;
+
+interface UseFriendTagsResult {
+  tags: FriendTag[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `tags` | The user's `FriendTag` rows (`id`, `gameId`, `junjoUserId`, `name`, `color`, `createdAt`), sorted by name. `[]` until the first response lands. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch. |
+
+## Mutations
+
+The write surface lives on [`junjo.friends.tags`](/sdk/friends#junjofriendstags): `create` (capped by `friends.tags.maxPerUser`), `update`, `delete` (cascades to all assignments), and `assign(userId, otherUserId, tagIds)` to replace the tag set on one friendship. Call `refetch` after each. To FILTER a friend list by tag, pass `tagId` to [`useFriends`](/react/use-friends).
+
+The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.friends.tags.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends.tags, {
+  list: vi.fn().mockResolvedValue([]),
+});
+```
+
+### See also
+
+- [`junjo.friends.tags`](/sdk/friends#junjofriendstags) - the underlying SDK namespace.

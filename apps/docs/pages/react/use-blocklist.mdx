@@ -1,0 +1,84 @@
+# useBlocklist
+
+Returns a user's outbound blocks. Fetch-on-mount and refetch-driven (no SSE subscription); `friend.blocked` / `friend.unblocked` fire as [webhooks](/api-reference/webhooks).
+
+```tsx
+import { useBlocklist, useJunjo } from "@junjo/react";
+
+function BlockedUsers({ userId }: { userId: string }) {
+  const junjo = useJunjo();
+  const { blocks, loading, error, refetch } = useBlocklist(userId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {blocks.map((b) => (
+        <li key={b.id}>
+          {b.junjoUserId}
+          <button
+            type="button"
+            onClick={async () => {
+              await junjo.friends.blocks.remove(userId, b.junjoUserId);
+              await refetch();
+            }}
+          >
+            Unblock
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useBlocklist(userId: string): UseBlocklistResult;
+
+interface UseBlocklistResult {
+  blocks: Block[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `blocks` | The user's outbound `Block` rows (`id`, `gameId`, `junjoUserId`, `blockedAt`). `[]` until the first response lands. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch. |
+
+## Mutations
+
+`junjo.friends.blocks.add(userId, targetJunjoUserId)` and `junjo.friends.blocks.remove(userId, otherUserId)` are the write surface; call `refetch` after each. Note that adding a block implicitly removes any friendship AND any pending requests in either direction (one transaction), so a screen that also renders [`useFriends`](/react/use-friends) or [`useFriendRequests`](/react/use-friend-requests) should refetch those too.
+
+The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.friends.blocks.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo/sdk";
+import { JunjoProvider } from "@junjo/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.friends.blocks, {
+  list: vi.fn().mockResolvedValue([]),
+});
+```
+
+### See also
+
+- [`junjo.friends.blocks`](/sdk/friends#junjofriendsblocks) - the underlying SDK namespace.

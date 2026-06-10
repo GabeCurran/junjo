@@ -13,10 +13,13 @@ const junjo = new Junjo({
 });
 ```
 
+This example targets a server. The `jk_` key is a full-control secret; never expose it to browsers via `NEXT_PUBLIC_` / `VITE_` style env vars. Browser apps construct with `proxy: true` and let a backend proxy inject the key; see [JunjoProvider + useJunjo](/react/provider#browser-apps-proxy-mode).
+
 | Option | Required | Notes |
 |--------|----------|-------|
-| `apiKey` | yes | The full `prefix.secret` string issued in the dashboard or by `npm run db:seed`. |
-| `baseUrl` | no | Override the API root. Trailing slashes are stripped. Defaults to the cloud endpoint. |
+| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string issued in the dashboard or by `npm run db:seed`. Server-side only. |
+| `proxy` | no | Browser mode: requests go to `baseUrl` (required) with no `authorization` header; passing `apiKey` throws `invalid_config`. Your backend forwards to the Junjo API and injects the key. |
+| `baseUrl` | no | Override the API root. Trailing slashes are stripped. Defaults to the cloud endpoint. Required in proxy mode (point it at your proxy route, e.g. `"/api/junjo"`). |
 | `authAdapter` | no | An `AuthAdapter` (Clerk, Supabase, JWT, or BYO). Used by the permission-resolution path; not required for server-to-server calls. |
 | `fetch` | no | Override the `fetch` implementation. Useful in environments without a global `fetch`, and to mock requests in tests. |
 
