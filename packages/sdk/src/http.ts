@@ -1,7 +1,9 @@
 import { JunjoError } from "./errors.js";
 
 export interface HttpClientOptions {
-  apiKey: string;
+  // Absent in proxy mode: the developer's backend proxy injects the real
+  // credential, so the SDK attaches no authorization header at all.
+  apiKey?: string;
   baseUrl: string;
   fetch: typeof fetch;
 }
@@ -17,7 +19,7 @@ export interface RequestOptions {
 }
 
 export class HttpClient {
-  private readonly apiKey: string;
+  private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
 
@@ -27,6 +29,10 @@ export class HttpClient {
     this.fetchImpl = opts.fetch;
   }
 
+  private authHeaders(): Record<string, string> {
+    return this.apiKey === undefined ? {} : { authorization: `Bearer ${this.apiKey}` };
+  }
+
   async request<T>(
     method: string,
     path: string,
@@ -34,10 +40,13 @@ export class HttpClient {
     opts: RequestOptions = {},
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
+    // Caller headers are spread first so the SDK-owned values win: a
+    // stray `authorization` or `content-type` in opts.headers must not
+    // silently clobber the credential or the JSON encoding.
     const headers: Record<string, string> = {
-      authorization: `Bearer ${this.apiKey}`,
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
       ...(opts.headers ?? {}),
+      ...this.authHeaders(),
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
     };
     const res = await this.fetchImpl(url, {
       method,
@@ -58,7 +67,7 @@ export class HttpClient {
     const res = await this.fetchImpl(url, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        ...this.authHeaders(),
         "content-type": contentType,
       },
       body,
@@ -73,40 +82,37 @@ export class HttpClient {
     const res = await this.fetchImpl(url, {
       method: "GET",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        ...this.authHeaders(),
         accept: "text/event-stream",
       },
       signal: opts?.signal,
     });
     if (!res.ok) {
-      let parsed: ServerErrorBody = {};
-      try {
-        parsed = (await res.json()) as ServerErrorBody;
-      } catch {
-        parsed = {};
-      }
-      throw new JunjoError(
-        parsed.message ?? res.statusText ?? "request failed",
-        parsed.code ?? "internal",
-        parsed.status ?? res.status,
-      );
+      await this.throwResponseError(res);
     }
     return res;
   }
 
+  // Reads the canonical error envelope ({ code, status, message }) off a
+  // non-2xx response and throws the matching JunjoError. Falls back to
+  // the transport-level status when the body is not the envelope.
+  private async throwResponseError(res: Response): Promise<never> {
+    let parsed: ServerErrorBody = {};
+    try {
+      parsed = (await res.json()) as ServerErrorBody;
+    } catch {
+      parsed = {};
+    }
+    throw new JunjoError(
+      parsed.message ?? res.statusText ?? "request failed",
+      parsed.code ?? "internal",
+      parsed.status ?? res.status,
+    );
+  }
+
   private async parseResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
-      let parsed: ServerErrorBody = {};
-      try {
-        parsed = (await res.json()) as ServerErrorBody;
-      } catch {
-        parsed = {};
-      }
-      throw new JunjoError(
-        parsed.message ?? res.statusText ?? "request failed",
-        parsed.code ?? "internal",
-        parsed.status ?? res.status,
-      );
+      await this.throwResponseError(res);
     }
 
     if (res.status === 204) {
@@ -133,7 +139,9 @@ export class HttpClient {
 
   // Body is optional and uncommon for DELETE, but valid HTTP/1.1.
   // Used by `bans.remove(userId, { actorUserId })` to attribute the
-  // unban without inventing a separate query-param surface.
+  // unban without inventing a separate query-param surface. Note that
+  // some proxies/CDNs strip DELETE bodies; the server treats the body
+  // as optional, so the worst case is lost attribution, not a failure.
   delete<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
     return this.request<T>("DELETE", path, body, opts);
   }

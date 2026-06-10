@@ -1,4 +1,4 @@
-import type { AuthAdapter, UserId } from "@junjo/shared";
+import type { AuthAdapter, GroupId, PermissionKey, UserId } from "@junjo/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
@@ -107,5 +107,102 @@ describe("Junjo apiKey shape validation", () => {
       expect(err).toBeInstanceOf(JunjoError);
       expect((err as JunjoError).code).toBe("invalid_config");
     }
+  });
+});
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+describe("Junjo proxy mode", () => {
+  it("sends no authorization header; the proxy injects the credential", async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ allowed: true, source: "role" }));
+    const junjo = new Junjo({
+      proxy: true,
+      baseUrl: "https://game.example/api/junjo",
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    await junjo.check("user_a" as UserId, "grp_a" as GroupId, "invite_member" as PermissionKey);
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBeUndefined();
+  });
+
+  it("requires baseUrl", () => {
+    expect(
+      () => new Junjo({ proxy: true, fetch: vi.fn() as unknown as typeof fetch }),
+    ).toThrowError(
+      expect.objectContaining({ name: "JunjoError", code: "invalid_config" }) as Error,
+    );
+  });
+
+  it("rejects an apiKey: the credential must never reach the browser", () => {
+    expect(
+      () =>
+        new Junjo({
+          proxy: true,
+          apiKey: "jk_abc.def",
+          baseUrl: "/api/junjo",
+          fetch: vi.fn() as unknown as typeof fetch,
+        }),
+    ).toThrow(/proxy mode does not take an apiKey/);
+  });
+
+  it("still requires an apiKey without proxy mode", () => {
+    expect(
+      () => new Junjo({ baseUrl: "/api/junjo", fetch: vi.fn() as unknown as typeof fetch }),
+    ).toThrow(/missing apiKey/);
+  });
+});
+
+describe("Junjo browser secret-key warning", () => {
+  it("warns once when a jk_ key is constructed with a window global present", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    (globalThis as { window?: unknown }).window = {};
+    try {
+      const config = {
+        apiKey: "jk_kzPNEgg-rEY5nGHF.vYJ-girvGuJfwkO4vM4jwT7stXHFxsbhRrpIYqfsWJY",
+        fetch: vi.fn() as unknown as typeof fetch,
+      };
+      new Junjo(config);
+      new Junjo(config);
+      const browserWarnings = warn.mock.calls.filter(
+        (c) => typeof c[0] === "string" && c[0].includes("browser"),
+      );
+      expect(browserWarnings).toHaveLength(1);
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("HttpClient header precedence", () => {
+  it("does not let custom request headers clobber authorization", async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ allowed: true, source: "role" }));
+    const junjo = new Junjo({
+      apiKey: "jk_abc.def",
+      baseUrl: "https://example.test",
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+    // No public API passes custom headers today; exercise the layer
+    // directly to pin the merge order for future call sites.
+    const http = (
+      junjo as unknown as { http: { get: (p: string, o?: unknown) => Promise<unknown> } }
+    ).http;
+
+    await http.get("/v1/permissions/check?x=1", {
+      headers: { authorization: "Bearer attacker", "x-custom": "ok" },
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer jk_abc.def");
+    expect(headers["x-custom"]).toBe("ok");
   });
 });

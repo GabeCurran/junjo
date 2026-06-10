@@ -23,13 +23,26 @@ import { WebhooksApi } from "./webhooks.js";
 // =====================================================================
 
 export interface JunjoConfig {
-  apiKey: string;
+  // Per-game secret API key (`jk_<prefix>.<secret>`). This credential
+  // authorizes every read and mutation on the game; treat it like a
+  // database password. Never ship it to browsers (no NEXT_PUBLIC_ /
+  // VITE_ env vars, no client bundles): construct the client on your
+  // server, or use `proxy: true` and inject the key in a backend proxy.
+  // Required unless `proxy` is true, in which case it must be omitted.
+  apiKey?: string;
   baseUrl?: string;
   // Base URL used to build invite-link URLs from `inviteByLink`. The dev's
   // frontend handles the actual UI at `${inviteBaseUrl}/invite/${code}`.
   // Defaults to `baseUrl`; set this to your frontend's origin when the
   // frontend lives at a different host than the API.
   inviteBaseUrl?: string;
+  // Proxy mode, for browser apps: requests are sent with NO authorization
+  // header to your own backend (`baseUrl` is required, e.g. "/api/junjo"),
+  // which forwards them to the Junjo API and injects the real API key
+  // server-side. The proxy is also the place to enforce per-user
+  // authorization: the jk_ key is full-control, so forward only the
+  // routes (and user ids) the signed-in user is allowed to touch.
+  proxy?: boolean;
   authAdapter?: AuthAdapter;
   fetch?: typeof fetch;
 }
@@ -45,6 +58,21 @@ const DEFAULT_BASE_URL = "https://api.junjo.io";
 const API_KEY_SHAPE = /^jk_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 let warnedNonStandardKeyShape = false;
+let warnedBrowserSecretKey = false;
+
+// A jk_ key in a browser context is readable by every visitor (bundle,
+// devtools, network tab). Warn loudly but once; throwing would break
+// legitimate non-window environments that happen to polyfill `window`.
+function warnIfSecretKeyInBrowser(apiKey: string): void {
+  if (warnedBrowserSecretKey) return;
+  if (typeof window === "undefined") return;
+  if (!API_KEY_SHAPE.test(apiKey)) return;
+  warnedBrowserSecretKey = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[junjo-sdk] a secret per-game API key (jk_*) is being used in a browser; every visitor can read it and gain full control of the game. Construct the client on your server instead, or use `new Junjo({ proxy: true, baseUrl: "/api/junjo" })` with a backend proxy that injects the key.',
+  );
+}
 
 function validateApiKeyShape(apiKey: unknown): void {
   if (typeof apiKey !== "string" || apiKey.length === 0) {
@@ -94,11 +122,34 @@ export class Junjo {
   private readonly authAdapter: AuthAdapter | undefined;
 
   constructor(config: JunjoConfig) {
-    validateApiKeyShape(config.apiKey);
+    let apiKey: string | undefined;
+    let baseUrl: string;
+    if (config.proxy) {
+      // In proxy mode the SDK must never hold a credential: accepting an
+      // apiKey here would defeat the point (the key would still ship to
+      // the browser), so it is a hard error rather than silently ignored.
+      if (config.apiKey !== undefined) {
+        throw new JunjoError(
+          "proxy mode does not take an apiKey; your backend proxy injects the credential. Remove `apiKey` or remove `proxy: true`.",
+          "invalid_config",
+        );
+      }
+      if (config.baseUrl === undefined) {
+        throw new JunjoError(
+          'proxy mode requires `baseUrl` pointing at your proxy (e.g. "/api/junjo"); the default Junjo API would reject unauthenticated requests.',
+          "invalid_config",
+        );
+      }
+      baseUrl = config.baseUrl;
+    } else {
+      validateApiKeyShape(config.apiKey);
+      apiKey = config.apiKey as string;
+      warnIfSecretKeyInBrowser(apiKey);
+      baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    }
     const fetchImpl = config.fetch ?? globalThis.fetch.bind(globalThis);
-    const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
     this.http = new HttpClient({
-      apiKey: config.apiKey,
+      apiKey,
       baseUrl,
       fetch: fetchImpl,
     });
@@ -178,6 +229,7 @@ export { InvitationsApi } from "./invitations.js";
 export type { ListInvitationsOptions } from "./invitations.js";
 export { MembersApi } from "./members.js";
 export type { ListMembersOptions } from "./members.js";
+export { UNKNOWN_EVENT_TYPE } from "./events.js";
 export { paginate } from "./pagination.js";
 export { RolesApi } from "./roles.js";
 export {
