@@ -10,6 +10,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { paginate } from "./pagination.js";
+import { parseWireDate } from "./wire.js";
 
 interface WireGameBan {
   id: string;
@@ -26,8 +27,8 @@ function deserializeBan(w: WireGameBan): Ban {
     id: w.id,
     gameId: w.gameId as GameId,
     userId: w.userId as UserId,
-    bannedAt: new Date(w.bannedAt),
-    expiresAt: w.expiresAt === null ? null : new Date(w.expiresAt),
+    bannedAt: parseWireDate(w.bannedAt, "bannedAt"),
+    expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
     reason: w.reason,
     bannedBy: w.bannedBy === null ? null : (w.bannedBy as UserId),
   };
@@ -55,8 +56,8 @@ export function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEn
     groupId: w.groupId === null ? null : (w.groupId as GroupId),
     kind: w.kind,
     reason: w.reason,
-    expiresAt: w.expiresAt === null ? null : new Date(w.expiresAt),
-    eventAt: new Date(w.eventAt),
+    expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
+    eventAt: parseWireDate(w.eventAt, "eventAt"),
     actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
   };
 }

@@ -15,6 +15,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { paginate } from "./pagination.js";
+import { parseWireDate } from "./wire.js";
 
 export interface WireMember {
   id: string;
@@ -39,8 +40,8 @@ export function deserializeMember(w: WireMember): Member {
     metadata: w.metadata,
     notesPublic: w.notesPublic,
     notesPrivate: w.notesPrivate,
-    joinedAt: new Date(w.joinedAt),
-    bannedUntil: w.bannedUntil === null ? null : new Date(w.bannedUntil),
+    joinedAt: parseWireDate(w.joinedAt, "joinedAt"),
+    bannedUntil: w.bannedUntil === null ? null : parseWireDate(w.bannedUntil, "bannedUntil"),
   };
 }
 
@@ -61,7 +62,7 @@ export function deserializeMemberPermissionOverride(
     userId: w.userId as UserId,
     permission: w.permission as PermissionKey,
     grant: w.grant,
-    setAt: new Date(w.setAt),
+    setAt: parseWireDate(w.setAt, "setAt"),
     setBy: w.setBy === null ? null : (w.setBy as UserId),
   };
 }

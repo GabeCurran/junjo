@@ -8,6 +8,7 @@ import type {
   UserId,
 } from "@junjo/shared";
 import type { HttpClient } from "./http.js";
+import { parseWireDate } from "./wire.js";
 
 export interface WireAuditEntry {
   id: string;
@@ -27,7 +28,7 @@ export function deserializeAuditEntry(w: WireAuditEntry): AuditEntry {
     action: w.action as AuditAction,
     targetId: w.targetId,
     payload: w.payload,
-    createdAt: new Date(w.createdAt),
+    createdAt: parseWireDate(w.createdAt, "createdAt"),
   };
 }
 

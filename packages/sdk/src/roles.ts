@@ -8,6 +8,7 @@ import type {
 } from "@junjo/shared";
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import { parseWireDate } from "./wire.js";
 
 export interface WireRole {
   id: string;
@@ -29,7 +30,7 @@ export function deserializeRole(w: WireRole): Role {
     color: w.color,
     isDefault: w.isDefault,
     permissions: w.permissions,
-    createdAt: new Date(w.createdAt),
+    createdAt: parseWireDate(w.createdAt, "createdAt"),
   };
 }
 

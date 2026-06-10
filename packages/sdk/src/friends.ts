@@ -5,8 +5,14 @@
 // Mirrors the server routes in packages/server/src/routes/{friends,
 // friendTags,visibility,suggestions}.ts.
 
-import type { FriendsListVisibility, FriendshipRelationship, FriendshipState } from "@junjo/shared";
+import type {
+  FriendsListVisibility,
+  FriendshipRelationship,
+  FriendshipState,
+  UserId,
+} from "@junjo/shared";
 import type { HttpClient } from "./http.js";
+import { parseWireDate } from "./wire.js";
 
 interface WireFriendshipRelationship {
   state: FriendshipState;
@@ -20,15 +26,15 @@ interface WireFriendshipRelationship {
 export interface FriendRequest {
   id: string;
   gameId: string;
-  actorJunjoUserId: string;
-  targetJunjoUserId: string;
+  actorJunjoUserId: UserId;
+  targetJunjoUserId: UserId;
   createdAt: Date;
 }
 
 export interface Friendship {
   id: string;
   gameId: string;
-  junjoUserId: string;
+  junjoUserId: UserId;
   since: Date;
 }
 
@@ -51,36 +57,36 @@ export interface FriendshipPage {
 export interface Block {
   id: string;
   gameId: string;
-  junjoUserId: string;
+  junjoUserId: UserId;
   blockedAt: Date;
 }
 
 export interface FriendTag {
   id: string;
   gameId: string;
-  junjoUserId: string;
+  junjoUserId: UserId;
   name: string;
   color: string | null;
   createdAt: Date;
 }
 
 export interface FriendTagAssignment {
-  friendJunjoUserId: string;
+  friendJunjoUserId: UserId;
   tagIds: string[];
 }
 
 export interface UserVisibilitySettings {
   gameId: string;
-  junjoUserId: string;
+  junjoUserId: UserId;
   friendsListVisibility: FriendsListVisibility;
   allowed: FriendsListVisibility[];
   updatedAt: Date | null;
 }
 
 export interface FriendSuggestion {
-  junjoUserId: string;
+  junjoUserId: UserId;
   mutualCount: number;
-  sampleMutualJunjoUserIds: string[];
+  sampleMutualJunjoUserIds: UserId[];
 }
 
 // =====================================================================
@@ -142,40 +148,40 @@ interface WireUserVisibility {
 const toFriendRequest = (w: WireFriendRequest): FriendRequest => ({
   id: w.id,
   gameId: w.gameId,
-  actorJunjoUserId: w.actorJunjoUserId,
-  targetJunjoUserId: w.targetJunjoUserId,
-  createdAt: new Date(w.createdAt),
+  actorJunjoUserId: w.actorJunjoUserId as UserId,
+  targetJunjoUserId: w.targetJunjoUserId as UserId,
+  createdAt: parseWireDate(w.createdAt, "createdAt"),
 });
 
 const toFriendship = (w: WireFriendship): Friendship => ({
   id: w.id,
   gameId: w.gameId,
-  junjoUserId: w.junjoUserId,
-  since: new Date(w.since),
+  junjoUserId: w.junjoUserId as UserId,
+  since: parseWireDate(w.since, "since"),
 });
 
 const toBlock = (w: WireBlock): Block => ({
   id: w.id,
   gameId: w.gameId,
-  junjoUserId: w.junjoUserId,
-  blockedAt: new Date(w.blockedAt),
+  junjoUserId: w.junjoUserId as UserId,
+  blockedAt: parseWireDate(w.blockedAt, "blockedAt"),
 });
 
 const toFriendTag = (w: WireFriendTag): FriendTag => ({
   id: w.id,
   gameId: w.gameId,
-  junjoUserId: w.junjoUserId,
+  junjoUserId: w.junjoUserId as UserId,
   name: w.name,
   color: w.color,
-  createdAt: new Date(w.createdAt),
+  createdAt: parseWireDate(w.createdAt, "createdAt"),
 });
 
 const toVisibility = (w: WireUserVisibility): UserVisibilitySettings => ({
   gameId: w.gameId,
-  junjoUserId: w.junjoUserId,
+  junjoUserId: w.junjoUserId as UserId,
   friendsListVisibility: w.friendsListVisibility,
   allowed: w.allowed,
-  updatedAt: w.updatedAt ? new Date(w.updatedAt) : null,
+  updatedAt: w.updatedAt ? parseWireDate(w.updatedAt, "updatedAt") : null,
 });
 
 // =====================================================================
@@ -186,7 +192,7 @@ class FriendRequestsApi {
   constructor(private readonly http: HttpClient) {}
 
   async list(
-    userId: string,
+    userId: UserId,
     opts?: { direction?: "in" | "out" | "both" },
   ): Promise<FriendRequestList> {
     const params = new URLSearchParams();
@@ -202,7 +208,7 @@ class FriendRequestsApi {
     };
   }
 
-  async send(userId: string, targetJunjoUserId: string): Promise<FriendRequestSendResult> {
+  async send(userId: UserId, targetJunjoUserId: UserId): Promise<FriendRequestSendResult> {
     const wire = await this.http.post<WireFriendRequestSendResult>(
       `/v1/users/${encodeURIComponent(userId)}/friend-requests`,
       { targetJunjoUserId },
@@ -233,21 +239,21 @@ class FriendRequestsApi {
 class BlocksApi {
   constructor(private readonly http: HttpClient) {}
 
-  async list(userId: string): Promise<Block[]> {
+  async list(userId: UserId): Promise<Block[]> {
     const wire = await this.http.get<{ items: WireBlock[] }>(
       `/v1/users/${encodeURIComponent(userId)}/blocks`,
     );
     return wire.items.map(toBlock);
   }
 
-  async add(userId: string, targetJunjoUserId: string): Promise<Block> {
+  async add(userId: UserId, targetJunjoUserId: UserId): Promise<Block> {
     const wire = await this.http.post<WireBlock>(`/v1/users/${encodeURIComponent(userId)}/blocks`, {
       targetJunjoUserId,
     });
     return toBlock(wire);
   }
 
-  async remove(userId: string, otherUserId: string): Promise<void> {
+  async remove(userId: UserId, otherUserId: UserId): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/users/${encodeURIComponent(userId)}/blocks/${encodeURIComponent(otherUserId)}`,
     );
@@ -257,14 +263,14 @@ class BlocksApi {
 class FriendTagsApi {
   constructor(private readonly http: HttpClient) {}
 
-  async list(userId: string): Promise<FriendTag[]> {
+  async list(userId: UserId): Promise<FriendTag[]> {
     const wire = await this.http.get<{ items: WireFriendTag[] }>(
       `/v1/users/${encodeURIComponent(userId)}/friend-tags`,
     );
     return wire.items.map(toFriendTag);
   }
 
-  async create(userId: string, input: { name: string; color?: string }): Promise<FriendTag> {
+  async create(userId: UserId, input: { name: string; color?: string }): Promise<FriendTag> {
     const wire = await this.http.post<WireFriendTag>(
       `/v1/users/${encodeURIComponent(userId)}/friend-tags`,
       input,
@@ -285,8 +291,8 @@ class FriendTagsApi {
   }
 
   async assign(
-    userId: string,
-    otherUserId: string,
+    userId: UserId,
+    otherUserId: UserId,
     tagIds: string[],
   ): Promise<FriendTagAssignment> {
     const wire = await this.http.put<FriendTagAssignment>(
@@ -300,14 +306,14 @@ class FriendTagsApi {
 class FriendVisibilityApi {
   constructor(private readonly http: HttpClient) {}
 
-  async get(userId: string): Promise<UserVisibilitySettings> {
+  async get(userId: UserId): Promise<UserVisibilitySettings> {
     const wire = await this.http.get<WireUserVisibility>(
       `/v1/users/${encodeURIComponent(userId)}/visibility`,
     );
     return toVisibility(wire);
   }
 
-  async set(userId: string, value: FriendsListVisibility): Promise<UserVisibilitySettings> {
+  async set(userId: UserId, value: FriendsListVisibility): Promise<UserVisibilitySettings> {
     const wire = await this.http.patch<WireUserVisibility>(
       `/v1/users/${encodeURIComponent(userId)}/visibility`,
       { friendsListVisibility: value },
@@ -334,8 +340,8 @@ export class FriendsApi {
   }
 
   async list(
-    userId: string,
-    opts?: { limit?: number; cursor?: string; tagId?: string; viewer?: string },
+    userId: UserId,
+    opts?: { limit?: number; cursor?: string; tagId?: string; viewer?: UserId },
   ): Promise<FriendshipPage> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
@@ -352,7 +358,7 @@ export class FriendsApi {
     };
   }
 
-  async remove(userId: string, otherUserId: string): Promise<void> {
+  async remove(userId: UserId, otherUserId: UserId): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(otherUserId)}`,
     );
@@ -364,8 +370,8 @@ export class FriendsApi {
   // Priority order baked into the resolver: blocks (viewer-side wins
   // on both-blocked edge), friendship, pending request, none.
   async getRelationship(
-    viewerUserId: string,
-    otherUserId: string,
+    viewerUserId: UserId,
+    otherUserId: UserId,
   ): Promise<FriendshipRelationship> {
     const wire = await this.http.get<WireFriendshipRelationship>(
       `/v1/users/${encodeURIComponent(viewerUserId)}/friends/${encodeURIComponent(
@@ -374,11 +380,11 @@ export class FriendsApi {
     );
     return {
       state: wire.state,
-      since: wire.since === null ? undefined : new Date(wire.since),
+      since: wire.since === null ? undefined : parseWireDate(wire.since, "since"),
     };
   }
 
-  async suggestions(userId: string, opts?: { limit?: number }): Promise<FriendSuggestion[]> {
+  async suggestions(userId: UserId, opts?: { limit?: number }): Promise<FriendSuggestion[]> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     const qs = params.toString();
