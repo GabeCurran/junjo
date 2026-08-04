@@ -1,10 +1,10 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import { Suspense } from "react";
 
-import { RecentActivityFeed } from "../../components/dashboard/recent-activity-feed";
-import { StatsCards } from "../../components/dashboard/stats-cards";
-import { Topbar } from "../../components/dashboard/topbar";
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
+import { RecentActivityFeed } from "../../../components/dashboard/recent-activity-feed";
+import { StatsCards } from "../../../components/dashboard/stats-cards";
+import { Topbar } from "../../../components/dashboard/topbar";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
 export const metadata = {
   title: "Dashboard | Junjo",

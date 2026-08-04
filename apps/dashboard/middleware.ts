@@ -3,9 +3,12 @@ import { type NextRequest, NextResponse } from "next/server";
 
 export const config = {
   // /healthz is excluded so the orchestrator's healthcheck can reach it
-  // without credentials. Everything else (including the rest of the
-  // dashboard surface) still goes through the basic-auth gate below.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
+  // without credentials, and the exact root path "/" is excluded because
+  // it serves the public marketing landing page (the capture group uses
+  // ".+" instead of ".*", so a request for "/" - an empty capture - never
+  // matches). Every admin surface (/overview, /games, /audit, ...) still
+  // goes through the basic-auth gate below.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).+)"],
 };
 
 const REALM = "Junjo Dashboard";

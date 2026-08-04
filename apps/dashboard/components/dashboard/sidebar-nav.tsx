@@ -26,7 +26,7 @@ interface NavItem {
 }
 
 const GLOBAL_NAV_ITEMS: readonly NavItem[] = [
-  { href: "/", label: "Dashboard", icon: Home },
+  { href: "/overview", label: "Dashboard", icon: Home },
   { href: "/games", label: "Games", icon: Gamepad2 },
 ];
 
@@ -85,10 +85,7 @@ export function SidebarNav() {
   return (
     <nav className="flex flex-col gap-1 p-3">
       {GLOBAL_NAV_ITEMS.map((item) => {
-        const active =
-          item.href === "/"
-            ? pathname === "/"
-            : pathname === item.href || pathname.startsWith(`${item.href}/`);
+        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         // Suppress the Games top-level highlight when inside a real game -
         // the per-game section below carries the active context and a
         // doubly-highlighted sidebar reads as broken. On a 404 game URL
