@@ -1,13 +1,14 @@
-# Publish packages to npm via changesets.
+# Publish packages to npm.
 #
 # MANUAL TRIGGER ONLY (workflow_dispatch). Packages publish under the
-# @junjo.io scope (the bare "junjo" npm name could not be secured; the
-# scope matches the owned junjo.io domain). The npm org "junjo-io" must
-# exist and the NPM_TOKEN repository secret must be a token authorized to
-# publish to it. See PUBLISH.md at the repo root for the owner runbook.
+# @junjo.io scope. Auth is npm TRUSTED PUBLISHING (OIDC): each package's
+# npm settings page lists this repo + workflow as a trusted publisher, so
+# no NPM_TOKEN secret is needed and provenance attestation is automatic
+# (requires npm >= 11.5, hence the explicit npm upgrade step).
 #
-# id-token: write + NPM_CONFIG_PROVENANCE enable npm provenance
-# attestation.
+# Publishes every publishable workspace whose version is not yet on the
+# registry; already-published versions are skipped, so the job is safe to
+# re-run. Bump versions in the package.json files, push, then dispatch.
 
 name: Publish
 
@@ -32,6 +33,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing needs a recent npm (OIDC exchange support).
+      - run: npm install -g npm@latest && npm --version
+
       - run: npm ci
 
       - name: Build
@@ -40,8 +44,13 @@ jobs:
       - name: Test
         run: npm run test
 
-      - name: Publish
-        run: npx changeset publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+      - name: Publish (skips versions already on the registry)
+        run: |
+          for pkg in "@junjo.io/shared" "@junjo.io/sdk" "@junjo.io/react"; do
+            version=$(npm pkg get version --workspace "$pkg" | node -e "const o=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(Object.values(o)[0])")
+            if npm view "$pkg@$version" version >/dev/null 2>&1; then
+              echo "$pkg@$version already published, skipping"
+            else
+              npm publish --workspace "$pkg" --access public --provenance
+            fi
+          done

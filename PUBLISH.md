@@ -1,49 +1,36 @@
 # Publishing Junjo to npm
 
-The publishable packages are scoped under `@junjo.io` (the bare `junjo`
-npm name could not be secured; the scope matches the junjo.io domain):
+The publishable packages are scoped under `@junjo.io` (the org name
+matches the junjo.io domain; dotted scopes are valid, like @socket.io):
 
-- `@junjo.io/sdk` (0.1.0)
-- `@junjo.io/react` (0.1.0)
-- `@junjo.io/shared` (0.1.0, internal types dependency of the other two)
+- `@junjo.io/sdk`
+- `@junjo.io/react`
+- `@junjo.io/shared` (internal types dependency of the other two)
 
 Everything else in the monorepo is `private: true` and will never publish.
+0.1.0 of all three shipped 2026-08-04.
 
-## One-time setup
+## Publishing by hand
 
-1. Create the free npm org. Log in at https://www.npmjs.com, click your
-   avatar > "Add Organization", name it exactly `junjo-io`, and pick the
-   free "Unlimited public packages" plan. (Scoped public packages are free;
-   no paid plan needed.)
-2. Log in with the npm CLI on this machine:
-
-   ```
-   npm login
-   ```
-
-   Follow the browser prompt. Verify with `npm whoami`.
-
-## Publish
-
-From the repo root:
-
-```
-npm run release
-```
-
-That runs the full monorepo build and then `changeset publish`, which
-publishes every non-private package whose version is not yet on the
-registry (the three packages above at 0.1.0). All three carry
-`publishConfig.access: public`, so no extra flags are needed.
-
-If you prefer to publish by hand instead, the equivalent is:
+The npm account uses passkey 2FA, so publishes need a browser approval.
+Run this in a REAL terminal (not a non-interactive shell - npm refuses
+the browser flow there and demands a TOTP code that does not exist):
 
 ```
 npm run build
-npm publish --workspace @junjo.io/shared --access public
-npm publish --workspace @junjo.io/sdk --access public
-npm publish --workspace @junjo.io/react --access public
+npm publish --workspace "@junjo.io/shared" --access public
+npm publish --workspace "@junjo.io/sdk" --access public
+npm publish --workspace "@junjo.io/react" --access public
 ```
+
+Quote the scoped names in PowerShell (bare @ is a parse error). After one
+browser approval there is a short same-IP grace window where further
+publishes go through without a prompt. Note: `npm run release` (changeset
+publish) does NOT work with passkey 2FA - it forces the OTP path.
+
+Registry reads can lag several minutes behind a publish: `npm view` may
+404 while a republish attempt says the version already exists. Wait it
+out before assuming failure.
 
 ## Verify
 
@@ -53,21 +40,31 @@ npm view @junjo.io/react
 npm view @junjo.io/shared
 ```
 
-Each should report version 0.1.0. Then a clean-room smoke test:
+Then a clean-room smoke test:
 
 ```
 mkdir /tmp/junjo-smoke && cd /tmp/junjo-smoke && npm init -y && npm install @junjo.io/sdk
 ```
 
-## Future releases via GitHub Actions (optional)
+## Releases via GitHub Actions (preferred)
 
 `.github/workflows/publish.yml` is a manual `workflow_dispatch` that runs
-build + test + `changeset publish` with npm provenance. To use it:
+build + test and publishes any workspace version not yet on the registry,
+with provenance. Auth is npm TRUSTED PUBLISHING (OIDC) - no token secret.
 
-1. Create a granular npm access token (npmjs.com > Access Tokens) with
-   read/write scoped to the `@junjo.io` packages.
-2. Add it as the `NPM_TOKEN` repository secret on GitHub.
-3. Trigger the "Publish" workflow from the Actions tab.
+One-time setup, once per package, on npmjs.com:
 
-Day-to-day version bumps go through changesets: `npm run changeset` to
-record a change, `npm run version-packages` to bump, then release.
+1. Open the package page > Settings (e.g.
+   https://www.npmjs.com/package/@junjo.io/sdk/access)
+2. Under "Trusted Publisher" choose GitHub Actions and enter:
+   - Organization or user: GabeCurran
+   - Repository: junjo
+   - Workflow filename: publish.yml
+   - Environment: (leave blank)
+3. Repeat for @junjo.io/react and @junjo.io/shared.
+
+Release flow: bump the versions in the three package.json files (keep the
+internal @junjo.io/* deps pinned to the new version), commit, push, then
+run the "Publish" workflow from the Actions tab (or `gh workflow run
+publish.yml`). Already-published versions are skipped, so re-runs are
+safe.
