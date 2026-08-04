@@ -1,7 +1,7 @@
 # Junjo
 
 [![CI](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![License: MIT + ELv2](https://img.shields.io/badge/License-MIT%20%2B%20ELv2-blue.svg)](./LICENSE)
 [![npm @junjo-io/sdk](https://img.shields.io/npm/v/@junjo-io/sdk?label=%40junjo-io%2Fsdk)](https://www.npmjs.com/package/@junjo-io/sdk)
 [![npm @junjo-io/react](https://img.shields.io/npm/v/@junjo-io/react?label=%40junjo-io%2Freact)](https://www.npmjs.com/package/@junjo-io/react)
 
@@ -21,7 +21,7 @@ await junjo.groups.inviteByUserId(guild.id, "user_123");
 - **`@junjo-io/react`**: React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates.
 - **`junjo-roblox`**: Luau client for Roblox experiences.
 - **Cross-game admin dashboard**: Next.js app for inspecting and managing groups across games.
-- **Server**: Hono on Node, Postgres via Prisma. Self-hostable (MIT) or use the cloud.
+- **Server**: Hono on Node, Postgres via Prisma. Self-hostable (source-available, ELv2) or use the cloud.
 - **Auth adapters**: Clerk, Supabase, JWT, BYO.
 
 ## A few screens from the admin dashboard
@@ -81,4 +81,4 @@ tools/
 
 ## License
 
-MIT for the OSS packages (`packages/*`). The dashboard at `apps/dashboard` is proprietary (see `apps/dashboard/LICENSE`).
+MIT for the client packages (`packages/sdk`, `packages/react`, `packages/shared`, `packages/sdk-roblox`). The server (`packages/server`) is source-available under the Elastic License 2.0: read it, run it, self-host it for your own games, but do not offer it to third parties as a hosted service. The dashboard at `apps/dashboard` is proprietary (see `apps/dashboard/LICENSE`).

@@ -1,29 +1,20 @@
-MIT License
+Junjo is a monorepo with per-package licensing. The license for each package
+is the LICENSE file in that package's directory, which is authoritative.
+
+Summary (see each package's LICENSE for the actual terms):
+
+  packages/sdk         MIT                  (client SDK)
+  packages/react       MIT                  (React hooks)
+  packages/shared      MIT                  (shared types)
+  packages/sdk-roblox  MIT                  (Roblox Luau client)
+  packages/server      Elastic License 2.0  (the Junjo server)
+  apps/dashboard       All rights reserved  (the cloud admin dashboard)
+  apps/docs            MIT                  (documentation site)
+
+In plain terms: the client libraries are MIT and safe to use in any game,
+commercial or not. The server is source-available under ELv2 - you can read
+it, run it, and self-host it for your own games, but you may not offer it to
+third parties as a hosted or managed service. The hosted dashboard is
+proprietary.
 
 Copyright (c) 2026 Gabe Curran
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
----
-
-Note: this MIT license covers the open-source packages in this repository:
-`packages/sdk`, `packages/react`, `packages/shared`, `packages/server`, and
-`packages/sdk-roblox`. Cloud-only code under `apps/dashboard` (and any module
-explicitly marked as cloud-only) is governed by `apps/dashboard/LICENSE` and
-is not covered by this MIT license.

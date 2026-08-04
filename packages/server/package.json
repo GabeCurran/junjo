@@ -2,7 +2,7 @@
   "name": "@junjo/server",
   "version": "0.0.0",
   "description": "Junjo HTTP API + SSE + webhook dispatcher. Hono on Node, Postgres via Prisma.",
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
