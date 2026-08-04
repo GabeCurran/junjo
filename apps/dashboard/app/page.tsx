@@ -17,6 +17,7 @@ export const metadata = {
 
 const GITHUB_URL = "https://github.com/GabeCurran/junjo";
 const DOCS_URL = "https://docs.junjo.io";
+const NPM_URL = "https://www.npmjs.com/package/@junjo.io/sdk";
 const CONTACT_MAILTO = "mailto:gabecurran01@gmail.com?subject=Junjo%20hosted%20beta";
 
 // External links open in a new tab; the reader keeps their place here.
@@ -216,10 +217,15 @@ export default function LandingPage() {
             >
               View on GitHub
             </a>
-            <p className={`${jbMono.className} text-sm text-muted-foreground`}>
+            <a
+              href={NPM_URL}
+              {...EXT}
+              className={`${jbMono.className} text-sm text-muted-foreground transition-colors hover:text-foreground`}
+              title="View @junjo.io/sdk on npm"
+            >
               <span className="select-none text-primary">$ </span>
               npm install @junjo.io/sdk
-            </p>
+            </a>
           </div>
         </section>
         <section className="mx-auto max-w-screen-lg px-6 pb-16 pt-10 md:pb-20">
@@ -337,6 +343,9 @@ export default function LandingPage() {
             </a>
             <a href={GITHUB_URL} {...EXT} className="transition-colors hover:text-foreground">
               GitHub
+            </a>
+            <a href={NPM_URL} {...EXT} className="transition-colors hover:text-foreground">
+              npm
             </a>
             <a href="/license" className="transition-colors hover:text-foreground">
               License
