@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![npm @junjo/sdk](https://img.shields.io/npm/v/@junjo/sdk?label=%40junjo%2Fsdk)](https://www.npmjs.com/package/@junjo/sdk)
-[![npm @junjo/react](https://img.shields.io/npm/v/@junjo/react?label=%40junjo%2Freact)](https://www.npmjs.com/package/@junjo/react)
+[![npm @junjo-io/sdk](https://img.shields.io/npm/v/@junjo-io/sdk?label=%40junjo-io%2Fsdk)](https://www.npmjs.com/package/@junjo-io/sdk)
+[![npm @junjo-io/react](https://img.shields.io/npm/v/@junjo-io/react?label=%40junjo-io%2Freact)](https://www.npmjs.com/package/@junjo-io/react)
 
 A drop-in social-organization layer for multiplayer games. Guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth; never replaces it.
 
@@ -17,8 +17,8 @@ await junjo.groups.inviteByUserId(guild.id, "user_123");
 
 ## What's in the box
 
-- **`@junjo/sdk`**: typed TypeScript client for any Node or browser app.
-- **`@junjo/react`**: React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates.
+- **`@junjo-io/sdk`**: typed TypeScript client for any Node or browser app.
+- **`@junjo-io/react`**: React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates.
 - **`junjo-roblox`**: Luau client for Roblox experiences.
 - **Cross-game admin dashboard**: Next.js app for inspecting and managing groups across games.
 - **Server**: Hono on Node, Postgres via Prisma. Self-hostable (MIT) or use the cloud.
@@ -67,10 +67,10 @@ The seed prints the game ID and API key to the terminal; the same values are wri
 ```
 packages/
   server/       Hono HTTP API + Prisma schema + webhook worker
-  sdk/          @junjo/sdk, typed TypeScript client
-  react/        @junjo/react, React hooks
+  sdk/          @junjo-io/sdk, typed TypeScript client
+  react/        @junjo-io/react, React hooks
   sdk-roblox/   junjo-roblox, Luau client
-  shared/       @junjo/shared, shared types
+  shared/       @junjo-io/shared, shared types
 apps/
   dashboard/    Next.js admin dashboard (proprietary)
   docs/         Nextra documentation site

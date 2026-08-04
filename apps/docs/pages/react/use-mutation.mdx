@@ -5,7 +5,7 @@ Generic mutation primitive for any function that calls the SDK and returns a Pro
 `useMutation` is the foundation the optimistic-update story is built on. Purpose-built hooks (e.g., `useKickMember`, `useInviteByUserId`) that wrap `useMutation` with the right optimistic snapshot + rollback wiring are a post-V1 idea; you can wire your own with the same primitive today.
 
 ```tsx
-import { useMembers, useMutation, useJunjo } from "@junjo/react";
+import { useMembers, useMutation, useJunjo } from "@junjo-io/react";
 
 function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
   const junjo = useJunjo();
@@ -115,7 +115,7 @@ Pass a stubbed mutation function and assert on the lifecycle:
 
 ```tsx
 import { renderHook, act } from "@testing-library/react";
-import { useMutation } from "@junjo/react";
+import { useMutation } from "@junjo-io/react";
 import { vi } from "vitest";
 
 it("transitions to success on resolve", async () => {

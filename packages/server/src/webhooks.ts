@@ -1,4 +1,4 @@
-import type { JunjoEvent } from "@junjo/shared";
+import type { JunjoEvent } from "@junjo-io/shared";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 // The JSON round-trip turns every `Date` into its ISO 8601 string and

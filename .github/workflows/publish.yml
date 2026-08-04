@@ -1,15 +1,13 @@
 # Publish packages to npm via changesets.
 #
-# MANUAL TRIGGER ONLY (workflow_dispatch). Nothing is published to npm yet
-# and the "junjo" npm name/scope could not be secured, so the final package
-# names are undecided. Until the scope/name decision is made and the names
-# are registered on npm, publishing must not be automated: unregistered
-# names are a dependency confusion risk (a third party could squat the
-# names and serve malicious packages to anyone installing them). Once the
-# names are secured, this trigger can be revisited.
+# MANUAL TRIGGER ONLY (workflow_dispatch). Packages publish under the
+# @junjo-io scope (the bare "junjo" npm name could not be secured; the
+# scope matches the owned junjo.io domain). The npm org "junjo-io" must
+# exist and the NPM_TOKEN repository secret must be a token authorized to
+# publish to it. See PUBLISH.md at the repo root for the owner runbook.
 #
-# Requires the NPM_TOKEN repository secret. id-token: write enables npm
-# provenance attestation.
+# id-token: write + NPM_CONFIG_PROVENANCE enable npm provenance
+# attestation.
 
 name: Publish
 

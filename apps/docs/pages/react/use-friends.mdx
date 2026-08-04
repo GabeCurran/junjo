@@ -3,7 +3,7 @@
 Returns a user's friend list. Fetch-on-mount and refetch-driven: friend events carry no `groupId`, so they do not flow over the per-group SSE channel (they fire as [webhooks](/api-reference/webhooks) instead), and the hook does not open a subscription.
 
 ```tsx
-import { useFriends } from "@junjo/react";
+import { useFriends } from "@junjo-io/react";
 
 function FriendsPanel({ userId }: { userId: string }) {
   const { friends, loading, error, refetch } = useFriends(userId);
@@ -73,7 +73,7 @@ All six friends hooks (`useFriends`, [`useFriendRequests`](/react/use-friend-req
 - **Mutations pair with `refetch`.** The friends hooks have no `applyOptimistic` helper in V1; mutate through `useJunjo()` and refetch on success:
 
 ```tsx
-import { useFriends, useJunjo } from "@junjo/react";
+import { useFriends, useJunjo } from "@junjo-io/react";
 
 function UnfriendButton({ userId, otherUserId }: { userId: string; otherUserId: string }) {
   const junjo = useJunjo();
@@ -103,8 +103,8 @@ If `useFriends` is called outside a `<JunjoProvider>`, it throws synchronously w
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.friends.list` directly on the instance (the hook unwraps the page's `items`):
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

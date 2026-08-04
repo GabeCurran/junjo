@@ -1,4 +1,4 @@
-import type { Junjo } from "@junjo/sdk";
+import type { Junjo } from "@junjo-io/sdk";
 import { useContext } from "react";
 import { JunjoContext } from "./context.js";
 

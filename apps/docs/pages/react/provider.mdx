@@ -7,8 +7,8 @@ How you construct that client depends on where the tree runs. The per-game API k
 ## `JunjoProvider`
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 
 // JUNJO_API_KEY is a server-only environment variable.
 // NOT NEXT_PUBLIC_ -- see the warning below.
@@ -34,15 +34,15 @@ This construction is for trees that run in a trusted server context: server-only
 
 The provider is a thin wrapper around `Context.Provider`; passing a different `client` to `JunjoProvider` re-renders consumers with the new instance. Nested providers shadow outer ones inside their subtree.
 
-Construct the client once and reuse it across renders. A fresh `new Junjo(...)` on every render allocates a new HTTP helper each time and defeats any future caching layer in `@junjo/react`.
+Construct the client once and reuse it across renders. A fresh `new Junjo(...)` on every render allocates a new HTTP helper each time and defeats any future caching layer in `@junjo-io/react`.
 
 ## Browser apps: proxy mode
 
 A browser client must hold no credential at all. Construct with `proxy: true` and point `baseUrl` at a route on your own backend:
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 
 const junjo = new Junjo({
   proxy: true,
@@ -120,7 +120,7 @@ The authorization comment is not optional homework. Because the `jk_` key bypass
 Returns the `Junjo` instance provided by the nearest ancestor `JunjoProvider`.
 
 ```tsx
-import { useJunjo } from "@junjo/react";
+import { useJunjo } from "@junjo-io/react";
 
 export function CreateGroupButton({ name }: { name: string }) {
   const junjo = useJunjo();
@@ -152,8 +152,8 @@ Wrap your tree (or your test) in a provider. The error is intentional: returning
 For component-level tests, render the component inside a provider with a stub client. The Junjo constructor accepts a `fetch` override, so tests can swap in a mock without touching the network.
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
 

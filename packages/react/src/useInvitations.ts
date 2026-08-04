@@ -1,5 +1,5 @@
-import type { ListInvitationsOptions, Subscription } from "@junjo/sdk";
-import type { GroupId, Invitation, JunjoEvent } from "@junjo/shared";
+import type { ListInvitationsOptions, Subscription } from "@junjo-io/sdk";
+import type { GroupId, Invitation, JunjoEvent } from "@junjo-io/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { useJunjo } from "./useJunjo.js";
 

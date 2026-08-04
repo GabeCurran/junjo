@@ -6,7 +6,7 @@ import type {
   ListAuditOptions,
   Page,
   UserId,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import type { HttpClient } from "./http.js";
 import { parseWireDate } from "./wire.js";
 

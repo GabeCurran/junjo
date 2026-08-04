@@ -1,10 +1,10 @@
-# @junjo/sdk
+# @junjo-io/sdk
 
 Junjo's TypeScript client. Works in Node and the browser. Uses built-in `fetch`; zero runtime dependencies.
 
 ```ts
-import { Junjo } from "@junjo/sdk";
-import { clerkAdapter } from "@junjo/sdk/adapters";
+import { Junjo } from "@junjo-io/sdk";
+import { clerkAdapter } from "@junjo-io/sdk/adapters";
 
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,
@@ -19,8 +19,8 @@ See `src/index.ts` for the full surface.
 ## Bundle size
 
 ```bash
-npm run build -w @junjo/sdk
-npm run size  -w @junjo/sdk
+npm run build -w @junjo-io/sdk
+npm run size  -w @junjo-io/sdk
 ```
 
 Limits are committed in `package.json#size-limit` and gate the `dist/index.js`

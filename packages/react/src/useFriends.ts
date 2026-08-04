@@ -7,7 +7,7 @@ import type {
   Junjo,
   UserId,
   UserVisibilitySettings,
-} from "@junjo/sdk";
+} from "@junjo-io/sdk";
 import { useEffect, useRef, useState } from "react";
 import { useJunjo } from "./useJunjo.js";
 

@@ -1,4 +1,4 @@
-import type { GroupId, JunjoEvent } from "@junjo/shared";
+import type { GroupId, JunjoEvent } from "@junjo-io/shared";
 import type { PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { streamSSE } from "hono/streaming";

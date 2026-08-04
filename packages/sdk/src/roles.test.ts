@@ -1,4 +1,4 @@
-import type { GroupId, RoleId } from "@junjo/shared";
+import type { GroupId, RoleId } from "@junjo-io/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 

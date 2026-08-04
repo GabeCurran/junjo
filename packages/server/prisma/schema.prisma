@@ -18,7 +18,7 @@ model Game {
   id   String @id @default(cuid())
   name String
   // Per-game configuration (Friends subsystem toggles + related knobs).
-  // Validated against `PartialGameConfig` from `@junjo/shared` on write.
+  // Validated against `PartialGameConfig` from `@junjo-io/shared` on write.
   // Read paths run the value through `resolveGameConfig` to fill missing
   // branches with defaults, so handlers always see a fully-populated tree.
   config Json @default("{}")

@@ -1,4 +1,4 @@
-import type { AuthAdapter, UserId } from "@junjo/shared";
+import type { AuthAdapter, UserId } from "@junjo-io/shared";
 import { JunjoError } from "../errors.js";
 
 // The minimum shape of a Supabase user record the adapter cares about.

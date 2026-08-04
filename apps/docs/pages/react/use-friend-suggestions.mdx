@@ -3,7 +3,7 @@
 Returns ranked mutual-friend suggestions for a user: candidates who share at least `friends.discovery.minMutuals` friends, excluding existing friends and anyone blocked in either direction. Fetch-on-mount and refetch-driven (no SSE subscription).
 
 ```tsx
-import { useFriendSuggestions, useJunjo } from "@junjo/react";
+import { useFriendSuggestions, useJunjo } from "@junjo-io/react";
 
 function PeopleYouMayKnow({ userId }: { userId: string }) {
   const junjo = useJunjo();
@@ -69,8 +69,8 @@ The hook never throws; errors land in `result.error`. A `not_found` `JunjoError`
 Stub `junjo.friends.suggestions` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

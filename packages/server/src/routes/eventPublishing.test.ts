@@ -12,7 +12,7 @@ import type {
   RoleChangedEvent,
   RoleCreatedEvent,
   RoleDeletedEvent,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { type Prisma, PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

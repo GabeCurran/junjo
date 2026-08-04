@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { GameId, GroupId, GroupUpdatedEvent } from "@junjo/shared";
+import type { GameId, GroupId, GroupUpdatedEvent } from "@junjo-io/shared";
 import { type Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { newEventId } from "./events.js";

@@ -1,4 +1,4 @@
-import type { GroupId, PermissionKey, UserId } from "@junjo/shared";
+import type { GroupId, PermissionKey, UserId } from "@junjo-io/shared";
 import { createContext, useContext, useMemo } from "react";
 
 export type PermissionCacheKey = string;

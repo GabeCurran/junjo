@@ -1,4 +1,4 @@
-import type { AuditAction, AuditEntry, GroupId, ListAuditOptions } from "@junjo/shared";
+import type { AuditAction, AuditEntry, GroupId, ListAuditOptions } from "@junjo-io/shared";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useJunjo } from "./useJunjo.js";
 

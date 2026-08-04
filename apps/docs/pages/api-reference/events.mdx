@@ -50,7 +50,7 @@ Comment-only heartbeat frames (sent every 30 seconds the connection is idle):
 
 ```
 
-The `data:` payload is one JSON object per event. The shape is the `JunjoEvent` union from `@junjo/shared`. `Date` fields (`occurredAt`, nested `joinedAt`, etc.) serialize as ISO 8601 strings on the wire.
+The `data:` payload is one JSON object per event. The shape is the `JunjoEvent` union from `@junjo-io/shared`. `Date` fields (`occurredAt`, nested `joinedAt`, etc.) serialize as ISO 8601 strings on the wire.
 
 The `event:` line is the `JunjoEvent.type` discriminator (`member.joined`, `member.left`, `group.updated`, ...). The `id:` line is the event's stable id; SSE clients expose this via `lastEventId` for resume-after-disconnect logic, though the V1 server does not currently replay missed events on reconnect (see [Limitations](#limitations) below).
 

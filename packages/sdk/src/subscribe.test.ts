@@ -5,7 +5,7 @@ import type {
   MemberLeftEvent,
   PermissionGrantedEvent,
   RoleChangedEvent,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 

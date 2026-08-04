@@ -1,4 +1,4 @@
-import type { Page } from "@junjo/shared";
+import type { Page } from "@junjo-io/shared";
 
 // Wraps a cursor-paginated `list(...)` call into an async iterator so
 // callers can `for await (const item of api.listAll(...))` instead of

@@ -2,7 +2,7 @@
 
 `clerkAdapter` is the built-in `AuthAdapter` for verifying Clerk-issued session tokens. Use it when your app uses [Clerk](https://clerk.com/) for authentication and you want Junjo to resolve a user id from each request.
 
-The adapter wraps a `verifyToken` function that you wire up against `@clerk/backend`. The Clerk SDK is a peer dependency of `@junjo/sdk`, not a direct dependency: callers without Clerk pay no install cost.
+The adapter wraps a `verifyToken` function that you wire up against `@clerk/backend`. The Clerk SDK is a peer dependency of `@junjo-io/sdk`, not a direct dependency: callers without Clerk pay no install cost.
 
 ## Install
 
@@ -15,8 +15,8 @@ npm install @clerk/backend
 ## Basic usage
 
 ```ts
-import { Junjo } from "@junjo/sdk";
-import { clerkAdapter } from "@junjo/sdk/adapters";
+import { Junjo } from "@junjo-io/sdk";
+import { clerkAdapter } from "@junjo-io/sdk/adapters";
 import { verifyToken } from "@clerk/backend";
 
 const junjo = new Junjo({

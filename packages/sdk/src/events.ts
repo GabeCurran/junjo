@@ -6,7 +6,7 @@ import type {
   PermissionKey,
   RoleId,
   UserId,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { JunjoError } from "./errors.js";
 import {
   type WireGroup,
@@ -28,7 +28,7 @@ interface WireEventBase {
 
 // Group-scoped events carry the routing groupId; user-scoped events
 // (friends, game-wide bans) have no group context and omit it, matching
-// `GroupEventBase` / `UserEventBase` in @junjo/shared.
+// `GroupEventBase` / `UserEventBase` in @junjo-io/shared.
 interface WireGroupEventBase extends WireEventBase {
   groupId: string;
 }
@@ -379,7 +379,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
       // runtime a newer server can still send types this SDK predates.
       const type = (w as { type?: unknown }).type;
       throw new JunjoError(
-        `unknown event type ${JSON.stringify(type)}; upgrade @junjo/sdk to handle it`,
+        `unknown event type ${JSON.stringify(type)}; upgrade @junjo-io/sdk to handle it`,
         UNKNOWN_EVENT_TYPE,
         400,
       );

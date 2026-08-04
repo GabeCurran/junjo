@@ -1,6 +1,6 @@
 {
-  "name": "@junjo/shared",
-  "version": "0.0.0",
+  "name": "@junjo-io/shared",
+  "version": "0.1.0",
   "description": "Shared TypeScript types for Junjo. No runtime code.",
   "license": "MIT",
   "type": "module",

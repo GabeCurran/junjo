@@ -9,7 +9,7 @@ import type {
   WebhookEndpointId,
   WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { JunjoError } from "./errors.js";
 import { type WireJunjoEvent, deserializeEvent } from "./events.js";
 import type { HttpClient } from "./http.js";

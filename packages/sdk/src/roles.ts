@@ -5,7 +5,7 @@ import type {
   Role,
   RoleId,
   UpdateRoleInput,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { JunjoError } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { parseWireDate } from "./wire.js";

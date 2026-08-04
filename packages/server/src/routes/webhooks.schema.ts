@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Mirrors the `JunjoEventType` union in `@junjo/shared`. Kept in lockstep
+// Mirrors the `JunjoEventType` union in `@junjo-io/shared`. Kept in lockstep
 // by hand: every published event type must appear here so the server can
 // reject typo'd subscriptions on the create / update flow before they
 // silently fail to match.

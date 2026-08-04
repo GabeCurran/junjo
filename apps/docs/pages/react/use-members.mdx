@@ -3,7 +3,7 @@
 Returns the paginated roster for a group plus a live event subscription that keeps it in sync with `member.joined`, `member.left`, and `role.changed` events.
 
 ```tsx
-import { useMembers } from "@junjo/react";
+import { useMembers } from "@junjo-io/react";
 
 function Roster({ groupId }: { groupId: GroupId }) {
   const { members, loading, error, hasMore, fetchMore, loadingMore } = useMembers(groupId);
@@ -102,7 +102,7 @@ If `useMembers` is called outside a `<JunjoProvider>`, it throws synchronously w
 `applyOptimistic(updater)` lets a mutation flip the local roster *before* the server confirms. It runs `updater(state.members)` and replaces `members` with the result; it returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation) so the snapshot lives inside the mutation's `context`:
 
 ```tsx
-import { useJunjo, useMembers, useMutation } from "@junjo/react";
+import { useJunjo, useMembers, useMutation } from "@junjo-io/react";
 
 function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
   const junjo = useJunjo();
@@ -178,8 +178,8 @@ The two hooks each open their own SSE subscription. If a screen renders both, tw
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.members.list` and `junjo.groups.subscribe` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

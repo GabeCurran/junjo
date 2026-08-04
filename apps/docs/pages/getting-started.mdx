@@ -48,16 +48,16 @@ The default listen port is `8787`. Override with `PORT=...`. See [`packages/serv
 ## 2. Install the SDK
 
 ```sh
-npm install @junjo/sdk
+npm install @junjo-io/sdk
 ```
 
 For React apps, also install the hooks package:
 
 ```sh
-npm install @junjo/react
+npm install @junjo-io/react
 ```
 
-The hooks package depends on `@junjo/sdk` and React 18+. Both packages are pure ESM with TypeScript types bundled.
+The hooks package depends on `@junjo-io/sdk` and React 18+. Both packages are pure ESM with TypeScript types bundled.
 
 Junjo's auth adapters live behind a separate import path so non-Clerk / non-Supabase consumers do not pay the dependency cost:
 
@@ -74,7 +74,7 @@ npm install @supabase/supabase-js
 ## 3. Construct a client
 
 ```ts
-import { Junjo } from "@junjo/sdk";
+import { Junjo } from "@junjo-io/sdk";
 
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,
@@ -112,7 +112,7 @@ If this returns without throwing, your API key is good and the server is reachab
 Every SDK method throws `JunjoError` for any non-2xx response. Branch on `error.code` (stable) rather than `error.message` (not stable):
 
 ```ts
-import { JunjoError } from "@junjo/sdk";
+import { JunjoError } from "@junjo-io/sdk";
 
 try {
   await junjo.groups.create({ kind: "guild", name: "" });

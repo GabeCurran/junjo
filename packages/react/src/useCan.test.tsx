@@ -1,5 +1,5 @@
-import { Junjo } from "@junjo/sdk";
-import type { GroupId, PermissionKey, UserId } from "@junjo/shared";
+import { Junjo } from "@junjo-io/sdk";
+import type { GroupId, PermissionKey, UserId } from "@junjo-io/shared";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";

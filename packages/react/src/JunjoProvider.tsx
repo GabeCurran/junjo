@@ -1,4 +1,4 @@
-import type { Junjo } from "@junjo/sdk";
+import type { Junjo } from "@junjo-io/sdk";
 import { type ReactNode, useRef } from "react";
 import { JunjoContext } from "./context.js";
 import { PermissionCache, PermissionCacheContext } from "./permissionCache.js";

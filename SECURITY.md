@@ -12,7 +12,7 @@ Please include:
 
 - A description of the vulnerability and its impact.
 - Steps to reproduce, or a proof-of-concept.
-- The Junjo package and version affected (e.g. `@junjo/sdk@0.1.2`).
+- The Junjo package and version affected (e.g. `@junjo-io/sdk@0.1.2`).
 - Any disclosure timeline you have in mind.
 
 You should expect an initial acknowledgement within **72 hours** and a
@@ -23,8 +23,8 @@ patch and a coordinated disclosure once a fix is available.
 
 In scope:
 
-- The published OSS packages: `@junjo/sdk`, `@junjo/react`,
-  `@junjo/shared`, `@junjo/server`, and `junjo-roblox`.
+- The published OSS packages: `@junjo-io/sdk`, `@junjo-io/react`,
+  `@junjo-io/shared`, `@junjo/server`, and `junjo-roblox`.
 - The Junjo HTTP API surface (`/v1/*`) and webhook delivery pipeline.
 
 Out of scope:

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { pageLimit } from "./page.schema.js";
 
-// Mirrors the `AuditAction` union in `@junjo/shared`. Kept in lockstep
+// Mirrors the `AuditAction` union in `@junjo-io/shared`. Kept in lockstep
 // by hand: every mutation that writes an `auditEntry.create` uses one of
 // these strings, and `audit.list` validates the `?actions=` filter
 // against this same set.

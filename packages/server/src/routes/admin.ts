@@ -19,7 +19,7 @@ import type {
   RoleDeletedEvent,
   RoleId,
   UserId,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { Prisma } from "@prisma/client";
 import type {
   ApiKey,

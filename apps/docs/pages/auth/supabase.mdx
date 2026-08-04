@@ -2,7 +2,7 @@
 
 `supabaseAdapter` is the built-in `AuthAdapter` for verifying Supabase Auth session tokens. Use it when your app uses [Supabase Auth](https://supabase.com/auth) and you want Junjo to resolve a user id from each request.
 
-The adapter wraps a Supabase client you construct yourself. The `@supabase/supabase-js` package is a peer dependency of `@junjo/sdk`, not a direct dependency: callers without Supabase pay no install cost.
+The adapter wraps a Supabase client you construct yourself. The `@supabase/supabase-js` package is a peer dependency of `@junjo-io/sdk`, not a direct dependency: callers without Supabase pay no install cost.
 
 ## Install
 
@@ -15,8 +15,8 @@ npm install @supabase/supabase-js
 ## Basic usage
 
 ```ts
-import { Junjo } from "@junjo/sdk";
-import { supabaseAdapter } from "@junjo/sdk/adapters";
+import { Junjo } from "@junjo-io/sdk";
+import { supabaseAdapter } from "@junjo-io/sdk/adapters";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(

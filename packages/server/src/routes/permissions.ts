@@ -1,4 +1,4 @@
-import type { PermissionCheckResult, RoleId } from "@junjo/shared";
+import type { PermissionCheckResult, RoleId } from "@junjo-io/shared";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";

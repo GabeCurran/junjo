@@ -29,7 +29,7 @@ import type {
   FriendshipRelationship,
   FriendshipState,
   GameId,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import type { PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";

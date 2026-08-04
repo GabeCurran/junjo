@@ -1,4 +1,4 @@
-import type { GroupId, RoleId } from "@junjo/shared";
+import type { GroupId, RoleId } from "@junjo-io/shared";
 import { PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

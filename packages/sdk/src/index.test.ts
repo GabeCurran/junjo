@@ -1,4 +1,4 @@
-import type { AuthAdapter, GroupId, PermissionKey, UserId } from "@junjo/shared";
+import type { AuthAdapter, GroupId, PermissionKey, UserId } from "@junjo-io/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 

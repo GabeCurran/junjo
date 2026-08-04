@@ -3,7 +3,7 @@
 Returns a user's outbound blocks. Fetch-on-mount and refetch-driven (no SSE subscription); `friend.blocked` / `friend.unblocked` fire as [webhooks](/api-reference/webhooks).
 
 ```tsx
-import { useBlocklist, useJunjo } from "@junjo/react";
+import { useBlocklist, useJunjo } from "@junjo-io/react";
 
 function BlockedUsers({ userId }: { userId: string }) {
   const junjo = useJunjo();
@@ -66,8 +66,8 @@ The hook never throws; errors land in `result.error`. Called outside a `<JunjoPr
 Stub `junjo.friends.blocks.list` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

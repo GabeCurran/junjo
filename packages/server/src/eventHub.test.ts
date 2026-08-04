@@ -5,7 +5,7 @@ import type {
   MemberId,
   MemberJoinedEvent,
   UserId,
-} from "@junjo/shared";
+} from "@junjo-io/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EventHub } from "./eventHub";
 

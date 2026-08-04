@@ -3,7 +3,7 @@
 Returns the paginated invitation list for a group plus a live event subscription that keeps it in sync with `member.invited` and `member.joined` events.
 
 ```tsx
-import { useInvitations } from "@junjo/react";
+import { useInvitations } from "@junjo-io/react";
 
 function PendingInvites({ groupId }: { groupId: GroupId }) {
   const { invitations, loading, error, hasMore, fetchMore, loadingMore } =
@@ -122,7 +122,7 @@ If `useInvitations` is called outside a `<JunjoProvider>`, it throws synchronous
 `applyOptimistic(updater)` lets a mutation flip the local invitation list *before* the server confirms. It runs `updater(state.invitations)` and replaces `invitations` with the result; it returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation) so the snapshot lives inside the mutation's `context`:
 
 ```tsx
-import { useInvitations, useJunjo, useMutation } from "@junjo/react";
+import { useInvitations, useJunjo, useMutation } from "@junjo-io/react";
 
 function RevokeButton({ groupId, code }: { groupId: GroupId; code: string }) {
   const junjo = useJunjo();
@@ -208,8 +208,8 @@ Each list hook opens its own SSE subscription. If a screen renders both `useInvi
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.invitations.list` and `junjo.groups.subscribe` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo/sdk";
-import { JunjoProvider } from "@junjo/react";
+import { Junjo } from "@junjo-io/sdk";
+import { JunjoProvider } from "@junjo-io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

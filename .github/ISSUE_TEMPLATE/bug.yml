@@ -11,8 +11,8 @@ body:
     id: package
     attributes:
       label: Affected package(s)
-      description: e.g. "@junjo/sdk", "apps/dashboard", "@junjo/server"
-      placeholder: "@junjo/sdk"
+      description: e.g. "@junjo-io/sdk", "apps/dashboard", "@junjo/server"
+      placeholder: "@junjo-io/sdk"
     validations:
       required: true
   - type: input

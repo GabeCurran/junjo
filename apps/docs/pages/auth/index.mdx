@@ -7,7 +7,7 @@ The dev's backend supplies the user id at the API-key boundary: most Junjo route
 ## The interface
 
 ```ts
-import type { AuthAdapter } from "@junjo/sdk";
+import type { AuthAdapter } from "@junjo-io/sdk";
 
 export interface AuthAdapter {
   verifyToken(token: string): Promise<{ userId: UserId } | null>;
@@ -32,8 +32,8 @@ The three built-in adapters are not mutually exclusive with BYO; they are conven
 ## Where it plugs in
 
 ```ts
-import { Junjo } from "@junjo/sdk";
-import { jwtAdapter } from "@junjo/sdk/adapters";
+import { Junjo } from "@junjo-io/sdk";
+import { jwtAdapter } from "@junjo-io/sdk/adapters";
 
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,
