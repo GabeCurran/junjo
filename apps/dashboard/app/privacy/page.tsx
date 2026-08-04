@@ -1,4 +1,5 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
+import { ArrowLeft } from "lucide-react";
 
 export const metadata = {
   title: "Privacy - Junjo",
@@ -8,8 +9,12 @@ export const metadata = {
 export default function PrivacyPage() {
   return (
     <main className="mx-auto max-w-screen-md px-6 py-16">
-      <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
-        &larr; junjo.io
+      <a
+        href="/"
+        className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden />
+        Back to junjo.io
       </a>
       <h1 className="mt-4 text-3xl font-bold tracking-tight">Privacy</h1>
       <p className="mt-2 text-sm text-muted-foreground">Last updated: August 4, 2026</p>
