@@ -28,13 +28,13 @@ const EXT = { target: "_blank", rel: "noopener noreferrer" } as const;
 const NAMESPACES: readonly { ns: string; body: string }[] = [
   {
     ns: "groups",
-    body: "Guilds, clans, parties, and sub-groups, with capacity and visibility rules.",
+    body: "Guilds, clans, parties, and sub-groups with capacity and visibility rules.",
   },
   { ns: "roles", body: "Multi-tier ranks with per-group permission overrides." },
   { ns: "members", body: "Rosters, joins, kicks, and promotions." },
-  { ns: "invitations", body: "Direct and bulk invites, with expiry and revocation." },
+  { ns: "invitations", body: "Direct and bulk invites with expiry and revocation." },
   { ns: "friends", body: "Requests, tags, suggestions, and blocklists." },
-  { ns: "bans", body: "Group-level and game-level bans, with history." },
+  { ns: "bans", body: "Group-level and game-level bans with full history." },
   { ns: "webhooks", body: "Signed delivery with automatic endpoint disabling." },
   { ns: "audit", body: "Every mutation recorded and queryable." },
 ];
@@ -272,8 +272,9 @@ export default function LandingPage() {
                   Works with your existing auth
                 </h2>
                 <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
-                  You hand Junjo a user id; it handles the group data. Adapters for Clerk, Supabase,
-                  and plain JWT, or bring your own.
+                  Junjo never touches your login flow. It takes a user id from the auth you already
+                  run and manages the group data under it. Clerk, Supabase, and plain JWT adapters
+                  are built in.
                 </p>
               </div>
               <div className="rounded-lg border border-border bg-card p-4">
@@ -318,7 +319,7 @@ export default function LandingPage() {
               <div className="rounded-lg border border-primary/40 bg-card p-6">
                 <h2 className="text-lg font-semibold tracking-tight">Or use the hosted beta</h2>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Dashboard and Postgres included. Free while in beta; email me and I&apos;ll set
+                  Dashboard and Postgres included. Free while in beta. Email me and I&apos;ll set
                   you up.
                 </p>
                 <a
