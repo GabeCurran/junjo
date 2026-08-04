@@ -187,11 +187,8 @@ export default function LandingPage() {
       <main className="flex-1">
         {/* Hero: full-width text, then code -> resulting state side by side */}
         <section className="mx-auto max-w-screen-lg px-6 pt-16 md:pt-20">
-          <p className={`${jbMono.className} text-xs uppercase tracking-widest text-primary`}>
-            Backend for multiplayer games
-          </p>
           <h1
-            className={`${jbMono.className} mt-4 text-3xl font-bold leading-tight tracking-tight md:text-5xl`}
+            className={`${jbMono.className} text-2xl font-bold leading-tight tracking-tight md:text-4xl`}
           >
             Guilds, ranks, and permissions
           </h1>
