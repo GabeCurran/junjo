@@ -17,7 +17,7 @@
     "tunnel:dashboard": "cloudflared tunnel --url http://localhost:3000",
     "tunnel:docs": "cloudflared tunnel --url http://localhost:3001",
     "db:seed:demo": "npm run db:seed:demo -w @junjo/server",
-    "build": "npm run build -w @junjo.io/shared && npm run build --workspaces --if-present",
+    "build": "npm run build -w @junjo.io/shared && npm run build -w @junjo.io/sdk && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "biome lint .",
     "format": "biome format --write .",
