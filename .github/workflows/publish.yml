@@ -46,11 +46,12 @@ jobs:
 
       - name: Publish (skips versions already on the registry)
         run: |
-          for pkg in "@junjo.io/shared" "@junjo.io/sdk" "@junjo.io/react"; do
-            version=$(npm pkg get version --workspace "$pkg" | node -e "const o=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(Object.values(o)[0])")
-            if npm view "$pkg@$version" version >/dev/null 2>&1; then
-              echo "$pkg@$version already published, skipping"
+          for dir in shared sdk react; do
+            name=$(node -p "require('./packages/$dir/package.json').name")
+            version=$(node -p "require('./packages/$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published, skipping"
             else
-              npm publish --workspace "$pkg" --access public --provenance
+              npm publish --workspace "$name" --access public --provenance
             fi
           done
