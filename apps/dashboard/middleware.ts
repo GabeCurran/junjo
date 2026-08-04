@@ -3,12 +3,13 @@ import { type NextRequest, NextResponse } from "next/server";
 
 export const config = {
   // /healthz is excluded so the orchestrator's healthcheck can reach it
-  // without credentials, and the exact root path "/" is excluded because
-  // it serves the public marketing landing page (the capture group uses
-  // ".+" instead of ".*", so a request for "/" - an empty capture - never
-  // matches). Every admin surface (/overview, /games, /audit, ...) still
-  // goes through the basic-auth gate below.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).+)"],
+  // without credentials; /license and /privacy are public legal pages; and
+  // the exact root path "/" is excluded because it serves the public
+  // marketing landing page (the capture group uses ".+" instead of ".*",
+  // so a request for "/" - an empty capture - never matches). Every admin
+  // surface (/overview, /games, /audit, ...) still goes through the
+  // basic-auth gate below.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz|license|privacy).+)"],
 };
 
 const REALM = "Junjo Dashboard";
@@ -25,6 +26,16 @@ export function middleware(req: NextRequest): NextResponse {
 
   const presented = parseBasicAuth(req.headers.get("authorization"));
   if (!presented) {
+    // Router prefetches (e.g. a <Link> to an admin page on a public page)
+    // must not carry the Basic challenge, or the browser shows its native
+    // sign-in dialog for a request the user never made. Deny quietly.
+    const isPrefetch =
+      req.headers.get("next-router-prefetch") !== null ||
+      req.headers.get("purpose") === "prefetch" ||
+      req.headers.get("sec-purpose")?.includes("prefetch") === true;
+    if (isPrefetch) {
+      return new NextResponse(null, { status: 401 });
+    }
     return unauthorized("authentication required");
   }
 

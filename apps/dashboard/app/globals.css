@@ -186,6 +186,47 @@
     }
   }
 
+  /* Landing page (app/page.tsx) hero animation: the invited player's
+   * roster row arrives, then the permission check resolves. One
+   * orchestrated moment on load; both elements settle to full opacity
+   * and stay there. */
+  @keyframes landing-join {
+    0%,
+    45% {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    60%,
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes landing-check {
+    0%,
+    70% {
+      opacity: 0;
+    }
+    85%,
+    100% {
+      opacity: 1;
+    }
+  }
+  .landing-join {
+    animation: landing-join 2.4s ease-out both;
+  }
+  .landing-check {
+    animation: landing-check 2.4s ease-out both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .landing-join,
+    .landing-check {
+      animation: none;
+      opacity: 1;
+      transform: none;
+    }
+  }
+
   /* Recharts (used internally by Tremor) sets an empty `fill=""`
    * attribute on every <text> element, which overrides the parent
    * <g class="fill-tremor-content">'s inherited fill and SVG falls
