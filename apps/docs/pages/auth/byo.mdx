@@ -5,7 +5,7 @@ The three built-in adapters ([`jwtAdapter`](/auth/jwt), [`clerkAdapter`](/auth/c
 ## The contract, again
 
 ```ts
-import type { AuthAdapter } from "@junjo-io/sdk";
+import type { AuthAdapter } from "@junjo.io/sdk";
 
 export interface AuthAdapter {
   verifyToken(token: string): Promise<{ userId: UserId } | null>;
@@ -25,7 +25,7 @@ The `UserId` brand is a TypeScript-only marker. At the boundary cast a raw strin
 The most common BYO case: you issue session tokens (via Lucia, NextAuth's database adapter, Iron Session, or a hand-rolled session table), store them server-side, and look them up on every request.
 
 ```ts
-import type { AuthAdapter, UserId } from "@junjo-io/sdk";
+import type { AuthAdapter, UserId } from "@junjo.io/sdk";
 import { prisma } from "./db";
 
 export function sessionStoreAdapter(): AuthAdapter {
@@ -60,7 +60,7 @@ Every `verifyToken` call hits your database. If that becomes a hot path, layer a
 Auth0 is JWT-based, so [`jwtAdapter`](/auth/jwt) is usually the right fit if you have your tenant's signing key. If you would rather call Auth0's `/userinfo` endpoint or use the `node-jwks-rsa` JWKS client to pick a key by `kid`:
 
 ```ts
-import type { AuthAdapter, UserId } from "@junjo-io/sdk";
+import type { AuthAdapter, UserId } from "@junjo.io/sdk";
 import jwksClient from "jwks-rsa";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 
@@ -91,14 +91,14 @@ export function auth0Adapter(opts: { audience: string; issuer: string }): AuthAd
 
 This pattern (use `createRemoteJWKSet` + `jwtVerify` from `jose`) generalizes to any provider that publishes JWKS: Cognito, Keycloak, Okta, your own JWKS-publishing issuer. The reason to BYO instead of using `jwtAdapter`: `jwtAdapter` takes a single PEM key (no JWKS / no `kid` selection / no rotation), so issuers that rotate keys via JWKS need this wrapper.
 
-`jose` is already a runtime dep of `@junjo-io/sdk`, so importing from it costs nothing additional.
+`jose` is already a runtime dep of `@junjo.io/sdk`, so importing from it costs nothing additional.
 
 ## Recipe 3: Roblox `LocalPlayer.UserId`
 
 Roblox does not give the dev's backend a session token; the user id comes from the player object on the server. The "verification" is that the request originates from the same Roblox server that owns the player. The adapter is a passthrough wrapper that brands the numeric id as a string:
 
 ```ts
-import type { AuthAdapter, UserId } from "@junjo-io/sdk";
+import type { AuthAdapter, UserId } from "@junjo.io/sdk";
 
 export function robloxUserIdAdapter(): AuthAdapter {
   return {
@@ -122,7 +122,7 @@ The `RobloxUserIdAdapter` shipped by [`junjo-roblox`](/roblox) (the Luau SDK) is
 When testing your own integration you often want to skip token verification entirely:
 
 ```ts
-import type { AuthAdapter, UserId } from "@junjo-io/sdk";
+import type { AuthAdapter, UserId } from "@junjo.io/sdk";
 
 export function staticUserAdapter(userId: string): AuthAdapter {
   return {
@@ -140,7 +140,7 @@ Use only in tests. A production deployment with this adapter accepts any string 
 Multi-tenant apps sometimes need to accept tokens from more than one issuer. Compose adapters by trying each in turn:
 
 ```ts
-import type { AuthAdapter } from "@junjo-io/sdk";
+import type { AuthAdapter } from "@junjo.io/sdk";
 
 export function firstMatch(adapters: AuthAdapter[]): AuthAdapter {
   return {

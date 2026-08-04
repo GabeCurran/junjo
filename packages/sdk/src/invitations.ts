@@ -1,4 +1,4 @@
-import type { GroupId, Invitation, Page, PageOptions } from "@junjo-io/shared";
+import type { GroupId, Invitation, Page, PageOptions } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
 import { type WireInvitation, deserializeInvitation } from "./groups.js";
 import type { HttpClient } from "./http.js";

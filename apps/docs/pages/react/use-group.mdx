@@ -3,7 +3,7 @@
 Live, snapshot-plus-stream view of a single group and its active members. Fetches the group and the first page of members up-front, then subscribes to the SSE event stream and applies incoming events to the cached state. Cleans up the subscription on unmount or when `groupId` changes.
 
 ```tsx
-import { useGroup } from "@junjo-io/react";
+import { useGroup } from "@junjo.io/react";
 
 function GuildPanel({ groupId }: { groupId: GroupId }) {
   const { group, members, loading, error, refetch } = useGroup(groupId);
@@ -84,7 +84,7 @@ Use `refetch` to recover from any of these states; it clears `error` before retr
 `applyOptimistic(updater)` lets a mutation flip the local `group` and `members` snapshot *before* the server confirms. The updater receives a `{ group, members }` snapshot and must return a new `{ group, members }` value. The hook returns a rollback closure that restores the pre-update snapshot if the mutation fails. Pair it with [`useMutation`](./use-mutation):
 
 ```tsx
-import { useGroup, useJunjo, useMutation } from "@junjo-io/react";
+import { useGroup, useJunjo, useMutation } from "@junjo.io/react";
 
 function KickButton({ groupId, userId }: { groupId: GroupId; userId: UserId }) {
   const junjo = useJunjo();
@@ -158,8 +158,8 @@ Two `useGroup(sameId)` calls inside the same provider open two SSE subscriptions
 The hook talks to the SDK exclusively through `useJunjo()`. Render the consumer inside a `JunjoProvider` and either point the underlying `Junjo` at a fake server or stub the SDK methods directly:
 
 ```tsx
-import { Junjo } from "@junjo-io/sdk";
-import { JunjoProvider } from "@junjo-io/react";
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

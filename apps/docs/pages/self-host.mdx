@@ -357,7 +357,7 @@ Both queries are read-only and cheap.
 
 ## Upgrades and breaking changes
 
-Junjo follows semver across the OSS surface (`@junjo-io/sdk`, `@junjo-io/react`, `junjo-server`). Patch and minor releases are safe to apply with the migrate-then-restart flow above. Major releases may require a one-time data migration; the release notes call out the upgrade path and any required downtime.
+Junjo follows semver across the OSS surface (`@junjo.io/sdk`, `@junjo.io/react`, `junjo-server`). Patch and minor releases are safe to apply with the migrate-then-restart flow above. Major releases may require a one-time data migration; the release notes call out the upgrade path and any required downtime.
 
 The `/v1` API namespace is the version line. A future `/v2` would ship alongside `/v1` for a deprecation window; the V1 commitment is that no `/v1` route ever changes its wire format in a backward-incompatible way once shipped.
 

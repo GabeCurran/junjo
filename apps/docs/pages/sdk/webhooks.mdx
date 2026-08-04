@@ -9,7 +9,7 @@ Two responsibilities live under this namespace:
 
 ```ts
 import express from "express";
-import { Junjo } from "@junjo-io/sdk";
+import { Junjo } from "@junjo.io/sdk";
 
 const app = express();
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
@@ -76,7 +76,7 @@ Every failure mode throws `JunjoError` with `status: 400`. Branch on `error.code
 For frameworks where the middleware shape doesn't fit, call `verify` directly:
 
 ```ts
-import { Junjo, JunjoError } from "@junjo-io/sdk";
+import { Junjo, JunjoError } from "@junjo.io/sdk";
 
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
 

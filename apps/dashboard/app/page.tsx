@@ -58,7 +58,7 @@ function CodePanel() {
           <span className="text-primary">{"import"}</span>
           {" { Junjo } "}
           <span className="text-primary">{"from"}</span>
-          {' "@junjo-io/sdk";\n\n'}
+          {' "@junjo.io/sdk";\n\n'}
           <span className="text-primary">{"const"}</span>
           {" guild = "}
           <span className="text-primary">{"await"}</span>
@@ -218,7 +218,7 @@ export default function LandingPage() {
             </div>
             <p className={`${jbMono.className} mt-6 text-sm text-muted-foreground`}>
               <span className="select-none text-primary">$ </span>
-              npm install @junjo-io/sdk
+              npm install @junjo.io/sdk
             </p>
           </div>
           <div className="space-y-3">
@@ -270,7 +270,7 @@ export default function LandingPage() {
                     <span className="text-primary">{"import"}</span>
                     {" { clerkAdapter } "}
                     <span className="text-primary">{"from"}</span>
-                    {' "@junjo-io/sdk/adapters";\n\n'}
+                    {' "@junjo.io/sdk/adapters";\n\n'}
                     <span className="text-primary">{"const"}</span>
                     {" junjo = "}
                     <span className="text-primary">{"new"}</span>

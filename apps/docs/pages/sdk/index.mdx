@@ -1,11 +1,11 @@
 # SDK overview
 
-`@junjo-io/sdk` is the TypeScript client. Same package runs in Node and the browser; tree-shakeable; zero runtime dependencies beyond `fetch` (a built-in everywhere we ship to).
+`@junjo.io/sdk` is the TypeScript client. Same package runs in Node and the browser; tree-shakeable; zero runtime dependencies beyond `fetch` (a built-in everywhere we ship to).
 
 ## Construct a client
 
 ```ts
-import { Junjo } from "@junjo-io/sdk";
+import { Junjo } from "@junjo.io/sdk";
 
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,
@@ -28,7 +28,7 @@ This example targets a server. The `jk_` key is a full-control secret; never exp
 Every method that talks to the server throws `JunjoError` for any non-2xx response. The instance preserves the server's envelope:
 
 ```ts
-import { JunjoError } from "@junjo-io/sdk";
+import { JunjoError } from "@junjo.io/sdk";
 
 try {
   await junjo.groups.create({ kind: "guild", name: "" });

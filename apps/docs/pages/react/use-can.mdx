@@ -3,7 +3,7 @@
 Boolean wrapper around the SDK's `junjo.can(userId, groupId, permission)`. Returns `true` if the permission resolves allowed, `false` if denied, and `undefined` while the request is in flight (or if the request errored).
 
 ```tsx
-import { useCan } from "@junjo-io/react";
+import { useCan } from "@junjo.io/react";
 
 function InviteButton({ userId, groupId }: { userId: UserId; groupId: GroupId }) {
   const canInvite = useCan(userId, groupId, "invite_member");
@@ -75,8 +75,8 @@ function GuildAdmin({ userId, groupId }: { userId: UserId; groupId: GroupId }) {
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.can` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo-io/sdk";
-import { JunjoProvider } from "@junjo-io/react";
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

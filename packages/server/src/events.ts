@@ -16,7 +16,7 @@ import type {
   Role as PublicRole,
   RoleId,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import type {
   PrismaClient,
   Group as PrismaGroup,

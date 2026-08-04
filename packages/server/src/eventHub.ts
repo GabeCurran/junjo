@@ -1,5 +1,5 @@
-import type { GroupId, JunjoEvent } from "@junjo-io/shared";
-import { isGroupScopedEvent } from "@junjo-io/shared";
+import type { GroupId, JunjoEvent } from "@junjo.io/shared";
+import { isGroupScopedEvent } from "@junjo.io/shared";
 
 export type EventListener = (event: JunjoEvent) => void;
 

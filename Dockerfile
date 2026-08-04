@@ -38,9 +38,9 @@ COPY apps/docs/package.json apps/docs/
 # Railway sets NODE_ENV=production at build time, which would otherwise
 # make npm skip devDependencies (Prisma CLI, tsc, next, etc.).
 RUN if [ "$WORKSPACE" = "server" ]; then \
-      npm ci --workspace @junjo-io/shared --workspace @junjo/server --include-workspace-root --include=dev; \
+      npm ci --workspace @junjo.io/shared --workspace @junjo/server --include-workspace-root --include=dev; \
     elif [ "$WORKSPACE" = "dashboard" ]; then \
-      npm ci --workspace @junjo-io/shared --workspace @junjo-io/sdk --workspace @junjo/dashboard --include-workspace-root --include=dev; \
+      npm ci --workspace @junjo.io/shared --workspace @junjo.io/sdk --workspace @junjo/dashboard --include-workspace-root --include=dev; \
     elif [ "$WORKSPACE" = "docs" ]; then \
       npm ci --workspace @junjo/docs --include-workspace-root --include=dev; \
     else echo "unknown WORKSPACE=$WORKSPACE" >&2 && exit 1; fi
@@ -55,9 +55,9 @@ COPY apps/dashboard apps/dashboard
 COPY apps/docs apps/docs
 
 RUN if [ "$WORKSPACE" = "server" ]; then \
-      npm run build -w @junjo-io/shared && npm run build -w @junjo/server; \
+      npm run build -w @junjo.io/shared && npm run build -w @junjo/server; \
     elif [ "$WORKSPACE" = "dashboard" ]; then \
-      npm run build -w @junjo-io/shared && npm run build -w @junjo-io/sdk && npm run build -w @junjo/dashboard; \
+      npm run build -w @junjo.io/shared && npm run build -w @junjo.io/sdk && npm run build -w @junjo/dashboard; \
     elif [ "$WORKSPACE" = "docs" ]; then \
       npm run build -w @junjo/docs; \
     fi

@@ -1,4 +1,4 @@
-import type { JunjoEventType } from "@junjo-io/shared";
+import type { JunjoEventType } from "@junjo.io/shared";
 import { describe, expect, it } from "vitest";
 import { JunjoError } from "./errors.js";
 import {
@@ -73,7 +73,7 @@ const wireGroup = {
   softDeletedAt: null,
 };
 
-// One representative wire payload per event type in the @junjo-io/shared
+// One representative wire payload per event type in the @junjo.io/shared
 // union. The completeness test below keeps this table honest: adding a
 // type to the union without extending the deserializer (or this table)
 // fails the suite.

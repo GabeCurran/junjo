@@ -21,8 +21,8 @@ flowchart LR
   end
 
   subgraph sdks["Junjo SDKs"]
-    tsSdk["@junjo-io/sdk (Node + browser)"]
-    reactSdk["@junjo-io/react (hooks)"]
+    tsSdk["@junjo.io/sdk (Node + browser)"]
+    reactSdk["@junjo.io/react (hooks)"]
     robloxSdk["junjo-roblox (Luau)"]
   end
 
@@ -81,7 +81,7 @@ flowchart LR
 - **Friends graph**: requests, blocks, friend tags, per-user list visibility, mutual-friend suggestions, and a single-pair relationship probe for profile views.
 - **Real-time events** through Server-Sent Events (`junjo.groups.subscribe`) and outbound webhooks (with HMAC signing, exponential-backoff retries, and per-endpoint Discord and Slack output formats).
 - **Auth adapters** for Clerk, Supabase, raw JWT, and bring-your-own.
-- **React hooks** in `@junjo-io/react`: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`, plus per-list optimistic-update helpers.
+- **React hooks** in `@junjo.io/react`: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`, plus per-list optimistic-update helpers.
 
 ## What it is not
 
@@ -100,7 +100,7 @@ Junjo intentionally does not handle:
 
 ## Reference
 
-- **[SDK](/sdk)** - per-namespace reference for `@junjo-io/sdk` (`junjo.groups`, `junjo.members`, `junjo.roles`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks`, plus the top-level `can` / `check`).
-- **[React](/react)** - hooks and provider in `@junjo-io/react`.
+- **[SDK](/sdk)** - per-namespace reference for `@junjo.io/sdk` (`junjo.groups`, `junjo.members`, `junjo.roles`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks`, plus the top-level `can` / `check`).
+- **[React](/react)** - hooks and provider in `@junjo.io/react`.
 - **[API](/api)** - the HTTP API the SDKs wrap. Use raw HTTP from any language Junjo does not yet ship a native client for.
 - **[Auth](/auth)** - adapter setup for Clerk, Supabase, and JWT.

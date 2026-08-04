@@ -1,7 +1,7 @@
 # Publish packages to npm via changesets.
 #
 # MANUAL TRIGGER ONLY (workflow_dispatch). Packages publish under the
-# @junjo-io scope (the bare "junjo" npm name could not be secured; the
+# @junjo.io scope (the bare "junjo" npm name could not be secured; the
 # scope matches the owned junjo.io domain). The npm org "junjo-io" must
 # exist and the NPM_TOKEN repository secret must be a token authorized to
 # publish to it. See PUBLISH.md at the repo root for the owner runbook.

@@ -10,9 +10,9 @@ export const metadata = {
 };
 
 const ROWS: readonly { pkg: string; license: string; note: string }[] = [
-  { pkg: "@junjo-io/sdk", license: "MIT", note: "TypeScript client SDK" },
-  { pkg: "@junjo-io/react", license: "MIT", note: "React hooks" },
-  { pkg: "@junjo-io/shared", license: "MIT", note: "Shared types" },
+  { pkg: "@junjo.io/sdk", license: "MIT", note: "TypeScript client SDK" },
+  { pkg: "@junjo.io/react", license: "MIT", note: "React hooks" },
+  { pkg: "@junjo.io/shared", license: "MIT", note: "Shared types" },
   { pkg: "sdk-roblox", license: "MIT", note: "Roblox Luau client" },
   { pkg: "server", license: "ELv2", note: "The Junjo server" },
   { pkg: "dashboard", license: "Proprietary", note: "The cloud admin dashboard" },

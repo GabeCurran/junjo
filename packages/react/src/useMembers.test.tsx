@@ -1,5 +1,5 @@
-import { Junjo, JunjoError } from "@junjo-io/sdk";
-import type { SubscribeOptions, Subscription } from "@junjo-io/sdk";
+import { Junjo, JunjoError } from "@junjo.io/sdk";
+import type { SubscribeOptions, Subscription } from "@junjo.io/sdk";
 import type {
   GameId,
   GroupId,
@@ -10,7 +10,7 @@ import type {
   Page,
   RoleId,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";

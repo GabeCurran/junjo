@@ -3,7 +3,7 @@
 Returns a user's pending friend requests, inbound and outbound. Fetch-on-mount and refetch-driven; request lifecycle events fire as [webhooks](/api-reference/webhooks), not SSE, so the hook does not open a subscription.
 
 ```tsx
-import { useFriendRequests, useJunjo } from "@junjo-io/react";
+import { useFriendRequests, useJunjo } from "@junjo.io/react";
 
 function RequestsInbox({ userId }: { userId: string }) {
   const junjo = useJunjo();
@@ -86,8 +86,8 @@ The hook never throws; errors land in `result.error`. An initial fetch error lea
 Stub `junjo.friends.requests.list` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo-io/sdk";
-import { JunjoProvider } from "@junjo-io/react";
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

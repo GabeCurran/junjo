@@ -22,7 +22,7 @@ Returns the most recent audit entries for the group, sorted by `createdAt` desce
 | `before` | ISO 8601 timestamp | none | If supplied, only entries with `createdAt < before` are returned. Used for pagination by feeding the response's `nextCursor` back in. |
 | `actions` | repeated string | (no filter) | Filter to entries whose `action` is one of the supplied values. Repeat the parameter for OR semantics: `?actions=group.created&actions=group.updated`. |
 
-The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `@junjo-io/shared`. Unknown values are rejected with `400 bad_request`.
+The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `@junjo.io/shared`. Unknown values are rejected with `400 bad_request`.
 
 ### Response
 

@@ -49,7 +49,7 @@ import { getAdminToken, getJunjoBaseUrl } from "./junjo";
 // import from `./admin` unchanged. The split is purely organisational:
 // `lib/admin-shared.ts` holds the runtime-free type/interface/constant
 // declarations so `"use client"` components can import them without
-// dragging the server-only chain (this file -> `./junjo` -> `@junjo-io/sdk`)
+// dragging the server-only chain (this file -> `./junjo` -> `@junjo.io/sdk`)
 // into the client bundle.
 export * from "./admin-shared";
 

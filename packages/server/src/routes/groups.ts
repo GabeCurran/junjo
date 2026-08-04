@@ -13,7 +13,7 @@ import type {
   RoleCreatedEvent,
   RoleId,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { hashSecret, verifySecret } from "../apiKey.js";

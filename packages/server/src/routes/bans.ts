@@ -1,4 +1,4 @@
-import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent } from "@junjo-io/shared";
+import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent } from "@junjo.io/shared";
 import type { BanHistory, GameBan, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";

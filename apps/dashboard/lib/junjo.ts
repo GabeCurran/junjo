@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import "server-only";
 
-import { Junjo } from "@junjo-io/sdk";
+import { Junjo } from "@junjo.io/sdk";
 import { loadDashboardEnv } from "./env";
 
 let cached: Junjo | null = null;

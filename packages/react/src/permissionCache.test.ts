@@ -1,4 +1,4 @@
-import type { GroupId, PermissionKey, UserId } from "@junjo-io/shared";
+import type { GroupId, PermissionKey, UserId } from "@junjo.io/shared";
 import { describe, expect, it, vi } from "vitest";
 import { MAX_ENTRIES, PermissionCache, makeCacheKey } from "./permissionCache.js";
 

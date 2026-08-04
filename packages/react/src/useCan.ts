@@ -1,4 +1,4 @@
-import type { GroupId, PermissionKey, UserId } from "@junjo-io/shared";
+import type { GroupId, PermissionKey, UserId } from "@junjo.io/shared";
 import { useEffect, useSyncExternalStore } from "react";
 import { makeCacheKey, usePermissionCache } from "./permissionCache.js";
 import { useJunjo } from "./useJunjo.js";

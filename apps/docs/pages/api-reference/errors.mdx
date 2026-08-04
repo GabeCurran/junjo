@@ -13,7 +13,7 @@ Every non-2xx response from the Junjo server uses the same envelope:
 The TypeScript SDK preserves all three fields on the `JunjoError` it throws, so callers can branch on `error.code` instead of parsing strings:
 
 ```ts
-import { JunjoError } from "@junjo-io/sdk";
+import { JunjoError } from "@junjo.io/sdk";
 
 try {
   await junjo.groups.get(groupId);
@@ -66,10 +66,10 @@ These codes are produced by the TypeScript SDK before any HTTP request, or by he
 
 ## SDK type
 
-The `JunjoError` class is exported from the top-level entry of `@junjo-io/sdk`:
+The `JunjoError` class is exported from the top-level entry of `@junjo.io/sdk`:
 
 ```ts
-import { JunjoError } from "@junjo-io/sdk";
+import { JunjoError } from "@junjo.io/sdk";
 
 class JunjoError extends Error {
   readonly code: string;

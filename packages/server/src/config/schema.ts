@@ -1,4 +1,4 @@
-import { FRIENDS_LIST_VISIBILITY_VALUES } from "@junjo-io/shared";
+import { FRIENDS_LIST_VISIBILITY_VALUES } from "@junjo.io/shared";
 import { z } from "zod";
 
 // Validates a PATCH /v1/admin/games/:gameId/config payload. Every leaf

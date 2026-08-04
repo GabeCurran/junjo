@@ -3,7 +3,7 @@
 Returns the paginated audit log for a group. Read-only and refetch-driven; the hook does NOT open an SSE subscription, so live updates require an explicit `refetch()` call.
 
 ```tsx
-import { useAuditLog } from "@junjo-io/react";
+import { useAuditLog } from "@junjo.io/react";
 
 function AuditPanel({ groupId }: { groupId: GroupId }) {
   const { entries, loading, error, hasMore, fetchMore, loadingMore, refetch } =
@@ -134,8 +134,8 @@ If `useAuditLog` is called outside a `<JunjoProvider>`, it throws synchronously 
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.audit.list` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo-io/sdk";
-import { JunjoProvider } from "@junjo-io/react";
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

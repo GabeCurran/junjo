@@ -1,4 +1,4 @@
-import type { GameId, GroupId, MemberId, MemberJoinedEvent, UserId } from "@junjo-io/shared";
+import type { GameId, GroupId, MemberId, MemberJoinedEvent, UserId } from "@junjo.io/shared";
 import { type Prisma, PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";

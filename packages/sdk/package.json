@@ -1,5 +1,5 @@
 {
-  "name": "@junjo-io/sdk",
+  "name": "@junjo.io/sdk",
   "version": "0.1.0",
   "description": "Junjo TypeScript client. Node + browser. Game-domain primitives for groups, ranks, and permissions.",
   "license": "MIT",
@@ -28,7 +28,7 @@
     "size": "size-limit"
   },
   "dependencies": {
-    "@junjo-io/shared": "0.1.0",
+    "@junjo.io/shared": "0.1.0",
     "jose": "^6.2.3"
   },
   "devDependencies": {
@@ -43,12 +43,12 @@
   },
   "size-limit": [
     {
-      "name": "@junjo-io/sdk (main entry)",
+      "name": "@junjo.io/sdk (main entry)",
       "path": "dist/index.js",
       "limit": "8 KB"
     },
     {
-      "name": "@junjo-io/sdk/adapters",
+      "name": "@junjo.io/sdk/adapters",
       "path": "dist/adapters/index.js",
       "limit": "10 KB"
     }

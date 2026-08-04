@@ -6,7 +6,7 @@ import type {
   PermissionSource,
   RoleId,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import { AuditApi } from "./audit.js";
 import { BansApi } from "./bans.js";
 import { JunjoError } from "./errors.js";
@@ -272,4 +272,4 @@ export type {
   WebhookEndpointId,
   WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";

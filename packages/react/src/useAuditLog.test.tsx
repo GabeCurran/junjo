@@ -1,5 +1,5 @@
-import { Junjo, JunjoError } from "@junjo-io/sdk";
-import type { ListAuditOptions } from "@junjo-io/shared";
+import { Junjo, JunjoError } from "@junjo.io/sdk";
+import type { ListAuditOptions } from "@junjo.io/shared";
 import type {
   AuditAction,
   AuditEntry,
@@ -7,7 +7,7 @@ import type {
   GroupId,
   Page,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";

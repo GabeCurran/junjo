@@ -3,7 +3,7 @@
 Returns a user's friend-list tags in the calling game, sorted by name. Tags are private to their owner: only the user that created a tag sees it applied. Fetch-on-mount and refetch-driven (no SSE subscription).
 
 ```tsx
-import { useFriendTags, useJunjo } from "@junjo-io/react";
+import { useFriendTags, useJunjo } from "@junjo.io/react";
 
 function TagManager({ userId }: { userId: string }) {
   const junjo = useJunjo();
@@ -68,8 +68,8 @@ The hook never throws; errors land in `result.error`. Called outside a `<JunjoPr
 Stub `junjo.friends.tags.list` directly on the instance:
 
 ```tsx
-import { Junjo } from "@junjo-io/sdk";
-import { JunjoProvider } from "@junjo-io/react";
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
 import { vi } from "vitest";
 
 const client = new Junjo({

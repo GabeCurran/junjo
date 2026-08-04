@@ -1,5 +1,5 @@
-import { Junjo } from "@junjo-io/sdk";
-import type { FriendRequestList, Friendship, FriendshipPage, UserId } from "@junjo-io/sdk";
+import { Junjo } from "@junjo.io/sdk";
+import type { FriendRequestList, Friendship, FriendshipPage, UserId } from "@junjo.io/sdk";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";

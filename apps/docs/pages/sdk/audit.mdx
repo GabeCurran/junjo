@@ -3,7 +3,7 @@
 Read the audit log for a group. The audit log is the durable record of every mutation Junjo has performed; the live event stream ([`junjo.groups.subscribe`](./groups#subscribegroupid-handler-opts)) is for transient UX, and `audit.list` is for "what has happened to this group, ever."
 
 ```ts
-import { Junjo } from "@junjo-io/sdk";
+import { Junjo } from "@junjo.io/sdk";
 
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
 

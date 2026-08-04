@@ -10,7 +10,7 @@ import type {
   FriendshipRelationship,
   FriendshipState,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import type { HttpClient } from "./http.js";
 import { parseWireDate } from "./wire.js";
 

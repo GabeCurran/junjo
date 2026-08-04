@@ -1,4 +1,4 @@
-import type { AuthAdapter, UserId } from "@junjo-io/shared";
+import type { AuthAdapter, UserId } from "@junjo.io/shared";
 import { JunjoError } from "../errors.js";
 
 // The minimum payload shape the adapter cares about. Any object with a

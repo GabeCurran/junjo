@@ -1,4 +1,4 @@
-import type { JunjoEvent } from "@junjo-io/shared";
+import type { JunjoEvent } from "@junjo.io/shared";
 import { PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

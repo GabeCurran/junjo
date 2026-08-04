@@ -1,4 +1,4 @@
-import type { GameConfig, PartialGameConfig } from "@junjo-io/shared";
+import type { GameConfig, PartialGameConfig } from "@junjo.io/shared";
 import type { PrismaClient } from "@prisma/client";
 import { Errors } from "../errors.js";
 import { resolveGameConfig } from "./defaults.js";

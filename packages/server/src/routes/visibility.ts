@@ -18,7 +18,7 @@
 // list handler before calling) so this helper stays decoupled from
 // the external-id resolution path.
 
-import type { FriendsListVisibility, GameConfig } from "@junjo-io/shared";
+import type { FriendsListVisibility, GameConfig } from "@junjo.io/shared";
 import type { PrismaClient, UserVisibility } from "@prisma/client";
 import type { Handler } from "hono";
 import { z } from "zod";

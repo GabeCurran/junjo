@@ -1,4 +1,4 @@
-import type { AuthAdapter, UserId } from "@junjo-io/shared";
+import type { AuthAdapter, UserId } from "@junjo.io/shared";
 import { type CryptoKey, type JWTPayload, importSPKI, errors as joseErrors, jwtVerify } from "jose";
 import { JunjoError } from "../errors.js";
 

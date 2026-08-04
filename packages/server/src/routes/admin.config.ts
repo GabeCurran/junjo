@@ -4,7 +4,7 @@
 // per-game settings page. Authenticated by the cross-game admin token,
 // not the per-game API key (mirrors the rest of `/v1/admin/*`).
 
-import type { GameConfig, PartialGameConfig } from "@junjo-io/shared";
+import type { GameConfig, PartialGameConfig } from "@junjo.io/shared";
 import type { PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { DEFAULT_GAME_CONFIG, mergeGameConfig, resolveGameConfig } from "../config/defaults.js";

@@ -5,7 +5,7 @@ import type {
   MemberJoinedEvent,
   RoleId,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import { type Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { newEventId } from "./events.js";

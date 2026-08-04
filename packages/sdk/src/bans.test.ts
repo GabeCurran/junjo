@@ -1,4 +1,4 @@
-import type { UserId } from "@junjo-io/shared";
+import type { UserId } from "@junjo.io/shared";
 import { describe, expect, it, vi } from "vitest";
 import { Junjo } from "./index.js";
 

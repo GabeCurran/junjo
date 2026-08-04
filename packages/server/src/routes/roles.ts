@@ -6,7 +6,7 @@ import type {
   PermissionRevokedEvent,
   RoleDeletedEvent,
   RoleId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";

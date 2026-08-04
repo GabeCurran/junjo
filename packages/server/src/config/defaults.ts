@@ -3,8 +3,8 @@ import type {
   GameConfig,
   GameConfigFriendsVisibility,
   PartialGameConfig,
-} from "@junjo-io/shared";
-import { FRIENDS_LIST_VISIBILITY_VALUES } from "@junjo-io/shared";
+} from "@junjo.io/shared";
+import { FRIENDS_LIST_VISIBILITY_VALUES } from "@junjo.io/shared";
 
 // Single source of truth for the default GameConfig. New games persist
 // `{}` to the `Game.config` column and the resolver fills the rest at

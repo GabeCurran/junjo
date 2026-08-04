@@ -1,11 +1,11 @@
 # Publishing Junjo to npm
 
-The publishable packages are scoped under `@junjo-io` (the bare `junjo`
+The publishable packages are scoped under `@junjo.io` (the bare `junjo`
 npm name could not be secured; the scope matches the junjo.io domain):
 
-- `@junjo-io/sdk` (0.1.0)
-- `@junjo-io/react` (0.1.0)
-- `@junjo-io/shared` (0.1.0, internal types dependency of the other two)
+- `@junjo.io/sdk` (0.1.0)
+- `@junjo.io/react` (0.1.0)
+- `@junjo.io/shared` (0.1.0, internal types dependency of the other two)
 
 Everything else in the monorepo is `private: true` and will never publish.
 
@@ -40,23 +40,23 @@ If you prefer to publish by hand instead, the equivalent is:
 
 ```
 npm run build
-npm publish --workspace @junjo-io/shared --access public
-npm publish --workspace @junjo-io/sdk --access public
-npm publish --workspace @junjo-io/react --access public
+npm publish --workspace @junjo.io/shared --access public
+npm publish --workspace @junjo.io/sdk --access public
+npm publish --workspace @junjo.io/react --access public
 ```
 
 ## Verify
 
 ```
-npm view @junjo-io/sdk
-npm view @junjo-io/react
-npm view @junjo-io/shared
+npm view @junjo.io/sdk
+npm view @junjo.io/react
+npm view @junjo.io/shared
 ```
 
 Each should report version 0.1.0. Then a clean-room smoke test:
 
 ```
-mkdir /tmp/junjo-smoke && cd /tmp/junjo-smoke && npm init -y && npm install @junjo-io/sdk
+mkdir /tmp/junjo-smoke && cd /tmp/junjo-smoke && npm init -y && npm install @junjo.io/sdk
 ```
 
 ## Future releases via GitHub Actions (optional)
@@ -65,7 +65,7 @@ mkdir /tmp/junjo-smoke && cd /tmp/junjo-smoke && npm init -y && npm install @jun
 build + test + `changeset publish` with npm provenance. To use it:
 
 1. Create a granular npm access token (npmjs.com > Access Tokens) with
-   read/write scoped to the `@junjo-io` packages.
+   read/write scoped to the `@junjo.io` packages.
 2. Add it as the `NPM_TOKEN` repository secret on GitHub.
 3. Trigger the "Publish" workflow from the Actions tab.
 

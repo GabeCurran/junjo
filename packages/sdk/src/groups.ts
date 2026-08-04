@@ -17,7 +17,7 @@ import type {
   RoleId,
   UpdateGroupInput,
   UserId,
-} from "@junjo-io/shared";
+} from "@junjo.io/shared";
 import { type WireBanHistoryEntry, deserializeBanHistoryEntry } from "./bans.js";
 import { JunjoError } from "./errors.js";
 import {

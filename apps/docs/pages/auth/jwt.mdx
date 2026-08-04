@@ -6,13 +6,13 @@ The adapter wraps the `jose` library and validates signature, expiration, not-be
 
 ## Install
 
-`jose` is a runtime dependency of `@junjo-io/sdk`; you do not need to install it separately.
+`jose` is a runtime dependency of `@junjo.io/sdk`; you do not need to install it separately.
 
 ## Basic usage
 
 ```ts
-import { Junjo } from "@junjo-io/sdk";
-import { jwtAdapter } from "@junjo-io/sdk/adapters";
+import { Junjo } from "@junjo.io/sdk";
+import { jwtAdapter } from "@junjo.io/sdk/adapters";
 
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,

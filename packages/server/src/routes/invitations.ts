@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { GameId, GroupId, MemberJoinedEvent, UserId } from "@junjo-io/shared";
+import type { GameId, GroupId, MemberJoinedEvent, UserId } from "@junjo.io/shared";
 import type { Invitation, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { banErrorMessage, checkBanState } from "../bans.js";
