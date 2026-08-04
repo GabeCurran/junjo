@@ -188,17 +188,16 @@ export default function LandingPage() {
         <section className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-2 md:py-20">
           <div>
             <p className={`${jbMono.className} text-xs uppercase tracking-widest text-primary`}>
-              Source-available backend for multiplayer games
+              Backend for multiplayer games
             </p>
             <h1
               className={`${jbMono.className} mt-4 text-3xl font-bold leading-tight tracking-tight md:text-4xl`}
             >
-              Guilds, ranks, and permissions for your game
+              Guilds, ranks, and permissions
             </h1>
             <p className="mt-4 max-w-md text-base leading-7 text-muted-foreground">
-              Junjo is a backend and TypeScript SDK for the social features most multiplayer games
-              build from scratch: groups, roles, friends, and invitations. It works with the auth
-              you already have, and you can self-host the whole thing.
+              A backend and TypeScript SDK for your game&apos;s social layer. Works with your
+              existing auth. Self-hostable.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
@@ -233,7 +232,7 @@ export default function LandingPage() {
           <div className="mx-auto max-w-screen-lg px-6 py-16">
             <h2 className="text-2xl font-semibold tracking-tight">The client surface</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Eight namespaces on one client, mirrored in the HTTP API and the React hooks.
+              Same shape in the HTTP API, the SDK, and the React hooks.
             </p>
             <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
               {NAMESPACES.map((f) => (
@@ -247,8 +246,7 @@ export default function LandingPage() {
               ))}
             </div>
             <p className="mt-4 text-sm leading-6 text-muted-foreground">
-              Plus server-sent events for live roster and membership updates, from the SDK or the
-              React hooks.
+              Plus server-sent events for live roster updates.
             </p>
           </div>
         </section>
@@ -262,9 +260,8 @@ export default function LandingPage() {
                   Works with your existing auth
                 </h2>
                 <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
-                  Junjo does not manage user accounts. Adapters for Clerk, Supabase, and plain JWT
-                  are included, and a small interface covers custom setups. You hand Junjo a user
-                  id; it handles the group data.
+                  You hand Junjo a user id; it handles the group data. Adapters for Clerk, Supabase,
+                  and plain JWT, or bring your own.
                 </p>
               </div>
               <div className="rounded-lg border border-border bg-card p-4">
@@ -282,9 +279,6 @@ export default function LandingPage() {
                     }
                   </code>
                 </pre>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Also included: supabaseAdapter, jwtAdapter, or bring your own.
-                </p>
               </div>
             </div>
           </div>
@@ -297,9 +291,8 @@ export default function LandingPage() {
               <div className="rounded-lg border border-border bg-card p-6">
                 <h2 className="text-lg font-semibold tracking-tight">Self-host it</h2>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  The server is source-available (ELv2): free to run for your own game. Hono on Node
-                  with Postgres; one Docker image and one database, running the same API as the
-                  hosted version.
+                  Source-available (ELv2), free to run for your own game. One Docker image, one
+                  Postgres, same API as hosted.
                 </p>
                 <a
                   href={`${DOCS_URL}/self-host`}
@@ -313,8 +306,8 @@ export default function LandingPage() {
               <div className="rounded-lg border border-primary/40 bg-card p-6">
                 <h2 className="text-lg font-semibold tracking-tight">Or use the hosted beta</h2>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Managed Junjo with the admin dashboard and Postgres included. Free while in beta.
-                  Email me and I will set you up.
+                  Dashboard and Postgres included. Free while in beta; email me and I&apos;ll set
+                  you up.
                 </p>
                 <a
                   href={CONTACT_MAILTO}
