@@ -190,17 +190,14 @@ export default function LandingPage() {
           <p className={`${jbMono.className} text-xs uppercase tracking-widest text-primary`}>
             Backend for multiplayer games
           </p>
-          <div className="mt-4 flex flex-wrap items-end justify-between gap-6">
-            <h1
-              className={`${jbMono.className} max-w-xl text-3xl font-bold leading-tight tracking-tight md:text-5xl`}
-            >
-              Guilds, ranks, and permissions
-            </h1>
-            <p className="max-w-xs text-base leading-7 text-muted-foreground">
-              A backend and TypeScript SDK for your game&apos;s social layer. Works with your
-              existing auth. Self-hostable.
-            </p>
-          </div>
+          <h1
+            className={`${jbMono.className} mt-4 text-3xl font-bold leading-tight tracking-tight md:text-5xl`}
+          >
+            Guilds, ranks, and permissions
+          </h1>
+          <p className="mt-3 text-base leading-7 text-muted-foreground">
+            A backend and TypeScript SDK for your game&apos;s social layer.
+          </p>
           <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-4">
             <a
               href={DOCS_URL}
