@@ -1,5 +1,5 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { Activity, ArrowRight, Mail } from "lucide-react";
+import { Activity, ArrowDown, ArrowRight, Mail } from "lucide-react";
 import { JetBrains_Mono } from "next/font/google";
 
 // Public marketing landing page. This is the ONLY route served without the
@@ -184,45 +184,51 @@ export default function LandingPage() {
       </header>
 
       <main className="flex-1">
-        {/* Hero */}
-        <section className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-2 md:py-20">
-          <div>
-            <p className={`${jbMono.className} text-xs uppercase tracking-widest text-primary`}>
-              Backend for multiplayer games
-            </p>
+        {/* Hero: full-width text, then code -> resulting state side by side */}
+        <section className="mx-auto max-w-screen-lg px-6 pt-16 md:pt-20">
+          <p className={`${jbMono.className} text-xs uppercase tracking-widest text-primary`}>
+            Backend for multiplayer games
+          </p>
+          <div className="mt-4 flex flex-wrap items-end justify-between gap-6">
             <h1
-              className={`${jbMono.className} mt-4 text-3xl font-bold leading-tight tracking-tight md:text-4xl`}
+              className={`${jbMono.className} max-w-xl text-3xl font-bold leading-tight tracking-tight md:text-5xl`}
             >
               Guilds, ranks, and permissions
             </h1>
-            <p className="mt-4 max-w-md text-base leading-7 text-muted-foreground">
+            <p className="max-w-xs text-base leading-7 text-muted-foreground">
               A backend and TypeScript SDK for your game&apos;s social layer. Works with your
               existing auth. Self-hostable.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <a
-                href={DOCS_URL}
-                {...EXT}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-              >
-                Read the docs
-                <ArrowRight className="h-4 w-4" aria-hidden />
-              </a>
-              <a
-                href={GITHUB_URL}
-                {...EXT}
-                className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
-              >
-                View on GitHub
-              </a>
-            </div>
-            <p className={`${jbMono.className} mt-6 text-sm text-muted-foreground`}>
+          </div>
+          <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-4">
+            <a
+              href={DOCS_URL}
+              {...EXT}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              Read the docs
+              <ArrowRight className="h-4 w-4" aria-hidden />
+            </a>
+            <a
+              href={GITHUB_URL}
+              {...EXT}
+              className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+            >
+              View on GitHub
+            </a>
+            <p className={`${jbMono.className} text-sm text-muted-foreground`}>
               <span className="select-none text-primary">$ </span>
               npm install @junjo.io/sdk
             </p>
           </div>
-          <div className="space-y-3">
+        </section>
+        <section className="mx-auto max-w-screen-lg px-6 pb-16 pt-10 md:pb-20">
+          <div className="grid items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
             <CodePanel />
+            <div className="flex justify-center text-primary" aria-hidden>
+              <ArrowRight className="hidden h-6 w-6 md:block" />
+              <ArrowDown className="h-6 w-6 md:hidden" />
+            </div>
             <GuildCard />
           </div>
         </section>

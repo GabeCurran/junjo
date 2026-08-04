@@ -52,5 +52,10 @@
       "path": "dist/adapters/index.js",
       "limit": "10 KB"
     }
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GabeCurran/junjo.git",
+    "directory": "packages/sdk"
+  }
 }
