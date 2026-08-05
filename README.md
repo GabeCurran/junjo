@@ -2,18 +2,32 @@
 
 [![CI](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml)
 [![License: MIT + ELv2](https://img.shields.io/badge/License-MIT%20%2B%20ELv2-blue.svg)](./LICENSE)
-[![npm @junjo.io/sdk](https://img.shields.io/npm/v/@junjo.io/sdk?label=%40junjo-io%2Fsdk)](https://www.npmjs.com/package/@junjo.io/sdk)
-[![npm @junjo.io/react](https://img.shields.io/npm/v/@junjo.io/react?label=%40junjo-io%2Freact)](https://www.npmjs.com/package/@junjo.io/react)
+[![npm @junjo.io/sdk](https://img.shields.io/npm/v/@junjo.io/sdk?label=%40junjo.io%2Fsdk)](https://www.npmjs.com/package/@junjo.io/sdk)
+[![npm @junjo.io/react](https://img.shields.io/npm/v/@junjo.io/react?label=%40junjo.io%2Freact)](https://www.npmjs.com/package/@junjo.io/react)
 
-A drop-in social-organization layer for multiplayer games. Guilds, clans, factions, parties, and the role/permission model around them. Plugs into your existing auth; never replaces it.
+**[junjo.io](https://junjo.io)** | **[Docs](https://docs.junjo.io)** | **[npm](https://www.npmjs.com/package/@junjo.io/sdk)**
 
-![Junjo dashboard](docs/screenshots/dashboard-home.png)
+A backend and TypeScript SDK for your game's social layer: guilds, clans,
+parties, ranks, permissions, friends, and invitations. It takes a user id
+from the auth you already run and manages the group data under it. Self-host
+the server or use the hosted beta.
+
+```sh
+npm install @junjo.io/sdk
+```
 
 ```ts
+import { Junjo } from "@junjo.io/sdk";
+
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY });
+
 const guild = await junjo.groups.create({ kind: "guild", name: "Crimson Dawn" });
 await junjo.groups.inviteByUserId(guild.id, "user_123");
+
+const allowed = await junjo.can("user_123", guild.id, "invite_member");
 ```
+
+![Junjo dashboard](docs/screenshots/dashboard-home.png)
 
 ## What's in the box
 
@@ -32,7 +46,16 @@ await junjo.groups.inviteByUserId(guild.id, "user_123");
 
 ## Documentation
 
-User and developer docs live at **`apps/docs`** (Nextra). Run `npm run dev` and open `http://localhost:3001`, or browse the source under `apps/docs/pages/`.
+Docs live at **[docs.junjo.io](https://docs.junjo.io)**: getting started, the
+SDK and React references, auth adapter guides (Clerk, Supabase, JWT, custom),
+the HTTP API reference, and the self-hosting guide. The source is `apps/docs`
+(Nextra); locally it runs at `http://localhost:3001` under `npm run dev`.
+
+## Hosted beta
+
+Managed Junjo with the admin dashboard and Postgres included. Free while in
+beta. Email [gabecurran01@gmail.com](mailto:gabecurran01@gmail.com?subject=Junjo%20hosted%20beta)
+and I will set you up.
 
 ## Local development
 

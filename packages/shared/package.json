@@ -1,6 +1,6 @@
 {
   "name": "@junjo.io/shared",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Shared TypeScript types for Junjo. No runtime code.",
   "license": "MIT",
   "type": "module",
@@ -32,5 +32,9 @@
     "type": "git",
     "url": "git+https://github.com/GabeCurran/junjo.git",
     "directory": "packages/shared"
+  },
+  "homepage": "https://junjo.io",
+  "bugs": {
+    "url": "https://github.com/GabeCurran/junjo/issues"
   }
 }
