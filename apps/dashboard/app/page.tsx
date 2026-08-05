@@ -188,7 +188,7 @@ export default function LandingPage() {
 
       <main className="flex-1">
         {/* Hero: full-width text, then code -> resulting state side by side */}
-        <section className="mx-auto max-w-screen-lg px-6 pt-16 md:pt-20">
+        <section className="mx-auto max-w-screen-lg px-6 pt-10 md:pt-12">
           <h1
             className={`${jbMono.className} text-2xl font-bold leading-tight tracking-tight md:text-4xl`}
           >
@@ -224,7 +224,7 @@ export default function LandingPage() {
             </a>
           </div>
         </section>
-        <section className="mx-auto max-w-screen-lg px-6 pb-16 pt-10 md:pb-20">
+        <section className="mx-auto max-w-screen-lg px-6 pb-12 pt-8 md:pb-14">
           <div className="grid items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
             <CodePanel />
             <div className="flex justify-center text-primary" aria-hidden>
@@ -237,7 +237,7 @@ export default function LandingPage() {
 
         {/* API surface */}
         <section className="border-t border-border bg-card/50">
-          <div className="mx-auto max-w-screen-lg px-6 py-16">
+          <div className="mx-auto max-w-screen-lg px-6 py-12">
             <h2 className="text-2xl font-semibold tracking-tight">The client surface</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
               Same shape in the HTTP API, the SDK, and the React hooks.
@@ -261,7 +261,7 @@ export default function LandingPage() {
 
         {/* Auth adapters */}
         <section className="border-t border-border">
-          <div className="mx-auto max-w-screen-lg px-6 py-16">
+          <div className="mx-auto max-w-screen-lg px-6 py-12">
             <div className="grid items-center gap-10 md:grid-cols-2">
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight">
@@ -295,7 +295,7 @@ export default function LandingPage() {
 
         {/* Self-host / hosted beta */}
         <section className="border-t border-border bg-card/50">
-          <div className="mx-auto max-w-screen-lg px-6 py-16">
+          <div className="mx-auto max-w-screen-lg px-6 py-12">
             <div className="grid gap-6 md:grid-cols-2">
               <div className="rounded-lg border border-border bg-card p-6">
                 <h2 className="text-lg font-semibold tracking-tight">Self-host it</h2>
@@ -334,9 +334,9 @@ export default function LandingPage() {
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-screen-lg flex-col gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <p>Junjo. MIT SDK, source-available server.</p>
-          <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-5">
+          <nav className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs sm:gap-5 sm:text-sm">
             <a href={DOCS_URL} {...EXT} className="transition-colors hover:text-foreground">
-              docs.junjo.io
+              Docs
             </a>
             <a href={GITHUB_URL} {...EXT} className="transition-colors hover:text-foreground">
               GitHub
