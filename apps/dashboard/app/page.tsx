@@ -47,7 +47,7 @@ const ROSTER: readonly { name: string; rank: string; lead?: boolean }[] = [
 
 function CodePanel() {
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card shadow-lg">
+    <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <span className="h-2.5 w-2.5 rounded-full bg-muted" aria-hidden />
         <span className="h-2.5 w-2.5 rounded-full bg-muted" aria-hidden />
@@ -86,7 +86,7 @@ function CodePanel() {
 // ranks, the invited player arriving, and the permission check resolving.
 function GuildCard() {
   return (
-    <div className="relative rounded-lg border border-border bg-card shadow-lg">
+    <div className="relative min-w-0 rounded-lg border border-border bg-card shadow-lg">
       <p
         className={`${jbMono.className} border-b border-border px-4 py-2.5 text-xs text-muted-foreground`}
       >
@@ -150,7 +150,7 @@ export default function LandingPage() {
             </div>
             <span className="text-base font-semibold tracking-tight">Junjo</span>
           </div>
-          <nav className="flex items-center gap-5 text-sm">
+          <nav className="flex items-center gap-4 text-sm sm:gap-5">
             <a
               href={DOCS_URL}
               {...EXT}
@@ -165,9 +165,11 @@ export default function LandingPage() {
             >
               GitHub
             </a>
+            {/* License and Admin live in the footer too, so they yield on
+                small screens to keep the header on one uncrowded line. */}
             <a
               href="/license"
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="hidden text-muted-foreground transition-colors hover:text-foreground sm:inline"
             >
               License
             </a>
@@ -176,7 +178,7 @@ export default function LandingPage() {
                 native sign-in dialog on the public page. */}
             <a
               href="/overview"
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="hidden text-muted-foreground transition-colors hover:text-foreground sm:inline"
             >
               Admin
             </a>
@@ -195,11 +197,11 @@ export default function LandingPage() {
           <p className="mt-3 text-base leading-7 text-muted-foreground">
             A backend and TypeScript SDK for your game&apos;s social layer.
           </p>
-          <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-4">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-5 sm:gap-y-4">
             <a
               href={DOCS_URL}
               {...EXT}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 sm:justify-start"
             >
               Read the docs
               <ArrowRight className="h-4 w-4" aria-hidden />
@@ -207,14 +209,14 @@ export default function LandingPage() {
             <a
               href={GITHUB_URL}
               {...EXT}
-              className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-accent sm:justify-start"
             >
               View on GitHub
             </a>
             <a
               href={NPM_URL}
               {...EXT}
-              className={`${jbMono.className} text-sm text-muted-foreground transition-colors hover:text-foreground`}
+              className={`${jbMono.className} mt-1 text-sm text-muted-foreground transition-colors hover:text-foreground sm:mt-0`}
               title="View @junjo.io/sdk on npm"
             >
               <span className="select-none text-primary">$ </span>
@@ -271,7 +273,7 @@ export default function LandingPage() {
                   are built in.
                 </p>
               </div>
-              <div className="rounded-lg border border-border bg-card p-4">
+              <div className="min-w-0 rounded-lg border border-border bg-card p-4">
                 <pre className={`${jbMono.className} overflow-x-auto text-[13px] leading-6`}>
                   <code>
                     <span className="text-primary">{"import"}</span>
@@ -330,9 +332,9 @@ export default function LandingPage() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex max-w-screen-lg flex-wrap items-center justify-between gap-4 px-6 py-8 text-sm text-muted-foreground">
+        <div className="mx-auto flex max-w-screen-lg flex-col gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <p>Junjo. MIT SDK, source-available server.</p>
-          <nav className="flex items-center gap-5">
+          <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-5">
             <a href={DOCS_URL} {...EXT} className="transition-colors hover:text-foreground">
               docs.junjo.io
             </a>
