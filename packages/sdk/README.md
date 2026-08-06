@@ -23,7 +23,7 @@ npm run build -w @junjo.io/sdk
 npm run size  -w @junjo.io/sdk
 ```
 
-Limits are committed in `package.json#size-limit` and gate the `dist/index.js`
-and `dist/adapters/index.js` entries against their measured brotli baseline.
-Bumping a limit is a deliberate decision; the commit that raises the limit
-should also justify why the new bytes are worth it.
+The limits live in `package.json#size-limit`. They check `dist/index.js` and
+`dist/adapters/index.js` against their current brotli size, so an accidental
+dependency shows up as a failed build. If you need to raise a limit, say what
+the extra bytes bought in the commit message.
