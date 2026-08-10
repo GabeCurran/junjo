@@ -12,7 +12,7 @@ Please include:
 
 - A description of the vulnerability and its impact.
 - Steps to reproduce, or a proof-of-concept.
-- The Junjo package and version affected (e.g. `@junjo.io/sdk@0.1.2`).
+- The Junjo package and version affected (e.g. `@junjo.io/sdk@0.2.0`).
 - Any disclosure timeline you have in mind.
 
 You should expect an initial acknowledgement within **72 hours** and a
@@ -25,8 +25,9 @@ In scope:
 
 - The npm-published packages `@junjo.io/sdk`, `@junjo.io/react`, and
   `@junjo.io/shared`, the source-available server (`@junjo/server`),
-  and the Junjo.io SDK for Roblox (`packages/sdk-roblox`, distributed
-  as `Junjo.rbxm` on GitHub releases).
+  the Junjo.io SDK for Roblox (`packages/sdk-roblox`, distributed as
+  `Junjo.rbxm` on GitHub releases), the C++ SDK (`packages/sdk-cpp`),
+  and the Unreal Engine plugin (`packages/sdk-unreal`).
 - The Junjo HTTP API surface (`/v1/*`) and webhook delivery pipeline.
 
 Out of scope:

@@ -10,9 +10,9 @@ import { JetBrains_Mono } from "next/font/google";
 const jbMono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "700"] });
 
 export const metadata = {
-  title: "Junjo - Guilds, ranks, and permissions for multiplayer games",
+  title: "Junjo - Social infrastructure for multiplayer games",
   description:
-    "A backend and TypeScript SDK for the social features most multiplayer games build from scratch: groups, roles, friends, and invitations. Works with your existing auth. Self-hostable.",
+    "Guilds, clans, parties, ranks, permissions, friends, bans, invitations, and live events for multiplayer games. Native SDKs for TypeScript, React, Roblox, C++, and Unreal Engine. Works with your existing auth. Self-hostable.",
 };
 
 const GITHUB_URL = "https://github.com/GabeCurran/junjo";
@@ -192,10 +192,11 @@ export default function LandingPage() {
           <h1
             className={`${jbMono.className} text-2xl font-bold leading-tight tracking-tight md:text-4xl`}
           >
-            Guilds, ranks, and permissions
+            Social infrastructure for multiplayer games
           </h1>
-          <p className="mt-3 text-base leading-7 text-muted-foreground">
-            A backend and TypeScript SDK for your game&apos;s social layer.
+          <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
+            Guilds, clans, parties, ranks, permissions, friends, bans, invitations, and live events.
+            Native SDKs for TypeScript, React, Roblox, C++, and Unreal Engine.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-5 sm:gap-y-4">
             <a

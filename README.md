@@ -7,10 +7,11 @@
 
 **[junjo.io](https://junjo.io)** | **[Docs](https://docs.junjo.io)** | **[npm](https://www.npmjs.com/package/@junjo.io/sdk)**
 
-A backend and TypeScript SDK for your game's social layer: guilds, clans,
-parties, ranks, permissions, friends, and invitations. It takes a user id
-from the auth you already run and manages the group data under it. Self-host
-the server or use the hosted beta.
+Social infrastructure for multiplayer games: guilds, clans, parties, ranks,
+permissions, friends, bans, invitations, and live events. Native SDKs for
+TypeScript, React, Roblox, C++, and Unreal Engine over one backend that takes
+a user id from the auth you already run and manages the group data under it.
+Self-host the server or use the hosted beta.
 
 ```sh
 npm install @junjo.io/sdk
