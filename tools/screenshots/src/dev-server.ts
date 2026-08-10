@@ -82,7 +82,22 @@ function waitForExit(child: ChildProcess): Promise<number | null> {
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.pid === undefined) return;
+  // Windows: `shell: true` runs cmd.exe -> npm.cmd -> a DETACHED node
+  // child. `child.kill()` only reaches the wrapper; the real dev server
+  // survives, keeps the port bound, and (because it inherited our
+  // stdio) holds the pipes open so any parent process waiting on the
+  // crawler's output never sees EOF. taskkill /T walks the whole tree.
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+      killer.once("exit", () => resolve());
+      killer.once("error", () => resolve());
+    });
+    return;
+  }
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {

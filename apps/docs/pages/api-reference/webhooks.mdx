@@ -93,7 +93,7 @@ Each delivery is one HTTP POST. Headers:
 | `x-junjo-timestamp` | ISO 8601 timestamp the request was signed at. Bound into the HMAC; receivers verify this is within their tolerance window (5 minutes by default in `webhooks.verify`). |
 | `x-junjo-signature` | HMAC-SHA256 of `<x-junjo-timestamp>.<body>`, hex-encoded, prefixed with the scheme version (`v1=`). |
 
-The body is the JSON-serialized `JunjoEvent`. Date fields render as ISO 8601 strings; branded ids render as plain strings. The body bytes are exactly what the signature is computed over - receivers MUST verify the signature against the raw body before parsing JSON.
+The body is the JSON-serialized `JunjoEvent`. Date fields render as ISO 8601 strings; branded ids render as plain strings. The body bytes are exactly what the signature is computed over; receivers MUST verify the signature against the raw body before parsing JSON.
 
 Example POST:
 
@@ -164,7 +164,7 @@ Endpoints are configured per game through the `/v1/webhooks` routes below. The d
 Each endpoint carries:
 
 - `url` - destination for the POST. Must use `https://` or `http://`.
-- `events` - array of event types this endpoint subscribes to. **Empty array means match-all** (the friendly default for "I want everything"). Non-empty array filters to the listed types; unknown event types are rejected at create / update time.
+- `events` - array of event types this endpoint subscribes to. **Empty array means match-all** (the friendly default for "I want everything"). Non-empty array filters to the listed types; unknown event types are rejected at create / update time. Subscriptions accept every published event type - all 22 of them, including the seven `friend.*` types, `game.user.banned` / `game.user.unbanned`, and `member.banned` / `member.unbanned`. The canonical list is `WEBHOOK_EVENT_TYPES` in `packages/server/src/routes/webhooks.schema.ts`, kept in compile-time lockstep with the `JunjoEventType` union.
 - `format` - wire format applied at delivery time. Defaults to `"junjo"` (raw `JunjoEvent` JSON with HMAC headers). `"discord"` produces a [Discord embed payload](./webhooks-discord.mdx) and `"slack"` produces a [Slack Block Kit message](./webhooks-slack.mdx); both skip the HMAC headers (those targets authenticate via URL token, not signed headers).
 - `disabledAt` - when set, the endpoint is muted: matching events do not enqueue deliveries to it.
 - `secret` - the HMAC signing key. Stored in recoverable form so the worker can sign requests; surfaced exactly once on `POST /v1/webhooks` and never again. Persist it on creation. The signing path is skipped for non-`junjo` formats, but the column still stores the secret in case the dev rotates the format back later.
@@ -187,7 +187,7 @@ Each endpoint carries:
 
 ### `POST /v1/webhooks`
 
-Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response is 201 Created and includes `secret` exactly once - persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
+Body: `{ url, events?, secret?, format? }`. If `secret` is omitted the server generates a 32-byte base64url secret. The response is 201 Created and includes `secret` exactly once; persist it server-side immediately. `events` defaults to `[]` (match-all). `format` defaults to `"junjo"`.
 
 | Validation | Notes |
 |------------|-------|
@@ -205,7 +205,14 @@ Errors:
 
 ### `GET /v1/webhooks`
 
-Returns `{ items: WebhookEndpoint[], nextCursor: null }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included. The response conforms to the same `Page<T>` envelope as every other list endpoint; today there is no pagination (typical games have a handful of endpoints) so `nextCursor` is always `null`. Adding `?limit&cursor` later is a purely additive change.
+Returns `{ items: WebhookEndpoint[], nextCursor: string | null }` for the calling game, sorted by `createdAt desc, id desc`. The secret is not included. The response conforms to the same `Page<T>` envelope as every other list endpoint. Query parameters:
+
+| Field | Type | Default | Notes |
+|-------|------|---------|------|
+| `limit` | integer (1-100) | 50 | Max endpoints per page. |
+| `cursor` | string | none | The `nextCursor` from a previous page (the id of that page's last item). A cursor id that does not resolve inside the calling game returns `400 bad_request` (invalid cursor). |
+
+`nextCursor` is the id of the last item when more endpoints exist; `null` on the final page. The SDK's `endpoints.listAll` walks the pages for you.
 
 ### `PATCH /v1/webhooks/:id`
 

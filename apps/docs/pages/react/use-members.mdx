@@ -1,6 +1,6 @@
 # useMembers
 
-Returns the paginated roster for a group plus a live event subscription that keeps it in sync with `member.joined`, `member.left`, and `role.changed` events.
+Returns the paginated roster for a group plus a live event subscription that keeps it in sync with `member.joined`, `member.left`, `role.changed`, `member.banned`, and `member.unbanned` events. The subscription rides the provider's [shared group event stream](/react/provider#shared-group-event-streams), so it adds no connection cost next to the other group hooks.
 
 ```tsx
 import { useMembers } from "@junjo.io/react";
@@ -53,7 +53,7 @@ interface UseMembersResult {
 | `members` | The current roster, filtered by `status`. Server order on the initial page; new pages append at the end; live events insert / remove in place. |
 | `loading` | `true` from mount until the first `members.list` response (success or error). |
 | `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
-| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Because the status filter runs server-side, this describes the filtered stream: `hasMore: false` means every member matching `status` has been loaded. |
 | `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
 | `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
 | `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
@@ -61,31 +61,37 @@ interface UseMembersResult {
 
 ## Status filter
 
-The `status` option defaults to `"active"`, which is the dominant case (a roster panel that should not show ex-members). The other valid values are `"active"`, `"invited"`, `"left"`, `"kicked"`, `"banned"`, or `"all"`.
+The `status` option defaults to `"active"`, which is the dominant case (a roster panel that should not show ex-members). The valid values are `"active"`, `"invited"`, `"left"`, `"kicked"`, `"banned"`, or `"all"`.
 
-The filter is applied client-side after the server returns each page. The underlying server route at `GET /v1/groups/:id/members` DOES support a `?status=` query param ([see API reference](/api-reference/groups#get-v1groupsidmembers)), but this hook currently does not forward it -- a future minor version will, eliminating wasted bandwidth on rows the UI immediately discards. Until then, a heavily-filtered group (e.g. one `active` member out of 1000 historical) may need several `fetchMore` calls to surface them; this is acceptable for the dominant use case because active members are usually the majority.
+The filter is applied server-side. For any `status` other than `"all"`, the hook forwards it as `status: [status]` on `junjo.members.list`, which the SDK sends as the `?status=` query param on `GET /v1/groups/:id/members` ([see API reference](/api-reference/groups#get-v1groupsidmembers)). Every page therefore contains only matching rows, and `hasMore` and the stored cursor describe the filtered stream: no bandwidth is spent on rows the UI would discard, and a group with one `active` member out of 1000 historical rows surfaces that member on the first page. For `"all"`, the option is omitted and the server returns every status.
 
-Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands) but does NOT re-open the SSE subscription.
+Live SSE events are the one place the filter still runs client-side: the shared stream delivers events for members of any status, so the hook re-checks each incoming member against `status` before inserting, updating, or dropping a row (see [Live updates](#live-updates)).
+
+Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands with the new query) but does NOT re-open the SSE subscription.
 
 ## Pagination
 
-Pagination is cursor-based. The hook calls `junjo.members.list(groupId, opts)` for each page, where the first call carries `{ limit?: number }` (no cursor) and subsequent `fetchMore` calls carry `{ cursor: <last-page-cursor>, limit?: number }`. The server's response shape is `{ items: Member[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
+Pagination is cursor-based. The hook calls `junjo.members.list(groupId, opts)` for each page, where the first call carries `{ status?: [status], limit?: number }` (no cursor) and subsequent `fetchMore` calls carry `{ status?: [status], cursor: <last-page-cursor>, limit?: number }`. The server's response shape is `{ items: Member[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
 
 `fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `userId` when appending, so a member already present in the current snapshot (e.g., added via a `member.joined` event between page boundaries) will not appear twice.
 
 ## Live updates
 
-After the first page lands, the hook opens an SSE subscription scoped to the group. Three event types modify state:
+On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Events carry members of any status, so each one is matched against the `status` filter client-side before it touches state; live updates therefore respect the filter even though the fetch path filters server-side. Five event types modify state:
 
 | Event | Behavior |
 |-------|----------|
 | `member.joined` | If the member matches the current filter, append at the end (or replace in-place when the same `userId` is already present, idempotent on dedupe). If the filter excludes them, ignore. |
-| `member.left` | Remove the member from the visible roster regardless of filter. For non-active filters, call `refetch` if you need to track lifecycle status precisely - V1 does not synthesize the post-left member shape from event data. |
+| `member.left` | Remove the member from the visible roster regardless of filter. For non-active filters, call `refetch` if you need to track lifecycle status precisely; V1 does not synthesize the post-left member shape from event data. |
 | `role.changed` | Update the member's `roles` in place: remove anything in `event.removed`, then append anything in `event.added` that is not already present. |
+| `member.banned` | If the user is in the visible roster, flip the row to `status: "banned"` with `bannedUntil: event.bannedUntil`, then apply the filter: on an `"active"` (or other non-matching) list the row drops out live; on a `"banned"` or `"all"` list it stays, updated in place. |
+| `member.unbanned` | If the user is in the visible roster, flip the row to `status: "left"` (the server's unban handler sets `"left"`, not `"active"`: an unbanned member has to rejoin) with `bannedUntil: null`, then apply the filter the same way. |
+
+Ban events update rows already present; they carry no member snapshot, so they cannot insert rows. A `"banned"`-filtered list learns about newly banned members it never loaded only on the next `refetch`.
 
 Other events (`role.created`, `role.deleted`, `permission.granted`, `permission.revoked`, `member.invited`, `group.updated`, `group.deleted`, `group.relationship.changed`) are ignored and do not cause re-renders.
 
-The subscription is tied to `(junjo, groupId)`. Changing `status` does not re-open it. Changing `groupId` closes the old subscription and opens a new one.
+The subscription is tied to `(client, groupId)`. Changing `status` does not re-open it. Changing `groupId` detaches from the old group's shared stream and attaches to the new one.
 
 ## Errors
 
@@ -93,7 +99,7 @@ The hook never throws; errors land in `result.error`. Three sources:
 
 - **Initial fetch error**: a `JunjoError` (or other) from the first `members.list` call. The hook stays at `loading: false` with `members: []`.
 - **`fetchMore` error**: appended to `error` while `members` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
-- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+- **Streaming error**: the shared stream failed (handshake rejection or mid-stream drop) or was closed cleanly by the server; a clean close surfaces as `JunjoStreamClosedError` (check with `isStreamClosedError`). The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; remount or change `groupId` to resubscribe (`refetch` refreshes the snapshot but does not reopen the stream). See [Stream teardown](/react/provider#stream-teardown-and-junjostreamclosederror) for the full contract.
 
 If `useMembers` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
 
@@ -171,7 +177,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Composing with `useGroup`
 
-The two hooks each open their own SSE subscription. If a screen renders both, two parallel streams open against the server. This is correct (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea; until then, prefer one of the hooks per screen unless you specifically need both result shapes.
+The two hooks share one SSE stream per `(client, groupId)` through the provider's [subscription hub](/react/provider#shared-group-event-streams). A screen rendering both (or adding `useInvitations` and `useRoles` on top) still costs one server connection; each hook keeps its own snapshot fetches and its own state.
 
 ## Testing
 

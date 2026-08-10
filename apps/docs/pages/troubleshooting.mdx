@@ -1,0 +1,101 @@
+# Troubleshooting
+
+Symptom-first debugging for the common failure modes. The canonical code table with every error code and status lives on the [errors reference](/api-reference/errors); this page is organized by what you observe. Branch on `err.code`, never on `err.message` (codes are stable, messages are not).
+
+When reporting a bug, quote the request id. The server stamps `x-request-id` on every response, and the TypeScript SDK copies it onto `JunjoError.requestId` for every server error (from the envelope on 500s, from the header otherwise). One id lets a log line be found in seconds.
+
+## 401 invalid_api_key
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Every call 401s with "missing or malformed Authorization header" | No `Bearer` header reached the server; in proxy setups, the proxy forgot to inject the key | Check the proxy injects `authorization: Bearer jk_...` on the forwarded request |
+| 401 "malformed API key" | The key is not the full `prefix.secret` string (truncated env var, quotes included, whitespace) | Re-copy the key; it must match `jk_<prefix>.<secret>` exactly |
+| 401 "unknown API key" or "invalid API key" | Wrong environment (cloud key against self-host or vice versa), or right prefix with wrong secret half | Verify `baseUrl` and the key came from the same server; `junjo.keyInfo()` is the quickest probe |
+| 401 "API key revoked" | Key was rotated or revoked in the dashboard / admin API | Issue a new key and update the deployment |
+| `new Junjo(...)` throws `invalid_config` before any request | You passed a `jadm_` admin token, an empty key, or `apiKey` together with `proxy: true` | The SDK rejects the `jadm_` shape at construction: admin tokens gate only `/v1/admin/*` and never work as a game key. Mint a per-game key (`POST /v1/admin/games/:gameId/api-keys`) |
+
+The Roblox SDK applies the same constructor checks (`init.lua` raises `invalid_config` for `jadm_` tokens and missing keys).
+
+## 403: three different meanings
+
+| Code | Meaning | Fix |
+|------|---------|-----|
+| `permission_denied` | The acting user lacks the permission, the group requires an invitation to join, or a direct invitation was redeemed with the wrong `userId` | Check with `junjo.check(userId, groupId, permission)` for the full resolution trace; for direct invitations, the accepting `userId` must equal the invitation's `targetUserId` |
+| `banned` | The user has an active per-group or game-wide ban; checked on join and on invitation accept, before any state changes | `junjo.bans.get` / ban history shows scope and expiry. Bans expire lazily: an expired ban stops blocking on the next check without a background job |
+| `passcode_required` / `passcode_invalid` | The group has a join passcode and the join body omitted it or got it wrong. Applies to `join` only; invitation accept never asks for a passcode (the invitation is the credential) | Send `passcode` in the join body. Note that repeated wrong passcodes hit a dedicated limiter (5/min per user per group, 30/min per group) which returns 429, not 403 |
+
+Secret groups return `404 not_found` to non-members instead of a 403, deliberately: a 403 would confirm the group exists.
+
+## 409 already_member
+
+Races, mostly. `already_member` fires when a join or invitation-accept lands on a user who already has an `active` membership row, including the concurrent case where two joins (or a join racing an accept) hit at once: the loser gets the 409 and the transaction rolls back cleanly (an invitation involved in the losing accept is un-consumed). Treat it as success-shaped in join flows: the user is in the group. Users with a `left` or `kicked` row are reactivated, not 409'd.
+
+## 410: gone
+
+| Code | Cause | Notes |
+|------|-------|-------|
+| `invitation_used` | Single-use code already redeemed, including losing a concurrent double-accept | Checked before expiry, so a used and expired code reports `invitation_used` |
+| `invitation_expired` | `expiresAt` passed | Preview (`GET /v1/invitations/:code`) still worked? Preview does not consume or gate on expiry the same way; re-check at accept time |
+| `restore_window_expired` | Group restore attempted more than 7 days after soft delete | The hourly sweeper has hard-deleted it; there is no recovery |
+
+## 429 rate_limit_exceeded
+
+The server sets `Retry-After` (integer seconds, always at least 1) and the TypeScript SDK surfaces it as `err.retryAfterSeconds`. The SDK never retries automatically, by design: a game server melting down does not need a client-side retry storm on top. Honor `retryAfterSeconds` in your own backoff.
+
+Things to check when 429s surprise you:
+
+- The limiter has two buckets: per API key (600/min, burst 100 at defaults) and per source IP (20x that). If many game servers share an egress IP, the source bucket can fire before the key bucket.
+- Self-host behind a proxy: without `TRUST_PROXY=true` every request appears to come from the proxy's IP and shares one source bucket.
+- `err.retryAfterSeconds === undefined` while `status` is 429 usually means an intermediary rewrote `Retry-After` into HTTP-date form; both the TypeScript and Roblox parsers accept only integer seconds.
+- Passcode joins have their own stricter limiter (see the 403 section); it also answers 429.
+
+## network_error, timeout, cancelled
+
+These three codes are minted by the SDK, not the server; `err.status` is `undefined`.
+
+| Code | Meaning | Fix |
+|------|---------|-----|
+| `network_error` | `fetch` itself rejected: DNS, connection refused, TLS, offline. Original error is on `err.cause` | Check `baseUrl`, connectivity, certificates |
+| `timeout` | The request exceeded `timeoutMs` (default 30 s). The timer covers body consumption too, so a server that sends headers then stalls still times out | Raise `timeoutMs` (client-level or per call), or `0` to disable. SSE subscriptions are exempt by design |
+| `cancelled` | Your `AbortSignal` fired (or was already aborted when the call started) | Expected during teardown; treat as non-error |
+
+A non-2xx response whose body is not the Junjo envelope (an HTML 502 page from a proxy, for example) surfaces as code `unknown` with the raw status. That is almost always an intermediary, not the Junjo server.
+
+## SSE streams
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `subscribe` connects but no events arrive for minutes | A buffering proxy is holding the response. The server writes a `:heartbeat` comment every 30 s, which never reaches your handler but keeps intermediaries honest | Nginx: `proxy_buffering off` on `/v1/events/`; Caddy handles `text/event-stream` automatically. See [self-hosting](/self-host) |
+| Stream dies on a fixed schedule | Proxy read timeout below the 30 s heartbeat interval, or an idle-timeout on an LB. Junjo itself has no idle timeout | Set the proxy read timeout to 35 s or more (ideally minutes) for the events path |
+| React hooks report `JunjoStreamClosedError` | The server (or an intermediary) closed the stream cleanly: a deploy, a proxy recycle | Deliberate: there is no silent auto-reconnect because missed events cannot be replayed. Resubscribe (remount or change `groupId`) and refetch state |
+| Plain SDK: stream ends quietly | Same clean close; the SDK fires `onClose` (not `onError`) | Pass `onClose` to `groups.subscribe` and resubscribe there; refetch to cover the gap, since there is no event replay or `lastEventId` support |
+| `stream_overflow` error | A single unterminated frame exceeded the SDK's 1 MiB buffer, typically a middlebox mangling the stream | Inspect what sits between you and the server; the API never emits frames near that size |
+| 401/404 instead of a stream | Handshake failures reject the `subscribe()` promise with a normal `JunjoError` before any stream exists | Same debugging as any request; note secret groups 404 |
+
+## Invitation preview confusion
+
+`GET /v1/invitations/:code` is deliberately unauthenticated (it is mounted before the API-key middleware) so your invite-landing page can render "Join Blue Guild?" without holding a key. It is still rate limited. Do not conclude from a working preview that your key is valid; use `junjo.keyInfo()` for that.
+
+## Roblox
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `network` error, "Http requests are not enabled" | `HttpService` disabled | Game Settings, Security, enable Allow HTTP Requests |
+| `GetSecret` warning, SDK falls back to literal `apiKey` | The secret name is not configured in Creator Dashboard secrets for this experience, or you are in Studio without secrets access | Add the secret (and its domain) in the Creator Dashboard; the warning names the secret, never the value |
+| `invalid_config`: "GetSecret(...) failed and no apiKey fallback was provided" | Same as above, with no fallback | Configure the secret or (dev only) pass a literal `apiKey` |
+| Requests start failing in bursts under load | Roblox's platform budget: 500 `HttpService` requests per minute per game server, shared with all other HTTP the server does | Batch reads, cache, and keep the SDK's opt-in retries conservative; the budget is Roblox's, not Junjo's |
+| Calls hang the script | `RequestAsync` has a fixed ~30 s timeout and no config | Call SDK methods from `task.spawn` so a slow request never stalls game logic |
+
+Roblox error objects are tables (`{ name = "JunjoError", message, code, status }`); check with `Junjo.JunjoError.is(err)` after `pcall`. There is no `requestId` field on the Roblox error object; log the response of a failing repro from the TypeScript SDK if you need one, or timestamp the failure precisely.
+
+## C++ and Unreal builds
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| MSVC link error: "mismatch detected for '_ITERATOR_DEBUG_LEVEL'" | A Debug-built SDK linked into a Release consumer (or vice versa). The Visual Studio generator is multi-config, so `CMAKE_BUILD_TYPE` is ignored and omitting `--config Release` on the build and install steps silently produces a Debug library | Build and install with `--config Release` (or install both configs; the `-d` debug postfix makes them co-installable) and link the configuration that matches your consumer |
+| UE 5.8 build refuses your compiler | UnrealBuildTool rejects MSVC 14.40 through 14.43 outright (known compiler issues), and 5.8's own engine headers fail to compile under the stated 14.38 minimum | Install a 14.50+ toolchain from the current Visual Studio generation; VS 2026 Build Tools are enough |
+| UBT keeps picking the old toolchain after you installed a new one | The project's build makefile caches the toolchain choice | Delete the project's `Intermediate` folder and rebuild |
+
+## Webhook deliveries failing
+
+Verification failures on your receiver are usually one of: verifying a re-serialized body instead of the raw bytes (mount `express.raw` before the middleware), a stripped `x-junjo-*` header, or clock skew beyond the verifier's 5-minute tolerance (code `webhook_timestamp_out_of_tolerance`). Deliveries are at-least-once; dedupe on the `eventId` from `verifyWithMeta`, which is stable across retries, not on `deliveryId`, which is unique per attempt. After 25 consecutive failed attempts the endpoint is disabled automatically; re-enable it from the dashboard once your receiver is healthy. Full signature scheme and retry schedule: [webhooks reference](/api-reference/webhooks) and [Limits](/limits#webhooks).

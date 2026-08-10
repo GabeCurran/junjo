@@ -1,0 +1,132 @@
+# Feature matrix
+
+What each SDK covers, verified against the SDK sources rather than their docs. Rows follow the server's per-game `/v1` surface. Java and Paper SDKs are planned but deferred; they have no columns because they do not exist yet.
+
+Column notes: **React** wraps the TypeScript client, so "Full, client" means the operation is fully reachable through `useJunjo()` (paired with `useMutation` for writes) without a dedicated hook. **UE BP** is the Unreal plugin's Blueprint and delegate surface; **Native-only** cells are reachable in Unreal today through `GetNativeClient()`, whose capabilities equal the C++ column exactly.
+
+## Groups
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Create | Full | Full, client | Full | Full | Full |
+| Get (viewer-scoped) | Full | Full, hook (`useGroup`, live) | Full | Full | Full |
+| List (cursor-paginated) | Full (+`listAll`) | Full, hook (`useGroups`, `fetchMore`) | Full (+`listAll`) | Full (`paginate`) | Full (manual cursor) |
+| Update | Full | Full, client | Full | Full | Native-only |
+| Delete (soft; `hard` option) | Full | Full, client | Full | Full | Native-only |
+| Restore | Full | Full, client | Full | Full | Native-only |
+| Passcode set/change/clear | Full | Full, client | Full | Full | Partial (set at create; change/clear Native-only) |
+| Join (passcode-aware) | Full | Full, client | Full | Full | Full |
+| Leave | Full | Full, client | Full | Full | Full |
+| Kick (with reason) | Full | Full, client | Full | Full | Full |
+| Per-group ban / unban | Full | Full, client | Full | Full | Native-only |
+| Per-group ban history | Full (+`banHistoryAll`) | Full, client | Full (+`banHistoryAll`) | Full | Native-only |
+| Relationships set/clear/get/list | Full | Full, client | Full | Full | Native-only |
+| Parent set / children list | Full | Full, client | Full | Full | Native-only |
+
+## Members
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Get (group + user) | Full | Full, client | Full | Full | Native-only |
+| Get by member id | Full | Full, client | Full | Full | Native-only |
+| List (status filter, paginated) | Full (+`listAll`) | Full, hook (`useMembers`, live, optimistic) | Full (+`listAll`) | Full | Full |
+| List memberships for a user | Full | Full, client | Full | Full | Native-only |
+| Notes (public/private) | Full | Full, client | Full | Full | Native-only |
+| Metadata | Full | Full, client | Full | Full | Native-only |
+| Assign / remove role on member | Full | Full, client | Full | Full | Native-only |
+| Permission overrides set/clear/list | Full | Full, client | Full | Full | Native-only |
+
+## Roles
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Create / get / list / update / delete | Full | Partial (`useRoles` live read; mutations via client) | Full | Full | Native-only |
+| Grant / revoke permission on role | Full | Full, client | Full | Full | Native-only |
+
+## Permissions
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| `check` (full decision + source) | Full | Full, client | Full | Full | Full |
+| `can` (boolean sugar) | Full | Full, hook (`useCan`, cached; manual invalidation via `useInvalidatePermissions`) | Full | Full | Full (read `bAllowed` from the check result) |
+
+## Invitations
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Invite by user id | Full | Full, client | Full | Full | Native-only |
+| Open invite by code | Full | Full, client | Full | Full | Native-only |
+| Invite-link builder | Full (`inviteByLink`) | Full, client | Full | Full (`invite_by_link`) | Native-only |
+| Bulk invite (CSV) | Full | Full, client | Full | Full (`bulk_invite`) | Native-only |
+| List per group (paginated) | Full | Full, hook (`useInvitations`, live, optimistic) | Full | Full | Native-only |
+| Lookup by code | Full | Full, client | Full | Full | Native-only |
+| Revoke | Full | Full, client | Full | Full | Native-only |
+| Accept / decline | Full | Full, client | Full | Full | Native-only |
+
+## Game-wide bans
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Add / remove | Full | Full, client | Full | Full | Full (`BanUser` / `UnbanUser`) |
+| Get one | Full | Full, client | Full | Full | Native-only |
+| List (paginated) | Full (+`listAll`) | Full, hook (`useBans`) | Full (+`listAll`) | Full | Native-only |
+| History (paginated) | Full (+`historyAll`) | Full, client | Full (+`historyAll`) | Full | Native-only |
+
+## Friends
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Requests send/list/accept/decline/cancel | Full | Partial (`useFriendRequests` read; mutations via client) | Full | Full | Native-only |
+| Friends list / unfriend / relationship | Full (+`listAll`) | Partial (`useFriends` read) | Full | Full | Native-only |
+| Blocks add/remove/list | Full | Partial (`useBlocklist` read) | Full | Full | Native-only |
+| Tags CRUD + assign to friend | Full | Partial (`useFriendTags` read) | Full | Full | Native-only |
+| Visibility get/set | Full | Partial (`useUserVisibility` read) | Full | Full | Native-only |
+| Suggestions | Full | Full, hook (`useFriendSuggestions`) | Full | Full | Native-only |
+
+## Audit
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Group audit list (`before` boundary, action filter) | Full | Full, hook (`useAuditLog`, `fetchMore`) | Full | Full | Native-only |
+
+## Webhooks
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Endpoints CRUD (create returns secret) | Full (+`listAll`) | Full, client | Full (+`listAll`) | Full | Native-only |
+| Delivery verification | Full | n.a. (browser) | n.a. (Roblox cannot receive HTTP) | Full | Native-only |
+| Signing helper | Full (`signWebhookBody`) | n.a. | n.a. | Full (`sign_webhook_body`) | Native-only |
+| Framework middleware | Full (Express-compatible) | n.a. | n.a. | No | No |
+| Unknown-event-type handling | Throws by default; `onUnknownType: "raw"` opt-in | n.a. | n.a. | Verifies verbatim always | Native-only |
+
+## Events (SSE)
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Per-group subscribe | Full | Full (shared `SubscriptionHub`) | No (HttpService cannot stream) | Full | Full (`UJunjoEventStream`) |
+| Skip-unknown-event behavior | Full | Full | n.a. | Full | Full |
+
+## Client plumbing
+
+| Capability | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| Key info (`GET /v1/whoami`) | Full (`keyInfo`) | Full, client | Full | Full (`key_info`) | Full (`KeyInfo`) |
+| Pagination helpers | Full (`listAll` + `paginate`) | Full (`fetchMore`) | Full (`listAll` + `pageAll`) | Full (`junjo::paginate`; audit uses `before` directly) | Partial (manual cursor) |
+| Auth adapters | Full (Clerk, Supabase, JWT) | n.a. (proxy mode instead) | Partial (Player-to-user-id resolver) | n.a. | n.a. |
+| Browser proxy mode | Full | Full | n.a. | n.a. | n.a. |
+| Typed error surface | Full | Full | Full | Full (`Result`, never throws) | Full (`FJunjoError`) |
+| Retry-After surfacing | Full | Full | Full | Full | Full |
+| Automatic retry policy | No (deliberate) | No | Full (opt-in, Retry-After-aware) | No (deliberate) | No |
+| Cancellation / per-call timeout | Full | Full | Partial (fixed ~30s, no cancellation) | Full (tokens + per-call timeout) | Partial (client-level timeout; cancellable async nodes) |
+
+## Per-SDK summaries
+
+**TypeScript** is the reference implementation and the only SDK covering every row: full REST surface, SSE, webhook receiving with middleware, invite links and CSV bulk invite, three auth adapters plus browser proxy mode, and the richest error object.
+
+**React** is a hooks layer over the TypeScript client, not a reimplementation. Reads are first-class (live SSE-backed hooks, `fetchMore`, optimistic updates, a permission cache with manual invalidation via `useInvalidatePermissions`); mutations go through the client plus `useMutation`, so effective coverage equals the TypeScript SDK. Webhook receiving and auth adapters are not applicable in a browser; proxy mode is the intended credential model.
+
+**Roblox** holds near-parity with TypeScript on the REST surface and is the only SDK with an automatic retry policy (opt-in, tuned for HttpService budgets). Platform limits shape the gaps: no SSE, no webhook receiving, fixed timeouts without cancellation, and a leaner error object.
+
+**C++** covers the full REST surface with a `Result`-based never-throw contract, cancellation tokens, a caller-owned-executor async facade, SSE, and webhook verification that accepts unknown event types verbatim by design. The one surface it does not bind is the Express-style webhook receiving middleware, which is a Node framework helper; verification and signing are present.
+
+**Unreal** binds a deliberately scoped gameplay slice to Blueprint and delegates (key info, permission checks, group get/create/list/join/leave/kick, member list, game-wide bans, live event streams), with everything else reachable through the native `junjo::` client, whose capabilities equal the C++ column exactly.

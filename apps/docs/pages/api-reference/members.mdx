@@ -13,12 +13,13 @@ The group-scoped routes (`GET /v1/groups/:id/members` and `GET /v1/groups/:id/me
 | `id` | string | Server-generated cuid. |
 | `groupId` | string | The group this membership is in. |
 | `userId` | string | The dev's external user id (the same value the SDK passed in or the row was seeded with), not the internal `JunjoUser` id. |
-| `status` | string | `"active"`, `"invited"`, `"left"`, or `"kicked"`. |
+| `status` | string | `"active"`, `"invited"`, `"left"`, `"kicked"`, or `"banned"`. |
 | `roles` | string[] | Role ids the member is assigned to. |
 | `metadata` | object | Free-form per-game state; defaults to `{}`. |
 | `notesPublic` | string \| null | Officer-readable note visible to other members. |
 | `notesPrivate` | string \| null | Officer-only note. |
 | `joinedAt` | string | ISO 8601 timestamp. |
+| `bannedUntil` | string \| null | Only meaningful while a per-group ban is active (`status` is `"banned"`): `null` means a permanent ban, an ISO 8601 timestamp is when the ban lapses. A past timestamp means the ban has lapsed (lazy expiry; the server does not auto-flip `status`). Always `null` for non-banned members. |
 
 ## `GET /v1/members/:id`
 

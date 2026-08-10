@@ -2,7 +2,7 @@
 
 Server-wide endpoints that operate across the games on a single Junjo deployment. These are intentionally separate from the per-game API key surface that the rest of the API uses, and they ship as cloud-only features in the runtime sense (the dashboard is the primary consumer; self-hosted single-game deployments do not need them).
 
-The code is built and tested like every other route - "cloud-only" means a future self-host build can exclude these modules via a build flag, not that they are skipped today.
+The code is built and tested like every other route; "cloud-only" means a future self-host build can exclude these modules via a build flag, not that they are skipped today.
 
 ## Authentication
 
@@ -83,7 +83,7 @@ Used by the dashboard to render a "this player is in N games on the platform" vi
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  https://api.junjo.io/v1/users/user_clxxx0000000000000000000/games
+  https://your-junjo-server/v1/users/user_clxxx0000000000000000000/games
 ```
 
 ## `GET /v1/admin/stats`
@@ -125,7 +125,7 @@ Returns aggregate counts across every game on the deployment. Used by the dashbo
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  https://api.junjo.io/v1/admin/stats
+  https://your-junjo-server/v1/admin/stats
 ```
 
 ## `GET /v1/admin/audit`
@@ -193,7 +193,7 @@ Returns the most recent audit entries across every game on the deployment, with 
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/audit?limit=20"
+  "https://your-junjo-server/v1/admin/audit?limit=20"
 ```
 
 ## `GET /v1/admin/games`
@@ -838,7 +838,7 @@ Body (required, JSON):
 | `roleId` | string \| omitted | `null` | Optional role to assign on accept; forwarded verbatim and not validated against `Role` (matches the per-game route; an invalid roleId surfaces at accept time). 1-255 chars. |
 | `expiresIn` | string \| omitted | `null` | Optional duration `<positive integer><unit>` where unit is `s\|m\|h\|d` (e.g. `7d`, `30m`). Server stamps `expiresAt = now() + expiresIn` at create time. Non-positive values (`0d`) return 400. |
 
-The body is required - send at least `{}` for an open-code invitation with no role and no expiry. A missing or malformed JSON body returns `400 bad_request`.
+The body is required: send at least `{}` for an open-code invitation with no role and no expiry. A missing or malformed JSON body returns `400 bad_request`.
 
 Response: `201 Created` with `WireInvitation`:
 
@@ -1085,7 +1085,7 @@ Path parameters:
 |------|------|-------|
 | `gameId` | string | The cross-game id (`Game.id`). |
 
-Response: `200 OK` with a bare `WireAdminPermissionDef[]` (no pagination wrapper; permission catalogs are conventionally a small list - 10s, not 1000s).
+Response: `200 OK` with a bare `WireAdminPermissionDef[]` (no pagination wrapper; permission catalogs are conventionally a small list: 10s, not 1000s).
 
 ```ts
 interface WireAdminPermissionDef {
@@ -1130,7 +1130,7 @@ Query parameters (all optional):
 | Name | Type | Default | Notes |
 |------|------|---------|-------|
 | `limit` | int 1-100 | 50 | Max items per page. |
-| `before` | ISO 8601 string | unset | Returns only entries with `createdAt < before`. Use the previous page's `nextCursor` value here. |
+| `before` | string | unset | Pagination cursor: the previous page's `nextCursor` value (an opaque entry id, exact keyset pagination). A bare ISO 8601 timestamp is also accepted (`createdAt < before` semantics, kept for stored cursors and hand-written calls). |
 | `actions` | repeated string | unset | Restricts results to entries whose `action` is in the supplied set (OR semantics). Each value must be a known `AuditAction`; unknowns return 400. Repeats per filter value (`?actions=group.created&actions=role.created`). |
 
 Response: `200 OK` with a `Page<WireAuditEntry>` shape. Wire format:
@@ -1148,15 +1148,15 @@ interface WireAuditEntry {
 
 interface WireAuditPage {
   items: WireAuditEntry[];
-  nextCursor: string | null; // ISO 8601 of the last item's createdAt, or null when no more pages
+  nextCursor: string | null; // id of the last item, or null when no more pages
 }
 ```
 
 Behavior:
 
 - Ordered `(createdAt desc, id desc)`. The `id` tiebreaker keeps pagination deterministic across rows that share a millisecond.
-- Pagination is timestamp-based via the exclusive `before` filter. Caller pages by feeding the response's `nextCursor` value back as `before` on the next call.
-- `nextCursor` is the ISO 8601 `createdAt` of the last item on the page when more pages exist; `null` when the page is the final one.
+- Caller pages by feeding the response's `nextCursor` value back as `before` on the next call. The id cursor resolves to exact keyset pagination on the `(createdAt, id)` sort; the ISO-timestamp form of `before` remains accepted with strictly-older-than semantics.
+- `nextCursor` is the id of the last item on the page when more pages exist; `null` when the page is the final one.
 - Wire shape is `WireAuditEntry` (functionally identical to the per-game route). The cross-game recent-audit feed at `/v1/admin/audit` carries additional `gameName` / `groupName` / `groupSoftDeleted` fields the per-group view doesn't need (the dashboard already has gameId + groupId from the URL path).
 - 404 collapses missing / cross-game / soft-deleted groups via the same three-check pattern other admin per-group routes use.
 - Cross-game soft-deleted-group audit activity is reachable via the `/v1/admin/audit` recent feed (which carries the `groupSoftDeleted` flag); per-group audit is not reachable for soft-deleted groups.
@@ -1166,7 +1166,7 @@ Errors:
 | Code | Status | When |
 |------|--------|------|
 | `not_found` | 404 | Group does not exist, belongs to a different `gameId`, or is soft-deleted. |
-| `bad_request` | 400 | `limit` out of range, `before` not parseable as ISO 8601, or `actions` includes an unknown value. |
+| `bad_request` | 400 | `limit` out of range, `before` neither a resolvable entry id nor a parseable ISO 8601 timestamp, or `actions` includes an unknown value. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 ## PUT /v1/admin/games/:gameId/groups/:a/relationships/:b
@@ -1349,7 +1349,7 @@ Errors:
 
 ## GET /v1/admin/games/:gameId/audit
 
-Returns a timestamp-paginated audit feed scoped to one game (across every group, including soft-deleted ones). Backs the dashboard's game-wide audit log viewer. The cross-group fan-in distinguishes this endpoint from `GET /v1/admin/games/:gameId/groups/:groupId/audit` (which is per-group and excludes soft-deleted groups).
+Returns a cursor-paginated audit feed scoped to one game (across every group, including soft-deleted ones). Backs the dashboard's game-wide audit log viewer. The cross-group fan-in distinguishes this endpoint from `GET /v1/admin/games/:gameId/groups/:groupId/audit` (which is per-group and excludes soft-deleted groups).
 
 Path parameters:
 
@@ -1362,7 +1362,7 @@ Query parameters (all optional):
 | Name | Type | Default | Notes |
 |------|------|---------|-------|
 | `limit` | int 1-100 | 50 | Max items per page. |
-| `before` | ISO 8601 string | unset | Returns only entries with `createdAt < before` (exclusive upper bound). Pass the previous page's `nextCursor` here to walk pagination. |
+| `before` | string | unset | Pagination cursor: pass the previous page's `nextCursor` here (an opaque entry id, exact keyset pagination). A bare ISO 8601 timestamp is also accepted as an exclusive upper bound on `createdAt`. |
 | `since` | ISO 8601 string | unset | Returns only entries with `createdAt >= since` (inclusive lower bound). Combined with `before` gives a date-range filter. |
 | `actions` | repeated string | unset | Restricts results to entries whose `action` is in the supplied set (OR semantics). Each value must be a known `AuditAction`; unknowns return 400. Repeats per filter value (`?actions=group.created&actions=role.created`). |
 | `actorUserId` | string 1-255 | unset | Exact match on the stored `AuditEntry.actorUserId` (the internal `JunjoUser.id` for routes that resolved an actor; null for routes that wrote `actorUserId: null`). The dashboard surfaces the value from a prior row, so operators don't need to know external/internal id mapping. |
@@ -1387,7 +1387,7 @@ interface WireAdminAuditEntry {
 
 interface WireAdminGameAuditPage {
   items: WireAdminAuditEntry[];
-  nextCursor: string | null; // ISO 8601 of the last item's `createdAt`, or null when no more pages.
+  nextCursor: string | null; // id of the last item, or null when no more pages.
 }
 ```
 
@@ -1396,16 +1396,16 @@ Behavior:
 - Ordered `(createdAt desc, id desc)`. The `id` tiebreaker keeps pagination deterministic across rows that share a millisecond.
 - **Soft-deleted-group entries ARE included.** This is the key behavior difference from the per-group `GET /v1/admin/games/:gameId/groups/:groupId/audit` route, which 404s on soft-deleted groups. The audit log preserves history regardless of group lifecycle; `groupSoftDeleted: boolean` on each row lets the dashboard mark them visually.
 - 404 only when the `gameId` itself does not exist; a game with zero audit entries returns `200` with `items: []`.
-- Filters are AND-combined. `since` is inclusive; `before` is exclusive.
+- Filters are AND-combined. `since` is inclusive; the timestamp form of `before` is exclusive.
 - Wire shape reuses `WireAdminAuditEntry` (the cross-game recent-audit shape from `/v1/admin/audit`). The dashboard ignores `gameId` / `gameName` since URL context already carries them; the same dashboard helper parses both feeds.
-- Pagination is timestamp-based via `nextCursor` -> `before`. Caller does not maintain state; the cursor is just an ISO timestamp.
+- Pagination is `nextCursor` -> `before`. Caller does not maintain state; the cursor is the opaque id the server handed back, resolved server-side to exact keyset pagination on the `(createdAt, id)` sort. ISO timestamps remain accepted for stored cursors and hand-written calls.
 
 Errors:
 
 | Code | Status | When |
 |------|--------|------|
 | `not_found` | 404 | `gameId` does not exist. |
-| `bad_request` | 400 | `limit` out of range; `before` / `since` not parseable as ISO 8601; `actions` includes an unknown value; `actorUserId` / `targetId` empty or over 255 chars. |
+| `bad_request` | 400 | `limit` out of range; `before` neither a resolvable entry id nor a parseable ISO 8601 timestamp; `since` not parseable as ISO 8601; `actions` includes an unknown value; `actorUserId` / `targetId` empty or over 255 chars. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 ## GET /v1/admin/games/:gameId/permissions/check
@@ -1464,7 +1464,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/permissions/check?userId=user_alice&groupId=cm_group_xyz&permission=guild.kick"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/permissions/check?userId=user_alice&groupId=cm_group_xyz&permission=guild.kick"
 ```
 
 ```json
@@ -1528,7 +1528,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-churn?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/analytics/group-churn?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
 ```
 
 ```json
@@ -1607,7 +1607,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/group-growth?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z&topN=5"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/analytics/group-growth?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z&topN=5"
 ```
 
 ```json
@@ -1674,7 +1674,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/member-activity?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/analytics/member-activity?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z"
 ```
 
 ```json
@@ -1740,7 +1740,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/role-distribution"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/analytics/role-distribution"
 ```
 
 ```json
@@ -1808,7 +1808,7 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
-  "https://api.junjo.io/v1/admin/games/cm_game_abc/analytics/permission-usage"
+  "https://your-junjo-server/v1/admin/games/cm_game_abc/analytics/permission-usage"
 ```
 
 ```json

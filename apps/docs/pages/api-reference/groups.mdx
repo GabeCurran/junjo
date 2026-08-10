@@ -44,7 +44,7 @@ Creates a new group scoped to the calling game. Writes a `group.created` audit e
 | `visibility` | no | `"invite-only"` | One of `"public"`, `"invite-only"`, `"secret"`. |
 | `metadata` | no | `{}` | Arbitrary JSON object. |
 | `defaultRoleId` | no | null | Pre-assigned role for new members. The role must exist on this group; the server does not verify this on create (a defensive existence check is a post-V1 idea). |
-| `passcode` | no | none | Optional shared-secret join gate. 4-128 chars. Stored as a scrypt hash; the plaintext is never returned. Members joining via `groups.join` must supply the same string. Orthogonal to `visibility` -- a public group with a passcode is "discoverable but gated". See [Passcodes](#passcodes). |
+| `passcode` | no | none | Optional shared-secret join gate. 4-128 chars. Stored as a scrypt hash; the plaintext is never returned. Members joining via `groups.join` must supply the same string. Orthogonal to `visibility`: a public group with a passcode is "discoverable but gated". See [Passcodes](#passcodes). |
 | `creatorUserId` | no | none | Optional external user id of the group's creator. When supplied, the create call atomically adds them as an active `GroupMember` in the same transaction, writes a second audit entry (`member.joined` with `payload.via = "creator"`), and fires the `member.joined` webhook event. Works for every visibility, so creators of `"invite-only"` and `"secret"` groups don't need a separate join call. If `defaultRoleId` is set AND a `Role` row with that id already exists in the new group, that role is assigned to the creator in the same transaction; otherwise the role assignment is silently skipped. |
 
 A missing or malformed body returns `400 bad_request` with the failing path in the message (e.g., `name: required`). A malformed JSON body also returns `400 bad_request`.
@@ -63,6 +63,7 @@ A missing or malformed body returns `400 bad_request` with the failing path in t
   "metadata": { "motto": "Howl together" },
   "defaultRoleId": "role_xyz",
   "memberCount": 0,
+  "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T05:00:00.000Z",
   "softDeletedAt": null
@@ -125,6 +126,7 @@ Fetches a single group by id. Soft-deleted groups and groups belonging to a diff
   "metadata": { "motto": "Howl together" },
   "defaultRoleId": "role_xyz",
   "memberCount": 42,
+  "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T05:00:00.000Z",
   "softDeletedAt": null
@@ -167,6 +169,7 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
       "metadata": {},
       "defaultRoleId": null,
       "memberCount": 42,
+      "hasPasscode": false,
       "createdAt": "2026-04-28T05:00:00.000Z",
       "updatedAt": "2026-04-28T05:00:00.000Z",
       "softDeletedAt": null
@@ -187,7 +190,7 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
 
 ## `PATCH /v1/groups/:id`
 
-Partially updates a group. The body is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields included are touched. At least one field must be provided. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
+Partially updates a group. The body is a subset of `{ name, visibility, metadata, defaultRoleId, passcode }`; only the fields included are touched. At least one field must be provided. Soft-deleted groups and groups belonging to a different game return `404 not_found` (the route does not leak existence across game boundaries).
 
 ### Path parameters
 
@@ -230,6 +233,7 @@ An empty body, an unknown visibility value, an empty `name`, or a malformed JSON
   "metadata": { "motto": "Roar" },
   "defaultRoleId": null,
   "memberCount": 42,
+  "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T06:00:00.000Z",
   "softDeletedAt": null
@@ -369,7 +373,7 @@ Soft-deleted groups and groups belonging to a different game return `404 not_fou
 | Field | Required | Notes |
 |-------|----------|-------|
 | `targetUserId` | no | Omit for an open-code invitation. When set, this is the external user id from the dev's auth provider; stored verbatim, the server does not require a corresponding `JunjoUser` row at invite time. |
-| `roleId` | no | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`members.assignRole`](/sdk/members#assignrole) afterward) and not validated against the group's roles. |
+| `roleId` | no | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`members.assignRole`](/sdk/members#assignrolegroupid-userid-roleid-opts) afterward) and not validated against the group's roles. |
 | `expiresIn` | no | Duration string `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`. Examples: `30s`, `15m`, `2h`, `7d`. The server stamps `expiresAt = now() + expiresIn` at create time. |
 
 An empty `targetUserId`, a malformed `expiresIn`, an `expiresIn` with a non-positive value (e.g., `0d`), or a malformed JSON body all return `400 bad_request`.
@@ -537,7 +541,7 @@ Fires `member.joined` with the new `Member` body, mirroring the invitation-accep
 | `passcode_invalid` | 403 | The supplied `passcode` did not match. |
 | `banned` | 403 | The user is game-banned or per-group-banned (with an active `bannedUntil`). |
 | `not_found` | 404 | No group with that id in the calling game, or the group is soft-deleted, or the group's `visibility` is `"secret"` (existence stays invisible to non-members). |
-| `already_member` | 409 | The user already has an active `GroupMember` row in this group. |
+| `already_member` | 409 | The user already has an active `GroupMember` row in this group. Also the losing outcome when two concurrent joins for the same user race: the winner gets 201, the loser gets this 409. If the goal is "make sure the user is a member", treat it as success. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/leave`
@@ -695,7 +699,7 @@ webhook event.
 ### `GET /v1/groups/:id/bans/history`
 
 Append-only timeline of every per-group ban transition (`set` and
-`lifted`) on this group, newest-first. Spans every user -- use
+`lifted`) on this group, newest-first. Spans every user; use
 `/v1/bans/:userId/history` ([Bans reference](/api-reference/bans))
 for a single user's full timeline across game and group scopes.
 
@@ -750,7 +754,7 @@ visibility / ban checks. Stored as a scrypt hash (same primitive as
 API keys); the plaintext is never returned by any route. Surfaced in
 serialized `Group` responses as `hasPasscode: boolean`.
 
-Passcode is **orthogonal to visibility** -- not a fourth visibility
+Passcode is **orthogonal to visibility**: it is not a fourth visibility
 mode. A `"public"` group with a passcode is "discoverable but gated"
 (the listening-room pattern). An `"invite-only"` or `"secret"` group
 with a passcode is harmless: the `/join` route is already blocked, and
@@ -811,7 +815,7 @@ proportionally higher effective ceilings.
 A "PIN" is just a numeric passcode. The 4-128 character bound on
 `passcode` accepts `"1234"`, `"00000"`, etc., so consumers wanting a
 keypad UX can pass digits straight through `groups.join({ passcode:
-"1234" })`. There is no separate PIN concept on the Junjo side -- the
+"1234" })`. There is no separate PIN concept on the Junjo side: the
 audit, rate-limiting, and storage all funnel through the single
 passcode primitive.
 

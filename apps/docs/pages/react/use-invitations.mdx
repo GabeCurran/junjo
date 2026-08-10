@@ -1,6 +1,6 @@
 # useInvitations
 
-Returns the paginated invitation list for a group plus a live event subscription that keeps it in sync with `member.invited` and `member.joined` events.
+Returns the paginated invitation list for a group plus a live event subscription that keeps it in sync with `member.invited` and `member.joined` events. The subscription rides the provider's [shared group event stream](/react/provider#shared-group-event-streams), so it adds no connection cost next to the other group hooks.
 
 ```tsx
 import { useInvitations } from "@junjo.io/react";
@@ -54,7 +54,7 @@ interface UseInvitationsResult {
 | `invitations` | The current list, filtered by `status`. Server order on the initial page; new pages append at the end; live events insert / remove / update in place. |
 | `loading` | `true` from mount until the first `invitations.list` response (success or error). |
 | `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
-| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. For `used` / `expired` / `all` this describes the fetched superset, not the visible list; see [Status filter](#status-filter). |
 | `error` | The most recent error: a fetch error, a `fetchMore` error, or a streaming error. Stays set until the next `refetch` clears it. |
 | `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
 | `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
@@ -64,20 +64,28 @@ interface UseInvitationsResult {
 
 The `status` option defaults to `"pending"`, which is the dominant case (a "Pending Invitations" panel that should not show invitations that have already been accepted, declined, or that have expired). The other valid values are `"used"`, `"expired"`, or `"all"`.
 
+The three concrete statuses partition invitations disjointly:
+
+- `pending`: unused and unexpired (`usedAt === null` and `expiresAt` is null or in the future).
+- `used`: any redeemed invitation (`usedAt !== null`), even one whose expiry has since passed. A used-and-expired invitation counts as `used`, never as `expired`.
+- `expired`: unused but past its `expiresAt` (`usedAt === null && expiresAt <= now`).
+
 The filter combines two layers:
 
-1. **Server-side narrowing.** The hook maps the `status` to the `includeExpired` and `includeUsed` flags on `junjo.invitations.list`:
+1. **Server-side narrowing.** The server's list endpoint has no exclusive status filter. It exposes two additive flags, `includeExpired` and `includeUsed`, which lift its default exclusion of expired and used rows. The hook maps `status` to the narrowest superset request on `junjo.invitations.list`:
 
    | `status` | Server flags |
    |----------|--------------|
-   | `pending` | `{}` (server default excludes both) |
-   | `used` | `{ includeUsed: true }` |
+   | `pending` | `{}` (the server's default exclusions already express "pending") |
+   | `used` | `{ includeExpired: true, includeUsed: true }` |
    | `expired` | `{ includeExpired: true }` |
    | `all` | `{ includeExpired: true, includeUsed: true }` |
 
-2. **Client-side narrowing.** After the page returns, the hook applies a matcher that keeps only rows matching the requested status. For `pending`, this is `usedAt === null && (expiresAt === null || expiresAt > now)`. For `used`, `usedAt !== null`. For `expired`, `expiresAt !== null && expiresAt <= now`. For `all`, every row passes.
+   `used` needs both flags: `includeUsed` alone is not enough, because a used invitation whose `expiresAt` has since passed is still dropped by the expired-row exclusion. Both flags must be lifted to receive every used row.
 
-The two-layer design exists because the server's flags are inclusive ("also include expired" / "also include used"), not exclusive. Asking for "only used" still requires a client-side filter to drop the pending rows the server returned alongside the used ones.
+2. **Client-side narrowing.** After each page returns, the hook applies a matcher that keeps only rows in the requested partition (using the definitions above, evaluated against the current clock). This layer is what the server cannot express: the flags are inclusive ("also include expired" / "also include used"), not exclusive, so asking for "only used" still requires dropping the pending rows the server returned alongside the used ones. For `pending` the server response already matches; for `all` every row passes.
+
+Because pagination happens before the client-side layer, `hasMore` and the cursor describe the fetched superset, not the visible list: for `used`, `expired`, and `all`, a page can contribute zero (or few) visible rows while `hasMore` stays `true`, and several `fetchMore` calls may be needed to surface the next visible row. For `pending`, the server's defaults already match the partition, so `hasMore` effectively describes the pending stream.
 
 Changing the `status` between renders triggers a `refetch` (the cursor resets and a fresh first page lands with new server flags) but does NOT re-open the SSE subscription.
 
@@ -89,7 +97,7 @@ Pagination is cursor-based. The hook calls `junjo.invitations.list(groupId, opts
 
 ## Live updates
 
-After the first page lands, the hook opens an SSE subscription scoped to the group. Two event types modify state:
+On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Incoming events are matched against the `status` partition client-side, so live updates respect the filter. Two event types modify state:
 
 | Event | Behavior |
 |-------|----------|
@@ -98,7 +106,7 @@ After the first page lands, the hook opens an SSE subscription scoped to the gro
 
 Other events (`role.created`, `role.deleted`, `member.left`, `permission.granted`, `permission.revoked`, `group.updated`, `group.deleted`, `role.changed`, `group.relationship.changed`) are ignored and do not cause re-renders.
 
-The subscription is tied to `(junjo, groupId)`. Changing `status` does not re-open it. Changing `groupId` closes the old subscription and opens a new one.
+The subscription is tied to `(client, groupId)`. Changing `status` does not re-open it. Changing `groupId` detaches from the old group's shared stream and attaches to the new one.
 
 ### V1 limitations on live updates
 
@@ -113,7 +121,7 @@ The hook never throws; errors land in `result.error`. Three sources:
 
 - **Initial fetch error**: a `JunjoError` (or other) from the first `invitations.list` call. The hook stays at `loading: false` with `invitations: []`.
 - **`fetchMore` error**: appended to `error` while `invitations` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
-- **Streaming error**: a thrown subscribe handshake error or a mid-stream error reported through `onError`. The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; consumers can call `refetch` to recover the snapshot or trigger a remount to reopen the SSE.
+- **Streaming error**: the shared stream failed (handshake rejection or mid-stream drop) or was closed cleanly by the server; a clean close surfaces as `JunjoStreamClosedError` (check with `isStreamClosedError`). The current snapshot stays intact; only `error` flips. The hook does NOT auto-reconnect; remount or change `groupId` to resubscribe (`refetch` refreshes the snapshot but does not reopen the stream). See [Stream teardown](/react/provider#stream-teardown-and-junjostreamclosederror) for the full contract.
 
 If `useInvitations` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
 
@@ -201,7 +209,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Composing with `useGroup` and `useMembers`
 
-Each list hook opens its own SSE subscription. If a screen renders both `useInvitations` and `useGroup` (or `useMembers`) for the same `groupId`, two or three parallel streams open against the server. This is correct (the server tolerates duplicate subscriptions per group) but wasteful for multi-consumer pages. A shared subscription cache that deduplicates streams under one provider is a post-V1 idea.
+The group hooks share one SSE stream per `(client, groupId)` through the provider's [subscription hub](/react/provider#shared-group-event-streams). A screen rendering `useInvitations` next to `useGroup`, `useMembers`, or `useRoles` for the same `groupId` still costs one server connection; each hook keeps its own snapshot fetches and its own state.
 
 ## Testing
 

@@ -19,10 +19,10 @@ Returns the most recent audit entries for the group, sorted by `createdAt` desce
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `limit` | integer (1-100) | 50 | Max number of entries to return. |
-| `before` | ISO 8601 timestamp | none | If supplied, only entries with `createdAt < before` are returned. Used for pagination by feeding the response's `nextCursor` back in. |
+| `before` | string | none | Cursor for pagination: feed the response's `nextCursor` (an opaque entry id) back in. Also accepts a bare ISO 8601 timestamp (the original contract, kept working for stored cursors and hand-written calls) with `createdAt < before` semantics. |
 | `actions` | repeated string | (no filter) | Filter to entries whose `action` is one of the supplied values. Repeat the parameter for OR semantics: `?actions=group.created&actions=group.updated`. |
 
-The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `@junjo.io/shared`. Unknown values are rejected with `400 bad_request`.
+The `actions` strings must match the [`AuditAction`](../sdk) union in `@junjo.io/shared`. Unknown values are rejected with `400 bad_request`.
 
 ### Response
 
@@ -50,11 +50,11 @@ The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `
       "createdAt": "2026-04-28T05:00:00.000Z"
     }
   ],
-  "nextCursor": "2026-04-28T05:00:00.000Z"
+  "nextCursor": "audit_1"
 }
 ```
 
-`nextCursor` is the ISO 8601 `createdAt` of the last item when the page is full; `null` when no further entries exist. To fetch the next page, pass `nextCursor` back as `before`.
+`nextCursor` is the id of the last item when more entries exist; `null` when this is the last page. To fetch the next page, pass `nextCursor` back as `before`.
 
 ### Audit entry shape
 
@@ -63,7 +63,7 @@ The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `
 | `id` | string | Stable cuid for the entry. |
 | `groupId` | string | The group the entry belongs to. |
 | `actorUserId` | string \| null | The Junjo user id that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired for most mutations). |
-| `action` | [`AuditAction`](../../sdk/index) | One of the strings in the union. |
+| `action` | [`AuditAction`](../sdk) | One of the strings in the union. |
 | `targetId` | string \| null | Free-form pointer to whatever the action targeted: a user id, role id, permission key, group id. Type depends on action. |
 | `payload` | object | Action-specific details. The `before` / `after` fields on update actions only contain the keys that actually changed. |
 | `createdAt` | ISO 8601 timestamp | When the entry was written. |
@@ -72,16 +72,16 @@ The `actions` strings must match the [`AuditAction`](../../sdk/index) union in `
 
 | Status | Code | When |
 |--------|------|------|
-| 400 | `bad_request` | The query is malformed (out-of-range limit, malformed `before`, unknown `actions` value). |
+| 400 | `bad_request` | The query is malformed (out-of-range limit, invalid `before` cursor, unknown `actions` value). A `before` id that does not resolve inside the group also reads as an invalid cursor rather than leaking whether the row exists. |
 | 401 | `invalid_api_key` | API key missing or invalid. |
 | 404 | `not_found` | Group does not exist, is soft-deleted, or belongs to a different game. |
 
 ### Pagination semantics
 
-The pagination uses `before` (a timestamp) rather than an opaque cursor. To walk all entries:
+To walk all entries:
 
-1. Call without `before`. Receive `items` and `nextCursor` (an ISO timestamp).
+1. Call without `before`. Receive `items` and `nextCursor` (the id of the last item, or `null`).
 2. If `nextCursor` is non-null, call again with `before = nextCursor`.
 3. Repeat until `nextCursor` is null.
 
-If two entries share the same `createdAt` to millisecond precision, the page boundary may skip entries with that exact timestamp on the next call (since `before` is exclusive). Audit entries are written one per transaction, so collisions are rare in practice; consumers that need strict ordering should treat the audit log as eventually consistent across page boundaries.
+Feeding an id back as `before` gives exact keyset pagination on the `(createdAt, id)` sort order, so page boundaries are immune to entries sharing a millisecond. The timestamp form of `before` remains strictly exclusive on `createdAt`: entries sharing the exact boundary timestamp can be skipped, so prefer the id cursor the server hands back.

@@ -127,7 +127,7 @@ If `useAuditLog` is called outside a `<JunjoProvider>`, it throws synchronously 
 
 ## Composing with `useGroup` and other hooks
 
-`useAuditLog` is the only list hook that does not open its own SSE subscription, so it adds zero stream cost when rendered alongside `useGroup` or `useMembers`. The trade is the no-live-updates limitation above; consumers needing both a member roster AND a live audit log should poll `useAuditLog`'s `refetch` while letting `useMembers` carry the live-updates load.
+`useAuditLog` does not subscribe to the group's event stream (like [`useBans`](/react/use-bans) and [`useGroups`](/react/use-groups)), so it adds zero stream cost when rendered alongside `useGroup` or `useMembers`. The trade is the no-live-updates limitation above; consumers needing both a member roster AND a live audit log should poll `useAuditLog`'s `refetch` while letting `useMembers` carry the live-updates load.
 
 ## Testing
 

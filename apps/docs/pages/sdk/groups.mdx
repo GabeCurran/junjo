@@ -31,6 +31,12 @@ group.softDeletedAt; // null
 | `visibility` | `"public" \| "invite-only" \| "secret"` | no | `"invite-only"` |
 | `metadata` | object | no | `{}` |
 | `defaultRoleId` | `RoleId` | no | `null` |
+| `passcode` | string | no | none |
+| `creatorUserId` | `UserId` | no | none |
+
+`passcode` is an optional shared-secret join gate (4-128 chars). It is stored as a scrypt hash; the plaintext is never returned, and `Group.hasPasscode` tells callers whether [`join`](#joingroupid-userid-opts) needs a `passcode`. Orthogonal to `visibility`: a public group with a passcode is "discoverable but gated".
+
+`creatorUserId` is the optional external user id of the group's creator. When supplied, the create call atomically adds them as an active member in the same transaction (writing a second audit entry, `member.joined` with `via: "creator"`, and firing the `member.joined` webhook event), so creators of `"invite-only"` and `"secret"` groups don't need a separate join call. If `defaultRoleId` is set AND a `Role` row with that id already exists in the new group, that role is assigned to the creator in the same transaction; otherwise the role assignment is silently skipped.
 
 ### Errors
 
@@ -127,7 +133,7 @@ Accepts the same options as `list` except `cursor` (the iterator manages cursors
 
 ## `update(id, input)`
 
-Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
+Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId, passcode }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
 
 ```ts
 const updated = await junjo.groups.update("grp_xyz" as GroupId, {
@@ -137,7 +143,7 @@ const updated = await junjo.groups.update("grp_xyz" as GroupId, {
 
 updated.name;       // "Crimson Lions"
 updated.visibility; // "public"
-updated.updatedAt;  // Date - bumped only when something actually changed
+updated.updatedAt;  // Date: bumped only when something actually changed
 ```
 
 ### Input
@@ -148,10 +154,11 @@ updated.updatedAt;  // Date - bumped only when something actually changed
 | `visibility` | `"public" \| "invite-only" \| "secret"` | |
 | `metadata` | object | **Replaces the existing metadata wholesale**, not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
 | `defaultRoleId` | `RoleId \| null` | Pass `null` to clear; pass a string to set. |
+| `passcode` | `string \| null` | Pass a 4-128 char string to set or replace the join passcode; pass `null` to clear it. Omit to leave any existing passcode untouched. |
 
 ### Returns
 
-`Group` - the updated row, with timestamps deserialized to `Date`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, and leaves `updatedAt` unchanged.
+`Group`: the updated row, with timestamps deserialized to `Date`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, and leaves `updatedAt` unchanged.
 
 ### Errors
 
@@ -207,7 +214,7 @@ group.softDeletedAt; // null
 
 ### Returns
 
-`Group` - the restored row, with timestamps deserialized to `Date`.
+`Group`: the restored row, with timestamps deserialized to `Date`.
 
 ### Errors
 
@@ -223,7 +230,7 @@ group.softDeletedAt; // null
 
 ## `inviteByUserId(groupId, userId, opts?)`
 
-Creates a direct-user invitation. The recipient is identified by the external user id from the dev's auth provider (the same id `whoami` will return). The server generates a unique 16-character hex code; subsequent endpoints (accept, decline, get-by-code) read invitations by the code.
+Creates a direct-user invitation. The recipient is identified by the external user id from the dev's auth provider (the same id `verifyToken` will return). The server generates a unique 16-character hex code; subsequent endpoints (accept, decline, get-by-code) read invitations by the code.
 
 ```ts
 const invitation = await junjo.groups.inviteByUserId(
@@ -243,7 +250,7 @@ invitation.createdAt;     // Date
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `roleId` | `RoleId` | none | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`junjo.members.assignRole`](/sdk/members#assignrole) afterward) and not validated against the group's roles. |
+| `roleId` | `RoleId` | none | A role hint stored on the invitation. Not auto-applied at acceptance time today (call [`junjo.members.assignRole`](/sdk/members#assignrolegroupid-userid-roleid-opts) afterward) and not validated against the group's roles. |
 
 ### Returns
 
@@ -378,7 +385,7 @@ The `userId` is the dev's external user id (Clerk sub, Supabase uuid, Roblox Use
 
 ### Returns
 
-`Member` with `joinedAt: Date`. `roles` is `[]` immediately after redemption; the invitation's `roleId` is not auto-applied today, so call [`members.assignRole`](/sdk/members#assignrole) after acceptance if you need it.
+`Member` with `joinedAt: Date`. `roles` is `[]` immediately after redemption; the invitation's `roleId` is not auto-applied today, so call [`members.assignRole`](/sdk/members#assignrolegroupid-userid-roleid-opts) after acceptance if you need it.
 
 ### Errors
 
@@ -436,11 +443,57 @@ The `userId` is optional: when supplied, it is recorded as `usedByUserId` on the
 
 - [`POST /v1/invitations/:code/decline`](/api-reference/invitations) - the underlying HTTP route.
 
+## `join(groupId, userId, opts?)`
+
+Open join for a group whose `visibility` is `"public"`. Use this when users should be able to add themselves to a group without an `Invitation`; invite-only and secret groups still go through the invitation flow. Returns the newly-active `Member` with `joinedAt` deserialized to a `Date`.
+
+When the group has a passcode set (`Group.hasPasscode` is `true`), pass `opts.passcode`; omitting it throws `403 passcode_required` and a wrong value throws `403 passcode_invalid`. Game and group ban checks both run before the join succeeds (a banned user receives `403 banned`).
+
+```ts
+const member = await junjo.groups.join(
+  "grp_xyz" as GroupId,
+  "user_alice" as UserId,
+  { passcode: "open-sesame" }, // only needed when the group has hasPasscode: true
+);
+
+member.status;   // "active"
+member.joinedAt; // Date
+```
+
+If the user previously left or was kicked from this group, the existing `GroupMember` row is reactivated rather than duplicated; `joinedAt` is preserved and `status` flips back to `"active"`.
+
+### Inputs
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | `GroupId` | The group to join. Its `visibility` must be `"public"`. |
+| `userId` | `UserId` | The joiner's external user id. Unknown users are auto-created (same upsert semantics as `acceptInvitation`). |
+| `opts.passcode` | string | Required when the group has `hasPasscode: true`; ignored otherwise. The server checks it before identity resolution, so a wrong passcode does not auto-create a `JunjoUser` for the caller's id. |
+
+### Returns
+
+`Member` with `joinedAt: Date` and `status: "active"`, identical in shape to the `acceptInvitation` response.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Missing `userId` or malformed body. |
+| `permission_denied` | 403 | The group's `visibility` is `"invite-only"`. |
+| `passcode_required` | 403 | The group has a passcode set and `opts.passcode` was omitted. |
+| `passcode_invalid` | 403 | The supplied `passcode` did not match. Incorrect attempts are rate-limited per (group, user) and per group; an exhausted bucket throws `429 rate_limit_exceeded`. |
+| `banned` | 403 | The user is game-banned or per-group-banned (with an active `bannedUntil`). |
+| `not_found` | 404 | No group with that id in the calling game, the group is soft-deleted, or its `visibility` is `"secret"` (existence stays invisible to non-members). |
+| `already_member` | 409 | The user already has an active membership. Also the losing outcome when two concurrent joins race; if the goal is "make sure the user is a member", treat it as success. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/join`](/api-reference/groups) - the underlying HTTP route.
+
 ## `leave(groupId, userId)`
 
-Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written.
-
-For the inverse -- having a user join a group that allows public-join -- use `junjo.groups.join(groupId, userId, { passcode? })`. It returns the newly-active `Member` and honors any configured passcode gate; the route is rate-limited on per-IP and per-game incorrect attempts. Game and group ban checks both run before the join succeeds (a banned user receives `403 banned`).
+Voluntarily removes the supplied user from the group. Returns the post-state `Member` (status `"left"`). Idempotent on a member who is already `left`, `kicked`, or `invited`: the response is the unchanged member, no audit entry is written. For the inverse, see [`join`](#joingroupid-userid-opts).
 
 ```ts
 const member = await junjo.groups.leave("grp_xyz" as GroupId, "user_alice" as UserId);
@@ -841,6 +894,8 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 | `groupId` | `GroupId` | The group to subscribe to. Must belong to the calling game and not be soft-deleted. |
 | `handler` | `(event: JunjoEvent) => void` | Called once per delivered event, in publication order. The `JunjoEvent` is fully deserialized: `Date` fields are `Date` instances, branded ids are typed. |
 | `opts.onError` | `(err: Error) => void` | Optional. Called with the underlying error after the subscription closes due to a streaming failure. Initial-handshake failures throw instead. |
+| `opts.onClose` | `() => void` | Optional. Called when the SERVER ends the stream cleanly (a deploy, a proxy idle timeout). The subscription is closed before it fires; events that occur before you resubscribe are lost. Not invoked when you end the stream yourself via `close()` or by aborting `signal`. |
+| `opts.signal` | `AbortSignal` | Optional. Aborting closes the subscription (equivalent to calling `close()`); aborting before the connection is established rejects `subscribe` with `JunjoError` code `cancelled`. There is no `timeoutMs` on subscribe by design: an event stream stays open. |
 
 ### Returns
 
@@ -851,6 +906,7 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 - **Single group per stream.** One connection covers one group; subscribe to N groups with N calls.
 - **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) or [webhooks](/api-reference/webhooks) for durable propagation.
 - **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
+- **Unknown event types are skipped.** When a newer server sends an event type this SDK predates, the frame is dropped without invoking `handler` and the stream stays alive. Upgrade the SDK to receive the new type.
 - **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
 
 ### Errors

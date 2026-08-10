@@ -12,7 +12,7 @@ if (!member) {
   // not in this group (or the group is soft-deleted, or cross-game)
   return;
 }
-member.status; // "active" | "left" | "kicked" | "invited"
+member.status; // "active" | "invited" | "left" | "kicked" | "banned"
 ```
 
 The response includes members in any status; historical rows (`left`, `kicked`) are returned as well as active members.

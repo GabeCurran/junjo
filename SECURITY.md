@@ -23,8 +23,10 @@ patch and a coordinated disclosure once a fix is available.
 
 In scope:
 
-- The published OSS packages: `@junjo.io/sdk`, `@junjo.io/react`,
-  `@junjo.io/shared`, `@junjo/server`, and `junjo-roblox`.
+- The npm-published packages `@junjo.io/sdk`, `@junjo.io/react`, and
+  `@junjo.io/shared`, the source-available server (`@junjo/server`),
+  and the Junjo.io SDK for Roblox (`packages/sdk-roblox`, distributed
+  as `Junjo.rbxm` on GitHub releases).
 - The Junjo HTTP API surface (`/v1/*`) and webhook delivery pipeline.
 
 Out of scope:

@@ -1,0 +1,32 @@
+%%{init: {'theme': 'neutral', 'flowchart': {'nodeSpacing': 60, 'rankSpacing': 140}}}%%
+flowchart LR
+  start(["start"])
+  none["No relationship<br/>(no UserRelationship rows)"]
+  pending["Pending request<br/>(one row, actor to target, type request)"]
+  friends["Friends<br/>(two mirror rows, one per direction, type friend)"]
+  blocked["Blocked<br/>(one row, blocker to blocked, type blocked)"]
+
+  start --> none
+
+  none -- "requests.send (requestsRequired true,<br/>fires friend.request.sent)" --> pending
+  none -- "requests.send with<br/>requestsRequired false auto-accepts:<br/>both mirror rows in one tx, fires<br/>friend.request.accepted to both" --> friends
+
+  pending -- "requests.accept (recipient)<br/>promotes the request row and<br/>writes the mirror, fires<br/>friend.request.accepted" --> friends
+  pending -- "requests.decline (recipient) or requests.cancel (sender)<br/>deletes the row, fires friend.request.declined<br/>or friend.request.cancelled" --> none
+
+  friends -- "friends.remove deletes both mirror rows<br/>in one statement, fires friend.removed" --> none
+
+  none -- "blocks.add (fires friend.blocked)" --> blocked
+  pending -- "blocks.add also deletes the pending<br/>request in either direction" --> blocked
+  friends -- "blocks.add also deletes<br/>both friend rows" --> blocked
+
+  blocked -- "blocks.remove (fires friend.unblocked)" --> none
+
+  sendGuards["Guards on send: already friends and an existing<br/>pending request (either direction) return 400;<br/>caps (maxFriends, maxPendingRequests) return 400.<br/>Accept, decline, and cancel are race-guarded:<br/>the loser of a concurrent pair matches zero rows<br/>and 404s instead of double-writing."]
+  blockSilence["While a block exists in either direction,<br/>requests.send returns 404 not_found, the same<br/>answer as an unknown user, so the blocked<br/>sender cannot detect the block. The blocked<br/>party is never notified of block or unblock."]
+
+  sendGuards -.- pending
+  blockSilence -.- blocked
+
+  style sendGuards fill:#fff5ad,stroke:#aaaa33
+  style blockSilence fill:#fff5ad,stroke:#aaaa33

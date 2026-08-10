@@ -1,0 +1,29 @@
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  create(["POST /v1/groups/:id/invitations<br/>open code (targetUserId null, anyone may redeem)<br/>or direct (targetUserId pinned, 403 for anyone else)<br/>optional expiresIn, fires member.invited"])
+  open["Open<br/>(usedAt null)"]
+  accepted["Accepted<br/>(usedAt + usedByUserId set, member row active)"]
+  declined["Declined<br/>(usedAt + optional usedByUserId set, no membership)"]
+  expired["Expired<br/>(row unchanged, unredeemable)"]
+  deleted["Deleted<br/>(row gone)"]
+
+  create --> open
+
+  open -- "accept consumes the code, then creates or<br/>reactivates the member and fires member.joined" --> accepted
+  open -- "decline consumes the code<br/>(body userId is optional attribution for audit)" --> declined
+  open -- "revoke while unused hard-deletes<br/>the row (a second revoke 404s)" --> deleted
+  open -- "expiresAt elapses" --> expired
+
+  expired -- "revoke still hard-deletes an<br/>unused expired row" --> deleted
+
+  singleUse["Accept and decline are single-use and race-guarded<br/>(UPDATE ... WHERE usedAt IS NULL): the loser of a<br/>concurrent redeem gets invitation_used, and a<br/>declined code cannot be redeemed later.<br/>Ban checks run before accept consumes anything:<br/>a game-wide or per-group ban rejects the redeem<br/>with 403 banned, leaving the code open."]
+  lazyExpiry["Expiry is lazy, checked at read time: accept and<br/>decline return invitation_expired, and list<br/>excludes expired by default. No background sweep."]
+  revokeAudit["Revoke after redemption keeps the row, used or<br/>declined, so audit can still answer who consumed<br/>the code. It returns 204 no matter how often it<br/>is called."]
+
+  singleUse -.- open
+  lazyExpiry -.- expired
+  revokeAudit -.- accepted
+
+  style singleUse fill:#fff5ad,stroke:#aaaa33
+  style lazyExpiry fill:#fff5ad,stroke:#aaaa33
+  style revokeAudit fill:#fff5ad,stroke:#aaaa33

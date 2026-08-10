@@ -11,7 +11,7 @@ import { Junjo } from "@junjo.io/sdk";
 import { JunjoProvider } from "@junjo.io/react";
 
 // JUNJO_API_KEY is a server-only environment variable.
-// NOT NEXT_PUBLIC_ -- see the warning below.
+// NOT NEXT_PUBLIC_; see the warning below.
 const junjo = new Junjo({
   apiKey: process.env.JUNJO_API_KEY!,
 });
@@ -23,7 +23,7 @@ export function App({ children }: { children: React.ReactNode }) {
 
 This construction is for trees that run in a trusted server context: server-only rendering, internal tools on a private network, tests. If the components calling Junjo hydrate in a visitor's browser, the bundler would have to embed the key for this code to run there, which leaks it. In that case construct with [proxy mode](#browser-apps-proxy-mode) instead.
 
-> **Never put the API key in a `NEXT_PUBLIC_` (or `VITE_`, or any other client-exposed) environment variable.** Next.js inlines every `NEXT_PUBLIC_` value into the JavaScript bundle at build time, so the key ships to every visitor and is readable in view-source, devtools, and the network tab. The `jk_` key is not a publishable key: anyone holding it has full control of your game. The SDK detects a `jk_` key being constructed while `window` exists and logs a console warning; treat that warning as a live leak - rotate the key and switch to proxy mode.
+> **Never put the API key in a `NEXT_PUBLIC_` (or `VITE_`, or any other client-exposed) environment variable.** Next.js inlines every `NEXT_PUBLIC_` value into the JavaScript bundle at build time, so the key ships to every visitor and is readable in view-source, devtools, and the network tab. The `jk_` key is not a publishable key: anyone holding it has full control of your game. The SDK detects a `jk_` key being constructed while `window` exists and logs a console warning; treat that warning as a live leak: rotate the key and switch to proxy mode.
 
 ### Props
 
@@ -146,6 +146,47 @@ useJunjo must be used inside a <JunjoProvider>
 ```
 
 Wrap your tree (or your test) in a provider. The error is intentional: returning `null` would push the same null check into every consumer.
+
+## Shared group event streams
+
+The live hooks in the group family ([`useGroup`](/react/use-group), [`useMembers`](/react/use-members), [`useInvitations`](/react/use-invitations), [`useRoles`](/react/use-roles)) do not each open their own SSE connection. The provider owns a subscription hub that keeps at most one stream per `(client, groupId)` pair:
+
+- The first hook that mounts for a `groupId` opens a single `groups.subscribe` stream.
+- Every other hook for the same `groupId` under the same provider attaches to that stream. A group page rendering all four hooks costs one server connection, not four.
+- The stream is refcounted: the last attached hook to unmount closes it.
+
+The hub shares the client's lifecycle: passing a different `client` to `JunjoProvider` rebuilds the hub, and the hooks resubscribe through the new one. Two providers (or two clients) never share streams.
+
+### Stream teardown and `JunjoStreamClosedError`
+
+Two signals end a shared stream: a stream error (a rejected subscribe handshake or a mid-stream failure) and a server-initiated clean close (a deploy, a proxy idle timeout). Either one tears the shared stream down and notifies every attached hook. Hooks are never silently re-attached to a future stream; the next subscriber for that `groupId` opens a fresh one.
+
+Each hook surfaces the signal on its `error` field:
+
+- A stream error passes through unchanged (typically a `JunjoError` or a network error).
+- A clean close surfaces as `JunjoStreamClosedError`, exported from `@junjo.io/react`.
+
+`JunjoStreamClosedError` means something different from a real failure, and its contract is:
+
+- The loaded snapshot is still valid; only the live feed has stopped.
+- There is no automatic reconnect. The server has no event replay, so a silently reopened stream would hide a gap the consumer cannot detect.
+- Recover by remounting the hook (or changing `groupId`), which refetches a fresh snapshot and opens a new stream. Calling `refetch` alone refreshes the snapshot but does NOT resubscribe.
+
+Use the exported `isStreamClosedError` guard to branch:
+
+```tsx
+import { isStreamClosedError } from "@junjo.io/react";
+
+function StreamStatus({ error }: { error: Error | null }) {
+  if (error === null) return null;
+  if (isStreamClosedError(error)) {
+    return <Banner kind="info">Live updates paused. Reload the panel to resubscribe.</Banner>;
+  }
+  return <Banner kind="error">{error.message}</Banner>;
+}
+```
+
+The guard matches on the error's `name` as well as its prototype, so it keeps working when a bundler ends up with duplicate copies of the package.
 
 ## Testing
 

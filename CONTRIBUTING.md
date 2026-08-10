@@ -36,6 +36,24 @@ export TEST_DATABASE_URL=postgres://postgres:junjo@localhost:5433/junjo_test
 npm test
 ```
 
+On Windows PowerShell:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgres://postgres:junjo@localhost:5433/junjo_test"
+npm test
+```
+
+**Warning: the dev database and the test database are the same database.**
+`scripts/ensure-pg.mjs` writes an identical `DATABASE_URL` and
+`TEST_DATABASE_URL` (both point at `junjo_test` on the dev container),
+and the DB-backed server tests truncate every table in `beforeEach` (see
+`packages/server/vitest.config.ts`). Running `npm test` while `npm run
+dev` is up therefore wipes the seeded demo data and the demo API key out
+from under the running server. Either stop the dev stack and reseed
+afterward (`npm run dev` reseeds on its next boot), or point
+`TEST_DATABASE_URL` at a separate throwaway database before running the
+suite.
+
 ## Conventions
 
 - **No em-dashes, en-dashes, or emoji** in source files. The

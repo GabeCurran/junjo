@@ -1,0 +1,110 @@
+# useGroups
+
+Returns the paginated group directory. Read-only and refetch-driven; the hook does NOT open an SSE subscription (see [No live updates](#no-live-updates) for why), so live updates require an explicit `refetch()` call. For a single group kept live, use [`useGroup`](/react/use-group).
+
+```tsx
+import { useGroups } from "@junjo.io/react";
+
+function GroupDirectory({ viewer }: { viewer: UserId }) {
+  const { groups, loading, error, hasMore, fetchMore, loadingMore } = useGroups({ viewer });
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {groups.map((g) => (
+        <li key={g.id}>
+          {g.name} ({g.memberCount} members)
+        </li>
+      ))}
+      {hasMore ? (
+        <li>
+          <button type="button" onClick={fetchMore} disabled={loadingMore}>
+            {loadingMore ? "Loading more..." : "Load more"}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useGroups(opts?: UseGroupsOptions): UseGroupsResult;
+
+interface UseGroupsOptions {
+  gameId?: GameId;
+  viewer?: UserId;
+  limit?: number;
+}
+
+interface UseGroupsResult {
+  groups: Group[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  fetchMore: () => Promise<void>;
+}
+```
+
+### Options
+
+| Option | Type | Meaning |
+|--------|------|---------|
+| `gameId` | `GameId` | Filter to one game. Omit to list across the API key's scope. |
+| `viewer` | `UserId` | External user id to scope visibility to: secret groups the viewer is not a member of are excluded. Omit for the admin / server-side view. |
+| `limit` | `number` | Page size forwarded to `groups.list`. |
+
+Changing any option triggers a `refetch` (the cursor resets and a fresh first page lands with the new query).
+
+### Result
+
+| Field | Meaning |
+|-------|---------|
+| `groups` | Groups accumulated so far, in server page order. New pages append at the end. Deduplicated by `id`. |
+| `loading` | `true` from mount until the first `groups.list` response (success or error). |
+| `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `error` | The most recent error: a fetch error or a `fetchMore` error. Cleared as soon as the next attempt starts: both `refetch` and `fetchMore` reset it to `null` when they fire (and again on success). |
+| `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
+| `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+
+## Pagination
+
+Pagination is cursor-based. The hook calls `junjo.groups.list(opts)` for each page; the first call carries `{ gameId?, viewer?, limit? }` (no cursor) and subsequent `fetchMore` calls add `cursor`. The server's response shape is `{ items: Group[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
+
+`fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `id` when appending.
+
+## No live updates
+
+Event streams are per-group, so there is no channel that could announce list-level changes: a group created or deleted elsewhere emits nothing this hook could subscribe to. The contract is "fetch on mount, paginate via `fetchMore`, refresh via `refetch`": call `refetch` after `junjo.groups.create` / `junjo.groups.delete`, or poll for directory screens. A group already in the list that changes (rename, member count) is also NOT updated live; only [`useGroup`](/react/use-group) tracks a single group's events.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Two sources:
+
+- **Initial fetch error**: a `JunjoError` (or other) from the first `groups.list` call. The hook stays at `loading: false` with `groups: []`.
+- **`fetchMore` error**: appended to `error` while `groups` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
+
+If `useGroups` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.groups.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.groups, {
+  list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+});
+```

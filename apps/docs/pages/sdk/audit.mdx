@@ -25,7 +25,9 @@ list(groupId: GroupId, opts?: ListAuditOptions): Promise<Page<AuditEntry>>;
 
 interface ListAuditOptions {
   limit?: number;
-  before?: Date;
+  // Page boundary: a Date (sent as ISO 8601) or an opaque cursor string
+  // from a previous page's `nextCursor`, passed through verbatim.
+  before?: Date | string;
   actions?: AuditAction[];
 }
 ```
@@ -35,25 +37,37 @@ interface ListAuditOptions {
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `limit` | number (1-100) | 50 | Max entries to return on this page. |
-| `before` | `Date` | (no filter) | Filter to entries with `createdAt < before`. Used for pagination by feeding the previous page's `nextCursor` (an ISO timestamp) back through `new Date(...)`. |
+| `before` | `Date \| string` | (no filter) | Page boundary. Pass the previous page's `nextCursor` string (an opaque cursor, exact keyset pagination) to walk pages; a `Date` is sent as ISO 8601 with strictly-older-than `createdAt` semantics for date-bounded reads. |
 | `actions` | `AuditAction[]` | (no filter) | Restrict the page to entries whose `action` is in the supplied list. Empty array is treated as "no filter" by the SDK and the server. |
 
 ### Pagination
 
-`Page<AuditEntry>.nextCursor` is the ISO 8601 `createdAt` of the last item when the page is full, or `null` otherwise. Walk pages by feeding it back as `before`:
+`Page<AuditEntry>.nextCursor` is an opaque cursor when more entries exist, or `null` on the last page. Feed it straight back in as `before`:
 
 ```ts
 let cursor: string | null = null;
 do {
   const opts: ListAuditOptions = { limit: 100 };
-  if (cursor !== null) opts.before = new Date(cursor);
+  if (cursor !== null) opts.before = cursor;
   const page = await junjo.audit.list(groupId, opts);
   for (const entry of page.items) handle(entry);
   cursor = page.nextCursor;
 } while (cursor !== null);
 ```
 
-If two entries share `createdAt` to millisecond precision, the page boundary may skip entries with that exact timestamp on the next call. Audit entries are written one per transaction, so collisions are rare; consumers that need strict ordering across page boundaries should treat the audit log as eventually consistent.
+The opaque cursor resolves server-side to exact keyset pagination on the `(createdAt, id)` sort, so page boundaries are immune to entries sharing a millisecond. Only the `Date` form of `before` has the older exclusive-timestamp semantics, where entries sharing the exact boundary timestamp can be skipped.
+
+## `listAll(groupId, opts?)`
+
+Async-iterator wrapper over `list` that walks the group's whole audit timeline, newest first, feeding each page's `nextCursor` back in as `before`. `actions` and `limit` filter exactly as on `list`.
+
+```ts
+for await (const entry of junjo.audit.listAll(groupId, {
+  actions: ["member.joined", "member.left"],
+})) {
+  handle(entry);
+}
+```
 
 ### Entry shape
 

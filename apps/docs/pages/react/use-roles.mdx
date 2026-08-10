@@ -1,0 +1,96 @@
+# useRoles
+
+Returns the group's role definitions plus a live event subscription that keeps them in sync with `role.created`, `role.deleted`, `permission.granted`, and `permission.revoked` events. The subscription rides the provider's [shared group event stream](/react/provider#shared-group-event-streams), so it adds no connection cost next to the other group hooks.
+
+```tsx
+import { useRoles } from "@junjo.io/react";
+
+function RoleList({ groupId }: { groupId: GroupId }) {
+  const { roles, loading, error, refetch } = useRoles(groupId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      <li>
+        <button type="button" onClick={refetch}>Refresh</button>
+      </li>
+      {roles.map((r) => (
+        <li key={r.id}>
+          {r.name} (priority {r.priority}, {r.permissions.length} permissions)
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useRoles(groupId: GroupId): UseRolesResult;
+
+interface UseRolesResult {
+  roles: Role[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `roles` | The group's role definitions, in server list order. Not paginated: `junjo.roles.list(groupId)` returns the full `Role[]` in one call, so there is no cursor, `hasMore`, or `fetchMore`. |
+| `loading` | `true` from mount until the first `roles.list` response (success or error). Flips back to `true` on `refetch` while the previous list stays visible. |
+| `error` | The most recent fetch error or streaming error (a server-initiated close surfaces as `JunjoStreamClosedError`). Cleared when the next `refetch` starts. |
+| `refetch` | Re-runs `roles.list`. Race-guarded by a generation counter, so a stale response cannot overwrite a newer one. Errors flow into `error`, never thrown. |
+
+The hook takes no options.
+
+## Live updates
+
+On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Four event types modify state, covering everything that alters role definitions:
+
+| Event | Behavior |
+|-------|----------|
+| `role.created` | Append `event.role` at the end (or replace in place when the same `id` is already present, idempotent on dedupe). |
+| `role.deleted` | Remove the role with `event.roleId`. |
+| `permission.granted` | Patch the affected role in place: append `event.permission` to its `permissions` array if not already present. Roles not in the list are ignored. |
+| `permission.revoked` | Patch the affected role in place: remove `event.permission` from its `permissions` array. |
+
+`role.changed` is intentionally a no-op here. Despite its name, it is a member-assignment event (`userId` / `added` / `removed`): it says which roles a member gained or lost and carries no role definition data, so it cannot change this list. The roster hooks ([`useMembers`](/react/use-members), [`useGroup`](/react/use-group)) apply it instead.
+
+Other events (`member.joined`, `member.left`, `member.invited`, `member.banned`, `member.unbanned`, `group.updated`, `group.deleted`, `group.relationship.changed`) are ignored and do not cause re-renders.
+
+The subscription is tied to `(client, groupId)`. Changing `groupId` detaches from the old group's shared stream and attaches to the new one.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Two sources:
+
+- **Fetch error**: a `JunjoError` (or other) from `roles.list`. On the initial fetch the hook stays at `loading: false` with `roles: []`; on a failed `refetch` the previous list is kept.
+- **Streaming error**: the shared stream failed (handshake rejection or mid-stream drop) or was closed cleanly by the server; a clean close surfaces as `JunjoStreamClosedError` (check with `isStreamClosedError`). The loaded list stays intact; only `error` flips. The hook does NOT auto-reconnect; remount or change `groupId` to resubscribe (`refetch` refreshes the list but does not reopen the stream). See [Stream teardown](/react/provider#stream-teardown-and-junjostreamclosederror) for the full contract.
+
+If `useRoles` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Composing with the other group hooks
+
+`useRoles` shares one SSE stream per `(client, groupId)` with `useGroup`, `useMembers`, and `useInvitations` through the provider's [subscription hub](/react/provider#shared-group-event-streams). A moderation page rendering all four still costs one server connection.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.roles.list` and `junjo.groups.subscribe` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.roles, { list: vi.fn().mockResolvedValue([]) });
+Object.assign(client.groups, {
+  subscribe: vi.fn().mockResolvedValue({ close: vi.fn() }),
+});
+```

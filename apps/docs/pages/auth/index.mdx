@@ -2,7 +2,7 @@
 
 An `AuthAdapter` resolves a player's session token to a stable user id. Junjo never issues session tokens of its own; it sits behind your existing auth provider (Clerk, Supabase, a JWT issuer, your own session-token store, Roblox's player API) and trusts whatever user id that provider returns.
 
-The dev's backend supplies the user id at the API-key boundary: most Junjo routes accept the user id as a path or body parameter, and the dev's backend has already resolved it. The auth adapter is for the few server-side flows that need to verify a token before resolving an id, plus the SDK's `whoami(token)` helper.
+The dev's backend supplies the user id at the API-key boundary: most Junjo routes accept the user id as a path or body parameter, and the dev's backend has already resolved it. The auth adapter is for the few server-side flows that need to verify a token before resolving an id, plus the SDK's `verifyToken(token)` helper.
 
 ## The interface
 
@@ -44,7 +44,7 @@ const junjo = new Junjo({
 });
 ```
 
-The `authAdapter` option is itself optional. You only need an adapter for the SDK's `whoami(token)` flow and for cross-game identity resolution (cloud-only). Server-to-server calls that already have a verified user id from your own auth layer do not need an adapter at all; pass the user id directly to the relevant Junjo method.
+The `authAdapter` option is itself optional. You only need an adapter for the SDK's `verifyToken(token)` flow and for cross-game identity resolution (cloud-only). Server-to-server calls that already have a verified user id from your own auth layer do not need an adapter at all; pass the user id directly to the relevant Junjo method.
 
 ## End-to-end flow
 
@@ -59,7 +59,7 @@ sequenceDiagram
   participant DB as Postgres (via Prisma)
 
   Note over App,DB: Step 1 - resolve session token to external user id (dev's host, never on Junjo's server)
-  App->>SDK: junjo.whoami(sessionToken)
+  App->>SDK: junjo.verifyToken(sessionToken)
   alt no authAdapter configured
     SDK--xApp: throw JunjoError invalid_config (setup-time mistake)
   else authAdapter present
@@ -74,7 +74,7 @@ sequenceDiagram
   end
 
   Note over App,DB: Step 2 - SDK call carrying the external user id (e.g. accept invitation)
-  App->>SDK: junjo.invitations.accept(code, { userId: externalUserId })
+  App->>SDK: junjo.groups.acceptInvitation(code, externalUserId)
   SDK->>Server: POST /v1/invitations/{code}/accept<br/>Authorization Bearer jk_...<br/>body { userId: externalUserId }
   Server->>DB: SELECT ApiKey WHERE prefix
   DB-->>Server: gameId, hashedSecret, revokedAt

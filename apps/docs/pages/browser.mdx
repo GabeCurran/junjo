@@ -1,0 +1,109 @@
+# Browser (plain JS)
+
+Using `@junjo.io/sdk` from a browser without React: proxy-mode construction, what your backend proxy must do, and a minimal proxy you can adapt. React apps get the same architecture plus a ready-made Next.js handler on the [provider page](/react/provider#browser-apps-proxy-mode); this page is the framework-free version. A complete runnable example lives in [`examples/webgame-threejs`](https://github.com/GabeCurran/junjo/tree/main/examples/webgame-threejs).
+
+## Why there is no key in the browser
+
+The `jk_` API key is admin-class for its game: whoever holds it can read secret groups, kick anyone, and act as any user, because Junjo performs no per-end-user authorization in v1 (see the [security model](/security-model)). Anything shipped to a browser is public, including "hidden" env vars inlined at build time. So the browser holds nothing, and a backend you control injects the key and enforces who may do what.
+
+## Client construction
+
+```js
+import { Junjo, JunjoError } from "@junjo.io/sdk";
+
+const junjo = new Junjo({
+  proxy: true,
+  baseUrl: "/api/junjo", // your proxy route; required in proxy mode
+});
+```
+
+In proxy mode the SDK sends **no `authorization` header at all**; the only header it sets is `content-type: application/json` on requests with a body (plus `accept: text/event-stream` when subscribing). Passing `apiKey` together with `proxy: true` throws `invalid_config` at construction, on purpose: the key would still ship to the browser. Every SDK request path is under `/v1/...`, appended to `baseUrl`, so the proxy sees e.g. `GET /api/junjo/v1/groups`.
+
+## What the proxy must do
+
+1. **Strip nothing in, inject the key out**: forward method, path (minus the mount prefix), query string, and body to the Junjo API, adding `authorization: Bearer <jk_ key>` from server-side config.
+2. **Allowlist routes.** Forward only what your UI needs; everything else is refused. This is what keeps the browser from reaching kick/ban/role-grant routes through your key. Include `GET /v1/whoami` if you call `junjo.keyInfo()` (a cheap connectivity probe), and `GET /v1/events/:groupId` (unbuffered) if you subscribe to events.
+3. **Pin identity.** Any `userId`-shaped input (body fields like `userId` / `creatorUserId`, user-id path segments, the `viewer` query param) must come from your session, not from the client payload. Overwrite what the browser sent.
+4. **Apply your policy.** Decide whether this user may perform this action, with your own rules or a `junjo.check` call server-side.
+
+## A minimal Hono proxy
+
+The same shape works in Express, Fastify, or a worker runtime; only the framework syntax changes.
+
+```js
+import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+
+const JUNJO_API = "https://api.junjo.io"; // or your self-host URL
+const KEY = process.env.JUNJO_API_KEY;
+
+// method + path pattern + which body field to pin to the session user
+const ALLOWED = [
+  { method: "GET",  pattern: /^\/v1\/whoami$/ },
+  { method: "GET",  pattern: /^\/v1\/groups$/ },
+  { method: "POST", pattern: /^\/v1\/groups$/, pin: "creatorUserId" },
+  { method: "POST", pattern: /^\/v1\/groups\/[^/]+\/join$/, pin: "userId" },
+];
+
+const app = new Hono();
+
+app.all("/api/junjo/*", async (c) => {
+  const path = c.req.path.slice("/api/junjo".length);
+  const rule = ALLOWED.find((r) => r.method === c.req.method && r.pattern.test(path));
+  if (!rule) {
+    // Same envelope shape as the server, so the SDK throws a normal JunjoError.
+    return c.json({ code: "not_found", status: 404, message: "route not proxied" }, 404);
+  }
+
+  const userId = await userIdFromSession(c); // YOUR auth: cookie/JWT -> user id, or 401
+  const init = { method: c.req.method, headers: { authorization: `Bearer ${KEY}` } };
+  if (rule.pin) {
+    const body = await c.req.json().catch(() => ({}));
+    body[rule.pin] = userId; // identity pinning: ignore whatever the browser sent
+    init.headers["content-type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+
+  const url = new URL(c.req.url);
+  const upstream = await fetch(`${JUNJO_API}${path}${url.search}`, init);
+  const headers = new Headers();
+  for (const h of ["content-type", "retry-after", "x-request-id"]) {
+    const v = upstream.headers.get(h);
+    if (v) headers.set(h, v);
+  }
+  return new Response(await upstream.text(), { status: upstream.status, headers });
+});
+
+serve({ fetch: app.fetch, port: 8788 });
+```
+
+Notes:
+
+- `userIdFromSession` is the load-bearing line. It must derive the user from something the browser cannot forge; a demo can hardcode it, production reads your session.
+- Passing the status and body through untouched means the browser SDK sees real `JunjoError`s: `already_member` stays `already_member`, and a 429's `Retry-After` header becomes `err.retryAfterSeconds` (mirror that header, as above).
+- For routes with user ids in the **path** (friends, visibility), match the segment against the session user instead of pinning a body field, or rewrite the segment.
+- `DELETE` requests can carry a body (`bans.remove` attribution); some proxies strip it, which degrades to lost attribution, not failure.
+- SSE (`/v1/events/:groupId`): stream the upstream body without buffering and preserve the `accept` header. See the [provider page notes](/react/provider#browser-apps-proxy-mode); the [self-hosting page](/self-host) covers reverse-proxy buffering.
+
+## Error handling in the browser
+
+Branch on `err.code`; in proxy setups also expect your **own** proxy's errors (401 from your session check, refused routes) alongside Junjo's:
+
+```js
+try {
+  await junjo.groups.join(groupId, sessionUserId);
+} catch (err) {
+  if (err instanceof JunjoError) {
+    if (err.code === "already_member") showToast("You are already in this guild.");
+    else if (err.code === "rate_limit_exceeded") showToast(`Slow down; retry in ${err.retryAfterSeconds ?? 5}s.`);
+    else if (err.code === "banned") showToast("You are banned from this guild.");
+    else showToast(`${err.code}: ${err.message}`);
+  } else {
+    throw err;
+  }
+}
+```
+
+## CORS
+
+If the proxy is served from the same origin as the page (the common setup: `/api/junjo` next to your static files, as in the sketch above), there is no CORS to configure. If the proxy lives on another origin, it needs the standard CORS response headers for your page's origin with methods `GET, POST, PATCH, PUT, DELETE` and the `content-type` header allowed; no credential headers are involved since the SDK sends none. Never "fix" CORS by calling `api.junjo.io` directly from the page: the Junjo API would happily serve a browser, but only with a key attached, which is exactly what must not exist there.

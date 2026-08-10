@@ -3,18 +3,30 @@ is the LICENSE file in that package's directory, which is authoritative.
 
 Summary (see each package's LICENSE for the actual terms):
 
-  packages/sdk         MIT                  (client SDK)
-  packages/react       MIT                  (React hooks)
-  packages/shared      MIT                  (shared types)
-  packages/sdk-roblox  MIT                  (Roblox Luau client)
-  packages/server      Elastic License 2.0  (the Junjo server)
-  apps/dashboard       All rights reserved  (the cloud admin dashboard)
-  apps/docs            MIT                  (documentation site)
+  packages/sdk               MIT                  (client SDK)
+  packages/react             MIT                  (React hooks)
+  packages/shared            MIT                  (shared types)
+  packages/sdk-roblox        MIT                  (Roblox Luau client)
+  packages/sdk-cpp           MIT                  (C++ client)
+  packages/sdk-unreal        MIT                  (Unreal Engine plugin)
+  packages/server            Elastic License 2.0  (the Junjo server)
+  apps/dashboard             All rights reserved  (the cloud admin dashboard)
+  apps/docs                  MIT                  (documentation site)
+  examples/webgame-threejs   MIT                  (Three.js example)
+  examples/roblox-mobarena   MIT                  (Roblox example)
+  examples/cpp-consumer      MIT                  (C++ consumer example)
+  tools/diagrams             MIT                  (Mermaid renderer)
+  tools/screenshots          MIT                  (screenshot crawler)
 
 In plain terms: the client libraries are MIT and safe to use in any game,
-commercial or not. The server is source-available under ELv2 - you can read
+commercial or not. The server is source-available under ELv2: you can read
 it, run it, and self-host it for your own games, but you may not offer it to
 third parties as a hosted or managed service. The hosted dashboard is
 proprietary.
+
+The C++ SDK and the Unreal Engine plugin compile or link third-party code
+into consuming binaries; packages/sdk-cpp/THIRD_PARTY_NOTICES.md and
+packages/sdk-unreal/JunjoIO/THIRD_PARTY_NOTICES.md carry the notices to
+reproduce.
 
 Copyright (c) 2026 Gabe Curran

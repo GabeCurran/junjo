@@ -1,0 +1,49 @@
+# Versioning and compatibility
+
+What version numbers promise, and what happens when a client and a server are not the same age.
+
+## Semver stance, pre-1.0
+
+Every published package (`@junjo.io/sdk`, `@junjo.io/react`, `@junjo.io/shared`; the Roblox SDK will ship as `Junjo.rbxm` on GitHub releases with the same `0.x` versioning) is pre-1.0. Per semver, that means **minor releases may break**: `0.2.0` can change behavior that `0.1.x` had. Breaking changes are not sneaked into patches, and every change is recorded as a changeset in the repo (`.changeset/`, released via `changeset version` on merge), with breaking entries called out explicitly in the resulting per-package `CHANGELOG.md`. Pin exact versions if you cannot absorb a minor.
+
+The C++ SDK installs as CMake package `JunjoIO` at version `0.1.0`; its config-version file declares `SameMinorVersion` compatibility, so `find_package(JunjoIO 0.1)` matches `0.1.x` only. That widens to `SameMajorVersion` at 1.0. The Unreal Engine plugin (`VersionName` `0.1.0`) vendors the C++ core and follows its versioning; it is a source plugin that compiles with your project, and no ABI stability is promised pre-1.0.
+
+The HTTP API is versioned by path (`/v1/...`). Within `/v1`, changes are additive: new routes, new optional request fields, new response fields, new event types, new error codes.
+
+## Wire compatibility rules
+
+### New response fields: always safe
+
+The SDKs deserialize responses field by field (each namespace has an explicit `Wire* -> deserialize*` mapping); fields the SDK does not know are silently dropped, never an error. The Roblox SDK returns parsed JSON verbatim, so it is additive-tolerant by construction. The one hard check at the boundary is timestamps: a malformed timestamp in a known field throws `invalid_wire_data` naming the field, immediately, instead of an Invalid Date detonating later.
+
+### New event types: contained per channel
+
+A newer server may emit event types an older SDK predates. The behavior differs by channel, deliberately:
+
+- **SSE** (`groups.subscribe`): the unknown frame is skipped and the stream lives on. A server upgrade cannot kill deployed clients' streams.
+- **Webhook verification** differs per SDK. The TypeScript `verify` / `verifyWithMeta` throw `JunjoError` code `unknown_event_type` by default ("upgrade @junjo.io/sdk to handle it"); `verifyWithMeta` accepts `onUnknownType: "raw"` to return the verified payload verbatim instead, which is what a match-all endpoint should use so a server upgrade cannot turn its receiver into a 400-forever retry loop. The C++ `verify_webhook` returns unknown types verbatim always: verification authenticates, it does not gate on the type.
+- **Webhook endpoint subscriptions** (the `events` array on an endpoint) are validated server-side against a closed enum, so a typo'd or too-new type is a `400` at create/update time, not a silent non-match. That enum is compile-guarded against the shared event union in both directions, so it cannot drift from the actual event set.
+
+### New error codes: keep a default branch
+
+`JunjoError.code` is a typed union, so typo'd comparisons fail to compile, but a newer server can return codes an older SDK does not know and they **pass through at runtime** verbatim. An exhaustive `switch` over `err.code` must keep a `default` branch. (A response that is not the Junjo envelope at all, such as an HTML 502 from a proxy, surfaces as code `unknown`; the Roblox SDK's equivalent fallback code is `internal`.)
+
+## Newer SDK against an older self-hosted server
+
+Cloud always runs the current server, but a self-hosted `/v1` may lag behind your SDK. What happens when a newer SDK sends a request field the older server has never heard of depends on the route's validation mode; there are exactly two, and the split is per route:
+
+- **Most routes** validate with schemas that strip unknown keys: the unknown field is silently discarded and the request succeeds with the new field having no effect. Watch for this as a silent no-op: the call "works" but the new behavior does not happen.
+- **Strict routes** reject unknown keys with `400 bad_request` ("Unrecognized key(s) in object: ..."). As of this writing the strict set is: group create/update bodies, game-ban add/remove bodies, the friends surface (friend request, block, tag bodies, and, unusually, the friends/friend-requests/blocks **query strings**), the visibility and suggestions routes, and the admin game-config payload.
+
+The practical consequence: a new optional field on a strict route, or any new query parameter on the friends routes, is a hard error against an older server rather than a quiet downgrade. If you self-host, upgrade the server before (or together with) the SDK; the server is a single container image and migrations run on boot. A too-new field never corrupts anything: it is either dropped or rejected.
+
+## Deprecations
+
+Deprecated surface stays through the 0.x line and is removed at 1.0, with the JSDoc pointing at the replacement. Current example: `junjo.whoami(token)` is a deprecated alias of `verifyToken` (renamed because it collided with the server's `GET /v1/whoami`, which answers "which game is this key", now `keyInfo()`); the alias delegates unchanged and will be removed at 1.0.
+
+## Version hygiene checklist
+
+- Pin exact SDK versions in game-server deployments; review changesets before bumping a minor.
+- Keep a `default` branch in every `switch` on `err.code` and on webhook event types.
+- Self-host: upgrade server first, SDK second.
+- Roblox: the shipped `Junjo.VERSION` constant, the package version, and the release tag are kept in lockstep by CI; check `Junjo.VERSION` at runtime when diagnosing mismatches.

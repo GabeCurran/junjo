@@ -1,6 +1,6 @@
 # SDK overview
 
-`@junjo.io/sdk` is the TypeScript client. Same package runs in Node and the browser; tree-shakeable; zero runtime dependencies beyond `fetch` (a built-in everywhere we ship to).
+`@junjo.io/sdk` is the TypeScript client. Same package runs in Node and the browser; tree-shakeable; one runtime dependency, `@junjo.io/shared` (the shared type package). Networking uses the built-in `fetch`. The `@junjo.io/sdk/adapters` entry bundles `jose` internally for JWT verification, so the adapters add no install-time dependency either.
 
 ## Construct a client
 
@@ -17,11 +17,19 @@ This example targets a server. The `jk_` key is a full-control secret; never exp
 
 | Option | Required | Notes |
 |--------|----------|-------|
-| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string issued in the dashboard or by `npm run db:seed`. Server-side only. |
+| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string. Hosted-beta keys arrive by email (there is no beta dashboard login yet); self-host and local dev issue one via `npm run db:seed`. Server-side only. |
 | `proxy` | no | Browser mode: requests go to `baseUrl` (required) with no `authorization` header; passing `apiKey` throws `invalid_config`. Your backend forwards to the Junjo API and injects the key. |
 | `baseUrl` | no | Override the API root. Trailing slashes are stripped. Defaults to the cloud endpoint. Required in proxy mode (point it at your proxy route, e.g. `"/api/junjo"`). |
-| `authAdapter` | no | An `AuthAdapter` (Clerk, Supabase, JWT, or BYO). Used by the permission-resolution path; not required for server-to-server calls. |
+| `inviteBaseUrl` | no | Base URL for the share links built by `groups.inviteByLink` (`${inviteBaseUrl}/invite/${code}`). There is no default: the API origin serves no invite pages, so without this option `inviteByLink` throws `JunjoError` code `invalid_config` (`inviteByCode` / `inviteByUserId` are unaffected). |
+| `authAdapter` | no | An `AuthAdapter` (Clerk, Supabase, JWT, or BYO). Used by `verifyToken`; not required for server-to-server calls. |
 | `fetch` | no | Override the `fetch` implementation. Useful in environments without a global `fetch`, and to mock requests in tests. |
+| `timeoutMs` | no | Per-request timeout in milliseconds; a request that exceeds it rejects with `JunjoError` code `timeout`. Defaults to `30000`. Set `0` to disable. SSE subscriptions are exempt: an event stream stays open by design. Every request-making method also accepts a per-request `timeoutMs` in its options that overrides this client-level value for that call. |
+
+Every request-making method also accepts an `AbortSignal` via `signal` in its options for caller-side cancellation (rejects with code `cancelled`). The SDK never retries automatically; see the [errors reference](/api-reference/errors) for the retry stance and `retryAfterSeconds`.
+
+## Trust boundaries
+
+The credential zones (which process may hold the `jk_` key, which holds the `jadm_` admin token, and what player devices carry instead) are documented on the [security model](/security-model) page.
 
 ## Errors
 
@@ -53,8 +61,10 @@ The `Junjo` instance exposes typed namespaces for each resource. See the per-nam
 | [`junjo.roles`](/sdk/roles) | `create`, `get`, `update`, `delete`, `list`, `grantPermission`, `revokePermission`. |
 | [`junjo.members`](/sdk/members) | Read (`get`, `getById`, `list`, `listForUser`), metadata / notes (`setMetadata`, `setNotes`), role assignment (`assignRole`, `removeRole`), permission overrides (`overridePermission`, `clearPermissionOverride`, `listPermissionOverrides`). |
 | [`junjo.invitations`](/sdk/invitations) | `list`, `get`, `revoke`. Accept and decline live on [`junjo.groups`](/sdk/groups) (`acceptInvitation`, `declineInvitation`). |
-| [`junjo.audit`](/sdk/audit) | `list`. |
-| [`junjo.webhooks`](/sdk/webhooks) | `verify`, `middleware`; `endpoints.{create,list,update,delete}`. |
+| [`junjo.audit`](/sdk/audit) | `list`, `listAll`. |
+| [`junjo.webhooks`](/sdk/webhooks) | `verify`, `verifyWithMeta`, `middleware`; `endpoints.{create,list,listAll,update,delete}`. |
+| [`junjo.friends`](/sdk/friends) | Friendship list (`list`, `listAll`, `remove`, `getRelationship`, `suggestions`) plus sub-namespaces `requests`, `blocks`, `tags`, `visibility`. |
+| [`junjo.bans`](/sdk/bans) | Game-wide bans: `add`, `remove`, `get`, `list`, `listAll`, `history`. |
 
 ## Top-level methods
 
@@ -64,4 +74,6 @@ In addition to the resource namespaces, `Junjo` exposes a small set of cross-cut
 |--------|-------|
 | [`junjo.can(userId, groupId, permission)`](/sdk/permissions) | Boolean wrapper around `check`. |
 | [`junjo.check(userId, groupId, permission)`](/sdk/permissions) | Returns the full `PermissionCheckResult`. |
-| `junjo.whoami(token)` | Delegates to the configured `authAdapter.verifyToken`; returns `{ userId } \| null`. Throws `JunjoError({ code: "invalid_config" })` if no `authAdapter` was passed to the constructor. |
+| `junjo.verifyToken(token)` | Delegates to the configured `authAdapter.verifyToken`; returns `{ userId } \| null`. Local to the adapter, no Junjo API round-trip. Throws `JunjoError` code `invalid_config` if no `authAdapter` was passed to the constructor. |
+| `junjo.whoami(token)` | Deprecated alias for `verifyToken` (the name collided with the server's `GET /v1/whoami`, which answers a different question). Will be removed at 1.0. |
+| `junjo.keyInfo()` | Asks the server which game the configured API key belongs to (`GET /v1/whoami`). Useful as a connectivity and credential check during setup and in health probes. In proxy mode it works only if your backend proxy forwards `GET /v1/whoami`. |

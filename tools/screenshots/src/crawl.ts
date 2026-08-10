@@ -46,6 +46,10 @@ async function main(argv: readonly string[]): Promise<void> {
   } finally {
     if (stop) await stop();
   }
+  // Everything is on disk and the dev server is down; exit explicitly
+  // so a stray handle (an orphaned grandchild pipe, a lingering browser
+  // stream) can never keep the process, and anything awaiting it, alive.
+  process.exit(0);
 }
 
 function printUsage(error: string): void {

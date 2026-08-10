@@ -1,0 +1,110 @@
+# Core concepts
+
+The whole Junjo data model on one page. Each section links to the reference for the routes and SDK methods; this page is about what the nouns mean and how they relate.
+
+## Game and API keys
+
+A **Game** is the tenant. Every group, member, ban, and audit row belongs to exactly one game, and the API key you authenticate with decides which one: the server resolves the key to its game and scopes every query to it. There is no cross-tenant read on the game surface.
+
+An **ApiKey** is a `jk_` credential for one game. A game can have many keys (mint and revoke them independently via the [admin API](/api-reference/admin)), and each key is the full `prefix.secret` string: the prefix is stored plaintext for lookup, the secret half is scrypt-hashed and shown exactly once at mint time. Within its game a key is admin-class: it can do everything, for every user, in every group. Junjo v1 performs no per-end-user authorization of its own; your backend is the authorization layer that decides which player may trigger which call. See the [security model](/security-model).
+
+Three credential shapes exist in total:
+
+| Credential | Scope | Where it lives |
+|------------|-------|----------------|
+| `jk_` API key | one game, full control | your backends only |
+| `jadm_` admin token | cross-game, `/v1/admin/*` only | the operator surface (dashboard). A single server-wide secret from `JUNJO_ADMIN_TOKEN`; the SDK constructor rejects it |
+| none (proxy mode) | - | browsers and other player devices; the SDK sends no credential and your proxy injects the `jk_` key server-side |
+
+## Users: JunjoUser and ExternalIdentity
+
+Junjo does not host your accounts. You keep your own user ids (from Clerk, Supabase, your DB, Roblox `UserId`, anything), and every `userId` on the wire is that external id, an opaque string to Junjo.
+
+Internally, each external id maps through an **ExternalIdentity** row (unique per game) to a **JunjoUser**, a bare identity anchor with no profile data. The mapping is auto-vivified: the first time a write path references an external id (creating a group with a `creatorUserId`, joining, accepting an invitation, sending a friend request, being banned), the rows are created on the fly, race-safely. There is no "create user" call and nothing to pre-provision. Read paths never vivify; asking about an unknown user simply 404s on the resource being read.
+
+Because identity is per-game unique but anchored on a shared JunjoUser, the same person can be linked across your games; the [friends network scope](#friends) is built on that.
+
+## Groups
+
+A **Group** is the container: guild, party, faction, clan, whatever your game calls it.
+
+- `kind` is a free-form string (1-64 chars) that you define; the server never branches on it. Use it to run several group systems side by side (`"guild"` and `"party"`) and filter lists by it.
+- `visibility` is one of `public`, `invite-only` (the default), `secret`. Public groups can be joined directly; invite-only groups require an invitation; secret groups additionally 404 for non-members and are filtered from viewer-scoped lists, so their existence is not disclosed.
+- An optional **passcode** (4-128 chars, scrypt-hashed at rest, never returned; the wire exposes only `hasPasscode`) gates public join. It is orthogonal to visibility and is not asked for on invitation accept: the invitation is the credential there.
+- Groups form a **parent/child hierarchy** (`setParent` / `listChildren`) with cycle detection; sub-guilds and alliances are modeled this way.
+- `metadata` is a free JSON object for your own data.
+
+Deleting a group is a **soft delete** by default: the group disappears from every read path but can be restored for 7 days (`restore`), after which an hourly sweeper hard-deletes it and restore answers `410 restore_window_expired`. Pass `hard=true` to skip the window.
+
+## Members
+
+A **Member** row ties a user to a group with a `status`:
+
+| Status | Meaning |
+|--------|---------|
+| `active` | in the group; the only status that exercises permissions |
+| `invited` | reserved in the status enum; pending invitations are tracked as [Invitation](#invitations) rows, not member rows |
+| `left` | left voluntarily |
+| `kicked` | removed by the game |
+| `banned` | banned from this group; `bannedUntil` null means permanent |
+
+Rejoining after `left` or `kicked` reactivates the same row (keeping the original `joinedAt`); joining while `active` is `409 already_member`. Members carry per-member `metadata`, `notesPublic` (member-visible), and `notesPrivate` (officer-only), and hold **multiple roles** at once via role assignment. Role assignments survive status transitions for history; the permission resolver ignores them unless the member is `active`.
+
+## Roles and permissions
+
+A **Role** belongs to a group and has a `name` (unique per group), an integer `priority` (higher = more authority; it orders lists and breaks resolution ties), an optional `color`, and a set of granted permission keys. There is no built-in permission list: permission keys are strings you invent (`"kick"`, `"edit-motd"`), auto-registered into a per-game catalog on first grant. A role with members cannot be deleted (`409 role_has_members`).
+
+Permission checks (`junjo.can` / `junjo.check`) resolve in a fixed order:
+
+1. **Override**: an explicit per-member override for that key wins in both directions (grant or deny), `source: "override"`.
+2. **Role**: otherwise, if any of the member's roles grants the key, allowed via the highest-priority such role, `source: "role"`.
+3. **Default**: otherwise denied, `source: "default"`.
+
+Non-members, and members whose status is not `active`, resolve to denied with `source: "none"`. The full mechanics, including the resolution diagram, are on the [permissions reference](/api-reference/permissions).
+
+## Invitations
+
+An **Invitation** is a single-use code (16 hex chars) into one group, in two flavors:
+
+- **Open** (`targetUserId` null): anyone holding the code may redeem it. This backs shareable links (`inviteByLink` / `inviteByCode`).
+- **Direct** (`targetUserId` set): pinned to one user; anyone else redeeming it gets `permission_denied`.
+
+Invitations never expire unless you pass `expiresIn` (`"30m"`, `"7d"`). Accepting consumes the code atomically (a concurrent double-accept loses with `410 invitation_used`); declining also burns it. Ban checks run before redemption, so a banned user cannot enter through an invitation. The preview route (`GET /v1/invitations/:code`) is deliberately unauthenticated so your invite landing page needs no key. Bulk invite accepts up to 1000 rows per request; see [Limits](/limits#bulk-invite).
+
+## Friends
+
+The friends subsystem lives beside groups, keyed on users rather than group membership. Under the hood it is **UserRelationship** rows with three types:
+
+| Type | Rows stored | Meaning |
+|------|-------------|---------|
+| `request` | one directed row | pending friend request |
+| `friend` | two rows, one per direction | established friendship (single-row lookup from either side) |
+| `blocked` | one directed row | block; silently deletes any friendship or pending requests between the pair, and the target is not notified |
+
+On top of that: **tags** (private, per-owner labels on friendships; the other party never sees them), per-user **friends-list visibility** (`private`, `friends-only`, `public`; which values are allowed and the default come from per-game config), and mutual-friend **suggestions**.
+
+Friends are per-game by default. Setting `friends.scope` to `"network"` on games that share a `networkId` makes friendships **read across those games** (both games must opt in) while writes stay pinned to the game they happened in, so switching back to per-game narrows visibility without destroying data. Caps (`maxFriends`, `maxPendingRequests`, tag counts) are per-game config; see [Limits](/limits#friends).
+
+## Bans
+
+Two scopes, one probe:
+
+- **Per-group**: expressed on the member row (`status: "banned"` plus `bannedUntil`); a mirror of kick that also blocks rejoin.
+- **Game-wide**: a separate `GameBan` row per user covering every group in the game, with optional expiry and a reason.
+
+Expiry is **lazy**: nothing sweeps expired bans; every join, invitation accept, and ban read simply treats a past `expiresAt` as not banned. Game-wide is checked first (it is strictly broader), and blocked writes answer `403 banned`.
+
+Every set and lift, at either scope, appends a **BanHistory** row (`scope`, `kind: "set" | "lifted"`, reason, expiry, actor, timestamp), so "what happened to this user" is a timeline query, not archaeology. Lazy expiry writes no history row; only explicit action does.
+
+## Audit log
+
+Every mutating action writes an **AuditEntry**: `action` (a closed list of 29 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
+
+## Events: SSE and webhooks
+
+State changes emit typed events on two channels, and scope decides which:
+
+- **Group-scoped events** (`member.joined`, `role.changed`, `group.updated`, ...) are delivered to [SSE subscribers](/api-reference/events) of that group and to webhooks.
+- **User-scoped events** (`friend.request.sent`, `game.user.banned`, ...) have no group to subscribe to, so they are **webhook-only**.
+
+Webhook endpoints choose event types (empty list = all), receive HMAC-signed deliveries with retries, and can output native Discord or Slack formats. Events are staged in the same transaction as the mutation and published only after commit, so a subscriber never sees a change that rolled back. See the [webhooks reference](/api-reference/webhooks).

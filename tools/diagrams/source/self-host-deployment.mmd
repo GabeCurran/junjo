@@ -1,0 +1,29 @@
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  clients["SDK / HTTP clients<br/>(Authorization Bearer jk_...)"]
+  proxy["Reverse proxy (optional)<br/>TLS termination; SSE path needs read timeout >= 35s<br/>and response buffering off; requires TRUST_PROXY=true"]
+
+  subgraph container["junjo-server container (one process, no separate worker)"]
+    direction LR
+    migrate["Boot: prisma migrate deploy<br/>(idempotent; container exits non-zero on failure,<br/>before the port binds)"]
+    hono["Hono HTTP /v1<br/>REST + SSE event streams"]
+    health["GET / liveness<br/>GET /healthz readiness<br/>(db ping + worker heartbeat, 503 when degraded)"]
+    worker["Webhook worker<br/>(5s tick, batch 50, HMAC + retries,<br/>30s drain on SIGTERM)"]
+    sweeper["Soft-delete sweeper<br/>(hourly, deletes groups soft-deleted > 7 days)"]
+  end
+
+  env["Env knobs<br/>DATABASE_URL (required)<br/>PORT (default 8787)<br/>TRUST_PROXY=true behind a proxy<br/>JUNJO_ADMIN_TOKEN (optional, gates /v1/admin/*)<br/>RATE_LIMIT_PER_MINUTE / RATE_LIMIT_BURST"]
+
+  postgres[("Postgres 14+")]
+  receivers["Webhook receivers<br/>(Discord, Slack, custom)"]
+  probes["Orchestrator probes<br/>(livenessProbe -> /, readinessProbe -> /healthz)"]
+
+  clients --> proxy -- "plain HTTP to PORT" --> hono
+  migrate -- "then bind PORT" --> hono
+  env -.-> container
+
+  hono --> postgres
+  worker --> postgres
+  sweeper --> postgres
+  worker -- "signed POST" --> receivers
+  probes --> health

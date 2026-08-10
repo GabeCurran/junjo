@@ -70,7 +70,7 @@ The server emits an event after every mutation that changes a group's externally
 | `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
 | `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
 | `POST /v1/groups/:id/members/:userId/ban` | `member.banned` | Carries `userId`, `reason`, `bannedUntil` (null = permanent). Idempotent re-ban with identical expiry emits nothing; changing the expiry re-emits. |
-| `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event -- read paths just stop treating the row as banned. Calls on non-banned members 404. |
+| `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event; read paths just stop treating the row as banned. Calls on non-banned members 404. |
 | `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
 | `DELETE /v1/roles/:id` | `role.deleted` | |
 | `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls (already assigned) emit nothing. |
@@ -116,6 +116,51 @@ Subscribe to these via webhook endpoints rather than `/v1/events/:groupId`.
 6. Client closes the connection (cancels the body reader, closes the underlying socket, etc.). Server observes the abort, deregisters the listener, and clears the heartbeat timer.
 
 A 404 fails synchronously with a JSON error body before the upgrade to SSE; clients that expect a stream should branch on `response.headers.get("content-type")` and treat anything other than `text/event-stream` as an error.
+
+The full subscribe-to-resubscribe shape, including how `@junjo.io/react` shares one stream across N hooks:
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Hooks as React hooks (useGroup, useMembers, ...)
+  participant HubR as SubscriptionHub (@junjo.io/react)
+  participant SDK as junjo.groups.subscribe
+  participant Server as GET /v1/events/:groupId
+  participant HubS as EventHub (in-process)
+
+  Note over Hooks,HubS: Subscribe. N hooks on one group share ONE stream: the first listener opens it,<br/>later listeners attach to it, the last unsubscribe closes it (refcounted).
+  Hooks->>HubR: subscribe(groupId, listener)
+  HubR->>SDK: subscribe(groupId, handler) on first listener only
+  SDK->>Server: GET /v1/events/{groupId}<br/>Authorization Bearer jk_...
+  Server->>Server: verify API key, load group<br/>(gameId-scoped, not soft-deleted)
+  alt group missing, cross-game, or soft-deleted
+    Server--xSDK: 404 JSON envelope (synchronous, before any stream opens)
+  else group found
+    Server->>HubS: hub.subscribe(groupId, listener)
+    Server-->>SDK: 200 text/event-stream
+  end
+
+  Note over Hooks,HubS: Event frames. Group-scoped events only: user-scoped events<br/>(friend.*, game.user.*) have no groupId and go to webhooks, never SSE.
+  loop while the stream is open
+    HubS-->>Server: publish(event) from a mutation route
+    Server-->>SDK: id: evt_...<br/>event: member.joined<br/>data: JSON event
+    SDK->>HubR: handler(event)
+    HubR->>Hooks: fan out to every listener (throws isolated per listener)
+    Server-->>SDK: :heartbeat comment every 30s (keeps proxies from idle-closing)
+  end
+
+  Note over Hooks,HubS: Server-side close (a deploy, a proxy idle timeout)
+  Server--xSDK: stream ends cleanly (reader done)
+  SDK->>HubR: onClose()
+  HubR->>HubR: tear down the shared stream,<br/>discard the entry
+  HubR->>Hooks: fan onClose to every listener<br/>(surfaces as JunjoStreamClosedError)
+  Hooks->>HubR: resubscribe (remount / groupId change opens a fresh stream)
+
+  Note over Hooks,HubS: No replay. The hub is in-memory and per-process: events published between<br/>the close and the resubscribe are lost, and lastEventId is not honored. That is why<br/>there is no silent auto-reconnect: a hidden gap would look like consistent state.<br/>Use webhooks or audit.list for durable delivery.
+```
+
+The diagram above is committed at `tools/diagrams/source/sse-flow.mmd`. The committed `.mmd` source and the Mermaid fence above must stay byte-identical.
 
 ### Limitations
 

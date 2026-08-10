@@ -16,10 +16,13 @@ npm install @junjo.io/sdk @junjo.io/react
 |------------------|-------------|
 | [`JunjoProvider`](/react/provider) | Provides a `Junjo` client to the subtree via context. |
 | [`useJunjo`](/react/provider) | Returns the provided client from any descendant component. |
-| [`useGroup`](/react/use-group) | Snapshot + live event stream for one group's metadata and active members. |
+| [`useGroup`](/react/use-group) | Snapshot + live event stream for one group's metadata and active members, with member pagination. |
+| [`useGroups`](/react/use-groups) | Paginated group directory with `gameId` / `viewer` scoping; refetch-driven (no SSE subscription). |
 | [`useCan`](/react/use-can) | Boolean permission check with a per-provider shared cache. |
-| [`useMembers`](/react/use-members) | Paginated roster with status filter and live event updates. |
+| [`useMembers`](/react/use-members) | Paginated roster with server-side status filter and live event updates. |
 | [`useInvitations`](/react/use-invitations) | Paginated invitation list with status filter and live event updates. |
+| [`useRoles`](/react/use-roles) | The group's role definitions, kept live including per-role permission changes. |
+| [`useBans`](/react/use-bans) | Paginated game-wide ban list; refetch-driven (game ban events are webhook-only). |
 | [`useAuditLog`](/react/use-audit-log) | Paginated audit log with action filter; refetch-driven (no SSE subscription). |
 | [`useFriends`](/react/use-friends) | A user's friend list with tag filter and viewer-perspective visibility; refetch-driven. |
 | [`useFriendRequests`](/react/use-friend-requests) | Pending inbound + outbound friend requests; refetch-driven. |
@@ -30,7 +33,7 @@ npm install @junjo.io/sdk @junjo.io/react
 | [`useMutation`](/react/use-mutation) | Generic mutation primitive with `onMutate -> context -> onError` rollback hooks for optimistic updates. |
 | `applyOptimistic` on `useMembers` / `useInvitations` / `useGroup` | Each hook's result returns a snapshot + rollback helper that pairs with [`useMutation`](/react/use-mutation). |
 
-Wiring `JunjoProvider` once at your app's root is the only setup step you need.
+Wiring `JunjoProvider` once at your app's root is the only setup step you need. The live hooks (`useGroup`, `useMembers`, `useInvitations`, `useRoles`) share one SSE stream per group under a provider; see [Shared group event streams](/react/provider#shared-group-event-streams).
 
 ## Security
 

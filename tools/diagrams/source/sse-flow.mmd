@@ -1,0 +1,38 @@
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+  autonumber
+  participant Hooks as React hooks (useGroup, useMembers, ...)
+  participant HubR as SubscriptionHub (@junjo.io/react)
+  participant SDK as junjo.groups.subscribe
+  participant Server as GET /v1/events/:groupId
+  participant HubS as EventHub (in-process)
+
+  Note over Hooks,HubS: Subscribe. N hooks on one group share ONE stream: the first listener opens it,<br/>later listeners attach to it, the last unsubscribe closes it (refcounted).
+  Hooks->>HubR: subscribe(groupId, listener)
+  HubR->>SDK: subscribe(groupId, handler) on first listener only
+  SDK->>Server: GET /v1/events/{groupId}<br/>Authorization Bearer jk_...
+  Server->>Server: verify API key, load group<br/>(gameId-scoped, not soft-deleted)
+  alt group missing, cross-game, or soft-deleted
+    Server--xSDK: 404 JSON envelope (synchronous, before any stream opens)
+  else group found
+    Server->>HubS: hub.subscribe(groupId, listener)
+    Server-->>SDK: 200 text/event-stream
+  end
+
+  Note over Hooks,HubS: Event frames. Group-scoped events only: user-scoped events<br/>(friend.*, game.user.*) have no groupId and go to webhooks, never SSE.
+  loop while the stream is open
+    HubS-->>Server: publish(event) from a mutation route
+    Server-->>SDK: id: evt_...<br/>event: member.joined<br/>data: JSON event
+    SDK->>HubR: handler(event)
+    HubR->>Hooks: fan out to every listener (throws isolated per listener)
+    Server-->>SDK: :heartbeat comment every 30s (keeps proxies from idle-closing)
+  end
+
+  Note over Hooks,HubS: Server-side close (a deploy, a proxy idle timeout)
+  Server--xSDK: stream ends cleanly (reader done)
+  SDK->>HubR: onClose()
+  HubR->>HubR: tear down the shared stream,<br/>discard the entry
+  HubR->>Hooks: fan onClose to every listener<br/>(surfaces as JunjoStreamClosedError)
+  Hooks->>HubR: resubscribe (remount / groupId change opens a fresh stream)
+
+  Note over Hooks,HubS: No replay. The hub is in-memory and per-process: events published between<br/>the close and the resubscribe are lost, and lastEventId is not honored. That is why<br/>there is no silent auto-reconnect: a hidden gap would look like consistent state.<br/>Use webhooks or audit.list for durable delivery.

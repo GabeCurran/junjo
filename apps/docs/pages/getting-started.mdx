@@ -14,31 +14,57 @@ Junjo runs as a single binary. Cloud and self-host are the same code; the only d
 
 ### Cloud
 
-Sign up, create a project, and copy the API key from the dashboard. Skip to [step 2](#2-install-the-sdk).
+Hosted access is by request while Junjo is in beta: email [gabecurran01@gmail.com](mailto:gabecurran01@gmail.com?subject=Junjo%20hosted%20beta) and you will get a managed instance and an API key. Free during the beta. Skip to [step 2](#2-install-the-sdk).
 
 ### Self-host (Docker)
 
+There is no published container image yet. Build one from the repo's root `Dockerfile` (the default `WORKSPACE=server` build target is the API server); the image applies pending migrations on boot before it starts listening:
+
 ```sh
-docker run -e DATABASE_URL=postgres://... -p 8787:8787 ghcr.io/junjo/server:latest
+git clone https://github.com/GabeCurran/junjo
+cd junjo
+docker build -t junjo-server .
+docker run -e DATABASE_URL=postgres://... -p 8787:8787 junjo-server
 ```
+
+If Postgres runs on the host (not in a container), `localhost` in the connection string points back at the container itself, not the host, so the boot-time migration fails to connect. Reach a host-run database at `host.docker.internal` on Docker Desktop (`-e DATABASE_URL=postgres://user:pass@host.docker.internal:5432/junjo`), or run the container with `--network host` and keep `localhost`, or use the Compose service name when both run under Compose (see [Self-hosting](/self-host)).
 
 Then issue an API key against your running container. The key is shown exactly once and cannot be recovered:
 
 ```sh
-docker exec <container> npm run db:seed -- --name "My Game"
+docker exec <container> npm run db:seed --workspace @junjo/server -- --name "My Game"
 ```
 
 For a real deployment (Docker Compose recipe, the full env-var table, the migration lifecycle across upgrades, reverse-proxy notes for the SSE path), see the [Self-hosting](/self-host) page.
 
 ### Local dev
 
-Clone the repo, bring up a Postgres database (any will do), and run:
+The repo bootstraps itself. With Docker running:
 
 ```sh
+git clone https://github.com/GabeCurran/junjo
+cd junjo
 npm install
+npm run dev
+```
+
+`npm run dev` first runs `scripts/ensure-pg.mjs`, which starts (or restarts) a `junjo-test-pg` Postgres container, writes the gitignored root `.env` with working dev defaults, applies migrations, and seeds a demo game, printing a fresh `jk_` API key and persisting it into `.env`. It then boots the API server (`:8787`), the dashboard (`:3000`), and the docs site (`:3001`). Run `npm run dev:server-only` for the same bootstrap with just the API server.
+
+If you would rather point at your own Postgres, create the env file yourself first (`.env` is gitignored, and the server's `dev` script reads the root `../../.env` at startup), then export `DATABASE_URL` for the Prisma commands:
+
+```sh
+cp .env.example .env    # then set DATABASE_URL inside it
+export DATABASE_URL=postgres://...
 npm run db:migrate --workspace @junjo/server
 npm run db:seed --workspace @junjo/server -- --name "My Game"
 npm run dev --workspace @junjo/server
+```
+
+On Windows PowerShell, the first two lines differ (`cp` / `export` are POSIX; the `npm` lines are identical):
+
+```powershell
+Copy-Item .env.example .env    # then set DATABASE_URL inside it
+$env:DATABASE_URL = "postgres://..."
 ```
 
 The seed command prints a `prefix.secret` API key to stdout. Save it; the secret half is hashed at rest and cannot be recovered.
@@ -57,7 +83,7 @@ For React apps, also install the hooks package:
 npm install @junjo.io/react
 ```
 
-The hooks package depends on `@junjo.io/sdk` and React 18+. Both packages are pure ESM with TypeScript types bundled.
+The hooks package depends on `@junjo.io/sdk` and React 18+. Both packages ship dual ESM and CJS builds, with TypeScript types for each format.
 
 Junjo's auth adapters live behind a separate import path so non-Clerk / non-Supabase consumers do not pay the dependency cost:
 
@@ -70,6 +96,8 @@ npm install @supabase/supabase-js
 
 # the JWT adapter has no peer deps
 ```
+
+Building on another platform? The [Roblox](/roblox), [C++](/cpp), and [Unreal Engine](/unreal) SDKs each have their own install path on their pages; the rest of this page follows the TypeScript SDK.
 
 ## 3. Construct a client
 
@@ -86,12 +114,13 @@ This pattern is for servers: Node processes, API routes, workers, anywhere `proc
 
 | Option | Required | Notes |
 |--------|----------|-------|
-| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string from the dashboard or `db:seed`. Server-side only. |
+| `apiKey` | yes, unless `proxy` | The full `prefix.secret` string. Hosted-beta keys arrive by email (there is no beta dashboard login yet); self-host and local dev print one from `db:seed`. Server-side only. |
 | `proxy` | no | Browser mode: requests go to `baseUrl` (required) with no credential, and passing `apiKey` throws. Your backend injects the key. See [the React provider page](/react/provider#browser-apps-proxy-mode). |
 | `baseUrl` | no | Override the API root. Defaults to the cloud endpoint. Trailing slashes are stripped. |
-| `inviteBaseUrl` | no | Public URL prefix used by `inviteByLink` to build the share URL. Defaults to `baseUrl`. |
+| `inviteBaseUrl` | no | Public URL prefix used by `inviteByLink` to build the share URL. No default: without it, `inviteByLink` throws `JunjoError` code `invalid_config`. |
 | `authAdapter` | no | An [`AuthAdapter`](/auth) (Clerk, Supabase, JWT, or BYO). Server-to-server calls do not need one. |
 | `fetch` | no | Override the `fetch` implementation. Useful for tests and for runtimes without a global `fetch`. |
+| `timeoutMs` | no | Per-request timeout in milliseconds. Defaults to `30000`; `0` disables it. SSE subscriptions are exempt. Every request-making method also accepts a per-request override. |
 
 The `Junjo` class is cheap to construct. You can either keep one instance for the lifetime of your process (the common case) or build one per request if you scope the API key per tenant.
 
@@ -125,7 +154,7 @@ try {
 }
 ```
 
-The full code table lives on the [API overview](/api).
+The full code table lives on the [errors reference](/api-reference/errors).
 
 ## Where to next
 

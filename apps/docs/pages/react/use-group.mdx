@@ -1,12 +1,13 @@
 # useGroup
 
-Live, snapshot-plus-stream view of a single group and its active members. Fetches the group and the first page of members up-front, then subscribes to the SSE event stream and applies incoming events to the cached state. Cleans up the subscription on unmount or when `groupId` changes.
+Live, snapshot-plus-stream view of a single group and its active members. Fetches the group and the first page of active members up-front, then attaches to the group's [shared SSE event stream](/react/provider#shared-group-event-streams) and applies incoming events to the cached state. Further member pages load on demand via `fetchMoreMembers`. The hook detaches from the shared stream on unmount or when `groupId` changes.
 
 ```tsx
 import { useGroup } from "@junjo.io/react";
 
 function GuildPanel({ groupId }: { groupId: GroupId }) {
-  const { group, members, loading, error, refetch } = useGroup(groupId);
+  const { group, members, loading, error, refetch, membersHasMore, fetchMoreMembers } =
+    useGroup(groupId);
 
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner error={error} onRetry={refetch} />;
@@ -16,6 +17,11 @@ function GuildPanel({ groupId }: { groupId: GroupId }) {
     <section>
       <h1>{group.name}</h1>
       <MemberList members={members} />
+      {membersHasMore ? (
+        <button type="button" onClick={fetchMoreMembers}>
+          Load more members
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -31,7 +37,9 @@ interface UseGroupResult {
   members: Member[];
   loading: boolean;
   error: Error | null;
+  membersHasMore: boolean;
   refetch: () => Promise<void>;
+  fetchMoreMembers: () => Promise<void>;
   applyOptimistic: (
     updater: (prev: { group: Group | null; members: Member[] }) => {
       group: Group | null;
@@ -44,18 +52,21 @@ interface UseGroupResult {
 | Field | Type | Notes |
 |-------|------|-------|
 | `group` | `Group \| null` | The group on success. `null` while loading, after a 404, or after a `group.deleted` event arrives on the live stream. |
-| `members` | `Member[]` | Active members only (status `"active"`). Initialized from the first page of `members.list`; updated by `member.joined` / `member.left` / `role.changed` events. |
-| `loading` | `boolean` | `true` until the initial fetch resolves (success or error). Does NOT flip back to `true` on `refetch`; the hook keeps the last snapshot visible while the new fetch is in flight. |
-| `error` | `Error \| null` | The fetch error or a streaming error. `JunjoError` instances pass through; cast with `instanceof JunjoError` if you want the typed `code` / `status`. |
-| `refetch` | `() => Promise<void>` | Re-runs the group + members fetch. Clears `error` on entry. The promise resolves once state has been dispatched; errors flow into `error`, never thrown. |
+| `members` | `Member[]` | Active members (status `"active"`, filtered server-side) accumulated so far. May be a partial roster: only the first page loads on mount, so check `membersHasMore` and call `fetchMoreMembers` until it turns `false` to exhaust the roster. Updated live by `member.joined` / `member.left` / `role.changed` / `member.banned` / `member.unbanned` events. |
+| `loading` | `boolean` | `true` until the initial fetch resolves (success or error). Flips back to `true` on `refetch`, but the hook keeps the last snapshot visible while the new fetch is in flight. |
+| `error` | `Error \| null` | The fetch error, a `fetchMoreMembers` error, or a streaming error (a server-initiated close surfaces as `JunjoStreamClosedError`). `JunjoError` instances pass through; cast with `instanceof JunjoError` if you want the typed `code` / `status`. |
+| `membersHasMore` | `boolean` | `true` while more active-member pages exist beyond those already loaded. |
+| `refetch` | `() => Promise<void>` | Re-runs the group + first-members-page fetch, resetting the member cursor. Clears `error` on entry. The promise resolves once state has been dispatched; errors flow into `error`, never thrown. Does NOT reopen the event stream (it never did; see [Errors](#errors)). |
+| `fetchMoreMembers` | `() => Promise<void>` | Loads the next page of active members and appends it to `members` (deduplicated by `userId`). No-op while `membersHasMore` is `false` or another page request is in flight. |
 | `applyOptimistic` | `(updater) => () => void` | Applies an updater to a `{ group, members }` snapshot immediately and returns a rollback closure that restores the pre-update snapshot. See [Optimistic updates](#optimistic-updates) below. |
 
 ## Behavior
 
-- **Initial fetch.** Issues `groups.get(groupId)` and `members.list(groupId)` in parallel. The members page is filtered to `status === "active"` before being placed in state.
-- **Subscription.** After the initial fetch resolves, opens an SSE subscription via `groups.subscribe(groupId, ...)`. Events are applied to local state synchronously; the subscription is closed on unmount, on `groupId` change, and after a streaming error fires `onError`.
+- **Initial fetch.** Issues `groups.get(groupId)` and `junjo.members.list(groupId, { status: ["active"] })` in parallel. The active-status filter runs server-side, so the member cursor and `membersHasMore` describe the active-member stream (a client-side filter would let a page of non-active rows read as a truncated roster with a live "load more").
+- **Member pagination.** Only the first member page loads up-front. `fetchMoreMembers` fetches the next page with the stored cursor (still `status: ["active"]`) and appends it, deduplicated by `userId`; `membersHasMore` mirrors `nextCursor !== null`. Page requests are generation-guarded: a `refetch` or `groupId` change invalidates any in-flight page so a stale response cannot land on the new state, and a second concurrent `fetchMoreMembers` returns immediately without a network request.
+- **Subscription.** After the initial fetch resolves, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams) (fetch-then-subscribe ordering is deliberate: an event landing on the empty pre-fetch state would be clobbered by the fetch result). Events are applied to local state synchronously; the hook detaches on unmount and on `groupId` change, and the provider's hub closes the underlying stream when the last hook detaches.
 - **Race protection.** A monotonic generation counter discards stale fetch results when `groupId` changes mid-flight or `refetch` is called while another fetch is pending.
-- **Snapshot durability.** A streaming error sets `error` but leaves `group` and `members` unchanged so the UI can keep rendering the last-known state. Call `refetch` to reset and reopen the stream.
+- **Snapshot durability.** A streaming error or server close sets `error` but leaves `group` and `members` unchanged so the UI can keep rendering the last-known state. `refetch` refreshes the snapshot; remount or change `groupId` to resubscribe to events.
 - **No replay across reconnects.** Per the V1 SSE contract, events that fire while no subscription is active are not replayed; if you suspect a gap, call `refetch` for an authoritative snapshot.
 
 ## Event handling
@@ -65,19 +76,20 @@ interface UseGroupResult {
 | `member.joined` | Appends `event.member` to `members`. If a member with the same `userId` already exists, replaces that entry in place. |
 | `member.left` | Removes any member with the matching `userId`. |
 | `role.changed` | Finds the member with `event.userId`; replaces their `roles` with `(roles - removed) + added`. Members not currently in the roster are ignored. |
+| `member.banned` / `member.unbanned` | Removes any member with the matching `userId` from the roster, live. The roster is active-only; a ban flips the row to `"banned"` and an unban to `"left"` (the server's unban handler sets `"left"`, not `"active"`: the member has to rejoin), and neither is active. The events carry no member snapshot, so rows not present cannot be inserted. |
 | `group.updated` | Replaces `group` with `event.group`. |
-| `group.deleted` | Sets `group` to `null` and clears `members`. The subscription stays open for any subsequent `group.updated` (e.g., after a restore). |
+| `group.deleted` | Sets `group` to `null`, clears `members`, and resets member pagination: `membersHasMore` flips to `false` and the stored cursor is discarded, so a later `fetchMoreMembers` cannot fire with a dead cursor. The subscription stays open for any subsequent `group.updated` (e.g., after a restore). |
 | Other event types | Ignored. Role / permission CRUD events that do not affect group identity or member roster have no effect on this hook's state. |
 
 ## Errors
 
 The hook never throws to the caller. Both fetch errors and streaming errors land in `error`:
 
-- `groups.get` or `members.list` rejects -> `error` set, `loading` -> `false`, `group` / `members` cleared. `JunjoError` instances pass through unchanged.
-- The SSE handshake fails (typically `permission_denied` or a network error) -> `error` set; the prior snapshot is left intact and `loading` is unchanged.
-- The stream drops mid-flight -> `error` set via the subscription's `onError`. `group` and `members` are not touched.
+- `groups.get` or `members.list` rejects -> `error` set, `loading` -> `false`. The prior `group` / `members` snapshot is left intact (relevant on a failed `refetch`; on mount it is simply empty). `JunjoError` instances pass through unchanged.
+- The SSE handshake fails (typically `permission_denied` or a network error) or the stream drops mid-flight -> `error` set with the underlying error; `group` and `members` are not touched.
+- The server closes the stream cleanly (a deploy, a proxy idle timeout) -> `error` set to `JunjoStreamClosedError` (check with `isStreamClosedError`); the snapshot is still valid, only the live feed has stopped.
 
-Use `refetch` to recover from any of these states; it clears `error` before retrying.
+`refetch` recovers the snapshot from a fetch error and clears `error` before retrying, but it does NOT reopen the event stream (it never did). After a streaming error or a server close there is no automatic reconnect, because the server has no event replay; remount the hook or change `groupId` to resubscribe. See [Stream teardown](/react/provider#stream-teardown-and-junjostreamclosederror) for the full contract.
 
 ## Optimistic updates
 
@@ -151,7 +163,7 @@ The hook only mutates local state; the network request is whatever you put in `m
 
 ## Multiple consumers
 
-Two `useGroup(sameId)` calls inside the same provider open two SSE subscriptions and two snapshot fetches today; there is no shared cache yet. Promote the hook into a parent component and pass `group` / `members` down if you need a single source of truth. A shared cache layer is a post-V1 idea and would be transparent to callers when it lands.
+Two `useGroup(sameId)` calls inside the same provider share one SSE stream through the [subscription hub](/react/provider#shared-group-event-streams), but still run two snapshot fetches and hold two independent copies of state. Promote the hook into a parent component and pass `group` / `members` down if you need a single source of truth; a shared snapshot cache is a post-V1 idea and would be transparent to callers when it lands.
 
 ## Testing
 

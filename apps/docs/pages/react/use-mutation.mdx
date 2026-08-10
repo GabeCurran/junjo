@@ -54,7 +54,7 @@ function useMutation<TData, TError = Error, TVariables = void, TContext = unknow
 
 The `onMutate -> onError` rollback pattern is how `useMutation` supports optimistic UI. Inside `onMutate`, snapshot the local state you are about to mutate and apply the optimistic change; return the snapshot as the context. If `mutationFn` rejects, `onError` receives that snapshot and restores it.
 
-When you are mutating local hook state, prefer the hook's `applyOptimistic` helper - it owns the snapshot lifecycle for you and returns a rollback closure:
+When you are mutating local hook state, prefer the hook's `applyOptimistic` helper; it owns the snapshot lifecycle for you and returns a rollback closure:
 
 - [`useMembers`](./use-members#optimistic-updates) - `applyOptimistic((prev: Member[]) => Member[])`
 - [`useInvitations`](./use-invitations#optimistic-updates) - `applyOptimistic((prev: Invitation[]) => Invitation[])`

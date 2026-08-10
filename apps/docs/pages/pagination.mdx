@@ -1,0 +1,78 @@
+# Pagination
+
+Every list endpoint that can grow without bound is cursor-paginated, and all of them share one shape. This page is the contract; per-route defaults and caps are tabulated in [Limits](/limits#request-and-page-sizes).
+
+## The page shape
+
+```ts
+interface Page<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+```
+
+Pass `limit` (per-route default, usually 50) and feed `nextCursor` back as `cursor` until it comes back `null`:
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await junjo.members.list(groupId, { limit: 100, cursor });
+  handle(page.items);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
+Treat cursors as opaque: today they are the id of the last row on the page (the friends list uses a composite `timestamp|id` form), but only "feed `nextCursor` back in" is contract. Ordering is keyset, not offset: each route sorts on a two-column tuple, newest first (`createdAt desc, id desc` for most routes; `joinedAt desc, id desc` for members; `respondedAt desc, id desc` for friends), so pages stay consistent while rows are inserted, and deep pages cost the same as page one. There is no `offset` parameter and no total count.
+
+A cursor that does not resolve inside the calling scope (including a cursor from another game) is `400 bad_request` "invalid cursor"; the friends list silently ignores an unparseable cursor instead.
+
+## The audit `before` variant
+
+The audit log paginates with `before` instead of `cursor`, and it accepts two forms:
+
+- **An entry id** (what `nextCursor` gives you): exact keyset continuation, no gaps or duplicates even when entries share a timestamp.
+- **A timestamp** (a `Date` in the TypeScript SDK, serialized ISO 8601; any string starting `YYYY-MM-DD` over HTTP): strictly-older-than that instant. Handy for "show me last week" without walking pages.
+
+Only strings starting with a date shape take the timestamp path, so ids can never be misparsed as dates. The TypeScript type is `before?: Date | string`.
+
+## Iterating everything
+
+Each SDK ships an iterator so "walk all pages" is not hand-rolled:
+
+**TypeScript**: `listAll` async iterators exist on `groups`, `members`, `bans` (plus `historyAll` / `banHistoryAll`), `friends`, `audit`, and `webhooks.endpoints`. They are built on the exported `paginate(fetchPage, opts?)` helper, which you can wrap around any `Page`-returning function of your own. Cancellation via `signal` rejects the in-flight page with code `cancelled` and finishes the generator; it is not resumable.
+
+```ts
+for await (const member of junjo.members.listAll(groupId)) {
+  // one member at a time, pages fetched lazily
+}
+```
+
+**Roblox**: `Junjo.pageAll(fetchPage)` returns a generic-for iterator, and the namespaces ship `listAll` wrappers (`groups:listAll`, `members:listAll`, `bans:listAll` / `historyAll`, `friends:listAll`, webhook `endpoints:listAll`). Pages are fetched lazily, so `break` stops the HTTP traffic; a page that repeats its own `nextCursor` raises rather than looping forever.
+
+**C++**: `junjo::paginate(fetchPage, perItem)` (in `junjo/pagination.hpp`) walks every page through a fetch-page callback that receives the current cursor and a per-item callback, keeping the SDK's one-`Result`-per-operation invariant: a mid-walk error stops the walk and comes back unchanged as the first error, and the per-item callback may return `false` to stop early (still success). The audit listing is the one exception: its boundary parameter is named `before`, not `cursor`, so `junjo::paginate` does not apply; feed each page's `next_cursor` back as `ListAuditOptions::before` directly.
+
+**Unreal**: the subsystem's paged methods (`ListGroups`, `ListMembers`) deliver `FJunjoGroupPage` / `FJunjoMemberPage` structs carrying `bHasMore` and `NextCursor`; feed `NextCursor` back through `Params.Cursor` until `bHasMore` is false. There is no iterator wrapper on the delegate or Blueprint surface; C++ gameplay code that wants a full walk can use `junjo::paginate` through the plugin's native client.
+
+**React**: the list hooks (`useGroups`, `useMembers`, `useInvitations`, `useAuditLog`, `useBans`; `useGroup` exposes `fetchMoreMembers`) accumulate pages instead of iterating: render `items`, show a button while `hasMore`, call `fetchMore()` on click. `fetchMore` is a no-op while a fetch is in flight or when no cursor remains. `useFriends` deliberately fetches only the first page; page the friends list through the SDK directly if you need more.
+
+Prefer plain `list` calls in request handlers and UIs; the iterators are for exports, migrations, and audits where you genuinely want every row.
+
+## Invitations: additive flags, not a status filter
+
+`invitations.list` has no exclusive status filter. The default page is pending invitations only (unused and not yet expired), and two boolean flags **lift exclusions** rather than select partitions:
+
+| Goal | Options |
+|------|---------|
+| pending only | defaults |
+| include expired too | `includeExpired: true` |
+| everything, including used | `includeExpired: true, includeUsed: true` |
+
+There is no way to ask the server for "used only" or "expired only"; fetch the narrowest superset and filter client-side. One subtlety: `includeUsed: true` alone is not "all used invitations", because a used invitation whose expiry has since passed is still dropped by the expired-row exclusion; lift both flags. This is exactly what `useInvitations`' `status` option does under the hood, which is also why a page filtered to `status: "used"` can render fewer than `limit` rows while `hasMore` is still true.
+
+Over raw HTTP the flags are strict string booleans: `?includeUsed=true`. Anything other than `true` / `false` is a `400`.
+
+## Non-paginated endpoints
+
+A few list endpoints return the full set in one `{ items }` response with no cursor: friend requests (`{ inbound, outbound }`), friend tags, friend suggestions, and roles.
+
+One of these is a known server limitation rather than a design choice: **the blocks list** (`GET /v1/users/:userId/blocks`) returns at most one page (default `limit` 100, capped by `JUNJO_MAX_PAGE_SIZE`, so a self-hoster can raise the ceiling), accepts no cursor, and the response carries no indicator that rows were cut off. The SDKs cannot exploit even that (`friends.blocks.list` takes no `limit`, so it always gets the default 100); a higher `limit` is available over raw HTTP only. If your game lets a user accumulate more blocks than the cap, keep your own record until the route grows pagination.

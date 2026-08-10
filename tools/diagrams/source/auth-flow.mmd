@@ -8,7 +8,7 @@ sequenceDiagram
   participant DB as Postgres (via Prisma)
 
   Note over App,DB: Step 1 - resolve session token to external user id (dev's host, never on Junjo's server)
-  App->>SDK: junjo.whoami(sessionToken)
+  App->>SDK: junjo.verifyToken(sessionToken)
   alt no authAdapter configured
     SDK--xApp: throw JunjoError invalid_config (setup-time mistake)
   else authAdapter present
@@ -23,7 +23,7 @@ sequenceDiagram
   end
 
   Note over App,DB: Step 2 - SDK call carrying the external user id (e.g. accept invitation)
-  App->>SDK: junjo.invitations.accept(code, { userId: externalUserId })
+  App->>SDK: junjo.groups.acceptInvitation(code, externalUserId)
   SDK->>Server: POST /v1/invitations/{code}/accept<br/>Authorization Bearer jk_...<br/>body { userId: externalUserId }
   Server->>DB: SELECT ApiKey WHERE prefix
   DB-->>Server: gameId, hashedSecret, revokedAt

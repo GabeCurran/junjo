@@ -2,7 +2,7 @@
 
 Game-domain primitives for groups, ranks, and permissions. A drop-in social-organization layer for any multiplayer game.
 
-Junjo gives your game the building blocks it would otherwise spend a quarter writing from scratch: groups (guilds, parties, factions), ranks (with priority and color), permissions (with per-member overrides), invitations (direct or shareable code), real-time events (over SSE or webhooks), and a typed TypeScript SDK that runs in Node and the browser.
+Junjo gives your game the building blocks it would otherwise spend a quarter writing from scratch: groups (guilds, parties, factions), ranks (with priority and color), permissions (with per-member overrides), invitations (direct or shareable code), real-time events (over SSE or webhooks), and native SDKs for five surfaces: TypeScript (typed, Node and the browser), React, Roblox, C++, and Unreal Engine.
 
 ## What it is, in one sentence
 
@@ -17,13 +17,17 @@ flowchart LR
     nodeApp["Node game server"]
     browserApp["Browser client"]
     robloxApp["Roblox place"]
+    cppApp["C++ game server"]
+    unrealApp["Unreal dedicated server"]
     dashboard["apps/dashboard (admin UI)"]
   end
 
   subgraph sdks["Junjo SDKs"]
     tsSdk["@junjo.io/sdk (Node + browser)"]
     reactSdk["@junjo.io/react (hooks)"]
-    robloxSdk["junjo-roblox (Luau)"]
+    robloxSdk["Roblox SDK (Luau)"]
+    cppSdk["C++ SDK (JunjoIO)"]
+    unrealSdk["Unreal plugin (JunjoIO)"]
   end
 
   subgraph server["junjo-server"]
@@ -50,10 +54,14 @@ flowchart LR
   browserApp --> reactSdk
   reactSdk --> tsSdk
   robloxApp --> robloxSdk
+  cppApp --> cppSdk
+  unrealApp --> unrealSdk
   dashboard --> tsSdk
 
   tsSdk -- HTTPS --> hono
   robloxSdk -- HTTPS --> hono
+  cppSdk -- HTTPS --> hono
+  unrealSdk -- HTTPS --> hono
 
   hono --> eventHub
   hono --> webhookWorker
@@ -77,7 +85,7 @@ flowchart LR
 - **Permissions** with role-derived defaults and explicit per-member overrides. `junjo.can(userId, groupId, permission)` answers in one call.
 - **Invitations** by direct user id or shareable code, with optional expiry and a public preview endpoint your invite-acceptance UI can call without an API key.
 - **Group relationships** (allied, hostile, asymmetric) and a parent-child hierarchy with cycle detection.
-- **Bans** at two scopes -- per-group (mirror of kick that blocks rejoin) and game-wide (covers every group in the game), each with optional expiry, append-only history, and webhook events.
+- **Bans** at two scopes: per-group (mirror of kick that blocks rejoin) and game-wide (covers every group in the game), each with optional expiry, append-only history, and webhook events.
 - **Friends graph**: requests, blocks, friend tags, per-user list visibility, mutual-friend suggestions, and a single-pair relationship probe for profile views.
 - **Real-time events** through Server-Sent Events (`junjo.groups.subscribe`) and outbound webhooks (with HMAC signing, exponential-backoff retries, and per-endpoint Discord and Slack output formats).
 - **Auth adapters** for Clerk, Supabase, raw JWT, and bring-your-own.
@@ -90,7 +98,7 @@ Junjo intentionally does not handle:
 - In-app chat (use Discord, Twilio, or your own).
 - Authentication itself (only adapters that verify tokens issued by your auth provider).
 - Game-state sync, matchmaking, leaderboards, achievements, or game-specific systems.
-- DMs or message transport. Junjo gives you the [Friends graph](/api-reference/friends) (requests, blocks, visibility) but not the message bus -- build that on your own backend keyed off the friend rows.
+- DMs or message transport. Junjo gives you the [Friends graph](/api-reference/friends) (requests, blocks, visibility) but not the message bus; build that on your own backend keyed off the friend rows.
 
 ## Get going
 
@@ -100,7 +108,11 @@ Junjo intentionally does not handle:
 
 ## Reference
 
-- **[SDK](/sdk)** - per-namespace reference for `@junjo.io/sdk` (`junjo.groups`, `junjo.members`, `junjo.roles`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks`, plus the top-level `can` / `check`).
+- **[SDK](/sdk)** - per-namespace reference for `@junjo.io/sdk` (`junjo.groups`, `junjo.members`, `junjo.roles`, `junjo.invitations`, `junjo.audit`, `junjo.webhooks`, `junjo.friends`, `junjo.bans`, plus the top-level `can` / `check`).
 - **[React](/react)** - hooks and provider in `@junjo.io/react`.
-- **[API](/api)** - the HTTP API the SDKs wrap. Use raw HTTP from any language Junjo does not yet ship a native client for.
+- **[Roblox](/roblox)** - the Luau SDK for Roblox game servers.
+- **[C++](/cpp)** - the C++20 SDK for game servers and backends.
+- **[Unreal Engine](/unreal)** - the source plugin over the C++ core: subsystem, Blueprint async nodes, live event streams.
+- **[Feature matrix](/feature-matrix)** - what each of the five SDKs covers, operation by operation.
+- **[API](/api-reference)** - the HTTP API the SDKs wrap. Use raw HTTP from any language outside the TypeScript, React, Roblox, C++, and Unreal Engine set.
 - **[Auth](/auth)** - adapter setup for Clerk, Supabase, and JWT.

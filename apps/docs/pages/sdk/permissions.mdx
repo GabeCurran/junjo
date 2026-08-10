@@ -1,6 +1,6 @@
 # Permission checks
 
-Two methods on the top-level `Junjo` instance answer "is this user allowed to do X in this group?" - the hot path for any game-loop code.
+Two methods on the top-level `Junjo` instance answer "is this user allowed to do X in this group?" (the hot path for any game-loop code).
 
 ```ts
 import { Junjo } from "@junjo.io/sdk";
@@ -16,7 +16,7 @@ The check is a single GET request to `/v1/permissions/check`. The server caches 
 
 ## `can(userId, groupId, permission)`
 
-Returns `Promise<boolean>` - the `allowed` field of the underlying `PermissionCheckResult`. Use this when you only need the yes/no.
+Returns `Promise<boolean>`, the `allowed` field of the underlying `PermissionCheckResult`. Use this when you only need the yes/no.
 
 ```ts
 if (!(await junjo.can(userId, groupId, "guild.invite_member"))) {
@@ -34,7 +34,7 @@ if (!(await junjo.can(userId, groupId, "guild.invite_member"))) {
 
 ## `check(userId, groupId, permission)`
 
-Returns `Promise<PermissionCheckResult>` - the richer answer that includes *why* a check passed or failed. Use this when you want to render "you can't do this because your role X is missing key Y" UX, or when an admin tool needs to display the resolution path.
+Returns `Promise<PermissionCheckResult>`, the richer answer that includes *why* a check passed or failed. Use this when you want to render "you can't do this because your role X is missing key Y" UX, or when an admin tool needs to display the resolution path.
 
 ```ts
 const result = await junjo.check(userId, groupId, "guild.kick");

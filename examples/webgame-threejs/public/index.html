@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Junjo guild panel</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      #groups {
+        padding-left: 1.25rem;
+      }
+      #groups li {
+        margin: 0.25rem 0;
+      }
+      #error {
+        color: #b00020;
+        min-height: 1.5rem;
+      }
+      #status {
+        color: #555;
+      }
+    </style>
+    <script type="importmap">
+      { "imports": { "@junjo.io/sdk": "/vendor/sdk/index.js" } }
+    </script>
+  </head>
+  <body>
+    <h1>Guild panel</h1>
+    <p id="status">Connecting through the proxy...</p>
+    <form id="create-form">
+      <input id="guild-name" placeholder="New guild name" />
+      <button type="submit">Create public guild</button>
+    </form>
+    <ul id="groups"></ul>
+    <p id="empty" hidden>No guilds yet. Create one above.</p>
+    <p id="error" role="alert"></p>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

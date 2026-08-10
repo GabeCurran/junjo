@@ -1,0 +1,303 @@
+# C++ SDK
+
+The Junjo.io SDK for C++ is a C++20 client library for game servers and backends written in C++. It covers the domain surface (groups, members, roles, invitations, permission checks, game-wide bans, friends, audit logs, webhook endpoint management and delivery verification, live SSE event subscriptions) behind a `junjo::Client` whose every call returns a typed `junjo::Result<T>` instead of throwing.
+
+This is a server-side SDK. The per-game API key (`jk_<prefix>.<secret>`) is a full-control credential; keep it inside your game server or backend, never in a client binary players can read.
+
+## Requirements
+
+| Requirement | Notes |
+|-------------|-------|
+| C++20 compiler | MSVC 2022, Clang 15+, GCC 12+ are the expected floor. |
+| CMake 3.24+ | The library, tests, and install package are all CMake-native. |
+| libcurl | Optional but on by default. A system curl found via `find_package(CURL)` is preferred; without one, a pinned curl 8.9.1 is fetched and built HTTP-only with OS-native TLS (Schannel on Windows, Secure Transport on macOS), so there is no CA bundle to ship. Building with `-DJUNJO_BUILD_CURL_TRANSPORT=OFF` drops the dependency entirely; you then supply your own `junjo::Transport`. |
+
+One discovery caveat: `find_package(CURL)` takes whatever libcurl is first on the search path, and machines with unrelated toolchains installed (Strawberry Perl on Windows is the common case) can have a curl built by a different compiler, which surfaces as confusing link errors. Configure with `-DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON` to skip discovery and force the pinned FetchContent build; the SDK's own CI does exactly this on Windows.
+
+## Install
+
+The SDK lives at `packages/sdk-cpp` in the monorepo and supports two integration modes.
+
+### Mode 1: vendor with add_subdirectory
+
+Copy or submodule the repo and add the SDK directory to your build:
+
+```cmake
+add_subdirectory(third_party/junjo/packages/sdk-cpp)
+target_link_libraries(your_game PRIVATE JunjoIO::SDK)
+```
+
+Everything is FetchContent-pinned, so the first configure downloads the SDK's dependencies; nothing else is required.
+
+### Mode 2: install and find_package
+
+Build and install the SDK to a prefix, then consume the CMake package from any project.
+
+Linux and macOS (single-config generators):
+
+```sh
+cmake -S packages/sdk-cpp -B build-sdk -DCMAKE_BUILD_TYPE=Release
+cmake --build build-sdk
+cmake --install build-sdk --prefix /opt/junjo
+```
+
+Windows (the Visual Studio generator is multi-config, so `CMAKE_BUILD_TYPE` is ignored and the configuration is chosen at build and install time; without `--config Release` you get a Debug library, and linking it into a Release consumer fails with an `_ITERATOR_DEBUG_LEVEL` mismatch):
+
+```powershell
+cmake -S packages/sdk-cpp -B build-sdk
+cmake --build build-sdk --config Release
+cmake --install build-sdk --config Release --prefix C:\junjo-prefix
+```
+
+```cmake
+find_package(JunjoIO 0.1 REQUIRED)
+target_link_libraries(your_game PRIVATE JunjoIO::SDK)
+```
+
+Pass `-DCMAKE_PREFIX_PATH=/opt/junjo` when configuring your project so `find_package` can see the prefix. The library is static by default; `-DBUILD_SHARED_LIBS=ON` is respected. When the SDK was built against its fetched curl, the vendored archive is installed into the prefix and re-attached automatically; when it was built against a system curl, the installed package re-resolves it with `find_package(CURL)` on your machine.
+
+A complete, runnable reference consumer (small `main.cpp`, its own `CMakeLists.txt`, build walkthrough for Windows and POSIX) lives at `examples/cpp-consumer` in the repo.
+
+## Quick start
+
+```cpp
+#include <junjo/client.hpp>
+
+int main() {
+  auto created = junjo::Client::create({
+      .api_key = /* from your secret store */ "jk_...",
+  });
+  if (!created) {
+    // Construction validates config only; it never performs I/O.
+    return 1;
+  }
+  auto client = std::move(created).value();
+
+  // Cheap connectivity + credential check (GET /v1/whoami).
+  auto info = client.key_info();
+  if (info) {
+    // info.value().game_id
+  }
+
+  // Fetch a group. A 404 is not an error here: the value is
+  // Result<std::optional<Group>>, and "absent" is a legitimate answer.
+  auto group = client.groups().get("grp_123");
+  if (group && group.value().has_value()) {
+    // group.value()->name
+  }
+
+  auto page = client.groups().list({.limit = 50});
+  if (page) {
+    for (const auto& g : page.value().items) {
+      // g.id, g.kind, g.name
+    }
+  }
+}
+```
+
+`ClientConfig` also takes `base_url` (defaults to `https://api.junjo.io`), `timeout` (a whole-request default of 30 seconds; a value of zero or less disables it), `invite_base_url` (the frontend origin `invite_by_link` composes accept URLs from; see "Invitations" below), and `transport` (see "Bring your own transport" below). The `Client` is cheap to copy; copies share the same transport and configuration.
+
+## Error handling
+
+Every fallible call returns `junjo::Result<T>`: exactly one of a `T` value or a `junjo::Error`. The SDK never throws for API errors, transport failures, or invalid wire data. Exceptions are reserved for programmer errors (documented preconditions, such as calling `value()` on an error `Result`, which throws `std::logic_error`) and allocation failure. The public headers also compile in translation units built without exception support; there a precondition violation terminates via `std::abort` instead of throwing, since a broken precondition must not be silently ignored.
+
+```cpp
+auto created = client.groups().create({.kind = "team", .name = ""});
+if (!created) {
+  const junjo::Error& err = created.error();
+  switch (err.code) {
+    case junjo::ErrorCode::BadRequest:
+      // err.message says which field; err.status is 400
+      break;
+    case junjo::ErrorCode::RateLimitExceeded:
+      // err.retry_after_seconds carries the server's Retry-After
+      // when present. The SDK never retries automatically; honor
+      // this in your own backoff.
+      break;
+    case junjo::ErrorCode::NetworkError:
+    case junjo::ErrorCode::Timeout:
+      // The request may or may not have reached the server.
+      break;
+    default:
+      // A newer server can send codes this SDK version does not
+      // know; they arrive as ErrorCode::Unknown with the wire
+      // string preserved in err.raw_code. Always keep a default.
+      break;
+  }
+}
+```
+
+`Error` is a plain value type: `code`, `message` (worth logging, not worth branching on), optional `status`, optional `request_id` (matches the server's `x-request-id`; quote it in bug reports), optional `retry_after_seconds`, and `raw_code`. Server envelope codes (`not_found`, `permission_denied`, `invitation_used`, ...) map onto the first block of `ErrorCode`; SDK-side codes (`NetworkError`, `Timeout`, `Cancelled`, `InvalidWireData`, `InvalidConfig`) are kept distinct so you can tell "the server rejected it" apart from "the request never got there" without string matching.
+
+`Result` also carries `value_or`, `map`, and `and_then` for callers who prefer combinator style.
+
+## Async calls
+
+The sync API is the first-class surface. For overlap without hand-rolled thread plumbing, a representative subset ships `_async` variants (`key_info_async`, `check_async`, `groups().create_async` / `get_async` / `list_async`, `members().list_async`) that post the sync call to an `Executor` you construct and own. The SDK never spawns a hidden thread.
+
+```cpp
+#include <junjo/executor.hpp>
+
+junjo::ThreadPoolExecutor pool(4);  // yours; destruction drains
+auto future = client.groups().get_async(pool, "grp_123");
+// ... other work ...
+auto group = future.get();  // Result<std::optional<Group>>
+```
+
+The contract shared by every `_async` method: arguments are copied at call time, so the caller's strings can die as soon as the call returns; the posted task owns everything it needs, so the future stays valid and completes even if the `Client` is destroyed first; cancellation tokens behave exactly as in the sync call; and `ThreadPoolExecutor` runs every queued task before its destructor returns, so no future is left forever pending. `InlineExecutor` runs tasks on the posting thread for deterministic tests.
+
+## Live events (SSE)
+
+```cpp
+#include <junjo/events.hpp>
+
+auto sub = client.events().subscribe("grp_123", {
+    .on_event = [](const junjo::SseEvent& e) {
+      // e.event_type ("member.joined"), e.event_id, e.payload_json
+    },
+    .on_error = [](const junjo::Error& err) { /* stream died; resubscribe */ },
+    .on_close = [] { /* server ended the stream cleanly; resubscribe */ },
+});
+if (!sub) { /* 401 / 404 / connect failures surface here */ }
+// ...
+sub.value().close();  // blocking: no callback runs after this returns
+```
+
+The contract:
+
+- `subscribe` blocks until the server accepts or rejects the connection, then delivers events on one dedicated thread per subscription. Callbacks run one at a time, never concurrently, and must not throw.
+- `close()` is idempotent and blocking: it joins the stream thread, so once it returns, no callback is running and none will ever run again, and you may safely destroy anything your callbacks captured.
+- The one caveat: calling `close()` from inside a callback (that is, from the stream thread itself) cannot join without self-deadlocking, so it signals the stop and returns without joining. The current callback is the last one, but the thread is still finishing as that `close()` returns; do not tear down callback captures from inside the callback itself. `junjo/events.hpp` documents the exact guarantees.
+- There is no auto-reconnect and the server keeps no replay buffer. When `on_error` or `on_close` fires, the subscription is already finished: resubscribe and re-fetch whatever you must not miss.
+- Event streams are exempt from the request timeout: the configured timeout (the client default, or the subscribe options' own `timeout` field when set) bounds the connect phase only. Heartbeat comments are filtered out, an unterminated frame beyond 1 MiB ends the stream with `StreamOverflow`, and event types this SDK version does not know are skipped so a newer server cannot break older clients.
+
+## Invitations
+
+Invitations are created from `client.groups()`. `invite_by_user_id` addresses an invitation to one user; `invite_by_code` mints an open invitation anyone holding the code can accept. Two convenience forms build on those:
+
+**Invite links.** `invite_by_link` creates an open invitation and returns it together with a ready-to-share URL, composed as `invite_base_url + "/invite/" + code`. The URL points at your own frontend (the page that renders the invite), so `invite_base_url` has no default: set it on `ClientConfig`, or the call fails with `ErrorCode::InvalidConfig` before any request is made and nothing is created. Trailing slashes on `invite_base_url` are stripped.
+
+```cpp
+auto created = junjo::Client::create({
+    .api_key = "jk_...",
+    .invite_base_url = "https://play.example.com",
+});
+auto client = std::move(created).value();
+
+auto linked = client.groups().invite_by_link("grp_123", {.role_id = "role_recruit"});
+if (linked) {
+  // linked.value().url         -> "https://play.example.com/invite/<code>"
+  // linked.value().invitation  -> the created Invitation
+}
+```
+
+**Bulk invite.** `bulk_invite` uploads a CSV body (one external user id per line) and mints one invitation per new row in a single request. The server caps the batch at 1000 rows and each user id at 255 characters. The result summarizes the batch: `invited` (newly created), `skipped` (already an active member, a duplicate within the batch, or already invited), and `errors` (per-row rejections such as an over-length id or a banned user, each carrying the 1-indexed source `row` and a `reason`). A large upload can outlive the default 30-second timeout; raise `options.timeout` (or set it to zero to disable) for big lists.
+
+```cpp
+std::string csv = "player_1\nplayer_2\nplayer_3\n";
+auto result = client.groups().bulk_invite("grp_123", csv, {.role_id = "role_recruit"});
+if (result) {
+  // result.value().invited, result.value().skipped
+  for (const auto& e : result.value().errors) {
+    // e.row, e.reason
+  }
+}
+```
+
+## Cancellation
+
+Every call accepts an optional `junjo::CancellationToken`, created from a `junjo::CancellationSource`:
+
+```cpp
+#include <junjo/cancellation.hpp>
+
+junjo::CancellationSource source;
+junjo::CancellationToken token = source.token();
+
+// On another thread, or in a shutdown path:
+source.request_cancellation();
+
+auto result = client.groups().list({}, token);
+// result.error().code == junjo::ErrorCode::Cancelled
+```
+
+Cancellation is cooperative and sticky: `request_cancellation()` may be called from any thread, once requested it never resets (create a new source per cancellable unit of work), and transports observe it by polling at their natural progress points. A cancelled SSE subscription ends silently, matching the TS SDK's abort semantics.
+
+## Thread guarantees
+
+- `Client` is safe for concurrent use from multiple threads as long as its transport is; the bundled curl transport is.
+- Surface objects (`client.groups()` and friends) share the client's internals and remain valid even after the `Client` object that produced them is destroyed.
+- SSE callbacks run on the subscription's dedicated thread, serialized.
+- `_async` work runs wherever your executor runs it; the SDK creates no threads of its own outside `ThreadPoolExecutor`, which you construct explicitly.
+
+## The bundled curl transport
+
+Behavior you should know about before profiling or deploying:
+
+- **No connection reuse yet.** Each request uses a fresh curl handle, so every call pays a TCP and TLS handshake. For a hot path like a permission check on every player join, either batch through `check` results you cache yourself, or supply a pooling transport (see below); cross-request connection reuse in the bundled transport is planned.
+- **TLS certificate verification is enabled.** The transport sets peer and host verification explicitly rather than trusting the linked curl's build defaults.
+- **Proxy environment variables are honored.** libcurl reads `http_proxy`, `https_proxy`, and `ALL_PROXY` by default, so in a proxied datacenter API traffic follows those variables. Set or clear them deliberately for the process that hosts the SDK.
+- **Redirects are disabled** so the authorization header is never resent to a location the server did not name.
+
+## Bring your own transport
+
+`ClientConfig::transport` accepts any `std::shared_ptr<junjo::Transport>`. Implementations must be callable from multiple threads and must classify failures precisely: `Timeout` when the request timeout elapsed, `Cancelled` when the token was observed cancelled, `NetworkError` for everything else that prevented a response. Any received HTTP response, whatever its status, is a success at the transport layer; envelope decoding is the client's job.
+
+Streaming is opt-in for custom transports: the base `execute_stream` fails with `InvalidConfig` ("streaming not supported"), so transports written without it stay source-compatible and everything except `events().subscribe` works. Override `execute_stream` to make a custom transport streaming-capable.
+
+If the library was built with `-DJUNJO_BUILD_CURL_TRANSPORT=OFF`, supplying a transport is mandatory; `Client::create` fails with `InvalidConfig` otherwise.
+
+## The Patch tri-state
+
+Update inputs distinguish "leave the field untouched", "clear it", and "set it", mirroring the TS SDK's undefined / null / value convention. `junjo::Patch<T>` names each state instead of nesting optionals:
+
+```cpp
+junjo::UpdateGroupInput input;
+input.name = "Renamed";                                  // set
+input.passcode = junjo::Patch<std::string>::clear();     // send null
+// input.default_role_id left default-constructed: omitted entirely
+auto updated = client.groups().update("grp_123", input);
+```
+
+## Pagination
+
+Cursor-paginated listings return `junjo::Page<T>` (`items` plus an optional `next_cursor`; absent means last page). `junjo::paginate` walks every page for you and keeps the SDK's one-Result-per-operation invariant, including mid-walk errors:
+
+```cpp
+#include <junjo/pagination.hpp>
+
+std::vector<std::string> names;
+auto walked = junjo::paginate(
+    [&](const std::optional<std::string>& cursor) {
+      junjo::ListGroupsOptions options;
+      options.cursor = cursor;
+      return client.groups().list(options);
+    },
+    [&](junjo::Group&& group) { names.push_back(group.name); });
+if (!walked) { /* first error, unchanged; no further pages fetched */ }
+```
+
+The per-item callback may return `bool`; returning `false` stops the walk early and still counts as success.
+
+## Webhook verification
+
+`junjo::verify_webhook` (in `junjo/webhooks.hpp`) verifies an inbound delivery's `x-junjo-signature` and `x-junjo-timestamp` headers against your endpoint secret without needing a `Client`. Failures come back as the `Webhook*` block of `ErrorCode`.
+
+Verification authenticates; it does not gate on the event type. A signed delivery whose type this SDK version does not know verifies successfully and hands you the type string and payload verbatim, so a newer server cannot break your receiver. This differs from the TypeScript SDK's default of rejecting unknown types (its `verifyWithMeta` takes `onUnknownType: "raw"` to opt into the same verbatim passthrough); see [Webhooks](/sdk/webhooks) for the per-SDK behavior.
+
+## Dependency rationale
+
+- **nlohmann/json v3.11.3** (FetchContent, pinned by content hash): wire serialization. Strictly private: compiled into the library, never in a public header, so your project can use any JSON library, or a different nlohmann version, without ODR or ABI conflicts.
+- **libcurl 8.9.1** (system preferred, pinned FetchContent fallback built HTTP-only): the default transport. See the requirements table for the TLS story and the install section for how each mode reaches consumers.
+- **HMAC-SHA256** for webhook verification is a small clean-room implementation bundled in the library (validated against the FIPS 180-4 and RFC 4231 test vectors in the test suite), so verification pulls in no crypto dependency.
+- **doctest 2.4.11** (FetchContent, tests only): chosen for compile speed.
+
+## Building and testing the SDK itself
+
+```sh
+cmake -S packages/sdk-cpp -B build -DJUNJO_DEV=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release
+```
+
+`JUNJO_DEV=ON` turns warnings into errors (used by CI, never imposed on consumers). The suite runs against mock transports; no server or network is required.

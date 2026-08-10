@@ -15,7 +15,7 @@ const junjo = new Junjo({
 });
 ```
 
-Junjo identifies users by your existing user id (whatever your auth provider returns). The tutorial uses string ids; your real code branded them as `UserId`.
+Junjo identifies users by your existing user id (whatever your auth provider returns). The tutorial uses string ids; your real code brands them as `UserId`.
 
 ## 1. Create a group
 
@@ -174,4 +174,4 @@ Everything else in Junjo is a variation on these primitives: more groups, more r
 - **[React reference](/react)** - drop-in hooks: `useGroup`, `useMembers`, `useInvitations`, `useAuditLog`, `useCan`, `useMutation`.
 - **[Webhooks](/api-reference/webhooks)** - dispatch events to your own backend, or pipe them to Discord and Slack.
 - **[Auth adapters](/auth)** - so the user id you pass to Junjo is the verified user id from your auth provider.
-- **[API reference](/api)** - the raw HTTP surface, for languages Junjo does not yet ship a native client for.
+- **[API reference](/api-reference)** - the raw HTTP surface, for languages Junjo does not yet ship a native client for.

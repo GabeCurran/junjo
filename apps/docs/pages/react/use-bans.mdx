@@ -1,0 +1,117 @@
+# useBans
+
+Returns the game's ban list, cursor-paginated. Read-only and refetch-driven; the hook does NOT open an SSE subscription (see [No live updates](#no-live-updates) for why), so live updates require an explicit `refetch()` call.
+
+Game-wide bans apply across every group in the game and live in their own `Ban` records. Per-group bans are a different surface: they live as `Member.status = "banned"` and are covered by [`useMembers`](/react/use-members) and [`useGroup`](/react/use-group).
+
+```tsx
+import { useBans } from "@junjo.io/react";
+
+function BanDashboard() {
+  const { bans, loading, error, hasMore, fetchMore, loadingMore, refetch } =
+    useBans({ includeExpired: true });
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      <li>
+        <button type="button" onClick={refetch}>Refresh</button>
+      </li>
+      {bans.map((b) => (
+        <li key={b.id}>
+          {b.userId} {b.expiresAt ? `until ${b.expiresAt.toISOString()}` : "permanent"}
+          {b.reason ? ` (${b.reason})` : null}
+        </li>
+      ))}
+      {hasMore ? (
+        <li>
+          <button type="button" onClick={fetchMore} disabled={loadingMore}>
+            {loadingMore ? "Loading more..." : "Load more"}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useBans(opts?: UseBansOptions): UseBansResult;
+
+interface UseBansOptions {
+  includeExpired?: boolean;
+  limit?: number;
+}
+
+interface UseBansResult {
+  bans: Ban[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+  fetchMore: () => Promise<void>;
+}
+```
+
+### Options
+
+| Option | Type | Default | Meaning |
+|--------|------|---------|---------|
+| `includeExpired` | `boolean` | `false` | When `true`, also returns rows whose `expiresAt` is in the past. Expiry is lazy: the runtime ban-check ignores lapsed rows but the server does not auto-clean them, so operators may want them in a dashboard. |
+| `limit` | `number` | server default | Page size forwarded to `bans.list`. |
+
+Changing either option triggers a `refetch` (the cursor resets and a fresh first page lands).
+
+### Result
+
+| Field | Meaning |
+|-------|---------|
+| `bans` | Game-level bans accumulated so far, in server page order. New pages append at the end. Deduplicated by `id`. |
+| `loading` | `true` from mount until the first `bans.list` response (success or error). |
+| `loadingMore` | `true` while a `fetchMore` request is in flight. Becomes `false` again once it resolves or errors. |
+| `hasMore` | `true` when the last page returned a non-null `nextCursor`. Becomes `false` after the final page lands. |
+| `error` | The most recent error: a fetch error or a `fetchMore` error. Stays set until the next `refetch` clears it. |
+| `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
+| `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
+
+## Pagination
+
+Pagination is cursor-based. The hook calls `junjo.bans.list(opts)` for each page; the first call carries `{ includeExpired?, limit? }` (no cursor) and subsequent `fetchMore` calls carry `{ includeExpired?, cursor, limit? }`. The server's response shape is `{ items: Ban[]; nextCursor: string | null }`; `hasMore` mirrors `nextCursor !== null`.
+
+`fetchMore` is idempotent on duplicate calls: the second concurrent invocation returns immediately without firing another network request. It is also a no-op once `hasMore` is `false`. The hook deduplicates by `id` when appending.
+
+## No live updates
+
+Game-wide bans are a webhook-only event domain. The corresponding events, `game.user.banned` and `game.user.unbanned`, have no group to route through, and SSE channels are per-group, so there is no stream this hook could subscribe to. The contract is "fetch on mount, paginate via `fetchMore`, refresh via `refetch`": call `refetch` after `junjo.bans.set` / `junjo.bans.remove`, or poll for operator dashboards.
+
+Per-group ban EVENTS (`member.banned`, `member.unbanned`) are different: they do arrive on the group SSE streams, and the roster hooks ([`useMembers`](/react/use-members), [`useGroup`](/react/use-group)) apply them live to rows they have already loaded. This hook covers the game-wide list only.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Two sources:
+
+- **Initial fetch error**: a `JunjoError` (or other) from the first `bans.list` call. The hook stays at `loading: false` with `bans: []`.
+- **`fetchMore` error**: appended to `error` while `bans` keeps the existing snapshot. `loadingMore` flips back to `false`. Calling `fetchMore` again retries with the same cursor.
+
+If `useBans` is called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.bans.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { JunjoProvider } from "@junjo.io/react";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.bans, {
+  list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+});
+```

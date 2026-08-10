@@ -93,20 +93,61 @@ This pattern (use `createRemoteJWKSet` + `jwtVerify` from `jose`) generalizes to
 
 `jose` is already a runtime dep of `@junjo.io/sdk`, so importing from it costs nothing additional.
 
-## Recipe 3: Roblox `LocalPlayer.UserId`
+## Recipe 3: Roblox `Player.UserId` behind a game-server secret
 
-Roblox does not give the dev's backend a session token; the user id comes from the player object on the server. The "verification" is that the request originates from the same Roblox server that owns the player. The adapter is a passthrough wrapper that brands the numeric id as a string:
+Roblox does not give the dev's backend a session token for a player; the trusted identity source is `Player.UserId` on the Roblox game server (server scripts have no `LocalPlayer`; that property is nil outside clients). So the thing your backend must authenticate is the ORIGIN of the request: a numeric user id is only trustworthy after you have proven the request came from your game server, not from anyone on the internet who found the endpoint.
+
+Authenticate the game server first, then trust the id. Store a shared secret in the Roblox secrets store (Creator Dashboard > your experience > Secrets), send it in a header from the game server, and have the backend reject any request lacking it BEFORE reading a user id out of the body. Without that gate, the adapter below is an impersonation oracle: it accepts any numeric string as a verified identity, so anyone who can reach the URL can act as any user in your game.
+
+On the Roblox side (a server `Script`):
+
+```lua
+local HttpService = game:GetService("HttpService")
+
+local function callBackend(player, payload)
+  HttpService:RequestAsync({
+    Url = "https://your-backend.example/junjo/act",
+    Method = "POST",
+    Headers = {
+      -- Secret userdata stays opaque to Lua; Roblox interpolates the
+      -- value at request time.
+      ["X-Game-Server-Key"] = HttpService:GetSecret("BACKEND_SHARED_SECRET"),
+      ["Content-Type"] = "application/json",
+    },
+    Body = HttpService:JSONEncode({
+      -- From the Player object the server already holds; clients
+      -- never supply this value.
+      userId = tostring(player.UserId),
+      payload = payload,
+    }),
+  })
+end
+```
+
+On the backend, gate the route before the adapter ever sees the id, then brand the id:
 
 ```ts
+import { timingSafeEqual } from "node:crypto";
 import type { AuthAdapter, UserId } from "@junjo.io/sdk";
 
+// Route-level guard: runs BEFORE any user id in the body is trusted.
+export function requireGameServer(req, res, next) {
+  const presented = Buffer.from(req.header("x-game-server-key") ?? "");
+  const expected = Buffer.from(process.env.ROBLOX_SHARED_SECRET ?? "");
+  if (
+    expected.length === 0 ||
+    presented.length !== expected.length ||
+    !timingSafeEqual(presented, expected)
+  ) {
+    return res.status(401).end();
+  }
+  next();
+}
+
+// Only after requireGameServer has passed is the numeric id meaningful.
 export function robloxUserIdAdapter(): AuthAdapter {
   return {
     async verifyToken(token) {
-      // Roblox passes the numeric UserId as a string. There is nothing
-      // cryptographic to verify; the contract is "the server-side script
-      // already trusted the Players.LocalPlayer.UserId before invoking
-      // this adapter." Reject empty / non-numeric inputs as a sanity guard.
       if (typeof token !== "string" || token.length === 0) return null;
       if (!/^[0-9]+$/.test(token)) return null;
       return { userId: token as UserId };
@@ -115,7 +156,7 @@ export function robloxUserIdAdapter(): AuthAdapter {
 }
 ```
 
-The `RobloxUserIdAdapter` shipped by [`junjo-roblox`](/roblox) (the Luau SDK) is an equivalent adapter for use inside Roblox Studio. The recipe above is the TypeScript counterpart for the non-Roblox half of the integration (a Node backend that the Roblox script forwards requests to).
+The adapter itself stays a passthrough because the real verification happened at the transport layer; its input guards are sanity checks, not authentication. The `RobloxUserIdAdapter` shipped by the [Junjo.io SDK for Roblox](/roblox) (the Luau SDK) is the in-game counterpart for code running on the Roblox server itself; the recipe above is for the non-Roblox half of the integration (a Node backend the Roblox game server forwards requests to).
 
 ## Recipe 4: passthrough adapter for tests
 

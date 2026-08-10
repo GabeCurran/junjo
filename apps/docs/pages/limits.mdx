@@ -1,0 +1,115 @@
+# Limits
+
+Every number on this page is read from the implementation, with where it lives and whether you can change it. Cloud and self-host run the same code, so the defaults are identical; the "Configurable" column tells you which knobs a self-hoster (or the admin config API) can turn.
+
+## Request and page sizes
+
+The server paginates with a per-route default `limit` and a global cap. The cap is `JUNJO_MAX_PAGE_SIZE` (default `100`), read per request, so changing it does not require re-deploying clients. Asking for more than the cap is a `400 bad_request`, not a silent clamp. See [Pagination](/pagination) for cursor semantics.
+
+| Route | Default `limit` | Cap |
+|-------|-----------------|-----|
+| `GET /v1/groups` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/groups/:id/members` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/groups/:id/invitations` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/groups/:id/audit` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/bans`, ban history routes | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/users/:id/friends` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/users/:id/friend-requests` | none: returns the complete inbound/outbound set | none (`limit` and `cursor` pass validation but the handler ignores them; see [Pagination](/pagination#non-paginated-endpoints)) |
+| `GET /v1/users/:id/blocks` | 100 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/webhooks` | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/users/:userId/friends/suggestions` | 20 | 50 (hardcoded; ignores `JUNJO_MAX_PAGE_SIZE`) |
+| `GET /v1/admin/games` | 100 | 200 (hardcoded; ignores `JUNJO_MAX_PAGE_SIZE`) |
+| `GET /v1/admin/audit` | 20 | `JUNJO_MAX_PAGE_SIZE` |
+
+One list endpoint refuses rather than paginates: the admin group list sorted by `sort=memberCount` returns `400` past 500 matching rows (`ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS`, hardcoded).
+
+## Field lengths
+
+Validation is zod on every write route; violations are `400 bad_request` with a field-specific message.
+
+| Field | Limit | Configurable |
+|-------|-------|--------------|
+| Group `kind` | 1 to 64 chars | no (hardcoded in `routes/groups.schema.ts`) |
+| Group `name` | 1 to 120 chars | no |
+| Group passcode | 4 to 128 chars | no |
+| Kick / ban `reason` (group and game-wide) | 500 chars, nullable | no |
+| Member `notesPublic` / `notesPrivate` | 5000 chars each | no |
+| Role `name` | 64 chars | no |
+| Role / friend-tag `color` | exactly `#rrggbb` | no |
+| Permission key | 128 chars | no |
+| Group relationship `type` | 64 chars | no |
+| Friend tag `name` | 1 to 64 chars | no |
+| Invitation `expiresIn` | `^\d+[smhd]$`, must be positive; no upper bound | no |
+| Bulk-invite `userId` (per CSV row) | 255 chars | no |
+
+Two deliberate non-limits worth knowing about:
+
+- `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows and admin invitation bodies. External ids are opaque to Junjo; keep them sane on your side.
+- Group and member `metadata` have no size cap, and the server sets no request-body size limit of its own. If you self-host behind a reverse proxy, its body limit is the effective one; keep metadata small regardless, it is returned inline on every read.
+
+## Bulk invite
+
+- 1000 rows per request (`BULK_INVITE_MAX_ROWS`, hardcoded). The count includes malformed rows: a CSV with 990 valid and 20 broken rows is rejected outright.
+- Individual over-long or malformed rows inside an accepted request do not fail the request; they come back as per-row errors in the response.
+
+## Webhooks
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Endpoint URL length | 2000 chars, `http:` or `https:` only | no |
+| Secret length | 16 to 256 chars (auto-generated secrets are 43-char base64url) | no |
+| Delivery attempts | 6 total: initial try plus 5 retries at 1m, 5m, 30m, 2h, 8h | no |
+| Per-delivery request timeout | 10 s | no |
+| Auto-disable | after 25 consecutive failed attempts across deliveries; any success resets the counter | no |
+| Verifier timestamp tolerance | 5 minutes either direction | per call, `tolerance` option of `verify` / `verifyWithMeta` (SDK-side check, not server-side) |
+| Private-network target URLs | blocked (loopback, link-local, RFC1918, IPv6 ULA) | `WEBHOOK_ALLOW_PRIVATE_HOSTS=true` (self-host) |
+
+Retry classification: 5xx, timeouts, and network errors retry; 4xx is permanent except `408` and `429`. Discord- and Slack-format endpoints receive unsigned payloads (the URL token is the credential); only `format: "junjo"` deliveries carry the `x-junjo-signature` HMAC headers. See the [webhooks reference](/api-reference/webhooks) for the signature scheme.
+
+## Rate limits
+
+The server runs an in-memory token-bucket limiter per process, applied to the whole `/v1` surface (including the unauthenticated invitation preview and the admin routes).
+
+| Bucket | Rate | Burst | Configurable |
+|--------|------|-------|--------------|
+| Per API key | 600/min | 100 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` (setting either to `0` disables rate limiting entirely) |
+| Per source IP | 20x the key bucket: 12,000/min, burst 2,000 at defaults | | same env vars; the 20x scale (`SOURCE_BUCKET_SCALE`) is hardcoded |
+| Passcode join, per `(groupId, userId)` | 5/min | 5 | no |
+| Passcode join, per group | 30/min | 30 | no |
+
+Every request drains the source-IP bucket; requests with a parseable API key also drain the key bucket. Whichever denies first returns `429` with a `Retry-After` header (floored at 1 s). Behind a reverse proxy, set `TRUST_PROXY=true` so the source bucket keys on the rightmost `x-forwarded-for` hop instead of the proxy's own address.
+
+## Friends
+
+These are per-game config values, changeable at runtime via `PATCH /v1/admin/games/:gameId/config` (admin token required; see [Admin](/api-reference/admin)).
+
+| Key | Default | Admin-settable range |
+|-----|---------|----------------------|
+| `friends.maxFriends` | 1000 | 1 to 100,000 |
+| `friends.maxPendingRequests` (outbound only) | 100 | 1 to 10,000 |
+| `friends.tags.maxPerUser` | 20 | 1 to 1000 |
+| `friends.discovery.minMutuals` | 2 | 1 to 50 |
+
+`maxFriends` is enforced against the sender and the target at request time and against both parties again at accept time. All of these produce `400 bad_request` when exceeded.
+
+## Events (SSE)
+
+- Server heartbeat: a comment frame every 30 s (`SSE_HEARTBEAT_INTERVAL_MS`, hardcoded; overridable only programmatically via `createApp` for embedders).
+- The TypeScript and C++ SDKs abort a subscription whose buffered, unterminated frame exceeds 1 MiB (TypeScript: `MAX_SSE_BUFFER_CHARS`, measured in UTF-16 code units; C++: the `StreamOverflow` error code; the Unreal plugin inherits the same cap through its vendored core). The server imposes no frame-size limit of its own.
+- There is no server-side idle timeout: a stream stays open until one side closes it. If your streams die on a schedule, the timeout belongs to an intermediary proxy; see [Troubleshooting](/troubleshooting#sse-streams).
+
+## Roblox
+
+- Roblox grants each game server a platform-level `HttpService` budget of 500 requests per minute. This is Roblox's limit, not Junjo's; the Roblox SDK does not throttle, queue, or count against it. Budget exhaustion surfaces as transport errors, see [Troubleshooting](/troubleshooting#roblox).
+- The Roblox SDK's opt-in retry (`retries = { maxAttempts, backoffSeconds }`) defaults to `maxAttempts = 1`, i.e. no retries.
+
+## Retention and structural limits
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Soft-deleted group restore window | 7 days (`SOFT_DELETE_RETENTION_DAYS`); restore after that is `410 restore_window_expired` | no (hard-delete sweeper runs hourly) |
+| Invitation default expiry | none; invitations live until used or revoked unless `expiresIn` is set | per invitation |
+| Invitation code entropy | 16 hex chars (64 bits) | no |
+| Parent-chain depth (sub-groups) | 100 (`MAX_PARENT_DEPTH`, cycle-detection walk) | no |
+| Roles per group, groups per game, members per group | unbounded | - |
+| Request timeout (TypeScript, C++, and Unreal SDKs) | 30 s default | yes: `timeoutMs` (TypeScript, per client or per call) or `timeout` (C++ config, Unreal project settings); `0` (TypeScript) or zero-or-less (C++ / Unreal) disables. Roblox is the exception: `RequestAsync` has a fixed ~30 s platform timeout |

@@ -4,13 +4,17 @@ flowchart LR
     nodeApp["Node game server"]
     browserApp["Browser client"]
     robloxApp["Roblox place"]
+    cppApp["C++ game server"]
+    unrealApp["Unreal dedicated server"]
     dashboard["apps/dashboard (admin UI)"]
   end
 
   subgraph sdks["Junjo SDKs"]
     tsSdk["@junjo.io/sdk (Node + browser)"]
     reactSdk["@junjo.io/react (hooks)"]
-    robloxSdk["junjo-roblox (Luau)"]
+    robloxSdk["Roblox SDK (Luau)"]
+    cppSdk["C++ SDK (JunjoIO)"]
+    unrealSdk["Unreal plugin (JunjoIO)"]
   end
 
   subgraph server["junjo-server"]
@@ -37,10 +41,14 @@ flowchart LR
   browserApp --> reactSdk
   reactSdk --> tsSdk
   robloxApp --> robloxSdk
+  cppApp --> cppSdk
+  unrealApp --> unrealSdk
   dashboard --> tsSdk
 
   tsSdk -- HTTPS --> hono
   robloxSdk -- HTTPS --> hono
+  cppSdk -- HTTPS --> hono
+  unrealSdk -- HTTPS --> hono
 
   hono --> eventHub
   hono --> webhookWorker

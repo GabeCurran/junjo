@@ -1,0 +1,175 @@
+# Unreal Engine SDK
+
+The Junjo.io SDK for Unreal Engine is a source plugin (`JunjoIO`) built on the [C++ SDK](/cpp): the plugin vendors the C++ core byte-for-byte, replaces its curl transport with one built on the engine's HTTP module, and puts an Unreal-native surface on top: a game instance subsystem (`UJunjoSubsystem`) with delegate-based async methods, Blueprint async nodes for the representative operations, live SSE event streams delivered on the game thread, and the full native `junjo::` API for C++ gameplay code. Engine support: UE 5.8 is compiled and verified (Win64 MSVC, Linux cross-clang, and the Linux Server target in Epic's dev container); 5.4 is the declared floor and has not yet been compiled.
+
+This is a server-side SDK. The per-game API key (`jk_<prefix>.<secret>`) is a full-control credential; it belongs on your dedicated game servers, never inside a client build players can read.
+
+## Install
+
+The plugin lives at `packages/sdk-unreal/JunjoIO` in the monorepo. Copy the `JunjoIO` folder into your project's `Plugins` directory (or submodule the repo and junction the folder), then enable it in your `.uproject`:
+
+```json
+"Plugins": [
+    { "Name": "JunjoIO", "Enabled": true }
+]
+```
+
+After copying, regenerate project files (right-click the `.uproject` and choose Generate Visual Studio project files, or run `GenerateProjectFiles`) so the plugin's module is picked up. The host project must be a C++ project: Blueprint-only projects cannot compile source plugins, so add at least one C++ class first if yours has none.
+
+The plugin is source-only and compiles with your project: one Runtime module, C++20, no prebuilt binaries, no content. The vendored core keeps nlohmann/json as a private, never-exposed dependency, so your project can use any JSON library without conflicts.
+
+## Settings and the API key
+
+Base URL and request timeout live under Project Settings > Plugins > Junjo.io SDK (persisted to `DefaultGame.ini`; defaults `https://api.junjo.io` and 30 seconds; a timeout of zero or less disables it).
+
+The API key is not there, deliberately. `Default*.ini` files are packaged into the client pak files that ship to every player, and pak contents are trivially extractable, so a key property in config would hand a full-control server credential to anyone who installs the game. Instead, `UJunjoSubsystem` reads the `JUNJO_API_KEY` environment variable once at startup:
+
+- Set on your dedicated game servers: the native client is constructed and the subsystem is active.
+- Absent (every player client, and any machine you did not configure): the subsystem stays inactive, every delegate method fails immediately with an `InvalidConfig` error, `SubscribeToGroupEvents` returns null, and there is no credential in the build to extract.
+
+The `JUNJO_BASE_URL` override sits inside the same boundary: an attacker who can set your server's environment already controls the machine and the key outright, so the override adds no new exposure; treat server environment configuration as part of the credential boundary.
+
+`IsActive()` (BlueprintPure) reports which of the two worlds you are in, and the subsystem logs the state at startup under the `LogJunjo` category.
+
+## The subsystem surface
+
+Fetch the subsystem with `GetGameInstance()->GetSubsystem<UJunjoSubsystem>()` in C++ or the Get JunjoSubsystem node in Blueprint. Every method below is BlueprintCallable, must be called on the game thread, and fires its callback exactly once on the game thread; on failure the callback carries a typed `FJunjoError` (branch on `Code`, not on `Message`).
+
+| Method | Callback | Notes |
+|--------|----------|-------|
+| `KeyInfo` | `FOnJunjoKeyInfo` | `GET /v1/whoami`; cheap credential and connectivity probe for server boot. |
+| `CheckPermission` | `FOnJunjoPermissionCheck` | Full decision including its source (role, override, default, none). |
+| `GetGroup` | `FOnJunjoGroup` | Not-found is not an error: `bSuccess` true with `bFound` false. Optional `Viewer` (the requesting player's user id) scopes visibility: secret groups the viewer is not a member of come back not-found. |
+| `CreateGroup` | `FOnJunjoGroup` | Optional fields (visibility, passcode, metadata JSON, `CreatorUserId`, `DefaultRoleId`) ride in `FJunjoCreateGroupParams`. The server default visibility is invite-only; pass `public` explicitly for open-join groups. With the invite-only default, `CreatorUserId` (added atomically as an active member) is how the creating player gets membership. |
+| `ListGroups` | `FOnJunjoGroupPage` | Cursor-paginated; feed `NextCursor` back through `Params.Cursor`. |
+| `ListMembers` | `FOnJunjoMemberPage` | Cursor-paginated, optional status filter. |
+| `JoinGroup` | `FOnJunjoCompleted` | Open join of public groups; passcode required when the group has one set. |
+| `LeaveGroup` | `FOnJunjoCompleted` | |
+| `KickMember` | `FOnJunjoCompleted` | A kicked user may rejoin; bans are separate. |
+| `BanUser` | `FOnJunjoCompleted` | Game-wide ban with optional expiry and audit attribution. |
+| `UnbanUser` | `FOnJunjoCompleted` | Lifts a game-wide ban. |
+| `SubscribeToGroupEvents` | returns `UJunjoEventStream*` | Live SSE stream (below); null when the subsystem is inactive. |
+
+Result payloads are Blueprint-friendly USTRUCT mirrors of the native types (`FJunjoGroup`, `FJunjoMember`, `FJunjoRole`, pages, params), with FDateTime timestamps in UTC and raw-JSON passthrough for metadata.
+
+```cpp
+#include "JunjoSubsystem.h"
+
+// In the class declaration. BindDynamic requires the handler to be a
+// UFUNCTION(); a plain member function will not bind.
+UFUNCTION()
+void HandleChecked(bool bSuccess, const FJunjoPermissionCheck& Result, const FJunjoError& Error);
+
+UJunjoSubsystem* Junjo = GetGameInstance()->GetSubsystem<UJunjoSubsystem>();
+if (Junjo->IsActive())
+{
+    FOnJunjoPermissionCheck OnChecked;
+    OnChecked.BindDynamic(this, &AMyGameMode::HandleChecked);
+    Junjo->CheckPermission(GroupId, UserId, TEXT("invite_member"), OnChecked);
+}
+```
+
+## Blueprint async nodes
+
+Five operations also ship as dedicated async nodes (category Junjo > Async): Check Permission Async, Get Group Async, Create Group Async, List Groups Async, Join Group Async. Each node exposes OnSuccess and OnFailure exec pins plus the payload data pins, resolves the subsystem from the calling world's game instance (the world context pin fills itself in actor graphs), and survives garbage collection until its single callback lands. Get Group Async has a third exec pin, OnNotFound, and an optional Viewer input: OnSuccess fires only when the group was found, OnNotFound when the call worked and no such group is visible (to the Viewer user id when one is supplied), and all three pins share one signature so the data pins stay populated on every path. The AsyncAction output pin supports Cancel; a cancelled node never fires a pin afterwards. When the subsystem is inactive, OnFailure fires with the same `InvalidConfig` error the delegate surface reports.
+
+The delegate-based subsystem methods remain the surface for everything else and for Blueprint code that prefers explicit binding.
+
+## Live events (SSE)
+
+`SubscribeToGroupEvents(GroupId)` returns a `UJunjoEventStream` immediately; the blocking native subscribe runs on the subsystem's worker pool, never on the game thread. The stream walks a four-state machine, readable via `GetState()`:
+
+| State | Meaning |
+|-------|---------|
+| `Connecting` | Initial; the subscribe is in flight. Bind delegates now: nothing can fire before the current game-thread task completes. |
+| `Open` | The server accepted; `OnConnected` has fired and events deliver through `OnEvent` (`FJunjoStreamEvent`: `EventType`, `EventId`, `PayloadJson`). |
+| `Closed` | Terminal. Either you called `Close()` (silent) or the server ended the stream cleanly (`OnStreamClosed` fired). |
+| `Failed` | Terminal. The connect was rejected or the open stream died; `OnStreamError` fired with the reason. |
+
+The contract:
+
+- Every delegate fires on the game thread. The native SDK runs one dedicated thread per subscription; the wrapper converts payloads there and marshals each broadcast to the game thread behind a weak pointer, so game code never sees the stream thread.
+- Because no handler ever runs on the stream thread, calling `Close()` from inside `OnEvent` (or any handler) is safe by construction; the native close-from-a-callback caveat cannot be hit.
+- `Close()` is idempotent and silent. For an open stream it blocks briefly (the underlying `Subscription::close()` joins the stream thread, which notices the stop at its next progress poll).
+- Frames with event types this SDK version does not know are skipped silently, never delivered as raw payloads, so a newer server never breaks an older client; resubscribe-and-refetch is the recovery for anything you needed from them.
+- There is no auto-reconnect and the server keeps no replay buffer. When `OnStreamClosed` or `OnStreamError` fires the stream is finished: resubscribe with `SubscribeToGroupEvents` from the handler and re-fetch any state you must not miss; events between the drop and the resubscribe are lost.
+- The subsystem keeps every live stream referenced, so a stream keeps delivering even if the requesting Blueprint drops its reference; `Deinitialize` closes all streams before the client goes away.
+
+## Native API access
+
+The bound surface covers the representative gameplay path. The whole SDK (friends, roles admin, invitations, audit, webhooks endpoint management) is available to C++ through the native client:
+
+```cpp
+#include "JunjoNativeApi.h"
+
+junjo::Client* Client = Junjo->GetNativeClient();  // nullptr when inactive
+if (Client)
+{
+    auto Page = Client->audit().list("grp_123", {});
+    if (Page)
+    {
+        // Page.value().items, Page.value().next_cursor
+    }
+}
+```
+
+Include `JunjoNativeApi.h`, never raw `junjo/` headers: the engine defines a function-like `check` macro that collides with `junjo::Client::check`, and the shim suspends the macro family around the junjo includes and restores it afterwards. The shim header documents the one call-site caveat for invoking `Client->check(...)` directly. Native access works from any module in your project; the plugin maps the core's `JUNJO_API` annotations onto UnrealBuildTool's per-module linkage macros, so `junjo::` symbols link across DLL boundaries in modular builds. The blocking native calls follow the C++ SDK's threading rules: call them from worker threads you own, not from the game thread.
+
+## Threading model
+
+| Work | Thread |
+|------|--------|
+| Subsystem methods and `Close()` | Call on the game thread. |
+| Blocking SDK calls behind the delegate surface | Subsystem worker pool (two threads, drained on `Deinitialize`). |
+| Delegate callbacks and async-node pins | Game thread, exactly once per call. |
+| Native SSE callbacks | One dedicated thread per subscription (inside the core). |
+| `UJunjoEventStream` delegates | Game thread, marshaled from the stream thread. |
+| Engine HTTP completion | HTTP thread (the transport blocks its calling worker, never the game thread). |
+
+`Deinitialize` tears down in a fixed order: event streams first (joining their callback threads), then the worker pool (draining every queued task), then the native client, so no callback or worker can ever touch a dead client.
+
+## Windows toolchain for UE 5.8
+
+Facts you will hit on a stock machine:
+
+- UE 5.8's UnrealBuildTool refuses MSVC 14.40 through 14.43 outright (known compiler issues). That range covers the default toolchain of many VS 2022 installs.
+- UBT states 14.38 as the minimum, but 5.8's own engine headers fail to compile under 14.38 (error C7539 in `ContainerAllocationPolicies.h`), so the stated minimum does not hold for real builds.
+- Builds succeed with 14.50+ from the current Visual Studio generation; VS 2026 Build Tools are enough (UBT enumerates Build Tools installs).
+
+If UBT keeps selecting a stale toolchain after installing a new one, delete the project's `Intermediate` folder; the build makefile caches the toolchain choice.
+
+## Linux cross-compile
+
+Game targets cross-compile from Windows with Epic's Linux cross-toolchain v26 (clang 20.1.8, rockylinux8 sysroot). Point `LINUX_MULTIARCH_ROOT` at the toolchain; the installer sets it machine-wide, but long-lived shells hold stale environments, so inject it into the build shell explicitly:
+
+```powershell
+$env:LINUX_MULTIARCH_ROOT = "C:\UnrealToolchains\v26_clang-20.1.8-rockylinux8\"
+& "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" MyProject Linux Development -Project="C:\path\to\MyProject.uproject"
+```
+
+The plugin is verified under both MSVC and this clang toolchain.
+
+## Dedicated servers
+
+The deployment model is the environment-variable pattern from the security section: bake nothing into the build, set `JUNJO_API_KEY` in the server process environment (your orchestrator's secret store, a systemd unit, a container env), and let client builds stay inactive by construction. `JUNJO_BASE_URL` completes the pattern: when set it overrides the configured base URL at startup, so the same cooked server image serves staging, production, or a self-hosted API without a re-cook.
+
+Two compile-time facts worth knowing when you gate server-only code:
+
+- `WITH_SERVER_CODE` is not a client discriminator: it is 1 in standalone Game builds too, so key handling or admin logic behind it still ships to players. `UE_SERVER` is 1 only on dedicated Server targets; gate with that, or with `Target.Type == TargetType.Server` in your `Target.cs` / `Build.cs`.
+- Dedicated Server targets do not build against the launcher-installed engine. You need a source-built engine or Epic's dev containers (`ghcr.io/epicgames/unreal-engine`, Epic account link required).
+
+A containerized Linux dedicated-server build is the deployment story, and it is proven: the Linux Server target builds inside Epic's dev container (`ghcr.io/epicgames/unreal-engine`), and the resulting server passed a containerized runtime smoke on `debian:bookworm-slim` with live authenticated traffic (a KeyInfo round trip plus a negative control). The plugin's module type is Runtime, so it loads on Server targets by design.
+
+One operational note for Railway deployments: `railway up` rejects build contexts over roughly 300 MB compressed with a 413, and a cooked server easily exceeds that, so push a prebuilt image to a registry and deploy by image reference instead.
+
+## Limitations
+
+Stated honestly:
+
+- The delegate and Blueprint surfaces bind the representative path only. Friends, audit, webhook endpoints, invitations, and roles administration are native-API-only for now.
+- The SSE wrapper does not auto-reconnect (core contract); resubscribe-and-refetch is your job.
+- The SDK never retries automatically; honor `RetryAfterSeconds` on rate limits in your own backoff.
+- Windows and Linux (cross-compile) builds are verified; macOS is not yet. Console platforms are unverified.
+- The source-built Linux Server target is verified via Epic's dev container; launcher-installed builds still cannot compile Server targets at all, an Epic constraint, not a plugin one.
+- The plugin has no automated test suite. It is verified by compilation on Win64 and Linux, code review, and a manual containerized runtime smoke; its logic-heavy parts (the SSE state machine, the thread-marshaling transport, the USTRUCT conversions) are not covered by executable tests. The vendored core is byte-identical to the tested `packages/sdk-cpp`, so the core's own test suite covers the client below the Unreal layer, but nothing exercises the Unreal-specific wrapper automatically.
+- The runtime path is container-smoke-tested with real authenticated traffic, but no shipped production game has exercised it yet.

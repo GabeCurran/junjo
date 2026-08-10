@@ -2,10 +2,12 @@
 
 Two responsibilities live under this namespace:
 
-1. **`endpoints`** - CRUD for the webhook endpoints Junjo POSTs to.
-2. **`verify` / `middleware`** - receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts) values. Pair with the [HTTP wire format](../api-reference/webhooks) docs for the corresponding server side.
+1. **`endpoints`**: CRUD for the webhook endpoints Junjo POSTs to.
+2. **`verify` / `verifyWithMeta` / `middleware`**: receiver-side helpers that validate the HMAC signature on inbound deliveries and parse them into typed [`JunjoEvent`](./groups#subscribegroupid-handler-opts) values. Pair with the [HTTP wire format](../api-reference/webhooks) docs for the corresponding server side.
 
-`webhooks.verify` and `webhooks.middleware` are server-only helpers (they run on the dev's backend that receives webhooks). The signing math is HMAC-SHA256 via the Web Crypto API, so the same code runs on Node 19+ and modern browsers without `node:crypto` or `@types/node`.
+The same helpers are also exported standalone (`verifyWebhook`, `verifyWebhookWithMeta`, `signWebhookBody`) for receivers that do not want to construct a client.
+
+`webhooks.verify` and `webhooks.middleware` are server-only helpers (they run on the dev's backend that receives webhooks). The signing math is HMAC-SHA256 via the Web Crypto API, so the same code runs on Node 20+ (the package's `engines` floor) and modern browsers without `node:crypto` or `@types/node`.
 
 ```ts
 import express from "express";
@@ -70,6 +72,7 @@ Every failure mode throws `JunjoError` with `status: 400`. Branch on `error.code
 | `webhook_timestamp_out_of_tolerance` | Skew exceeds `tolerance` (default 5 minutes). |
 | `webhook_invalid_signature` | The recomputed HMAC does not match the header. Either the body was tampered, the wrong secret was supplied, or the signature scheme is unknown. |
 | `webhook_invalid_body` | The body is not valid JSON. (The signature passes only when the body is byte-for-byte what was signed, so the only way to reach this branch is when the upstream sender signed garbage.) |
+| `unknown_event_type` | The body verified but carries an event type this SDK version does not know (a newer server). Acknowledge and ignore, or upgrade the SDK. Match-all endpoints should prefer `verifyWithMeta` with `onUnknownType: "raw"` (below), which returns the verified payload instead of throwing this. |
 
 ### Manual call (no Express)
 
@@ -96,6 +99,74 @@ async function handle(rawBody: Uint8Array, headers: Record<string, string>) {
   }
 }
 ```
+
+## `verifyWithMeta(rawBody, headers, secret, opts?)`
+
+Same verification as `verify`, but returns the delivery identity headers alongside the event so receivers can dedupe retries without re-reading the headers object themselves:
+
+```ts
+verifyWithMeta(
+  rawBody: string | Uint8Array,
+  headers: WebhookHeaders,
+  secret: string,
+  opts?: VerifyWithMetaOptions,
+): Promise<VerifiedWebhook | UnknownVerifiedWebhook>;
+
+interface VerifyWithMetaOptions extends VerifyOptions {
+  onUnknownType?: "throw" | "raw"; // default "throw"
+}
+
+interface VerifiedWebhook {
+  event: JunjoEvent;
+  // From x-junjo-event-id: stable per event, shared by every delivery
+  // (and retry) of that event. The right key for dedupe.
+  eventId: string | undefined;
+  // From x-junjo-delivery-id: unique per delivery attempt.
+  deliveryId: string | undefined;
+}
+
+interface UnknownVerifiedWebhook {
+  event: null; // the discriminant against VerifiedWebhook
+  eventType: string | undefined; // the wire type string, when present
+  payload: unknown; // the parsed body verbatim, shape unvalidated
+  eventId: string | undefined;
+  deliveryId: string | undefined;
+}
+```
+
+Both ids are `undefined` only when an intermediary stripped the header; the signature check is unchanged. Dedupe on `eventId` (retries share it), not `deliveryId` (each POST gets a fresh one):
+
+```ts
+const { event, eventId } = await junjo.webhooks.verifyWithMeta(
+  rawBody,
+  headers,
+  process.env.JUNJO_WEBHOOK_SECRET!,
+);
+if (eventId && (await alreadyProcessed(eventId))) return; // duplicate delivery
+```
+
+Also exported standalone as `verifyWebhookWithMeta`.
+
+### `onUnknownType`
+
+Endpoints created with an empty `events` array receive every event type the server emits, including types added after your SDK version shipped. With the default `onUnknownType: "throw"`, such a delivery throws `unknown_event_type`, your receiver responds non-2xx, and the delivery worker retries it until you upgrade. Pass `onUnknownType: "raw"` to have unknown types verify and return instead of throwing:
+
+```ts
+const result = await junjo.webhooks.verifyWithMeta(
+  rawBody,
+  headers,
+  process.env.JUNJO_WEBHOOK_SECRET!,
+  { onUnknownType: "raw" },
+);
+if (result.event === null) {
+  // Verified, but this SDK version predates result.eventType.
+  // result.payload is the parsed body verbatim. Acknowledge with 2xx.
+} else {
+  // result.event is a typed JunjoEvent as usual.
+}
+```
+
+The signature and timestamp checks are identical in both modes; only the reaction to an unrecognized `type` differs. Known-type payloads that fail deserialization still throw. The C++ SDK's `verify_webhook` behaves like `"raw"` unconditionally.
 
 ## `middleware(secret, opts?)`
 
@@ -144,7 +215,8 @@ CRUD for the webhook endpoints Junjo POSTs to. Endpoints are scoped per game; th
 ```ts
 class WebhookEndpointsApi {
   create(input: CreateWebhookEndpointInput): Promise<WebhookEndpointWithSecret>;
-  list(): Promise<WebhookEndpoint[]>;
+  list(opts?: { limit?: number; cursor?: string }): Promise<Page<WebhookEndpoint>>;
+  listAll(opts?: { limit?: number }): AsyncGenerator<WebhookEndpoint>;
   update(id: WebhookEndpointId, input: UpdateWebhookEndpointInput): Promise<WebhookEndpoint>;
   delete(id: WebhookEndpointId): Promise<void>;
 }
@@ -168,7 +240,7 @@ type WebhookEndpointFormat = "junjo" | "discord" | "slack";
 
 ### `endpoints.create(input)`
 
-Creates a webhook endpoint and returns it including the signing `secret`. The secret is returned exactly once - persist it server-side immediately. Subsequent `list` and `update` calls do not surface it again.
+Creates a webhook endpoint and returns it including the signing `secret`. The secret is returned exactly once; persist it server-side immediately. Subsequent `list` and `update` calls do not surface it again.
 
 ```ts
 const endpoint = await junjo.webhooks.endpoints.create({
@@ -182,12 +254,12 @@ If `secret` is omitted (the common case), the server generates a 32-byte base64u
 
 `events` defaults to `[]` (match-all). Pass a non-empty array to filter to specific event types; unknown event types are rejected with a 400.
 
-`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api-reference/webhooks-discord) or `"slack"` to produce a [Slack Block Kit message](../api-reference/webhooks-slack) before POSTing - the URL is then a provider-issued webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (the provider receives the delivery directly).
+`format` defaults to `"junjo"` (the raw `JunjoEvent` JSON with HMAC headers, the format `verify` and `middleware` consume above). Pass `"discord"` to translate events into [Discord embed payloads](../api-reference/webhooks-discord) or `"slack"` to produce a [Slack Block Kit message](../api-reference/webhooks-slack) before POSTing; the URL is then a provider-issued webhook URL, the HMAC headers are skipped, and `verify` / `middleware` are not used (the provider receives the delivery directly).
 
 ```ts
 // Pipe Junjo events to a Discord channel
 await junjo.webhooks.endpoints.create({
-  url: "https://discord.com/api-reference/webhooks/123/abc...",
+  url: "https://discord.com/api/webhooks/123/abc...",
   format: "discord",
   events: ["member.joined", "member.left", "group.deleted"],
 });
@@ -200,14 +272,24 @@ await junjo.webhooks.endpoints.create({
 });
 ```
 
-### `endpoints.list()`
+### `endpoints.list(opts?)`
 
-Returns every endpoint configured for the calling game, newest first. The wire format omits `secret`.
+Returns one page of the calling game's endpoints, newest first, in the standard `Page<WebhookEndpoint>` shape (`{ items, nextCursor }`). The wire format omits `secret`. `limit` defaults to 50 (max 100); `nextCursor` is the id of the last item, fed back as `cursor` for the next page, and `null` on the final page.
 
 ```ts
-const endpoints = await junjo.webhooks.endpoints.list();
-for (const e of endpoints) {
+const page = await junjo.webhooks.endpoints.list();
+for (const e of page.items) {
   if (e.disabledAt) console.log(`${e.id} is disabled`);
+}
+```
+
+### `endpoints.listAll(opts?)`
+
+Async-iterator wrapper over `list` that walks every page until `nextCursor` is null. Endpoint counts are small in practice, but this keeps the surface symmetric with the other paginated lists.
+
+```ts
+for await (const e of junjo.webhooks.endpoints.listAll()) {
+  // ...
 }
 ```
 

@@ -1,7 +1,7 @@
 # Junjo
 
 [![CI](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml/badge.svg)](https://github.com/GabeCurran/junjo/actions/workflows/ci.yml)
-[![License: MIT + ELv2](https://img.shields.io/badge/License-MIT%20%2B%20ELv2-blue.svg)](./LICENSE)
+[![License: MIT clients, ELv2 server](https://img.shields.io/badge/License-MIT%20clients%2C%20ELv2%20server-blue.svg)](./LICENSE)
 [![npm @junjo.io/sdk](https://img.shields.io/npm/v/@junjo.io/sdk?label=%40junjo.io%2Fsdk)](https://www.npmjs.com/package/@junjo.io/sdk)
 [![npm @junjo.io/react](https://img.shields.io/npm/v/@junjo.io/react?label=%40junjo.io%2Freact)](https://www.npmjs.com/package/@junjo.io/react)
 
@@ -33,7 +33,9 @@ const allowed = await junjo.can("user_123", guild.id, "invite_member");
 
 - **`@junjo.io/sdk`**: typed TypeScript client for any Node or browser app.
 - **`@junjo.io/react`**: React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates.
-- **`junjo-roblox`**: Luau client for Roblox experiences.
+- **Junjo.io SDK for Roblox** (`packages/sdk-roblox`, will ship as `Junjo.rbxm` on GitHub releases): Luau client for Roblox experiences.
+- **Junjo.io SDK for C++** (`packages/sdk-cpp`): C++20 client library for game servers, installed as a CMake `find_package(JunjoIO)` package.
+- **Junjo.io SDK for Unreal Engine** (`packages/sdk-unreal`): source plugin over the C++ core with a game instance subsystem, Blueprint async nodes, and live SSE event streams.
 - **Cross-game admin dashboard**: Next.js app for inspecting and managing groups across games.
 - **Server**: Hono on Node, Postgres via Prisma. Self-hostable (source-available, ELv2) or use the cloud.
 - **Auth adapters**: Clerk, Supabase, JWT, BYO.
@@ -92,16 +94,24 @@ packages/
   server/       Hono HTTP API + Prisma schema + webhook worker
   sdk/          @junjo.io/sdk, typed TypeScript client
   react/        @junjo.io/react, React hooks
-  sdk-roblox/   junjo-roblox, Luau client
+  sdk-roblox/   Junjo.io SDK for Roblox, Luau client (will ship as Junjo.rbxm)
+  sdk-cpp/      Junjo.io SDK for C++, C++20 client (CMake package JunjoIO)
+  sdk-unreal/   Junjo.io SDK for Unreal Engine, source plugin over the C++ core
   shared/       @junjo.io/shared, shared types
 apps/
   dashboard/    Next.js admin dashboard (proprietary)
   docs/         Nextra documentation site
+examples/
+  webgame-threejs/   Plain-browser guild panel on the SDK in proxy mode (no framework or build step; name is historical, no Three.js)
+  roblox-mobarena/   Pointer to the Roblox SDK dogfood target (separate repo)
+  cpp-consumer/      Standalone CMake consumer of the installed C++ SDK
 tools/
   screenshots/  Puppeteer screenshot crawler for visual QA
   diagrams/     Mermaid renderer
+scripts/        Repo-level dev and CI scripts (style gate, commit-msg check, dev Postgres bootstrap)
+docs/           Repo assets (README screenshots)
 ```
 
 ## License
 
-MIT for the client packages (`packages/sdk`, `packages/react`, `packages/shared`, `packages/sdk-roblox`). The server (`packages/server`) is source-available under the Elastic License 2.0: read it, run it, self-host it for your own games, but do not offer it to third parties as a hosted service. The dashboard at `apps/dashboard` is proprietary (see `apps/dashboard/LICENSE`).
+MIT for the client packages (`packages/sdk`, `packages/react`, `packages/shared`, `packages/sdk-roblox`, `packages/sdk-cpp`, `packages/sdk-unreal`). The server (`packages/server`) is source-available under the Elastic License 2.0: read it, run it, self-host it for your own games, but do not offer it to third parties as a hosted service. The dashboard at `apps/dashboard` is proprietary (see `apps/dashboard/LICENSE`).
