@@ -1,0 +1,85 @@
+# Junjo.io SDK for C++: find_package(JunjoIO) entry point.
+#
+# Defines the imported target JunjoIO::SDK.
+#
+# Curl handling depends on how the SDK was built; the facts are baked
+# in below at SDK configure time:
+#   - Shared SDK: curl (system or vendored) was resolved into the
+#     library at its own link step. Consumers need no curl target here;
+#     a system-curl shared build additionally needs libcurl present at
+#     run time.
+#   - Static SDK against a system libcurl: the archive contains object
+#     code that calls libcurl but does not carry it. Curl is
+#     re-resolved via find_dependency(CURL) and attached to the
+#     imported target, so the consumer machine needs a
+#     find_package-able curl.
+#   - Static SDK against the pinned FetchContent curl: the vendored
+#     archive was installed next to the SDK library, and this file
+#     reconstructs it as an imported target (per-config locations plus
+#     the system libraries curl needs). Consumers need nothing extra.
+
+@PACKAGE_INIT@
+
+set(JUNJO_BUILT_WITH_CURL_TRANSPORT @JUNJO_BUILD_CURL_TRANSPORT@)
+set(_junjo_sdk_shared @JUNJO_SDK_SHARED@)
+set(_junjo_vendored_curl @JUNJO_VENDORED_CURL@)
+
+include(CMakeFindDependencyMacro)
+
+# std::thread machinery (executors, SSE subscription threads) is a
+# PUBLIC dependency of the library.
+find_dependency(Threads)
+
+if(JUNJO_BUILT_WITH_CURL_TRANSPORT AND NOT _junjo_sdk_shared AND NOT _junjo_vendored_curl)
+  find_dependency(CURL)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/JunjoIOTargets.cmake")
+
+if(JUNJO_BUILT_WITH_CURL_TRANSPORT AND NOT _junjo_sdk_shared)
+  if(_junjo_vendored_curl)
+    if(NOT TARGET JunjoIO::vendored_libcurl)
+      # The captured dependency list below may name imported OpenSSL
+      # targets; the SDK build emits a find_dependency(OpenSSL) here
+      # exactly when it does, so those targets exist before the list
+      # is attached. Empty otherwise.
+      @JUNJO_VENDORED_CURL_FIND_OPENSSL@
+      set(_junjo_curl_release "@PACKAGE_JUNJO_INSTALL_LIBDIR@/@JUNJO_VENDORED_CURL_RELEASE_FILE@")
+      set(_junjo_curl_debug "@PACKAGE_JUNJO_INSTALL_LIBDIR@/@JUNJO_VENDORED_CURL_DEBUG_FILE@")
+      add_library(JunjoIO::vendored_libcurl STATIC IMPORTED)
+      set(_junjo_curl_default "")
+      if(EXISTS "${_junjo_curl_release}")
+        set_property(TARGET JunjoIO::vendored_libcurl APPEND PROPERTY
+          IMPORTED_CONFIGURATIONS RELEASE)
+        set_target_properties(JunjoIO::vendored_libcurl PROPERTIES
+          IMPORTED_LOCATION_RELEASE "${_junjo_curl_release}")
+        set(_junjo_curl_default "${_junjo_curl_release}")
+      endif()
+      if(EXISTS "${_junjo_curl_debug}")
+        set_property(TARGET JunjoIO::vendored_libcurl APPEND PROPERTY
+          IMPORTED_CONFIGURATIONS DEBUG)
+        set_target_properties(JunjoIO::vendored_libcurl PROPERTIES
+          IMPORTED_LOCATION_DEBUG "${_junjo_curl_debug}")
+        if(_junjo_curl_default STREQUAL "")
+          set(_junjo_curl_default "${_junjo_curl_debug}")
+        endif()
+      endif()
+      if(_junjo_curl_default STREQUAL "")
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE
+          "JunjoIO was built against a vendored curl, but neither ${_junjo_curl_release} nor ${_junjo_curl_debug} exists in the install prefix.")
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
+        return()
+      endif()
+      set_target_properties(JunjoIO::vendored_libcurl PROPERTIES
+        IMPORTED_LOCATION "${_junjo_curl_default}"
+        INTERFACE_LINK_LIBRARIES "@JUNJO_VENDORED_CURL_DEPS@")
+    endif()
+    set_property(TARGET JunjoIO::SDK APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES JunjoIO::vendored_libcurl)
+  else()
+    set_property(TARGET JunjoIO::SDK APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES CURL::libcurl)
+  endif()
+endif()
+
+check_required_components(JunjoIO)
