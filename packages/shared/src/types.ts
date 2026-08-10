@@ -23,9 +23,8 @@ export type WebhookEndpointId = Brand<string, "WebhookEndpointId">;
 
 export type GroupVisibility = "public" | "invite-only" | "secret";
 
-// Open string. Devs pass whatever taxonomy fits their game ("guild",
-// "clan", "faction", "party", "crew"). The server stores it verbatim and
-// never branches on it; it's there for the dev's UI and analytics.
+// An open string the game defines. The server stores it verbatim and
+// never branches on it; it exists for the dev's UI and analytics.
 export type GroupKind = string;
 
 export type GroupMetadata = Record<string, unknown>;
@@ -143,8 +142,10 @@ export interface Member {
   status: MemberStatus;
   roles: RoleId[];
   metadata: MemberMetadata;
-  // notesPublic: visible to other group members. notesPrivate:
-  // officer-only ("don't promote, has been late on raids" etc.).
+  // notesPublic: intended for display to other group members.
+  // notesPrivate: intended for group staff only. The server stores both
+  // verbatim and returns both to API callers; enforcing who sees which
+  // is the game's responsibility.
   notesPublic: string | null;
   notesPrivate: string | null;
   joinedAt: Date;
@@ -195,10 +196,9 @@ export interface UpdateRoleInput {
 // Permission
 // =====================================================================
 
-// Open string. The dev defines their own permission keys per game
-// ("invite_member", "claim_territory", "edit_treasury"). Junjo stores
-// them and answers can(user, group, key) without ever interpreting the
-// key itself.
+// An open string the game defines. Junjo stores each key verbatim and
+// answers can(user, group, key) without ever interpreting the key
+// itself.
 export type PermissionKey = string;
 
 export type PermissionSource = "role" | "override" | "default" | "none";
@@ -228,8 +228,8 @@ export interface MemberPermissionOverride {
 // Group relationship
 // =====================================================================
 
-// Open string. "ally" / "enemy" / "neutral" are conventional but the
-// dev can use any tag they want ("trade-partner", "vassal", etc.).
+// An open string the game defines. The server stores it verbatim and
+// never branches on it.
 //
 // Stored *directed* (A -> B) so asymmetric relationships are possible;
 // symmetry is opt-in (`setRelationship(..., { mutual: true })` writes
@@ -324,7 +324,9 @@ export interface AuditEntry {
 
 export interface ListAuditOptions {
   limit?: number;
-  before?: Date;
+  // Page boundary: a Date (sent as ISO 8601) or an opaque cursor string
+  // from a previous page's `nextCursor`, passed through verbatim.
+  before?: Date | string;
   actions?: AuditAction[];
 }
 
@@ -444,10 +446,8 @@ export interface FriendRequestAcceptedEvent extends UserEventBase {
   respondedAt: Date;
 }
 
-// Fires when the recipient explicitly declines a pending request. The
-// handler can only emit this when the caller supplies `actorUserId` on
-// the DELETE body and that actor matches the recipient; without an
-// actor, the path stays silent (legacy contract).
+// Fires when the recipient declines a pending request via
+// POST /v1/friend-requests/:id/decline.
 export interface FriendRequestDeclinedEvent extends UserEventBase {
   type: "friend.request.declined";
   requestId: string;
@@ -585,8 +585,8 @@ export function isGroupScopedEvent(event: JunjoEvent): event is JunjoEvent & { g
 // =====================================================================
 
 export interface AuthAdapter {
-  // The userId is opaque to Junjo: whatever the dev's auth provider
-  // returns (Clerk user_xyz, Supabase uuid, Roblox UserId as string).
+  // The userId is opaque to Junjo: whatever external id the game's
+  // auth provider issues, passed through as a string.
   verifyToken(token: string): Promise<{ userId: UserId } | null>;
 }
 
@@ -646,17 +646,6 @@ export interface UpdateWebhookEndpointInput {
   format?: WebhookEndpointFormat;
 }
 
-export interface WebhookDelivery {
-  id: string;
-  endpointId: string;
-  eventId: string;
-  status: "pending" | "delivered" | "failed";
-  attemptCount: number;
-  lastAttemptAt: Date | null;
-  nextAttemptAt: Date | null;
-  responseStatus: number | null;
-}
-
 // =====================================================================
 // User relationships (Friends + blocks)
 // =====================================================================
@@ -675,6 +664,83 @@ export type UserRelationshipId = string & { readonly [userRelBrand]: "UserRelati
 
 declare const friendTagBrand: unique symbol;
 export type FriendTagId = string & { readonly [friendTagBrand]: "FriendTagId" };
+
+// Domain shapes returned by the friends routes. Ids are the underlying
+// UserRelationship / FriendTag row ids. `junjoUserId` fields carry the
+// dev's EXTERNAL user ids (resolved by the server before serialization),
+// matching the userId convention on Member and Ban.
+
+export interface FriendRequest {
+  id: UserRelationshipId;
+  gameId: GameId;
+  // The original sender.
+  actorJunjoUserId: UserId;
+  // The original target.
+  targetJunjoUserId: UserId;
+  createdAt: Date;
+}
+
+// One side of a mutual friendship, from the queried user's point of
+// view: `junjoUserId` is the OTHER party.
+export interface Friendship {
+  id: UserRelationshipId;
+  gameId: GameId;
+  junjoUserId: UserId;
+  since: Date;
+}
+
+// Response of `requests.send`. `status` tells the caller which shape is
+// populated: "pending" carries `request`; "auto-accepted" (games with
+// requestsRequired=false) carries `friendship`.
+export interface FriendRequestSendResult {
+  status: "pending" | "auto-accepted";
+  request?: FriendRequest;
+  friendship?: Friendship;
+}
+
+export interface FriendRequestList {
+  inbound: FriendRequest[];
+  outbound: FriendRequest[];
+}
+
+export interface Block {
+  id: UserRelationshipId;
+  gameId: GameId;
+  // The blocked party, from the queried user's point of view.
+  junjoUserId: UserId;
+  blockedAt: Date;
+}
+
+export interface FriendTag {
+  id: FriendTagId;
+  gameId: GameId;
+  // The tag owner.
+  junjoUserId: UserId;
+  name: string;
+  color: string | null;
+  createdAt: Date;
+}
+
+export interface FriendTagAssignment {
+  friendJunjoUserId: UserId;
+  tagIds: FriendTagId[];
+}
+
+export interface UserVisibilitySettings {
+  gameId: GameId;
+  junjoUserId: UserId;
+  friendsListVisibility: FriendsListVisibility;
+  // The game-config allowlist the user may pick from.
+  allowed: FriendsListVisibility[];
+  // Null until the user first overrides the game default.
+  updatedAt: Date | null;
+}
+
+export interface FriendSuggestion {
+  junjoUserId: UserId;
+  mutualCount: number;
+  sampleMutualJunjoUserIds: UserId[];
+}
 
 // =====================================================================
 // Game configuration
@@ -760,4 +826,46 @@ export interface Page<T> {
 export interface PageOptions {
   limit?: number;
   cursor?: string;
+}
+
+// =====================================================================
+// Errors
+// =====================================================================
+
+// Canonical set of `code` values the server's error envelope can carry.
+// The server types its error factory against this union, so adding a
+// code there without listing it here fails to compile. SDK-side-only
+// failure codes (transport errors, webhook verification, wire parsing)
+// are defined by each SDK, not here.
+export const JUNJO_ERROR_CODES = [
+  "bad_request",
+  "invalid_api_key",
+  "invalid_admin_token",
+  "permission_denied",
+  "not_found",
+  "already_member",
+  "role_has_members",
+  "role_name_taken",
+  "role_group_mismatch",
+  "parent_cycle",
+  "banned",
+  "passcode_required",
+  "passcode_invalid",
+  "invitation_expired",
+  "invitation_used",
+  "restore_window_expired",
+  "rate_limit_exceeded",
+  "internal",
+] as const;
+
+export type JunjoErrorCode = (typeof JUNJO_ERROR_CODES)[number];
+
+// The JSON envelope every non-2xx server response carries.
+export interface JunjoErrorEnvelope {
+  code: JunjoErrorCode;
+  status: number;
+  message: string;
+  // Correlation id, present on internal-500 responses; matches the
+  // x-request-id response header.
+  requestId?: string;
 }
