@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Junjo.io SDK",
+	"Description": "Groups, ranks, and permissions for games. Game instance subsystem with delegate and Blueprint async surfaces, live SSE event streams, and the full native junjo:: C++ API over the engine's HTTP stack.",
+	"Category": "Networking",
+	"CreatedBy": "Gabe Curran",
+	"CreatedByURL": "https://junjo.io",
+	"DocsURL": "https://docs.junjo.io",
+	"SupportURL": "https://github.com/GabeCurran/junjo/issues",
+	"EngineVersion": "5.4.0",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "JunjoIO",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
