@@ -67,20 +67,34 @@ export function deserializeMemberPermissionOverride(
   };
 }
 
+/** Options for {@link MembersApi.list}. */
 export interface ListMembersOptions extends PageOptions {
-  // Filter to one or more statuses. Omit for all statuses (the default).
-  // Common shapes: ["active"] for "show me current members",
-  // ["banned"] for the moderation panel.
+  /**
+   * Filter to one or more statuses. Omit for all statuses (the default).
+   * Common shapes: ["active"] for "show me current members",
+   * ["banned"] for the moderation panel.
+   */
   status?: MemberStatus[];
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
+/**
+ * Group members: lookups, listing, per-member metadata and notes, role
+ * assignment, and per-member permission overrides.
+ */
 export class MembersApi {
   constructor(private readonly http: HttpClient) {}
 
-  async get(groupId: GroupId, userId: UserId): Promise<Member | null> {
+  async get(
+    groupId: GroupId,
+    userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Member | null> {
     try {
       const wire = await this.http.get<WireMember>(
         `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
       );
       return deserializeMember(wire);
     } catch (err) {
@@ -89,9 +103,15 @@ export class MembersApi {
     }
   }
 
-  async getById(id: MemberId): Promise<Member | null> {
+  async getById(
+    id: MemberId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Member | null> {
     try {
-      const wire = await this.http.get<WireMember>(`/v1/members/${encodeURIComponent(id)}`);
+      const wire = await this.http.get<WireMember>(`/v1/members/${encodeURIComponent(id)}`, {
+        signal: opts?.signal,
+        timeoutMs: opts?.timeoutMs,
+      });
       return deserializeMember(wire);
     } catch (err) {
       if (err instanceof JunjoError && err.code === "not_found") return null;
@@ -99,9 +119,11 @@ export class MembersApi {
     }
   }
 
-  // Async-iterator wrapper over `list(...)`. Walks every page until
-  // `nextCursor` is null. Combine with `status` to iterate all banned
-  // members in a group, all kicked members, etc.
+  /**
+   * Async-iterator wrapper over `list(...)`. Walks every page until
+   * `nextCursor` is null. Combine with `status` to iterate all banned
+   * members in a group, all kicked members, etc.
+   */
   listAll(groupId: GroupId, opts?: Omit<ListMembersOptions, "cursor">): AsyncGenerator<Member> {
     return paginate((cursor) => this.list(groupId, { ...opts, cursor }));
   }
@@ -116,20 +138,29 @@ export class MembersApi {
     const qs = params.toString();
     const base = `/v1/groups/${encodeURIComponent(groupId)}/members`;
     const path = qs ? `${base}?${qs}` : base;
-    const wire = await this.http.get<{ items: WireMember[]; nextCursor: string | null }>(path);
+    const wire = await this.http.get<{ items: WireMember[]; nextCursor: string | null }>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return {
       items: wire.items.map(deserializeMember),
       nextCursor: wire.nextCursor,
     };
   }
 
-  async listForUser(userId: UserId, opts?: { gameId?: GameId }): Promise<Member[]> {
+  async listForUser(
+    userId: UserId,
+    opts?: { gameId?: GameId; signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Member[]> {
     const params = new URLSearchParams();
     if (opts?.gameId !== undefined) params.set("gameId", opts.gameId);
     const qs = params.toString();
     const base = `/v1/users/${encodeURIComponent(userId)}/members`;
     const path = qs ? `${base}?${qs}` : base;
-    const wire = await this.http.get<WireMember[]>(path);
+    const wire = await this.http.get<WireMember[]>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return wire.map(deserializeMember);
   }
 
@@ -137,21 +168,29 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     metadata: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<Member> {
     const wire = await this.http.patch<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
       { metadata },
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeMember(wire);
   }
 
-  async setNotes(groupId: GroupId, userId: UserId, input: SetMemberNotesInput): Promise<Member> {
+  async setNotes(
+    groupId: GroupId,
+    userId: UserId,
+    input: SetMemberNotesInput,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Member> {
     const body: Record<string, string | null> = {};
     if (input.notesPublic !== undefined) body.notesPublic = input.notesPublic;
     if (input.notesPrivate !== undefined) body.notesPrivate = input.notesPrivate;
     const wire = await this.http.patch<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
       body,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeMember(wire);
   }
@@ -160,12 +199,13 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     roleId: RoleId,
-    opts?: { actorUserId?: UserId },
+    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<Member> {
     const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
       body,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeMember(wire);
   }
@@ -174,12 +214,13 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     roleId: RoleId,
-    opts?: { actorUserId?: UserId },
+    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<Member> {
     const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.delete<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
       body,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeMember(wire);
   }
@@ -189,10 +230,12 @@ export class MembersApi {
     userId: UserId,
     permission: PermissionKey,
     grant: boolean,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<MemberPermissionOverride> {
     const wire = await this.http.post<WireMemberPermissionOverride>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
       { grant },
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeMemberPermissionOverride(wire);
   }
@@ -201,18 +244,23 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     permission: PermissionKey,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+      undefined,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
   }
 
   async listPermissionOverrides(
     groupId: GroupId,
     userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<MemberPermissionOverride[]> {
     const wire = await this.http.get<WireMemberPermissionOverride[]>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions`,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return wire.map(deserializeMemberPermissionOverride);
   }

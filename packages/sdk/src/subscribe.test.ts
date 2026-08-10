@@ -629,6 +629,120 @@ describe("groups.subscribe", () => {
     ctrl.end();
   });
 
+  it("rejects with code 'cancelled' when SubscribeOptions.signal is already aborted", async () => {
+    const { stream } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    const ac = new AbortController();
+    ac.abort();
+
+    await expect(
+      junjo.groups.subscribe("grp_1" as GroupId, () => {}, { signal: ac.signal }),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "cancelled" });
+    // The connection attempt never starts for a pre-aborted signal.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("mid-stream abort closes the stream and removes the abort listener", async () => {
+    const { stream, ctrl } = createPushStream();
+    let reqSignal: AbortSignal | undefined;
+    const fetchMock = makeFetch((req) => {
+      reqSignal = req.signal;
+      return streamingResponse(stream);
+    });
+    const junjo = makeJunjo(fetchMock);
+    const events: JunjoEvent[] = [];
+    const closes: number[] = [];
+    const ac = new AbortController();
+    const removeSpy = vi.spyOn(ac.signal, "removeEventListener");
+
+    await junjo.groups.subscribe("grp_1" as GroupId, (e) => events.push(e), {
+      signal: ac.signal,
+      onClose: () => closes.push(1),
+    });
+
+    expect(reqSignal?.aborted).toBe(false);
+    ac.abort();
+    expect(reqSignal?.aborted).toBe(true);
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    // Events after the abort are not delivered.
+    ctrl.push(
+      frame({
+        event: "group.deleted",
+        id: "evt_after_abort",
+        data: { ...baseEvent, id: "evt_after_abort", type: "group.deleted" },
+      }),
+    );
+    await flushMicrotasks();
+    expect(events).toHaveLength(0);
+    // A caller-initiated abort must not masquerade as a server close.
+    expect(closes).toHaveLength(0);
+
+    ctrl.end();
+  });
+
+  it("natural server end fires onClose exactly once; a later close() is a no-op", async () => {
+    const { stream, ctrl } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    const events: JunjoEvent[] = [];
+    const errors: Error[] = [];
+    let closeCount = 0;
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, (e) => events.push(e), {
+      onError: (err) => errors.push(err),
+      onClose: () => {
+        closeCount += 1;
+      },
+    });
+
+    ctrl.push(
+      frame({
+        event: "group.deleted",
+        id: "evt_before_end",
+        data: { ...baseEvent, id: "evt_before_end", type: "group.deleted" },
+      }),
+    );
+    await flushMicrotasks();
+    expect(events).toHaveLength(1);
+
+    ctrl.end();
+    await flushMicrotasks();
+    expect(closeCount).toBe(1);
+    expect(errors).toHaveLength(0);
+
+    // The subscription is already closed; close() must neither throw
+    // nor fire onClose again.
+    expect(() => {
+      sub.close();
+      sub.close();
+    }).not.toThrow();
+    await flushMicrotasks();
+    expect(closeCount).toBe(1);
+  });
+
+  it("does not fire onClose when the consumer calls close()", async () => {
+    const { stream, ctrl } = createPushStream();
+    const fetchMock = makeFetch(() => streamingResponse(stream));
+    const junjo = makeJunjo(fetchMock);
+    let closeCount = 0;
+
+    const sub = await junjo.groups.subscribe("grp_1" as GroupId, () => {}, {
+      onClose: () => {
+        closeCount += 1;
+      },
+    });
+
+    sub.close();
+    await flushMicrotasks();
+    expect(closeCount).toBe(0);
+
+    ctrl.end();
+    await flushMicrotasks();
+    expect(closeCount).toBe(0);
+  });
+
   it("parses frames from a CRLF-normalized stream", async () => {
     const { stream, ctrl } = createPushStream();
     const fetchMock = makeFetch(() => streamingResponse(stream));

@@ -3,11 +3,19 @@ import { JunjoError } from "./errors.js";
 import { type WireInvitation, deserializeInvitation } from "./groups.js";
 import type { HttpClient } from "./http.js";
 
+/** Options for {@link InvitationsApi.list}. */
 export interface ListInvitationsOptions extends PageOptions {
   includeExpired?: boolean;
   includeUsed?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
+/**
+ * Invitations: list a group's invitations, look one up by code, and
+ * revoke. Creation lives on `groups.inviteByUserId` / `inviteByCode` /
+ * `inviteByLink`.
+ */
 export class InvitationsApi {
   constructor(private readonly http: HttpClient) {}
 
@@ -24,17 +32,24 @@ export class InvitationsApi {
     const qs = params.toString();
     const base = `/v1/groups/${encodeURIComponent(groupId)}/invitations`;
     const path = qs ? `${base}?${qs}` : base;
-    const wire = await this.http.get<{ items: WireInvitation[]; nextCursor: string | null }>(path);
+    const wire = await this.http.get<{ items: WireInvitation[]; nextCursor: string | null }>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return {
       items: wire.items.map(deserializeInvitation),
       nextCursor: wire.nextCursor,
     };
   }
 
-  async get(code: string): Promise<Invitation | null> {
+  async get(
+    code: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Invitation | null> {
     try {
       const wire = await this.http.get<WireInvitation>(
         `/v1/invitations/${encodeURIComponent(code)}`,
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
       );
       return deserializeInvitation(wire);
     } catch (err) {
@@ -43,7 +58,10 @@ export class InvitationsApi {
     }
   }
 
-  async revoke(code: string): Promise<void> {
-    await this.http.delete<unknown>(`/v1/invitations/${encodeURIComponent(code)}`);
+  async revoke(code: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
+    await this.http.delete<unknown>(`/v1/invitations/${encodeURIComponent(code)}`, undefined, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
   }
 }

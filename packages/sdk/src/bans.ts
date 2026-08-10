@@ -62,46 +62,65 @@ export function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEn
   };
 }
 
+/** Input for {@link BansApi.add}. */
 export interface CreateBanInput {
-  // External user id of the user to ban (Clerk sub, Supabase uuid,
-  // Roblox UserId-as-string -- whatever the dev's auth provider returns).
+  /**
+   * External user id of the user to ban. Opaque to Junjo: whatever
+   * external id the game's auth provider issues.
+   */
   userId: UserId;
-  // Optional human-readable reason; surfaces in audit / dashboard.
+  /** Optional human-readable reason; surfaces in audit / dashboard. */
   reason?: string | null;
-  // Optional ISO timestamp / Date for time-bounded bans. Omit / null =
-  // permanent. Lazy expiry on read; the server does not auto-clean
-  // expired rows.
+  /**
+   * Optional ISO timestamp / Date for time-bounded bans. Omit / null =
+   * permanent. Lazy expiry on read; the server does not auto-clean
+   * expired rows.
+   */
   expiresAt?: Date | string | null;
-  // Optional moderator attribution. The dev's external user id of the
-  // operator pressing the ban button. Auto-creates a JunjoUser if the
-  // actor hasn't been seen in this game (mirrors the target user).
-  // Surfaces back as `Ban.bannedBy` and on audit / BanHistory rows.
+  /**
+   * Optional moderator attribution. The dev's external user id of the
+   * operator pressing the ban button. Auto-creates a JunjoUser if the
+   * actor hasn't been seen in this game (mirrors the target user).
+   * Surfaces back as `Ban.bannedBy` and on audit / BanHistory rows.
+   */
   actorUserId?: UserId;
 }
 
+/** Options for {@link BansApi.list}. */
 export interface ListBansOptions extends PageOptions {
-  // Default false. When true, also returns rows whose `expiresAt` is in
-  // the past (the runtime ban-check ignores those, but operators may
-  // want to see them in the dashboard).
+  /**
+   * Default false. When true, also returns rows whose `expiresAt` is in
+   * the past (the runtime ban-check ignores those, but operators may
+   * want to see them in the dashboard).
+   */
   includeExpired?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
+/** Options for {@link BansApi.history}. */
 export interface ListBanHistoryOptions extends PageOptions {
-  // Filter to one ban surface. Omit for both. Forced to "group" when
-  // `groupId` is supplied; supplying both with `scope: "game"` is a
-  // 400 error.
+  /**
+   * Filter to one ban surface. Omit for both. Forced to "group" when
+   * `groupId` is supplied; supplying both with `scope: "game"` is a
+   * 400 error.
+   */
   scope?: "game" | "group";
   groupId?: GroupId;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
-// Game-level bans. Per-group bans live on `MembersApi` / `GroupsApi`
-// alongside kick semantics.
-//
-// Game-level ban applies across every group in the game: the user
-// cannot accept invitations or open-join any group while the ban is
-// active. Per-group ban (`groups.ban(...)`) is scoped to one group.
-// The two compose -- enforcement on the server checks game-level
-// first, then per-group.
+/**
+ * Game-level bans. Per-group bans live on `MembersApi` / `GroupsApi`
+ * alongside kick semantics.
+ *
+ * Game-level ban applies across every group in the game: the user
+ * cannot accept invitations or open-join any group while the ban is
+ * active. Per-group ban (`groups.ban(...)`) is scoped to one group.
+ * The two compose: enforcement on the server checks game-level
+ * first, then per-group.
+ */
 export class BansApi {
   constructor(private readonly http: HttpClient) {}
 
@@ -112,19 +131,30 @@ export class BansApi {
     if (opts?.includeExpired === true) params.set("includeExpired", "true");
     const qs = params.toString();
     const path = qs ? `/v1/bans?${qs}` : "/v1/bans";
-    const wire = await this.http.get<{ items: WireGameBan[]; nextCursor: string | null }>(path);
+    const wire = await this.http.get<{ items: WireGameBan[]; nextCursor: string | null }>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return {
       items: wire.items.map(deserializeBan),
       nextCursor: wire.nextCursor,
     };
   }
 
-  // Async-iterator wrapper over `list(...)`. See GroupsApi.listAll.
-  listAll(opts?: { limit?: number; includeExpired?: boolean }): AsyncGenerator<Ban> {
+  /** Async-iterator wrapper over `list(...)`. See GroupsApi.listAll. */
+  listAll(opts?: {
+    limit?: number;
+    includeExpired?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): AsyncGenerator<Ban> {
     return paginate((cursor) => this.list({ ...opts, cursor }));
   }
 
-  async add(input: CreateBanInput): Promise<Ban> {
+  async add(
+    input: CreateBanInput,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Ban> {
     const body: Record<string, unknown> = { userId: input.userId };
     if (input.reason !== undefined) body.reason = input.reason;
     if (input.expiresAt !== undefined) {
@@ -136,23 +166,38 @@ export class BansApi {
             : input.expiresAt;
     }
     if (input.actorUserId !== undefined) body.actorUserId = input.actorUserId;
-    const wire = await this.http.post<WireGameBan>("/v1/bans", body);
+    const wire = await this.http.post<WireGameBan>("/v1/bans", body, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return deserializeBan(wire);
   }
 
-  async remove(userId: UserId, opts?: { actorUserId?: UserId }): Promise<void> {
+  async remove(
+    userId: UserId,
+    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/bans/${encodeURIComponent(userId)}`,
       opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
   }
 
-  // Fetch the current active game-level ban for a user. Returns null
-  // if the user is not banned, the ban has expired, or the user has
-  // never been seen in this game.
-  async get(userId: UserId): Promise<Ban | null> {
+  /**
+   * Fetch the current active game-level ban for a user. Returns null
+   * if the user is not banned, the ban has expired, or the user has
+   * never been seen in this game.
+   */
+  async get(
+    userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Ban | null> {
     try {
-      const wire = await this.http.get<WireGameBan>(`/v1/bans/${encodeURIComponent(userId)}`);
+      const wire = await this.http.get<WireGameBan>(`/v1/bans/${encodeURIComponent(userId)}`, {
+        signal: opts?.signal,
+        timeoutMs: opts?.timeoutMs,
+      });
       return deserializeBan(wire);
     } catch (err) {
       if (err instanceof JunjoError && err.code === "not_found") return null;
@@ -160,9 +205,11 @@ export class BansApi {
     }
   }
 
-  // Append-only ban-event timeline for a user in this game. Includes
-  // both game-scope and group-scope rows by default. Cursor-paginated,
-  // newest-first.
+  /**
+   * Append-only ban-event timeline for a user in this game. Includes
+   * both game-scope and group-scope rows by default. Cursor-paginated,
+   * newest-first.
+   */
   async history(userId: UserId, opts?: ListBanHistoryOptions): Promise<Page<BanHistoryEntry>> {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
@@ -176,18 +223,26 @@ export class BansApi {
     const wire = await this.http.get<{
       items: WireBanHistoryEntry[];
       nextCursor: string | null;
-    }>(path);
+    }>(path, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
     return {
       items: wire.items.map(deserializeBanHistoryEntry),
       nextCursor: wire.nextCursor,
     };
   }
 
-  // Async-iterator wrapper over `history(...)`. Walks every page of
-  // ban events for the user until exhausted.
+  /**
+   * Async-iterator wrapper over `history(...)`. Walks every page of
+   * ban events for the user until exhausted.
+   */
   historyAll(
     userId: UserId,
-    opts?: { limit?: number; scope?: "game" | "group"; groupId?: GroupId },
+    opts?: {
+      limit?: number;
+      scope?: "game" | "group";
+      groupId?: GroupId;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    },
   ): AsyncGenerator<BanHistoryEntry> {
     return paginate((cursor) => this.history(userId, { ...opts, cursor }));
   }

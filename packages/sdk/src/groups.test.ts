@@ -181,7 +181,9 @@ describe("groups.create", () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(JunjoError);
-    expect((thrown as JunjoError).code).toBe("internal");
+    // "unknown", not "internal": a non-envelope 502 from a proxy is a
+    // transport-level surprise, not a server-reported internal error.
+    expect((thrown as JunjoError).code).toBe("unknown");
     expect((thrown as JunjoError).status).toBe(502);
   });
 
@@ -880,7 +882,9 @@ describe("groups.inviteByLink", () => {
     expect(result.url).toBe("https://app.example.test/invite/abcd1234abcd1234");
   });
 
-  it("falls back to baseUrl when inviteBaseUrl is unset", async () => {
+  it("throws invalid_config before any request when inviteBaseUrl is unset", async () => {
+    // No fallback to baseUrl: that would mint dead links on the API
+    // origin (https://api.junjo.io/invite/CODE is a 404).
     const fetchMock = makeFetch(async () => jsonResponse(openInviteFixture, 201));
     const junjo = new Junjo({
       apiKey: "test_key",
@@ -888,8 +892,13 @@ describe("groups.inviteByLink", () => {
       fetch: fetchMock as unknown as typeof fetch,
     });
 
-    const { url } = await junjo.groups.inviteByLink("grp_1" as GroupId);
-    expect(url).toBe("https://api.example.test/invite/abcd1234abcd1234");
+    await expect(junjo.groups.inviteByLink("grp_1" as GroupId)).rejects.toMatchObject({
+      name: "JunjoError",
+      code: "invalid_config",
+      message: expect.stringContaining("inviteBaseUrl") as unknown as string,
+    });
+    // The invitation must not be created when the link cannot be built.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("strips trailing slashes from inviteBaseUrl when building the URL", async () => {
@@ -938,6 +947,52 @@ describe("groups.inviteByLink", () => {
       expiresIn: "1h",
     });
     expect(invitation.roleId).toBe("role_recruit");
+  });
+});
+
+describe("request cancellation via AbortSignal", () => {
+  it("forwards the per-request signal to fetch and maps an abort to code 'cancelled'", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      // Mirror real fetch: an aborted signal rejects with AbortError.
+      expect(init?.signal).toBeDefined();
+      if (init?.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      return jsonResponse(wireFixture, 200);
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      junjo.groups.get("grp_1" as GroupId, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "JunjoError", code: "cancelled" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("maps a mid-flight abort to code 'cancelled'", async () => {
+    const fetchMock = vi.fn(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const controller = new AbortController();
+    const pending = junjo.groups.list({ signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "JunjoError", code: "cancelled" });
   });
 });
 

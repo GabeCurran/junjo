@@ -74,6 +74,45 @@ describe("audit.list", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("passes a string `before` (an opaque nextCursor) through verbatim", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.searchParams.get("before")).toBe("audit_41");
+      return jsonResponse({ items: [], nextCursor: null });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await junjo.audit.list("grp_1" as GroupId, { before: "audit_41" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("feeds a page's nextCursor straight back as `before` without mangling", async () => {
+    const seen: Array<string | null> = [];
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      seen.push(url.searchParams.get("before"));
+      return jsonResponse({
+        items: [wireEntry],
+        nextCursor: seen.length === 1 ? "audit_1" : null,
+      });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const first = await junjo.audit.list("grp_1" as GroupId);
+    expect(first.nextCursor).toBe("audit_1");
+    if (first.nextCursor === null) throw new Error("expected a cursor");
+    await junjo.audit.list("grp_1" as GroupId, { before: first.nextCursor });
+    expect(seen).toEqual([null, "audit_1"]);
+  });
+
   it("rehydrates createdAt into Date and brand-casts ids", async () => {
     const fetchMock = makeFetch(async () =>
       jsonResponse({
@@ -201,5 +240,46 @@ describe("audit.list", () => {
     });
     await junjo.audit.list("grp_1" as GroupId, { actions: [] });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("audit.listAll", () => {
+  it("walks every page, feeding nextCursor back as `before`, and forwards filters", async () => {
+    const seenBefore: Array<string | null> = [];
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/audit");
+      expect(url.searchParams.get("limit")).toBe("2");
+      expect(url.searchParams.getAll("actions")).toEqual(["group.created", "group.updated"]);
+      seenBefore.push(url.searchParams.get("before"));
+      if (seenBefore.length === 1) {
+        return jsonResponse({
+          items: [wireEntry, { ...wireEntry, id: "audit_2" }],
+          nextCursor: "cursor_page2",
+        });
+      }
+      return jsonResponse({
+        items: [{ ...wireEntry, id: "audit_3" }],
+        nextCursor: null,
+      });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const ids: string[] = [];
+    for await (const entry of junjo.audit.listAll("grp_1" as GroupId, {
+      limit: 2,
+      actions: ["group.created", "group.updated"],
+    })) {
+      ids.push(entry.id);
+      expect(entry.createdAt).toBeInstanceOf(Date);
+    }
+
+    expect(ids).toEqual(["audit_1", "audit_2", "audit_3"]);
+    expect(seenBefore).toEqual([null, "cursor_page2"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

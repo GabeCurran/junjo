@@ -1,5 +1,5 @@
 import { SignJWT, exportSPKI, generateKeyPair } from "jose";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JunjoError } from "../errors.js";
 import { jwtAdapter } from "./jwt.js";
 
@@ -335,5 +335,25 @@ describe("jwtAdapter key import failure handling", () => {
     await expect(adapter.verifyToken("any.token.here")).rejects.toMatchObject({
       code: "invalid_config",
     });
+  });
+});
+
+describe("jwtAdapter browser shared-secret warning", () => {
+  it("warns once (and only once) when an HS256 adapter is constructed with `window` present", () => {
+    vi.stubGlobal("window", {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      jwtAdapter({ key: HS256_SECRET, algorithm: "HS256" });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain("HS256 shared secret");
+      // Warn-once: a second construction stays quiet.
+      jwtAdapter({ key: HS256_SECRET, algorithm: "HS256" });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      // Asymmetric algorithms are safe in a browser; no warning.
+      warnSpy.mockClear();
+    } finally {
+      warnSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

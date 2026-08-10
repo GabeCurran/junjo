@@ -1,6 +1,6 @@
 # @junjo.io/sdk
 
-Junjo's TypeScript client. Works in Node and the browser. Uses built-in `fetch`; zero runtime dependencies.
+Junjo's TypeScript client. Works in Node and the browser. Uses built-in `fetch`. One runtime dependency: `@junjo.io/shared`, the contract types shared with the server. The `@junjo.io/sdk/adapters` entry bundles `jose` for local JWT verification, so nothing extra is installed at runtime.
 
 ```ts
 import { Junjo } from "@junjo.io/sdk";
@@ -15,6 +15,23 @@ const allowed = await junjo.can(userId, groupId, "invite_member");
 ```
 
 See `src/index.ts` for the full surface.
+
+## Errors and retries
+
+Every failure throws `JunjoError`. The SDK never retries automatically;
+branch on `err.code` and decide yourself:
+
+- Server rejections carry the server's envelope code (`not_found`,
+  `permission_denied`, `banned`, `rate_limit_exceeded`, ...).
+- On `rate_limit_exceeded`, honor `err.retryAfterSeconds` in your own
+  backoff before retrying.
+- Transport failures use SDK-side codes: `network_error` (fetch itself
+  rejected; the request may or may not have reached the server),
+  `timeout` (the configured or per-request `timeoutMs` elapsed), and
+  `cancelled` (your `AbortSignal` aborted the request).
+
+Keep a default branch when switching on `err.code`: newer servers can
+send codes an older SDK does not know.
 
 ## Bundle size
 

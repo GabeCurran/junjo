@@ -194,10 +194,13 @@ export type WireJunjoEvent =
   | WireGameUserBannedEvent
   | WireGameUserUnbannedEvent;
 
-// Thrown (with this code) when the server sends an event type this SDK
-// version does not know. `verifyWebhook` propagates it so receivers see
-// a clear error; the SSE subscribe loop skips the frame instead, so a
-// newer server cannot kill older clients' streams.
+/**
+ * Thrown (with this code) when the server sends an event type this SDK
+ * version does not know. `verifyWebhook` propagates it so receivers see
+ * a clear error; `verifyWebhookWithMeta` can opt out of the throw via
+ * `onUnknownType: "raw"`; the SSE subscribe loop skips the frame, so a
+ * newer server cannot kill older clients' streams.
+ */
 export const UNKNOWN_EVENT_TYPE = "unknown_event_type";
 
 export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {

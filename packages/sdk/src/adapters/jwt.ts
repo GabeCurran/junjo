@@ -2,24 +2,32 @@ import type { AuthAdapter, UserId } from "@junjo.io/shared";
 import { type CryptoKey, type JWTPayload, importSPKI, errors as joseErrors, jwtVerify } from "jose";
 import { JunjoError } from "../errors.js";
 
+/** Signature algorithms the JWT adapter supports. */
 export type JwtAdapterAlgorithm = "HS256" | "RS256" | "ES256";
 
+/** Options for {@link jwtAdapter}. */
 export interface JwtAdapterOptions {
-  // For HS256, a UTF-8 shared secret. For RS256 / ES256, a PEM-encoded
-  // SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs
-  // are not supported in V1; rotate keys by deploying a new adapter.
+  /**
+   * For HS256, a UTF-8 shared secret. For RS256 / ES256, a PEM-encoded
+   * SPKI public key (the `-----BEGIN PUBLIC KEY-----` block). JWKS URLs
+   * are not supported in V1; rotate keys by deploying a new adapter.
+   */
   key: string;
   algorithm: JwtAdapterAlgorithm;
-  // The JWT claim to read the user id from. Defaults to "sub".
+  /** The JWT claim to read the user id from. Defaults to "sub". */
   userIdClaim?: string;
-  // When set, the JWT's `iss` claim must equal this value.
+  /** When set, the JWT's `iss` claim must equal this value. */
   issuer?: string;
-  // When set, the JWT's `aud` claim must include this value (string or
-  // array; jose handles both).
+  /**
+   * When set, the JWT's `aud` claim must include this value (string or
+   * array; jose handles both).
+   */
   audience?: string | string[];
-  // Maximum allowed clock skew between the JWT's `nbf`/`exp` and `now`,
-  // in seconds. Defaults to 0 (strict). Set higher only if the issuer
-  // and your server are known to drift.
+  /**
+   * Maximum allowed clock skew between the JWT's `nbf`/`exp` and `now`,
+   * in seconds. Defaults to 0 (strict). Set higher only if the issuer
+   * and your server are known to drift.
+   */
   clockToleranceSeconds?: number;
 }
 
@@ -27,6 +35,28 @@ export interface JwtAdapterOptions {
 // least the hash's output size (256 bits), matching RFC 7518's minimum.
 const HS256_MIN_KEY_BYTES = 32;
 
+let warnedBrowserSharedSecret = false;
+
+// An HS256 shared secret in a browser context is readable by every
+// visitor (bundle, devtools), and whoever holds it can mint tokens for
+// any user. Warn loudly but once; throwing would break legitimate
+// non-window environments that happen to polyfill `window`. Mirrors
+// the jk_ browser warning in index.ts.
+function warnIfSharedSecretInBrowser(): void {
+  if (warnedBrowserSharedSecret) return;
+  if (typeof window === "undefined") return;
+  warnedBrowserSharedSecret = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[junjo-sdk] jwtAdapter was constructed with an HS256 shared secret in a browser; every visitor can read the secret and forge tokens for any user. Verify tokens on your server instead, or switch to RS256/ES256 so the browser only ever sees the public key.",
+  );
+}
+
+/**
+ * Builds an AuthAdapter that verifies JWTs locally with jose. Returns
+ * null (rather than throwing) for tokens that fail signature, issuer,
+ * audience, or time-window checks, or that lack the user id claim.
+ */
 export function jwtAdapter(opts: JwtAdapterOptions): AuthAdapter {
   if (typeof opts.key !== "string" || opts.key.length === 0) {
     throw new JunjoError("jwtAdapter: `key` must be a non-empty string", "invalid_config");
@@ -45,6 +75,9 @@ export function jwtAdapter(opts: JwtAdapterOptions): AuthAdapter {
       `jwtAdapter: HS256 \`key\` must be at least ${HS256_MIN_KEY_BYTES} bytes (256 bits); generate one with \`openssl rand -base64 32\``,
       "invalid_config",
     );
+  }
+  if (opts.algorithm === "HS256") {
+    warnIfSharedSecretInBrowser();
   }
 
   const userIdClaim = opts.userIdClaim ?? "sub";

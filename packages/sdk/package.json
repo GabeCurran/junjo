@@ -1,6 +1,6 @@
 {
   "name": "@junjo.io/sdk",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Junjo TypeScript client. Node + browser. Game-domain primitives for groups, ranks, and permissions.",
   "license": "MIT",
   "type": "module",
@@ -10,17 +10,30 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./adapters": {
-      "types": "./dist/adapters/index.d.ts",
-      "import": "./dist/adapters/index.js",
-      "require": "./dist/adapters/index.cjs"
+      "import": {
+        "types": "./dist/adapters/index.d.ts",
+        "default": "./dist/adapters/index.js"
+      },
+      "require": {
+        "types": "./dist/adapters/index.d.cts",
+        "default": "./dist/adapters/index.cjs"
+      }
     }
   },
   "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
@@ -28,10 +41,10 @@
     "size": "size-limit"
   },
   "dependencies": {
-    "@junjo.io/shared": "0.1.2",
-    "jose": "^6.2.3"
+    "@junjo.io/shared": "0.2.0"
   },
   "devDependencies": {
+    "jose": "^6.2.3",
     "@size-limit/preset-small-lib": "^12.1.0",
     "size-limit": "^12.1.0",
     "tsup": "^8.3.5",

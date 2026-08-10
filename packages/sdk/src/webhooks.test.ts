@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
-import { WEBHOOK_SIGNATURE_SCHEME, signWebhookBody, verifyWebhook } from "./webhooks.js";
+import {
+  WEBHOOK_SIGNATURE_SCHEME,
+  signWebhookBody,
+  verifyWebhook,
+  verifyWebhookWithMeta,
+} from "./webhooks.js";
 
 const SECRET = "topsecret-1234";
 
@@ -316,6 +321,162 @@ describe("verifyWebhook", () => {
     expect(event.group.createdAt).toBeInstanceOf(Date);
     expect(event.group.updatedAt).toBeInstanceOf(Date);
     expect(event.group.softDeletedAt).toBeNull();
+  });
+});
+
+describe("verifyWebhookWithMeta", () => {
+  it("returns the parsed event plus eventId and deliveryId from the headers", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const result = await verifyWebhookWithMeta(body, headers, SECRET, { now: FROZEN_NOW });
+    expect(result.event.type).toBe("group.updated");
+    expect(result.event.id).toBe("evt_1");
+    expect(result.eventId).toBe("evt_1");
+    expect(result.deliveryId).toBe("del_1");
+  });
+
+  it("reads the id headers case-insensitively", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const mixed: Record<string, string> = {
+      "x-junjo-signature": headers["x-junjo-signature"] as string,
+      "x-junjo-timestamp": headers["x-junjo-timestamp"] as string,
+      "X-Junjo-Event-Id": "evt_1",
+      "X-Junjo-Delivery-Id": "del_1",
+    };
+    const result = await verifyWebhookWithMeta(body, mixed, SECRET, { now: FROZEN_NOW });
+    expect(result.eventId).toBe("evt_1");
+    expect(result.deliveryId).toBe("del_1");
+  });
+
+  it("leaves eventId/deliveryId undefined when an intermediary stripped the headers", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const {
+      "x-junjo-event-id": _omitEvent,
+      "x-junjo-delivery-id": _omitDelivery,
+      ...stripped
+    } = headers;
+    const result = await verifyWebhookWithMeta(body, stripped, SECRET, { now: FROZEN_NOW });
+    expect(result.event.type).toBe("group.updated");
+    expect(result.eventId).toBeUndefined();
+    expect(result.deliveryId).toBeUndefined();
+  });
+
+  it("rejects with the same verification errors as verifyWebhook", async () => {
+    const { headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    await expect(
+      verifyWebhookWithMeta('{"tampered": true}', headers, SECRET, { now: FROZEN_NOW }),
+    ).rejects.toMatchObject({ code: "webhook_invalid_signature", status: 400 });
+  });
+
+  it("is exposed as junjo.webhooks.verifyWithMeta", async () => {
+    const junjo = new Junjo({ apiKey: "x", fetch: vi.fn() as unknown as typeof fetch });
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const result = await junjo.webhooks.verifyWithMeta(body, headers, SECRET, { now: FROZEN_NOW });
+    expect(result.eventId).toBe("evt_1");
+    expect(result.deliveryId).toBe("del_1");
+  });
+
+  it("throws unknown_event_type on a future type by default", async () => {
+    const futureEvent = {
+      id: "evt_future",
+      type: "member.promoted",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "2026-04-28T05:00:00.000Z",
+    };
+    const { body, headers } = await buildSignedDelivery(futureEvent, SECRET);
+    await expect(
+      verifyWebhookWithMeta(body, headers, SECRET, { now: FROZEN_NOW }),
+    ).rejects.toMatchObject({ code: "unknown_event_type", status: 400 });
+  });
+
+  it("returns the raw payload for a future type under onUnknownType: 'raw'", async () => {
+    const futureEvent = {
+      id: "evt_future",
+      type: "member.promoted",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "2026-04-28T05:00:00.000Z",
+    };
+    const { body, headers } = await buildSignedDelivery(futureEvent, SECRET);
+    const result = await verifyWebhookWithMeta(body, headers, SECRET, {
+      now: FROZEN_NOW,
+      onUnknownType: "raw",
+    });
+    expect(result.event).toBeNull();
+    if (result.event === null) {
+      expect(result.eventType).toBe("member.promoted");
+      expect(result.payload).toEqual(futureEvent);
+    }
+    expect(result.eventId).toBe("evt_1");
+    expect(result.deliveryId).toBe("del_1");
+  });
+
+  it("still returns the typed event for known types under onUnknownType: 'raw'", async () => {
+    const { body, headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    const result = await verifyWebhookWithMeta(body, headers, SECRET, {
+      now: FROZEN_NOW,
+      onUnknownType: "raw",
+    });
+    expect(result.event).not.toBeNull();
+    if (result.event !== null) {
+      expect(result.event.type).toBe("group.updated");
+    }
+  });
+
+  it("leaves eventType undefined under 'raw' when the payload has no string type", async () => {
+    const typeless = { id: "evt_x", gameId: "game_1", occurredAt: "2026-04-28T05:00:00.000Z" };
+    const { body, headers } = await buildSignedDelivery(typeless, SECRET);
+    const result = await verifyWebhookWithMeta(body, headers, SECRET, {
+      now: FROZEN_NOW,
+      onUnknownType: "raw",
+    });
+    expect(result.event).toBeNull();
+    if (result.event === null) {
+      expect(result.eventType).toBeUndefined();
+      expect(result.payload).toEqual(typeless);
+    }
+  });
+
+  it("does not swallow verification failures under onUnknownType: 'raw'", async () => {
+    const { headers } = await buildSignedDelivery(sampleEvent, SECRET);
+    await expect(
+      verifyWebhookWithMeta('{"tampered": true}', headers, SECRET, {
+        now: FROZEN_NOW,
+        onUnknownType: "raw",
+      }),
+    ).rejects.toMatchObject({ code: "webhook_invalid_signature", status: 400 });
+  });
+
+  it("still rejects malformed known-type payloads under 'raw' (only unknown types are exempt)", async () => {
+    const malformed = {
+      id: "evt_bad",
+      type: "group.updated",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "not-a-date",
+      group: sampleEvent.group,
+    };
+    const { body, headers } = await buildSignedDelivery(malformed, SECRET);
+    await expect(
+      verifyWebhookWithMeta(body, headers, SECRET, { now: FROZEN_NOW, onUnknownType: "raw" }),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("supports onUnknownType via junjo.webhooks.verifyWithMeta", async () => {
+    const junjo = new Junjo({ apiKey: "x", fetch: vi.fn() as unknown as typeof fetch });
+    const futureEvent = {
+      id: "evt_future",
+      type: "member.promoted",
+      gameId: "game_1",
+      groupId: "grp_1",
+      occurredAt: "2026-04-28T05:00:00.000Z",
+    };
+    const { body, headers } = await buildSignedDelivery(futureEvent, SECRET);
+    const result = await junjo.webhooks.verifyWithMeta(body, headers, SECRET, {
+      now: FROZEN_NOW,
+      onUnknownType: "raw",
+    });
+    expect(result.event).toBeNull();
   });
 });
 
@@ -664,11 +825,12 @@ describe("WebhookEndpointsApi.create", () => {
 });
 
 describe("WebhookEndpointsApi.list", () => {
-  it("GETs /v1/webhooks and returns deserialized endpoints (no secret on the wire)", async () => {
+  it("GETs /v1/webhooks with no query and returns a Page of deserialized endpoints (no secret on the wire)", async () => {
     const fetchMock = endpointFetch(async (req) => {
       expect(req.method).toBe("GET");
       const url = new URL(req.url);
       expect(url.pathname).toBe("/v1/webhooks");
+      expect(url.search).toBe("");
       expect(req.headers.get("authorization")).toBe("Bearer test_key");
       return jsonResponse({ items: [wireEndpoint], nextCursor: null });
     });
@@ -677,22 +839,41 @@ describe("WebhookEndpointsApi.list", () => {
       baseUrl: "https://example.test",
       fetch: fetchMock as unknown as typeof fetch,
     });
-    const items = await junjo.webhooks.endpoints.list();
-    expect(items).toHaveLength(1);
-    expect(items[0]?.id).toBe("whe_1");
-    expect((items[0] as unknown as Record<string, unknown>).secret).toBeUndefined();
-    expect(items[0]?.createdAt).toBeInstanceOf(Date);
+    const page = await junjo.webhooks.endpoints.list();
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.id).toBe("whe_1");
+    expect((page.items[0] as unknown as Record<string, unknown>).secret).toBeUndefined();
+    expect(page.items[0]?.createdAt).toBeInstanceOf(Date);
+    expect(page.nextCursor).toBeNull();
   });
 
-  it("returns an empty array when the server returns no items", async () => {
+  it("forwards limit and cursor as query parameters and passes nextCursor through", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks");
+      expect(url.searchParams.get("limit")).toBe("2");
+      expect(url.searchParams.get("cursor")).toBe("whe_0");
+      return jsonResponse({ items: [wireEndpoint], nextCursor: "whe_1" });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const page = await junjo.webhooks.endpoints.list({ limit: 2, cursor: "whe_0" });
+    expect(page.nextCursor).toBe("whe_1");
+  });
+
+  it("returns an empty page when the server returns no items", async () => {
     const fetchMock = endpointFetch(async () => jsonResponse({ items: [], nextCursor: null }));
     const junjo = new Junjo({
       apiKey: "test_key",
       baseUrl: "https://example.test",
       fetch: fetchMock as unknown as typeof fetch,
     });
-    const items = await junjo.webhooks.endpoints.list();
-    expect(items).toEqual([]);
+    const page = await junjo.webhooks.endpoints.list();
+    expect(page.items).toEqual([]);
+    expect(page.nextCursor).toBeNull();
   });
 
   it("propagates JunjoError on a non-2xx response", async () => {
@@ -850,5 +1031,42 @@ describe("WebhookEndpointsApi.delete", () => {
       code: "not_found",
       status: 404,
     });
+  });
+});
+
+describe("WebhookEndpointsApi.listAll", () => {
+  it("walks every page, feeding nextCursor back as cursor", async () => {
+    const seenCursors: Array<string | null> = [];
+    const fetchMock = endpointFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/webhooks");
+      expect(url.searchParams.get("limit")).toBe("2");
+      seenCursors.push(url.searchParams.get("cursor"));
+      if (seenCursors.length === 1) {
+        return jsonResponse({
+          items: [wireEndpoint, { ...wireEndpoint, id: "whe_2" }],
+          nextCursor: "whe_2",
+        });
+      }
+      return jsonResponse({
+        items: [{ ...wireEndpoint, id: "whe_3" }],
+        nextCursor: null,
+      });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const ids: string[] = [];
+    for await (const endpoint of junjo.webhooks.endpoints.listAll({ limit: 2 })) {
+      ids.push(endpoint.id);
+      expect(endpoint.createdAt).toBeInstanceOf(Date);
+    }
+
+    expect(ids).toEqual(["whe_1", "whe_2", "whe_3"]);
+    expect(seenCursors).toEqual([null, "whe_2"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -53,20 +53,33 @@ function buildCreateBody(input: CreateRoleInput): {
   return body;
 }
 
+/**
+ * Roles: CRUD within a group plus permission grant / revoke. Roles get
+ * permissions via the dedicated grant / revoke routes, never at
+ * creation time.
+ */
 export class RolesApi {
   constructor(private readonly http: HttpClient) {}
 
-  async create(groupId: GroupId, input: CreateRoleInput): Promise<Role> {
+  async create(
+    groupId: GroupId,
+    input: CreateRoleInput,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Role> {
     const wire = await this.http.post<WireRole>(
       `/v1/groups/${encodeURIComponent(groupId)}/roles`,
       buildCreateBody(input),
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeRole(wire);
   }
 
-  async get(id: RoleId): Promise<Role | null> {
+  async get(id: RoleId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<Role | null> {
     try {
-      const wire = await this.http.get<WireRole>(`/v1/roles/${encodeURIComponent(id)}`);
+      const wire = await this.http.get<WireRole>(`/v1/roles/${encodeURIComponent(id)}`, {
+        signal: opts?.signal,
+        timeoutMs: opts?.timeoutMs,
+      });
       return deserializeRole(wire);
     } catch (err) {
       if (err instanceof JunjoError && err.code === "not_found") return null;
@@ -74,31 +87,58 @@ export class RolesApi {
     }
   }
 
-  async update(id: RoleId, input: UpdateRoleInput): Promise<Role> {
-    const wire = await this.http.patch<WireRole>(`/v1/roles/${encodeURIComponent(id)}`, input);
+  async update(
+    id: RoleId,
+    input: UpdateRoleInput,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Role> {
+    const wire = await this.http.patch<WireRole>(`/v1/roles/${encodeURIComponent(id)}`, input, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return deserializeRole(wire);
   }
 
-  async delete(id: RoleId): Promise<void> {
-    await this.http.delete<unknown>(`/v1/roles/${encodeURIComponent(id)}`);
+  async delete(id: RoleId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
+    await this.http.delete<unknown>(`/v1/roles/${encodeURIComponent(id)}`, undefined, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
   }
 
-  async list(groupId: GroupId): Promise<Role[]> {
-    const wire = await this.http.get<WireRole[]>(`/v1/groups/${encodeURIComponent(groupId)}/roles`);
+  async list(
+    groupId: GroupId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Role[]> {
+    const wire = await this.http.get<WireRole[]>(
+      `/v1/groups/${encodeURIComponent(groupId)}/roles`,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+    );
     return wire.map(deserializeRole);
   }
 
-  async grantPermission(roleId: RoleId, permission: PermissionKey): Promise<Role> {
+  async grantPermission(
+    roleId: RoleId,
+    permission: PermissionKey,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Role> {
     const wire = await this.http.post<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/permissions`,
       { permission },
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeRole(wire);
   }
 
-  async revokePermission(roleId: RoleId, permission: PermissionKey): Promise<Role> {
+  async revokePermission(
+    roleId: RoleId,
+    permission: PermissionKey,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Role> {
     const wire = await this.http.delete<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}`,
+      undefined,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return deserializeRole(wire);
   }

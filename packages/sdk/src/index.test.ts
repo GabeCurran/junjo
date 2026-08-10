@@ -2,7 +2,7 @@ import type { AuthAdapter, GroupId, PermissionKey, UserId } from "@junjo.io/shar
 import { describe, expect, it, vi } from "vitest";
 import { Junjo, JunjoError } from "./index.js";
 
-describe("Junjo.whoami", () => {
+describe("Junjo.verifyToken", () => {
   it("delegates to the configured authAdapter and returns its result", async () => {
     const verifyToken = vi.fn(async (_token: string) => ({
       userId: "user_alice" as UserId,
@@ -15,11 +15,26 @@ describe("Junjo.whoami", () => {
       fetch: vi.fn() as unknown as typeof fetch,
     });
 
-    const result = await junjo.whoami("session.token");
+    const result = await junjo.verifyToken("session.token");
 
     expect(verifyToken).toHaveBeenCalledOnce();
     expect(verifyToken).toHaveBeenCalledWith("session.token");
     expect(result).toEqual({ userId: "user_alice" });
+  });
+
+  it("keeps the deprecated whoami alias delegating to verifyToken", async () => {
+    const verifyToken = vi.fn(async (_token: string) => ({
+      userId: "user_alice" as UserId,
+    }));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      authAdapter: { verifyToken },
+      fetch: vi.fn() as unknown as typeof fetch,
+    });
+
+    expect(await junjo.whoami("session.token")).toEqual({ userId: "user_alice" });
+    expect(verifyToken).toHaveBeenCalledWith("session.token");
   });
 
   it("returns null when the adapter rejects the token", async () => {
@@ -62,6 +77,29 @@ describe("Junjo.whoami", () => {
     });
 
     await expect(junjo.whoami("any.token")).rejects.toThrow("upstream verifier exploded");
+  });
+});
+
+describe("Junjo.keyInfo", () => {
+  it("GETs /v1/whoami with the auth header and brands the gameId", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ gameId: "game_1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const junjo = new Junjo({
+      apiKey: "jk_test.secret",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const info = await junjo.keyInfo();
+    expect(info).toEqual({ gameId: "game_1" });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://example.test/v1/whoami");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer jk_test.secret");
   });
 });
 
