@@ -1,11 +1,14 @@
 // Junjo.io SDK for C++
 //
-// libcurl transport implementation. One easy handle per request keeps
-// the type trivially thread-safe; see curl_transport.hpp for the
-// classification and TLS notes.
+// libcurl transport implementation. One easy handle per request, each
+// attached to a per-transport CURLSH share so requests reuse pooled
+// connections without holding per-request shared state; the share's
+// caches are serialized by lock callbacks. See curl_transport.hpp for
+// the thread-safety classification and TLS notes.
 
 #include "junjo/curl_transport.hpp"
 
+#include <array>
 #include <cstddef>
 #include <mutex>
 #include <string>
@@ -28,6 +31,14 @@ void ensure_curl_global_init() {
   static std::once_flag once;
   std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
+
+// One mutex per curl_lock_data kind, indexed by the enum value. A
+// CURLSH used from multiple threads requires lock and unlock callbacks;
+// a mutex per kind lets independent caches (connection, DNS, TLS
+// session) be held concurrently while each cache is serialized against
+// itself. Sized by the enum sentinel so every value curl can pass is a
+// valid index.
+using ShareLocks = std::array<std::mutex, CURL_LOCK_DATA_LAST>;
 
 // Owns a CURL easy handle and its header list for one request.
 class EasyHandle {
@@ -99,6 +110,22 @@ struct StreamCallbackState {
 };
 
 extern "C" {
+
+// CURLSH lock callback: acquires the mutex for the given cache kind.
+// The access mode is irrelevant here because a single mutex already
+// serializes both shared and exclusive access. Parameters curl requires
+// but this backing does not use are left unnamed.
+void junjo_curl_share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userdata) {
+  auto* locks = static_cast<ShareLocks*>(userdata);
+  (*locks)[static_cast<size_t>(data)].lock();
+}
+
+// CURLSH unlock callback: releases the mutex the matching lock call
+// acquired for the same cache kind.
+void junjo_curl_share_unlock(CURL*, curl_lock_data data, void* userdata) {
+  auto* locks = static_cast<ShareLocks*>(userdata);
+  (*locks)[static_cast<size_t>(data)].unlock();
+}
 
 size_t junjo_curl_write_body(char* data, size_t size, size_t nmemb, void* userdata) {
   auto* state = static_cast<CallbackState*>(userdata);
@@ -187,7 +214,38 @@ size_t junjo_curl_stream_write(char* data, size_t size, size_t nmemb, void* user
 
 }  // namespace
 
-CurlTransport::CurlTransport() { ensure_curl_global_init(); }
+// The cross-request state: the share handle and the mutexes its
+// callbacks lock. locks_ is declared before share so it is fully
+// constructed before curl_share_init and destroyed only after
+// curl_share_cleanup has run in the destructor, meaning no callback can
+// touch a mutex outside its lifetime.
+struct CurlTransport::Shared {
+  ShareLocks locks;
+  CURLSH* share = nullptr;
+};
+
+CurlTransport::CurlTransport() : shared_(std::make_unique<Shared>()) {
+  ensure_curl_global_init();
+  shared_->share = curl_share_init();
+  if (shared_->share != nullptr) {
+    curl_share_setopt(shared_->share, CURLSHOPT_LOCKFUNC, junjo_curl_share_lock);
+    curl_share_setopt(shared_->share, CURLSHOPT_UNLOCKFUNC, junjo_curl_share_unlock);
+    curl_share_setopt(shared_->share, CURLSHOPT_USERDATA, &shared_->locks);
+    // Share the connection cache so per-request handles reuse pooled
+    // keep-alive connections, plus the DNS and TLS-session caches so
+    // repeat requests to the same host skip resolution and the full TLS
+    // handshake.
+    curl_share_setopt(shared_->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+    curl_share_setopt(shared_->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    curl_share_setopt(shared_->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+  }
+}
+
+CurlTransport::~CurlTransport() {
+  if (shared_->share != nullptr) {
+    curl_share_cleanup(shared_->share);
+  }
+}
 
 Result<HttpResponse> CurlTransport::execute(const HttpRequest& request,
                                             const CancellationToken& token) {
@@ -206,6 +264,11 @@ Result<HttpResponse> CurlTransport::execute(const HttpRequest& request,
   CallbackState state;
   char errbuf[CURL_ERROR_SIZE] = {0};
 
+  // Attach the shared connection, DNS, and TLS-session caches so this
+  // per-request handle reuses a kept-alive connection when one exists.
+  if (shared_->share != nullptr) {
+    curl_easy_setopt(h, CURLOPT_SHARE, shared_->share);
+  }
   curl_easy_setopt(h, CURLOPT_URL, request.url.c_str());
   curl_easy_setopt(h, CURLOPT_CUSTOMREQUEST, request.method.c_str());
   // No signals: required for timeouts to be thread-safe on POSIX; a
@@ -283,6 +346,11 @@ Result<void> CurlTransport::execute_stream(const HttpRequest& request, StreamHan
   state.handler = &handler;
   char errbuf[CURL_ERROR_SIZE] = {0};
 
+  // Attach the shared connection, DNS, and TLS-session caches so this
+  // per-request handle reuses a kept-alive connection when one exists.
+  if (shared_->share != nullptr) {
+    curl_easy_setopt(h, CURLOPT_SHARE, shared_->share);
+  }
   curl_easy_setopt(h, CURLOPT_URL, request.url.c_str());
   curl_easy_setopt(h, CURLOPT_CUSTOMREQUEST, request.method.c_str());
   curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);

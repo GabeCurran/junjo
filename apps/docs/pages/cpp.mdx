@@ -234,7 +234,7 @@ Cancellation is cooperative and sticky: `request_cancellation()` may be called f
 
 Behavior you should know about before profiling or deploying:
 
-- **No connection reuse yet.** Each request uses a fresh curl handle, so every call pays a TCP and TLS handshake. For a hot path like a permission check on every player join, either batch through `check` results you cache yourself, or supply a pooling transport (see below); cross-request connection reuse in the bundled transport is planned.
+- **Connections are reused across requests and threads.** Each request still creates and owns its own curl handle, but every handle is attached to a shared connection, DNS, and TLS-session cache guarded by a locked share, so a hot path like a permission check on every player join reuses a kept-alive TLS connection to the API instead of paying a fresh TCP and TLS handshake each time.
 - **TLS certificate verification is enabled.** The transport sets peer and host verification explicitly rather than trusting the linked curl's build defaults.
 - **Proxy environment variables are honored.** libcurl reads `http_proxy`, `https_proxy`, and `ALL_PROXY` by default, so in a proxied datacenter API traffic follows those variables. Set or clear them deliberately for the process that hosts the SDK.
 - **Redirects are disabled** so the authorization header is never resent to a location the server did not name.
