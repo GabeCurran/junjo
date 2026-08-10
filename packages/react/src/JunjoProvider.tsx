@@ -2,6 +2,7 @@ import type { Junjo } from "@junjo.io/sdk";
 import { type ReactNode, useRef } from "react";
 import { JunjoContext } from "./context.js";
 import { PermissionCache, PermissionCacheContext } from "./permissionCache.js";
+import { SubscriptionHub, SubscriptionHubContext } from "./subscriptionHub.js";
 
 export interface JunjoProviderProps {
   client: Junjo;
@@ -9,15 +10,27 @@ export interface JunjoProviderProps {
 }
 
 export function JunjoProvider({ client, children }: JunjoProviderProps) {
-  const cacheRef = useRef<{ client: Junjo; cache: PermissionCache } | null>(null);
-  if (cacheRef.current === null || cacheRef.current.client !== client) {
-    cacheRef.current = { client, cache: new PermissionCache() };
+  // The cache and the hub share the client's lifecycle: one of each per
+  // client, rebuilt together when the client instance is swapped.
+  const perClientRef = useRef<{
+    client: Junjo;
+    cache: PermissionCache;
+    hub: SubscriptionHub;
+  } | null>(null);
+  if (perClientRef.current === null || perClientRef.current.client !== client) {
+    perClientRef.current = {
+      client,
+      cache: new PermissionCache(),
+      hub: new SubscriptionHub(client),
+    };
   }
-  const permissionCache = cacheRef.current.cache;
+  const { cache: permissionCache, hub: subscriptionHub } = perClientRef.current;
   return (
     <JunjoContext.Provider value={client}>
       <PermissionCacheContext.Provider value={permissionCache}>
-        {children}
+        <SubscriptionHubContext.Provider value={subscriptionHub}>
+          {children}
+        </SubscriptionHubContext.Provider>
       </PermissionCacheContext.Provider>
     </JunjoContext.Provider>
   );

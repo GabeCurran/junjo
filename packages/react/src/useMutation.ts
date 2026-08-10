@@ -11,15 +11,6 @@ export type MutationStatus = "idle" | "pending" | "success" | "error";
  * reflects only the latest call. Order cache invalidation in callbacks
  * with that in mind: a callback from a stale mutation still runs, so
  * invalidations should be idempotent and safe to apply out of order.
- *
- * @example
- * ```tsx
- * const { invalidateGroup } = useInvalidatePermissions();
- * const promote = useMutation({
- *   mutationFn: (memberId: MemberId) => junjo.members.addRole(memberId, roleId),
- *   onSuccess: () => invalidateGroup(groupId),
- * });
- * ```
  */
 export interface UseMutationOptions<TData, TError = Error, TVariables = void, TContext = unknown> {
   mutationFn: (variables: TVariables) => Promise<TData>;

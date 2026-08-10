@@ -1,8 +1,15 @@
-import type { ListInvitationsOptions, Subscription } from "@junjo.io/sdk";
+import type { ListInvitationsOptions } from "@junjo.io/sdk";
 import type { GroupId, Invitation, JunjoEvent } from "@junjo.io/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
 
+/**
+ * The three concrete statuses partition invitations disjointly:
+ * "pending" is unused and unexpired, "used" is any redeemed invitation
+ * (even one whose expiry has since passed), and "expired" is unused
+ * but past its expiresAt.
+ */
 export type UseInvitationsStatus = "pending" | "used" | "expired" | "all";
 
 export interface UseInvitationsOptions {
@@ -134,15 +141,27 @@ function applyEvent(state: State, event: JunjoEvent, matches: InvitationMatcher)
   }
 }
 
+/**
+ * Server-side portion of the status filter. The list endpoint exposes
+ * two additive flags, includeExpired and includeUsed, which lift the
+ * server's default exclusion of expired and used rows; there is no way
+ * to exclusively select one partition, so the request fetches the
+ * narrowest superset and matchInvitation narrows it client-side.
+ */
 function listOptionsForStatus(status: UseInvitationsStatus): {
   includeExpired?: boolean;
   includeUsed?: boolean;
 } {
   switch (status) {
     case "pending":
+      // The server's default exclusions already express "pending".
       return {};
     case "used":
-      return { includeUsed: true };
+      // includeUsed alone is not enough: a used invitation whose
+      // expiresAt has since passed is still dropped by the expired-row
+      // exclusion, so both flags must be lifted to receive every used
+      // row.
+      return { includeExpired: true, includeUsed: true };
     case "expired":
       return { includeExpired: true };
     case "all":
@@ -150,6 +169,15 @@ function listOptionsForStatus(status: UseInvitationsStatus): {
   }
 }
 
+/**
+ * Client-side narrowing for what the server cannot express: the
+ * include flags above are supersets, and pending-vs-expired is a
+ * partition of unused rows by expiresAt against the clock. `now` is
+ * supplied fresh on every invocation of the `matches` callback, so
+ * each refetch, fetchMore, and SSE application re-evaluates expiry
+ * against the current time; an already-rendered list is only
+ * re-partitioned by the next fetch or event.
+ */
 function matchInvitation(inv: Invitation, status: UseInvitationsStatus, now: Date): boolean {
   const used = inv.usedAt !== null;
   const expired = inv.expiresAt !== null && inv.expiresAt.getTime() <= now.getTime();
@@ -161,7 +189,7 @@ function matchInvitation(inv: Invitation, status: UseInvitationsStatus, now: Dat
     case "used":
       return used;
     case "expired":
-      return expired;
+      return !used && expired;
   }
 }
 
@@ -170,12 +198,17 @@ export function useInvitations(
   opts?: UseInvitationsOptions,
 ): UseInvitationsResult {
   const junjo = useJunjo();
+  const hub = useSubscriptionHub();
   const status: UseInvitationsStatus = opts?.status ?? "pending";
   const limit = opts?.limit;
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const generationRef = useRef(0);
   const cursorRef = useRef<string | null>(null);
-  const inflightMoreRef = useRef(false);
+  // Holds the generation that owns the in-flight page request, or null
+  // when none is in flight. Generation-aware so a stale request's
+  // finally cannot clear a flag a newer generation owns (which would
+  // let a duplicate page request slip through).
+  const inflightMoreRef = useRef<number | null>(null);
 
   const matches = useCallback<InvitationMatcher>(
     (inv) => matchInvitation(inv, status, new Date()),
@@ -198,7 +231,7 @@ export function useInvitations(
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
     cursorRef.current = null;
-    inflightMoreRef.current = false;
+    inflightMoreRef.current = null;
     dispatch({ type: "fetch_start" });
     try {
       const listOpts: ListInvitationsOptions = { ...listOptionsForStatus(status) };
@@ -222,9 +255,9 @@ export function useInvitations(
 
   const fetchMore = useCallback(async (): Promise<void> => {
     if (cursorRef.current === null) return;
-    if (inflightMoreRef.current) return;
-    inflightMoreRef.current = true;
+    if (inflightMoreRef.current !== null) return;
     const generation = generationRef.current;
+    inflightMoreRef.current = generation;
     dispatch({ type: "fetch_more_start" });
     try {
       const listOpts: ListInvitationsOptions = {
@@ -247,7 +280,7 @@ export function useInvitations(
         error: err instanceof Error ? err : new Error(String(err)),
       });
     } finally {
-      inflightMoreRef.current = false;
+      if (inflightMoreRef.current === generation) inflightMoreRef.current = null;
     }
   }, [junjo, groupId, status, limit, matches]);
 
@@ -255,44 +288,23 @@ export function useInvitations(
     void refetch();
   }, [refetch]);
 
+  // Streaming failures (handshake rejection, mid-stream drop, server
+  // close) all surface as stream_error via the hub's listener
+  // callbacks; the hub tears down its shared stream and this hook
+  // recovers on remount / groupId change as before.
   useEffect(() => {
-    let cancelled = false;
-    let subscription: Subscription | null = null;
-
-    void (async () => {
-      try {
-        const sub = await junjo.groups.subscribe(
-          groupId,
-          (event) => {
-            if (cancelled) return;
-            dispatch({ type: "event", event, matches: matchesRef.current });
-          },
-          {
-            onError: (err) => {
-              if (cancelled) return;
-              dispatch({ type: "stream_error", error: err });
-            },
-          },
-        );
-        if (cancelled) {
-          sub.close();
-          return;
-        }
-        subscription = sub;
-      } catch (err) {
-        if (cancelled) return;
-        dispatch({
-          type: "stream_error",
-          error: err instanceof Error ? err : new Error(String(err)),
-        });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      subscription?.close();
-    };
-  }, [junjo, groupId]);
+    return hub.subscribe(groupId, {
+      onEvent: (event) => {
+        dispatch({ type: "event", event, matches: matchesRef.current });
+      },
+      onError: (err) => {
+        dispatch({ type: "stream_error", error: err });
+      },
+      onClose: () => {
+        dispatch({ type: "stream_error", error: new JunjoStreamClosedError() });
+      },
+    });
+  }, [hub, groupId]);
 
   return {
     invitations: state.invitations,

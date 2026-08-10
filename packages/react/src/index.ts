@@ -1,5 +1,6 @@
 export { JunjoProvider } from "./JunjoProvider.js";
 export type { JunjoProviderProps } from "./JunjoProvider.js";
+export { JunjoStreamClosedError, isStreamClosedError } from "./subscriptionHub.js";
 export { useJunjo } from "./useJunjo.js";
 export { useGroup } from "./useGroup.js";
 export type { GroupSnapshot, GroupUpdater, UseGroupResult } from "./useGroup.js";
@@ -20,6 +21,12 @@ export type {
   UseInvitationsResult,
   UseInvitationsStatus,
 } from "./useInvitations.js";
+export { useRoles } from "./useRoles.js";
+export type { UseRolesResult } from "./useRoles.js";
+export { useBans } from "./useBans.js";
+export type { UseBansOptions, UseBansResult } from "./useBans.js";
+export { useGroups } from "./useGroups.js";
+export type { UseGroupsOptions, UseGroupsResult } from "./useGroups.js";
 export { useAuditLog } from "./useAuditLog.js";
 export type { UseAuditLogOptions, UseAuditLogResult } from "./useAuditLog.js";
 export { useMutation } from "./useMutation.js";

@@ -119,14 +119,17 @@ describe("useInvitations", () => {
     expect(callOpts.includeUsed).toBeUndefined();
   });
 
-  it('passes includeUsed: true when status is "used"', async () => {
+  it('lifts both server exclusions when status is "used"', async () => {
+    // includeUsed alone would drop used invitations whose expiry has
+    // since passed (the server's expired-row exclusion still applies),
+    // so the wire query must lift both flags.
     const h = makeHarness();
     h.list.mockResolvedValue(invitationsPage([]));
 
     renderHook(() => useInvitations(GROUP_ID, { status: "used" }), { wrapper: wrapper(h.client) });
 
     await waitFor(() => expect(h.list).toHaveBeenCalledTimes(1));
-    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { includeUsed: true });
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { includeExpired: true, includeUsed: true });
   });
 
   it('passes includeExpired: true when status is "expired"', async () => {
@@ -176,17 +179,24 @@ describe("useInvitations", () => {
       usedAt: new Date("2026-04-27T00:00:00.000Z"),
       usedBy: "user_x" as UserId,
     });
-    h.list.mockResolvedValue(invitationsPage([pending, used]));
+    // A used invitation whose expiry has since passed still counts as
+    // used (the statuses partition disjointly).
+    const usedExpired = makeInvitation("code_used_expired", {
+      usedAt: new Date("2026-04-27T00:00:00.000Z"),
+      usedBy: "user_y" as UserId,
+      expiresAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
+    h.list.mockResolvedValue(invitationsPage([pending, used, usedExpired]));
 
     const { result } = renderHook(() => useInvitations(GROUP_ID, { status: "used" }), {
       wrapper: wrapper(h.client),
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.invitations).toEqual([used]);
+    expect(result.current.invitations).toEqual([used, usedExpired]);
   });
 
-  it('keeps only expired invitations client-side when status is "expired"', async () => {
+  it('keeps only unused expired invitations client-side when status is "expired"', async () => {
     const h = makeHarness();
     const future = makeInvitation("code_future", {
       expiresAt: new Date("2099-01-01T00:00:00.000Z"),
@@ -194,7 +204,13 @@ describe("useInvitations", () => {
     const expired = makeInvitation("code_expired", {
       expiresAt: new Date("2020-01-01T00:00:00.000Z"),
     });
-    h.list.mockResolvedValue(invitationsPage([future, expired]));
+    // Redeemed-then-expired belongs to the "used" partition.
+    const usedExpired = makeInvitation("code_used_expired", {
+      usedAt: new Date("2026-04-27T00:00:00.000Z"),
+      usedBy: "user_x" as UserId,
+      expiresAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
+    h.list.mockResolvedValue(invitationsPage([future, expired, usedExpired]));
 
     const { result } = renderHook(() => useInvitations(GROUP_ID, { status: "expired" }), {
       wrapper: wrapper(h.client),

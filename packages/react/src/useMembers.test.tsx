@@ -105,24 +105,22 @@ describe("useMembers", () => {
     expect(result.current.members).toEqual([a, b]);
     expect(result.current.error).toBeNull();
     expect(h.list).toHaveBeenCalledTimes(1);
-    expect(h.list).toHaveBeenCalledWith(GROUP_ID, undefined);
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["active"] });
   });
 
-  it("filters non-active members out by default", async () => {
+  it("requests only active members from the server by default", async () => {
     const h = makeHarness();
     const active = makeMember("user_a");
-    const left = makeMember("user_b", { status: "left" });
-    const kicked = makeMember("user_c", { status: "kicked" });
-    const invited = makeMember("user_d", { status: "invited" });
-    h.list.mockResolvedValue(membersPage([active, left, kicked, invited]));
+    h.list.mockResolvedValue(membersPage([active]));
 
     const { result } = renderHook(() => useMembers(GROUP_ID), { wrapper: wrapper(h.client) });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["active"] });
     expect(result.current.members).toEqual([active]);
   });
 
-  it('returns every member when status is "all"', async () => {
+  it('omits the status filter from the wire query when status is "all"', async () => {
     const h = makeHarness();
     const active = makeMember("user_a");
     const left = makeMember("user_b", { status: "left" });
@@ -134,20 +132,38 @@ describe("useMembers", () => {
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, {});
     expect(result.current.members).toEqual([active, left, kicked]);
   });
 
-  it('returns only matching status when status is "left"', async () => {
+  it('sends the wire query with status: ["banned"] and trusts the filtered stream', async () => {
     const h = makeHarness();
-    const active = makeMember("user_a");
+    const bannedA = makeMember("user_a", { status: "banned" });
+    const bannedB = makeMember("user_b", { status: "banned" });
+    h.list.mockResolvedValue(membersPage([bannedA, bannedB], "cursor_1"));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "banned" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["banned"] });
+    expect(result.current.members).toEqual([bannedA, bannedB]);
+    // hasMore now describes the filtered stream, not the raw one.
+    expect(result.current.hasMore).toBe(true);
+  });
+
+  it('passes status: ["left"] on the wire when status is "left"', async () => {
+    const h = makeHarness();
     const left = makeMember("user_b", { status: "left" });
-    h.list.mockResolvedValue(membersPage([active, left]));
+    h.list.mockResolvedValue(membersPage([left]));
 
     const { result } = renderHook(() => useMembers(GROUP_ID, { status: "left" }), {
       wrapper: wrapper(h.client),
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["left"] });
     expect(result.current.members).toEqual([left]);
   });
 
@@ -158,7 +174,7 @@ describe("useMembers", () => {
     renderHook(() => useMembers(GROUP_ID, { limit: 25 }), { wrapper: wrapper(h.client) });
 
     await waitFor(() => expect(h.list).toHaveBeenCalledTimes(1));
-    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { limit: 25 });
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { limit: 25, status: ["active"] });
   });
 
   it("captures a JunjoError thrown by members.list into result.error", async () => {
@@ -234,14 +250,17 @@ describe("useMembers", () => {
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(h.captures[1]?.groupId).toBe(ALT_GROUP_ID);
     expect(result.current.loading).toBe(false);
-    expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID, undefined);
+    expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID, { status: ["active"] });
   });
 
   it("does not re-subscribe when only the status filter changes", async () => {
     const h = makeHarness();
     const active = makeMember("user_a");
     const left = makeMember("user_b", { status: "left" });
-    h.list.mockResolvedValue(membersPage([active, left]));
+    // Emulate server-side filtering: the wire query carries the status.
+    h.list.mockImplementation((_groupId: GroupId, opts?: { status?: MemberStatus[] }) =>
+      Promise.resolve(membersPage(opts?.status !== undefined ? [active] : [active, left])),
+    );
 
     const { result, rerender } = renderHook(
       ({ status }: { status: "active" | "all" }) => useMembers(GROUP_ID, { status }),
@@ -341,6 +360,159 @@ describe("useMembers", () => {
     });
 
     expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+  });
+
+  it("drops a banned member from an active-filtered list on member.banned", async () => {
+    const h = makeHarness();
+    const a = makeMember("user_a");
+    const b = makeMember("user_b");
+    h.list.mockResolvedValue(membersPage([a, b]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "active" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(2));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.banned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: a.userId,
+        reason: "griefing",
+        bannedUntil: null,
+      });
+    });
+
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+  });
+
+  it("updates a present row in a banned-filtered list on member.banned", async () => {
+    const h = makeHarness();
+    const banned = makeMember("user_a", { status: "banned", bannedUntil: null });
+    h.list.mockResolvedValue(membersPage([banned]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "banned" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    const until = new Date("2026-09-01T00:00:00.000Z");
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.banned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: banned.userId,
+        reason: "re-banned with a deadline",
+        bannedUntil: until,
+      });
+    });
+
+    expect(result.current.members).toHaveLength(1);
+    expect(result.current.members[0]?.status).toBe("banned");
+    expect(result.current.members[0]?.bannedUntil).toEqual(until);
+  });
+
+  it('flips a present banned row to "left" on member.unbanned (status: "all")', async () => {
+    const h = makeHarness();
+    const banned = makeMember("user_a", {
+      status: "banned",
+      bannedUntil: new Date("2026-09-01T00:00:00.000Z"),
+    });
+    h.list.mockResolvedValue(membersPage([banned]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "all" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.unbanned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: banned.userId,
+      });
+    });
+
+    // The server's unban handler sets status "left", not "active".
+    expect(result.current.members).toHaveLength(1);
+    expect(result.current.members[0]?.status).toBe("left");
+    expect(result.current.members[0]?.bannedUntil).toBeNull();
+  });
+
+  it("removes a present row from a banned-filtered list on member.unbanned", async () => {
+    const h = makeHarness();
+    const banned = makeMember("user_a", { status: "banned" });
+    h.list.mockResolvedValue(membersPage([banned]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "banned" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.unbanned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: banned.userId,
+      });
+    });
+
+    expect(result.current.members).toEqual([]);
+  });
+
+  it("ignores ban events for rows not present (events carry no member snapshot)", async () => {
+    const h = makeHarness();
+    h.list.mockResolvedValue(membersPage([makeMember("user_a", { status: "banned" })]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID, { status: "banned" }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    const snapshot = result.current.members;
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.banned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: "user_unloaded" as UserId,
+        reason: null,
+        bannedUntil: null,
+      });
+    });
+
+    // The row cannot be inserted; a banned-filtered list learns about
+    // members it never loaded only on refetch.
+    expect(result.current.members).toBe(snapshot);
   });
 
   it("updates a member's roles on role.changed (added + removed merge)", async () => {
@@ -548,7 +720,10 @@ describe("useMembers", () => {
     expect(result.current.members).toEqual([a, b, c]);
     expect(result.current.hasMore).toBe(false);
     expect(result.current.loadingMore).toBe(false);
-    expect(h.list).toHaveBeenLastCalledWith(GROUP_ID, { cursor: "cursor_1" });
+    expect(h.list).toHaveBeenLastCalledWith(GROUP_ID, {
+      cursor: "cursor_1",
+      status: ["active"],
+    });
   });
 
   it("fetchMore is a no-op when hasMore is false", async () => {
@@ -598,6 +773,67 @@ describe("useMembers", () => {
     expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
   });
 
+  it("a stale fetchMore's completion does not clear a newer generation's inflight flag", async () => {
+    const h = makeHarness();
+    h.list.mockResolvedValueOnce(membersPage([makeMember("user_a")], "cursor_1"));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(result.current.hasMore).toBe(true));
+
+    // Stale fetchMore (generation 1) left pending.
+    let resolveStale!: (p: Page<Member>) => void;
+    h.list.mockImplementationOnce(
+      () =>
+        new Promise<Page<Member>>((resolve) => {
+          resolveStale = resolve;
+        }),
+    );
+    let stale!: Promise<void>;
+    act(() => {
+      stale = result.current.fetchMore();
+    });
+
+    // refetch bumps the generation and resets pagination.
+    h.list.mockResolvedValueOnce(membersPage([makeMember("user_b")], "cursor_2"));
+    await act(async () => {
+      await result.current.refetch();
+    });
+
+    // Newer fetchMore (generation 2) in flight.
+    let resolveFresh!: (p: Page<Member>) => void;
+    h.list.mockImplementationOnce(
+      () =>
+        new Promise<Page<Member>>((resolve) => {
+          resolveFresh = resolve;
+        }),
+    );
+    let fresh!: Promise<void>;
+    act(() => {
+      fresh = result.current.fetchMore();
+    });
+    const callsAfterFresh = h.list.mock.calls.length;
+
+    // The stale request settles while the fresh one is still in
+    // flight; its finally must not clear the flag the fresh request
+    // owns.
+    await act(async () => {
+      resolveStale(membersPage([makeMember("user_z")], null));
+      await stale;
+    });
+
+    // A duplicate page request must still be suppressed.
+    await act(async () => {
+      await result.current.fetchMore();
+    });
+    expect(h.list).toHaveBeenCalledTimes(callsAfterFresh);
+
+    await act(async () => {
+      resolveFresh(membersPage([makeMember("user_c")], null));
+      await fresh;
+    });
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_b", "user_c"]);
+  });
+
   it("captures a fetchMore error without dropping previous members", async () => {
     const h = makeHarness();
     const a = makeMember("user_a");
@@ -631,7 +867,42 @@ describe("useMembers", () => {
       await result.current.fetchMore();
     });
 
-    expect(h.list).toHaveBeenLastCalledWith(GROUP_ID, { cursor: "cursor_1", limit: 25 });
+    expect(h.list).toHaveBeenLastCalledWith(GROUP_ID, {
+      cursor: "cursor_1",
+      limit: 25,
+      status: ["active"],
+    });
+  });
+
+  it("recovers from a stream error via refetch", async () => {
+    const h = makeHarness();
+    const before = makeMember("user_a");
+    h.list.mockResolvedValueOnce(membersPage([before]));
+
+    const { result } = renderHook(() => useMembers(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const onError = h.captures[0]?.opts?.onError;
+    if (!onError) throw new Error("onError missing");
+
+    // SSE drops: the hook surfaces the stream error on result.error
+    // while keeping the last snapshot.
+    act(() => {
+      onError(new Error("stream dropped"));
+    });
+    expect(result.current.error).toEqual(new Error("stream dropped"));
+    expect(result.current.members).toEqual([before]);
+
+    // A manual refetch clears the error and restores fresh data.
+    const after = makeMember("user_b");
+    h.list.mockResolvedValueOnce(membersPage([after]));
+    await act(async () => {
+      await result.current.refetch();
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.members).toEqual([after]);
+    expect(result.current.loading).toBe(false);
   });
 
   describe("applyOptimistic", () => {

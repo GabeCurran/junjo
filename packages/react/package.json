@@ -1,6 +1,6 @@
 {
   "name": "@junjo.io/react",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "React hooks for Junjo. Built on @junjo.io/sdk.",
   "license": "MIT",
   "type": "module",
@@ -10,20 +10,28 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@junjo.io/sdk": "0.1.2",
-    "@junjo.io/shared": "0.1.2"
+    "@junjo.io/sdk": "0.2.0",
+    "@junjo.io/shared": "0.2.0"
   },
   "peerDependencies": {
     "react": "^18 || ^19"

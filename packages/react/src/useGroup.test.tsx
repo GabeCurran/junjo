@@ -96,8 +96,8 @@ function makeMember(userId: string, overrides: Partial<Member> = {}): Member {
   };
 }
 
-function membersPage(items: Member[]): Page<Member> {
-  return { items, nextCursor: null };
+function membersPage(items: Member[], nextCursor: string | null = null): Page<Member> {
+  return { items, nextCursor };
 }
 
 function wrapper(client: Junjo) {
@@ -129,25 +129,24 @@ describe("useGroup", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.group).toBe(group);
     expect(result.current.members).toEqual([memberA, memberB]);
+    expect(result.current.membersHasMore).toBe(false);
     expect(result.current.error).toBeNull();
     expect(h.get).toHaveBeenCalledTimes(1);
     expect(h.get).toHaveBeenCalledWith(GROUP_ID);
     expect(h.list).toHaveBeenCalledTimes(1);
-    expect(h.list).toHaveBeenCalledWith(GROUP_ID);
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["active"] });
   });
 
-  it("filters non-active members out of the initial roster", async () => {
+  it("requests only active members from the server for the roster", async () => {
     const h = makeHarness();
     const active = makeMember("user_a");
-    const left = makeMember("user_b", { status: "left" });
-    const kicked = makeMember("user_c", { status: "kicked" });
-    const invited = makeMember("user_d", { status: "invited" });
     h.get.mockResolvedValue(makeGroup());
-    h.list.mockResolvedValue(membersPage([active, left, kicked, invited]));
+    h.list.mockResolvedValue(membersPage([active]));
 
     const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(h.list).toHaveBeenCalledWith(GROUP_ID, { status: ["active"] });
     expect(result.current.members).toEqual([active]);
   });
 
@@ -249,7 +248,7 @@ describe("useGroup", () => {
     await waitFor(() => expect(result.current.group?.id).toBe(ALT_GROUP_ID));
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(h.get).toHaveBeenLastCalledWith(ALT_GROUP_ID);
-    expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID);
+    expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID, { status: ["active"] });
     expect(h.captures).toHaveLength(2);
     expect(h.captures[1]?.groupId).toBe(ALT_GROUP_ID);
   });
@@ -450,6 +449,92 @@ describe("useGroup", () => {
     expect(result.current.members).toEqual([]);
   });
 
+  it("group.deleted also invalidates the members cursor so fetchMoreMembers is a no-op", async () => {
+    const h = makeHarness();
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockResolvedValue(membersPage([makeMember("user_a")], "cursor_1"));
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.membersHasMore).toBe(true));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "group.deleted",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+      });
+    });
+    expect(result.current.membersHasMore).toBe(false);
+
+    // A programmatic fetchMoreMembers must not fire with the dead
+    // pre-deletion cursor.
+    const callsBefore = h.list.mock.calls.length;
+    await act(async () => {
+      await result.current.fetchMoreMembers();
+    });
+    expect(h.list).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it("drops a banned member from the active roster on member.banned", async () => {
+    const h = makeHarness();
+    const a = makeMember("user_a");
+    const b = makeMember("user_b");
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockResolvedValue(membersPage([a, b]));
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(2));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.banned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: a.userId,
+        reason: "griefing",
+        bannedUntil: null,
+      });
+    });
+
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+  });
+
+  it("drops a present row on member.unbanned (unban sets status left, not active)", async () => {
+    const h = makeHarness();
+    const a = makeMember("user_a");
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockResolvedValue(membersPage([a]));
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.members).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.unbanned",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: a.userId,
+      });
+    });
+
+    expect(result.current.members).toEqual([]);
+  });
+
   it("does not change state for unrelated events (e.g. role.created)", async () => {
     const h = makeHarness();
     const before = makeMember("user_a");
@@ -544,6 +629,127 @@ describe("useGroup", () => {
       await Promise.resolve();
     });
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  describe("fetchMoreMembers", () => {
+    it("exposes membersHasMore and appends the next page on fetchMoreMembers", async () => {
+      const h = makeHarness();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      const c = makeMember("user_c");
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValueOnce(membersPage([a, b], "cursor_1"));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.members).toEqual([a, b]);
+      expect(result.current.membersHasMore).toBe(true);
+
+      h.list.mockResolvedValueOnce(membersPage([c], null));
+      await act(async () => {
+        await result.current.fetchMoreMembers();
+      });
+
+      expect(result.current.members).toEqual([a, b, c]);
+      expect(result.current.membersHasMore).toBe(false);
+      expect(h.list).toHaveBeenLastCalledWith(GROUP_ID, {
+        status: ["active"],
+        cursor: "cursor_1",
+      });
+    });
+
+    it("is a no-op when membersHasMore is false", async () => {
+      const h = makeHarness();
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValue(membersPage([makeMember("user_a")], null));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.membersHasMore).toBe(false);
+
+      await act(async () => {
+        await result.current.fetchMoreMembers();
+      });
+
+      expect(h.list).toHaveBeenCalledTimes(1);
+    });
+
+    it("deduplicates members already present when appending a page", async () => {
+      const h = makeHarness();
+      const a = makeMember("user_a");
+      const b = makeMember("user_b");
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValueOnce(membersPage([a], "cursor_1"));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.membersHasMore).toBe(true));
+
+      h.list.mockResolvedValueOnce(membersPage([a, b], null));
+      await act(async () => {
+        await result.current.fetchMoreMembers();
+      });
+
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+    });
+
+    it("captures a fetchMoreMembers error without dropping loaded members", async () => {
+      const h = makeHarness();
+      const a = makeMember("user_a");
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValueOnce(membersPage([a], "cursor_1"));
+
+      const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+      await waitFor(() => expect(result.current.membersHasMore).toBe(true));
+
+      const err = new JunjoError("boom", "internal", 500);
+      h.list.mockRejectedValueOnce(err);
+      await act(async () => {
+        await result.current.fetchMoreMembers();
+      });
+
+      expect(result.current.error).toBe(err);
+      expect(result.current.members).toEqual([a]);
+      expect(result.current.membersHasMore).toBe(true);
+    });
+
+    it("discards a page that resolves after a groupId change (generation guard)", async () => {
+      const h = makeHarness();
+      const a = makeMember("user_a");
+      const c = makeMember("user_c", { groupId: ALT_GROUP_ID });
+      h.get.mockResolvedValue(makeGroup());
+      h.list.mockResolvedValueOnce(membersPage([a], "cursor_1"));
+
+      const { result, rerender } = renderHook(({ id }: { id: GroupId }) => useGroup(id), {
+        initialProps: { id: GROUP_ID },
+        wrapper: wrapper(h.client),
+      });
+      await waitFor(() => expect(result.current.membersHasMore).toBe(true));
+
+      let resolveStale!: (page: Page<Member>) => void;
+      h.list.mockImplementationOnce(
+        () =>
+          new Promise<Page<Member>>((resolve) => {
+            resolveStale = resolve;
+          }),
+      );
+
+      let stale!: Promise<void>;
+      act(() => {
+        stale = result.current.fetchMoreMembers();
+      });
+
+      h.list.mockResolvedValueOnce(membersPage([c]));
+      rerender({ id: ALT_GROUP_ID });
+      await waitFor(() => expect(result.current.members.map((m) => m.userId)).toEqual(["user_c"]));
+
+      await act(async () => {
+        resolveStale(membersPage([makeMember("user_stale")], null));
+        await stale;
+      });
+
+      expect(result.current.members.map((m) => m.userId)).toEqual(["user_c"]);
+    });
   });
 
   describe("applyOptimistic", () => {
