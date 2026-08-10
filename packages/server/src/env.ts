@@ -56,6 +56,18 @@ const EnvSchema = z.object({
         .int("JUNJO_MAX_PAGE_SIZE must be a positive integer")
         .positive("JUNJO_MAX_PAGE_SIZE must be a positive integer"),
     ),
+  // Whether a trusted proxy fronts the server and APPENDS the client
+  // address to x-forwarded-for (Railway, nginx, any standard LB). When
+  // true, rate limiting keys keyless traffic on the rightmost
+  // x-forwarded-for hop (the one hop the client cannot forge). When
+  // false (default, correct for direct exposure), the header is ignored
+  // entirely and the socket address is used. Cloud deployments behind
+  // Railway MUST set this to "true" or all keyless traffic shares the
+  // proxy's socket address bucket.
+  TRUST_PROXY: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
   // Operator escape hatch for webhook URL SSRF guard. Default false rejects
   // POST /v1/webhooks { url: ... } pointed at loopback / link-local /
   // RFC1918 / IPv6 ULA hosts. Self-host devs running a receiver on the same

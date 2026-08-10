@@ -177,8 +177,8 @@ export const adminSetParentBody = z.object({
   parentGroupId: z.string().min(1).nullable(),
 });
 
-// Mirrors the per-game `MAX_PARENT_DEPTH`.
-export const ADMIN_MAX_PARENT_DEPTH = 100;
+// The admin parent-set route shares MAX_PARENT_DEPTH from
+// groups.schema.ts via parentCycle.ts.
 
 // Extends the per-group `listAuditQuery` with `since` (lower bound),
 // `actorUserId` (exact match against the internal `JunjoUser.id`), and
@@ -188,11 +188,10 @@ export const ADMIN_AUDIT_TARGET_ID_MAX_LENGTH = 255;
 
 export const listAdminGameAuditQuery = z.object({
   limit: pageLimit(50),
-  before: z
-    .string()
-    .min(1)
-    .refine((s) => !Number.isNaN(Date.parse(s)), { message: "before must be an ISO 8601 date" })
-    .optional(),
+  // Either an audit entry id (the value `nextCursor` returns) or an ISO
+  // 8601 timestamp (the original strictly-older-than contract). Ids are
+  // validated against the database in `auditBeforeFilter`.
+  before: z.string().min(1).max(255).optional(),
   since: z
     .string()
     .min(1)

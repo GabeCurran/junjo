@@ -6,9 +6,9 @@ export const createGameBanBody = z
   .object({
     userId: z.string().min(1),
     reason: z.string().max(500).nullable().optional(),
-    // Validator rejects past timestamps to catch typos client-side; lazy
-    // expiry on read still treats already-elapsed values as not-banned
-    // for any rows that pre-date this validation.
+    // Validator only checks that the string parses as a date; a past
+    // timestamp is accepted and creates a ban that is already expired,
+    // which lazy expiry on read treats as not-banned.
     expiresAt: z
       .string()
       .min(1)
@@ -46,7 +46,7 @@ export const listGameBansQuery = z.object({
   cursor: z.string().min(1).optional(),
   // When `true`, also returns rows whose expiresAt is in the past. The
   // default mirrors the runtime contract (the ban check ignores expired
-  // rows) -- expired rows are surfaced only when the operator asks.
+  // rows); expired rows are surfaced only when the operator asks.
   includeExpired: z
     .enum(["true", "false"])
     .optional()

@@ -121,6 +121,36 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects metadata whose serialized size exceeds the cap", async () => {
+    // One string value pushed past the 16 KB serialized ceiling.
+    const oversized = { blob: "x".repeat(17 * 1024) };
+    const res = await postGroups({ kind: "guild", name: "Big Meta", metadata: oversized });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("bad_request");
+
+    const groups = await prisma.group.findMany({ where: { gameId } });
+    expect(groups).toHaveLength(0);
+  });
+
+  it("rejects a body larger than the global 1 MB cap with 413", async () => {
+    // Body exceeds the global bodyLimit before any handler runs. A real
+    // HTTP client always sends Content-Length, which is bodyLimit's
+    // primary check; set it explicitly so the in-process request mirrors
+    // that path deterministically.
+    const huge = JSON.stringify({ kind: "guild", name: "x".repeat(1024 * 1024 + 16) });
+    const res = await app.request("/v1/groups", {
+      method: "POST",
+      headers: {
+        authorization: authHeader,
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(huge, "utf8")),
+      },
+      body: huge,
+    });
+    expect(res.status).toBe(413);
+  });
+
   it("rejects requests without an API key", async () => {
     const res = await app.request("/v1/groups", {
       method: "POST",
@@ -3005,6 +3035,36 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/groups/:id/bulk-invite", () => {
 
     const invitations = await prisma.invitation.findMany({ where: { groupId: group.id } });
     expect(invitations).toHaveLength(0);
+  });
+
+  it("invites at the 1000-row cap", async () => {
+    const group = await seedGroup();
+    const csv = `${Array.from({ length: 1000 }, (_, i) => `user_${i}`).join("\n")}\n`;
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { invited: number; skipped: number };
+    expect(body.invited).toBe(1000);
+    expect(body.skipped).toBe(0);
+
+    const count = await prisma.invitation.count({ where: { groupId: group.id } });
+    expect(count).toBe(1000);
+  });
+
+  it("rejects a body larger than the bulk cap before splitting it", async () => {
+    const group = await seedGroup();
+    // 600 KB body: under the global 1 MB cap but over the 512 KB bulk
+    // guard, so the pre-split byte check rejects it with 400.
+    const csv = "x".repeat(600 * 1024);
+
+    const res = await postBulk(group.id, csv);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toMatch(/bytes/);
+
+    const count = await prisma.invitation.count({ where: { groupId: group.id } });
+    expect(count).toBe(0);
   });
 
   it("returns zero counts and an empty errors array for an empty body", async () => {

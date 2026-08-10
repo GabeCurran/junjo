@@ -1,8 +1,17 @@
+import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type RawApiKey, generateApiKey } from "../apiKey";
+import { createApp } from "../app";
 import { errorHandler } from "./error";
-import { RateLimiter, buildRateLimiter, rateLimitMiddleware, resolveBucketKey } from "./rateLimit";
+import {
+  RateLimiter,
+  SOURCE_BUCKET_SCALE,
+  buildRateLimiter,
+  parseBearerPrefix,
+  rateLimitMiddleware,
+  resolveClientIp,
+} from "./rateLimit";
 
 describe("RateLimiter", () => {
   it("allows the first request and tracks the key in its bucket map", () => {
@@ -170,29 +179,46 @@ describe("buildRateLimiter", () => {
   });
 });
 
-describe("resolveBucketKey", () => {
-  it("returns 'anon' for null", () => {
-    expect(resolveBucketKey(null)).toBe("anon");
-  });
-
-  it("returns 'anon' for an empty string", () => {
-    expect(resolveBucketKey("")).toBe("anon");
-  });
-
-  it("returns 'anon' for a non-Bearer scheme", () => {
-    expect(resolveBucketKey("Basic dXNlcjpwYXNz")).toBe("anon");
-  });
-
-  it("returns 'anon' for a malformed key (no dot)", () => {
-    expect(resolveBucketKey("Bearer no_dot_here")).toBe("anon");
+describe("parseBearerPrefix", () => {
+  it("returns null for null / empty / non-Bearer / malformed values", () => {
+    expect(parseBearerPrefix(null)).toBeNull();
+    expect(parseBearerPrefix("")).toBeNull();
+    expect(parseBearerPrefix("Basic dXNlcjpwYXNz")).toBeNull();
+    expect(parseBearerPrefix("Bearer no_dot_here")).toBeNull();
   });
 
   it("returns the prefix for a parseable Bearer key", () => {
-    expect(resolveBucketKey("Bearer jk_someprefix.somesecret")).toBe("jk_someprefix");
+    expect(parseBearerPrefix("Bearer jk_someprefix.somesecret")).toBe("jk_someprefix");
   });
 
   it("trims whitespace around the bearer value", () => {
-    expect(resolveBucketKey("Bearer    jk_a.b   ")).toBe("jk_a");
+    expect(parseBearerPrefix("Bearer    jk_a.b   ")).toBe("jk_a");
+  });
+});
+
+describe("resolveClientIp", () => {
+  it("uses the socket address when no proxy is trusted, ignoring x-forwarded-for", () => {
+    // The whole header is client-controlled without a trusted proxy;
+    // honoring any hop of it would let callers mint fresh buckets.
+    expect(resolveClientIp("6.6.6.6", false, "203.0.113.9")).toBe("203.0.113.9");
+    expect(resolveClientIp(null, false, "203.0.113.9")).toBe("203.0.113.9");
+  });
+
+  it("falls back to direct when no socket address is known", () => {
+    expect(resolveClientIp(null, false, null)).toBe("direct");
+    expect(resolveClientIp("6.6.6.6", false, null)).toBe("direct");
+  });
+
+  it("uses the RIGHTMOST x-forwarded-for hop when the proxy is trusted", () => {
+    // The rightmost hop is appended by the closest trusted proxy; the
+    // leftmost hops are client-supplied and forgeable.
+    expect(resolveClientIp("203.0.113.9", true, "10.0.0.1")).toBe("203.0.113.9");
+    expect(resolveClientIp("6.6.6.6, 203.0.113.9", true, "10.0.0.1")).toBe("203.0.113.9");
+  });
+
+  it("falls back to the socket when trusted but the header is absent or blank", () => {
+    expect(resolveClientIp(null, true, "10.0.0.1")).toBe("10.0.0.1");
+    expect(resolveClientIp("   ", true, "10.0.0.1")).toBe("10.0.0.1");
   });
 });
 
@@ -272,14 +298,31 @@ describe("rateLimitMiddleware", () => {
     expect(b.status).toBe(200);
   });
 
-  it("falls back to the 'anon' bucket when no Authorization header is present", async () => {
-    const limiter = new RateLimiter({ perMinute: 60, burst: 2 }, () => 0);
+  it("keyless traffic shares one scaled source bucket", async () => {
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
     const app = buildApp(limiter);
-    expect((await app.request("/protected/echo")).status).toBe(200);
-    expect((await app.request("/protected/echo")).status).toBe(200);
+    // Source-bucket capacity is burst * SOURCE_BUCKET_SCALE.
+    for (let i = 0; i < SOURCE_BUCKET_SCALE; i++) {
+      expect((await app.request("/protected/echo")).status).toBe(200);
+    }
     const blocked = await app.request("/protected/echo");
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("rotating fabricated Bearer prefixes cannot mint fresh budgets", async () => {
+    // Regression: prefix buckets used to be handed to ANY dotted Bearer
+    // value, so rotating junk prefixes bypassed the source limit.
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
+    const app = buildApp(limiter);
+    let blocked = 0;
+    for (let i = 0; i < SOURCE_BUCKET_SCALE + 5; i++) {
+      const res = await app.request("/protected/echo", {
+        headers: { authorization: `Bearer fake${i}.secret` },
+      });
+      if (res.status === 429) blocked++;
+    }
+    expect(blocked).toBeGreaterThanOrEqual(5);
   });
 
   it("burst absorbs spikes up to the burst cap", async () => {
@@ -321,5 +364,71 @@ describe("rateLimitMiddleware", () => {
     const seconds = Number(retryAfter);
     expect(Number.isInteger(seconds)).toBe(true);
     expect(seconds).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// The limiter registers ahead of every /v1 route, so the admin-token
+// surface and the unauthenticated invitation preview are covered, not
+// just per-game-key routes. These tests never reach a handler that
+// touches the database: the admin requests fail auth (401) and the
+// preview lookup uses a stub that returns null (404). Both still
+// consume rate-limit tokens, which is the point.
+describe("app-wide rate limit coverage", () => {
+  const prismaStub = {
+    invitation: { findUnique: async () => null },
+  } as unknown as PrismaClient;
+
+  it("limits admin-token routes per source", async () => {
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
+    const app = createApp({
+      prisma: prismaStub,
+      rateLimit: limiter,
+      adminToken: "test-admin-token-rate-limit",
+    });
+    const headers = { authorization: "Bearer wrong-token" };
+    for (let i = 0; i < SOURCE_BUCKET_SCALE; i++) {
+      expect((await app.request("/v1/admin/stats", { headers })).status).toBe(401);
+    }
+    const blocked = await app.request("/v1/admin/stats", { headers });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("limits the unauthenticated invitation preview", async () => {
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
+    const app = createApp({ prisma: prismaStub, rateLimit: limiter });
+    for (let i = 0; i < SOURCE_BUCKET_SCALE; i++) {
+      expect((await app.request("/v1/invitations/nope")).status).toBe(404);
+    }
+    expect((await app.request("/v1/invitations/nope")).status).toBe(429);
+  });
+
+  it("separates keyless buckets by trusted forwarded IP (rightmost hop)", async () => {
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
+    const app = createApp({ prisma: prismaStub, rateLimit: limiter, trustProxy: true });
+    const from = (xff: string) => ({ headers: { "x-forwarded-for": xff } });
+    for (let i = 0; i < SOURCE_BUCKET_SCALE; i++) {
+      expect((await app.request("/v1/invitations/nope", from("203.0.113.9"))).status).toBe(404);
+    }
+    expect((await app.request("/v1/invitations/nope", from("203.0.113.9"))).status).toBe(429);
+    // Spoofing a leftmost hop while the rightmost stays the same does
+    // NOT mint a fresh bucket.
+    expect((await app.request("/v1/invitations/nope", from("6.6.6.6, 203.0.113.9"))).status).toBe(
+      429,
+    );
+    // A genuinely different client (different rightmost hop) keeps its
+    // own budget.
+    expect((await app.request("/v1/invitations/nope", from("198.51.100.4"))).status).toBe(404);
+  });
+
+  it("ignores x-forwarded-for entirely when no proxy is trusted", async () => {
+    const limiter = new RateLimiter({ perMinute: 60, burst: 1 }, () => 0);
+    const app = createApp({ prisma: prismaStub, rateLimit: limiter });
+    const from = (xff: string) => ({ headers: { "x-forwarded-for": xff } });
+    // All requests share the direct bucket regardless of header games.
+    for (let i = 0; i < SOURCE_BUCKET_SCALE; i++) {
+      expect((await app.request("/v1/invitations/nope", from(`10.0.0.${i}`))).status).toBe(404);
+    }
+    expect((await app.request("/v1/invitations/nope", from("10.9.9.9"))).status).toBe(429);
   });
 });

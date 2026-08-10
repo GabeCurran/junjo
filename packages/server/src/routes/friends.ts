@@ -4,9 +4,9 @@
 //
 // Identity contract (matches the rest of the Junjo server): path params
 // and body fields named `userId` / `targetJunjoUserId` / `viewerUserId`
-// / `otherUserId` carry the dev's EXTERNAL user id (Clerk sub, Supabase
-// uuid, Reibu cuid, Roblox UserId-as-string, etc.). Each handler
-// resolves the external id to the internal `JunjoUser.id` via
+// / `otherUserId` carry the dev's EXTERNAL user id, whatever external
+// id the game's auth provider issues. Each handler resolves the
+// external id to the internal `JunjoUser.id` via
 // `findOrCreateJunjoUser` (for write paths that should auto-vivify a
 // missing user) or `findJunjoUserId` (for read paths that should
 // surface "no relationship" without writing anything). All DB queries
@@ -30,13 +30,14 @@ import type {
   FriendshipState,
   GameId,
 } from "@junjo.io/shared";
-import type { PrismaClient, UserRelationship } from "@prisma/client";
+import type { Prisma, PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent } from "../events.js";
+import { publishStagedEvents, stageEvent } from "../events.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { isUniqueViolation, retryOnSerializationFailure } from "../prismaErrors.js";
 import {
   addBlockBody,
   listBlocksQuery,
@@ -281,21 +282,36 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     await assertCapsBeforeWrite(prisma, visibleGameIds, actorJid, config.friends, "request");
 
     if (config.friends.requestsRequired) {
-      const row = await prisma.userRelationship.create({
-        data: {
-          gameId,
-          actorJunjoUserId: actorJid,
-          targetJunjoUserId: targetJid,
-          type: "request",
-        },
-      });
-      await dispatchEvent<FriendRequestSentEvent>(prisma, hub, {
-        type: "friend.request.sent",
-        gameId: gameId as GameId,
-        requestId: row.id,
-        actorJunjoUserId: userId,
-        targetJunjoUserId,
-      });
+      const { row, event } = await prisma
+        .$transaction(async (tx) => {
+          const created = await tx.userRelationship.create({
+            data: {
+              gameId,
+              actorJunjoUserId: actorJid,
+              targetJunjoUserId: targetJid,
+              type: "request",
+            },
+          });
+          const staged = await stageEvent<FriendRequestSentEvent>(tx, {
+            type: "friend.request.sent",
+            gameId: gameId as GameId,
+            requestId: created.id,
+            actorJunjoUserId: userId,
+            targetJunjoUserId,
+          });
+          return { row: created, event: staged };
+        })
+        .catch((err) => {
+          // Loser of a concurrent duplicate send: the winner's row landed
+          // after the existingPendingRequest check above. Same answer the
+          // sequential second sender gets. The rollback also drops the
+          // staged webhook deliveries.
+          if (isUniqueViolation(err)) {
+            throw Errors.badRequest("a pending friend request already exists");
+          }
+          throw err;
+        });
+      publishStagedEvents(hub, event);
       const externals = new Map<string, string>([
         [actorJid, userId],
         [targetJid, targetJunjoUserId],
@@ -323,36 +339,46 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     }
 
     const now = new Date();
-    const [actorRow] = await prisma.$transaction([
-      prisma.userRelationship.create({
-        data: {
-          gameId,
-          actorJunjoUserId: actorJid,
-          targetJunjoUserId: targetJid,
-          type: "friend",
+    const { actorRow, event } = await prisma
+      .$transaction(async (tx) => {
+        const created = await tx.userRelationship.create({
+          data: {
+            gameId,
+            actorJunjoUserId: actorJid,
+            targetJunjoUserId: targetJid,
+            type: "friend",
+            respondedAt: now,
+          },
+        });
+        await tx.userRelationship.create({
+          data: {
+            gameId,
+            actorJunjoUserId: targetJid,
+            targetJunjoUserId: actorJid,
+            type: "friend",
+            respondedAt: now,
+          },
+        });
+        // Auto-accept: both parties get the accepted-event because neither
+        // explicitly chose to accept (the request WAS the acceptance).
+        const staged = await stageEvent<FriendRequestAcceptedEvent>(tx, {
+          type: "friend.request.accepted",
+          gameId: gameId as GameId,
+          relationshipId: created.id,
+          actorJunjoUserId: userId,
+          targetJunjoUserId,
           respondedAt: now,
-        },
-      }),
-      prisma.userRelationship.create({
-        data: {
-          gameId,
-          actorJunjoUserId: targetJid,
-          targetJunjoUserId: actorJid,
-          type: "friend",
-          respondedAt: now,
-        },
-      }),
-    ]);
-    // Auto-accept: both parties get the accepted-event because neither
-    // explicitly chose to accept (the request WAS the acceptance).
-    await dispatchEvent<FriendRequestAcceptedEvent>(prisma, hub, {
-      type: "friend.request.accepted",
-      gameId: gameId as GameId,
-      relationshipId: actorRow.id,
-      actorJunjoUserId: userId,
-      targetJunjoUserId,
-      respondedAt: now,
-    });
+        });
+        return { actorRow: created, event: staged };
+      })
+      .catch((err) => {
+        // Loser of a concurrent duplicate auto-accept: the winner already
+        // wrote the friend rows. Matches the sequential "already friends"
+        // guard above.
+        if (isUniqueViolation(err)) throw Errors.badRequest("already friends");
+        throw err;
+      });
+    publishStagedEvents(hub, event);
     const externals = new Map<string, string>([
       [actorJid, userId],
       [targetJid, targetJunjoUserId],
@@ -458,68 +484,92 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
     }
 
     const now = new Date();
-    const [promotedSender] = await prisma.$transaction([
-      // Promote the original request row to "friend" so its createdAt
-      // becomes the audit-quality "request originated at" timestamp;
-      // respondedAt records the accept time.
-      prisma.userRelationship.update({
-        where: { id },
-        data: { type: "friend", respondedAt: now },
-      }),
-      // Write the mirror row so "is X a friend of Y?" is a single-row
-      // read on either side. The mirror's gameId matches the request's
-      // originating gameId (not the calling game's gameId) so a sibling
-      // game accepting a request keeps the friendship anchored to its
-      // origin.
-      prisma.userRelationship.create({
-        data: {
-          gameId: request.gameId,
-          actorJunjoUserId: request.targetJunjoUserId,
-          targetJunjoUserId: request.actorJunjoUserId,
-          type: "friend",
+    const { promotedSender, externals, event } = await prisma
+      .$transaction(async (tx) => {
+        // Promote the original request row to "friend" so its createdAt
+        // becomes the audit-quality "request originated at" timestamp;
+        // respondedAt records the accept time. Guarded on the row still
+        // being a pending request: a racing accept, decline, or cancel
+        // serializes on the row lock and the loser matches zero rows
+        // (or, for a racing delete, finds the row gone) instead of
+        // double-promoting or crashing on a missing record.
+        const promoted = await tx.userRelationship.updateMany({
+          where: { id, type: "request" },
+          data: { type: "friend", respondedAt: now },
+        });
+        if (promoted.count === 0) throw Errors.notFound("friend request");
+        const sender = await tx.userRelationship.findUniqueOrThrow({ where: { id } });
+        // Write the mirror row so "is X a friend of Y?" is a single-row
+        // read on either side. The mirror's gameId matches the request's
+        // originating gameId (not the calling game's gameId) so a sibling
+        // game accepting a request keeps the friendship anchored to its
+        // origin.
+        await tx.userRelationship.create({
+          data: {
+            gameId: request.gameId,
+            actorJunjoUserId: request.targetJunjoUserId,
+            targetJunjoUserId: request.actorJunjoUserId,
+            type: "friend",
+            respondedAt: now,
+          },
+        });
+
+        // Translate the request's stored JunjoUser cuids back to external
+        // ids for the wire response and the staged event. Looks up
+        // mappings in the request's originating game (not necessarily the
+        // calling game; matters under scope=network).
+        const loadedExternals = await batchLoadExternalUserIds(tx, request.gameId, [
+          request.actorJunjoUserId,
+          request.targetJunjoUserId,
+        ]);
+
+        // Fires under the request's originating gameId so webhook
+        // subscribers in that game see the lifecycle they originally saw
+        // start.
+        const staged = await stageEvent<FriendRequestAcceptedEvent>(tx, {
+          type: "friend.request.accepted",
+          gameId: request.gameId as GameId,
+          relationshipId: sender.id,
+          actorJunjoUserId: externalOr(loadedExternals, request.actorJunjoUserId),
+          targetJunjoUserId: externalOr(loadedExternals, request.targetJunjoUserId),
           respondedAt: now,
-        },
-      }),
-    ]);
+        });
 
-    // Translate the request's stored JunjoUser cuids back to external
-    // ids for the wire response and the dispatched event. Looks up
-    // mappings in the request's originating game (not necessarily the
-    // calling game; matters under scope=network).
-    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
-      request.actorJunjoUserId,
-      request.targetJunjoUserId,
-    ]);
+        return { promotedSender: sender, externals: loadedExternals, event: staged };
+      })
+      .catch((err) => {
+        // Mirror row already exists: the pair is already friends through
+        // some concurrent path.
+        if (isUniqueViolation(err)) throw Errors.badRequest("already friends");
+        throw err;
+      });
 
-    // Fires under the request's originating gameId so webhook
-    // subscribers in that game see the lifecycle they originally saw
-    // start.
-    await dispatchEvent<FriendRequestAcceptedEvent>(prisma, hub, {
-      type: "friend.request.accepted",
-      gameId: request.gameId as GameId,
-      relationshipId: promotedSender.id,
-      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
-      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
-      respondedAt: now,
-    });
-
+    publishStagedEvents(hub, event);
     return c.json<WireFriendship>(toWireFriendshipFromActorPOV(promotedSender, externals));
   };
 }
 
 // Shared deletion path for decline + cancel. Returns the deleted
-// request row so the route handler can dispatch the appropriate event
-// with the (sender, target) ids preserved.
+// request row so the route handler can stage the appropriate event
+// with the (sender, target) ids preserved. Runs on the caller's
+// transaction so the delete and the staged event commit atomically.
 async function deletePendingRequest(
-  prisma: PrismaClient,
+  db: PrismaClient | Prisma.TransactionClient,
   visibleGameIds: string[],
   id: string,
 ): Promise<UserRelationship> {
-  const request = await prisma.userRelationship.findUnique({ where: { id } });
+  const request = await db.userRelationship.findUnique({ where: { id } });
   if (!request || !visibleGameIds.includes(request.gameId) || request.type !== "request") {
     throw Errors.notFound("friend request");
   }
-  await prisma.userRelationship.delete({ where: { id } });
+  // Guarded delete: a racing accept promotes the row to "friend" and a
+  // racing decline/cancel removes it; either way the loser matches zero
+  // rows and 404s like a sequential second caller, instead of deleting
+  // a live friendship or crashing on a missing record.
+  const deleted = await db.userRelationship.deleteMany({
+    where: { id, type: "request" },
+  });
+  if (deleted.count === 0) throw Errors.notFound("friend request");
   return request;
 }
 
@@ -538,19 +588,21 @@ export function declineFriendRequestHandler(prisma: PrismaClient, hub: EventHub)
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const request = await deletePendingRequest(prisma, visibleGameIds, id);
-
-    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
-      request.actorJunjoUserId,
-      request.targetJunjoUserId,
-    ]);
-    await dispatchEvent<FriendRequestDeclinedEvent>(prisma, hub, {
-      type: "friend.request.declined",
-      gameId: request.gameId as GameId,
-      requestId: request.id,
-      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
-      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
+    const event = await prisma.$transaction(async (tx) => {
+      const request = await deletePendingRequest(tx, visibleGameIds, id);
+      const externals = await batchLoadExternalUserIds(tx, request.gameId, [
+        request.actorJunjoUserId,
+        request.targetJunjoUserId,
+      ]);
+      return stageEvent<FriendRequestDeclinedEvent>(tx, {
+        type: "friend.request.declined",
+        gameId: request.gameId as GameId,
+        requestId: request.id,
+        actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
+        targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
+      });
     });
+    publishStagedEvents(hub, event);
     return c.body(null, 204);
   };
 }
@@ -567,19 +619,21 @@ export function cancelFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
     if (!loaded.config.friends.enabled) throw Errors.notFound("resource");
     const visibleGameIds = await gameIdsInScope(prisma, loaded);
 
-    const request = await deletePendingRequest(prisma, visibleGameIds, id);
-
-    const externals = await batchLoadExternalUserIds(prisma, request.gameId, [
-      request.actorJunjoUserId,
-      request.targetJunjoUserId,
-    ]);
-    await dispatchEvent<FriendRequestCancelledEvent>(prisma, hub, {
-      type: "friend.request.cancelled",
-      gameId: request.gameId as GameId,
-      requestId: request.id,
-      actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
-      targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
+    const event = await prisma.$transaction(async (tx) => {
+      const request = await deletePendingRequest(tx, visibleGameIds, id);
+      const externals = await batchLoadExternalUserIds(tx, request.gameId, [
+        request.actorJunjoUserId,
+        request.targetJunjoUserId,
+      ]);
+      return stageEvent<FriendRequestCancelledEvent>(tx, {
+        type: "friend.request.cancelled",
+        gameId: request.gameId as GameId,
+        requestId: request.id,
+        actorJunjoUserId: externalOr(externals, request.actorJunjoUserId),
+        targetJunjoUserId: externalOr(externals, request.targetJunjoUserId),
+      });
     });
+    publishStagedEvents(hub, event);
     return c.body(null, 204);
   };
 }
@@ -691,38 +745,43 @@ export function unfriendHandler(prisma: PrismaClient, hub: EventHub): Handler {
     const forward = await existingFriendship(prisma, visibleGameIds, actorJid, otherJid);
     if (!forward) throw Errors.notFound("friendship");
 
-    // Delete both rows in one transaction. Both rows scope to the
-    // friendship's originating game (which may be a sibling under
-    // scope=network, not necessarily the calling game).
-    await prisma.$transaction([
-      prisma.userRelationship.deleteMany({
-        where: {
-          gameId: forward.gameId,
-          actorJunjoUserId: actorJid,
-          targetJunjoUserId: otherJid,
-          type: "friend",
-        },
+    // Delete both rows in one statement inside the transaction. Both
+    // rows scope to the friendship's originating game (which may be a
+    // sibling under scope=network, not necessarily the calling game).
+    // One statement (rather than two per-direction deletes) avoids the
+    // lock-order deadlock two opposite-side racers would hit deleting
+    // the rows in opposite order; the serialization retry covers the
+    // residual case, and its rerun deletes zero rows and 404s like a
+    // sequential second caller.
+    const event = await retryOnSerializationFailure(() =>
+      prisma.$transaction(async (tx) => {
+        const deleted = await tx.userRelationship.deleteMany({
+          where: {
+            gameId: forward.gameId,
+            type: "friend",
+            OR: [
+              { actorJunjoUserId: actorJid, targetJunjoUserId: otherJid },
+              { actorJunjoUserId: otherJid, targetJunjoUserId: actorJid },
+            ],
+          },
+        });
+        // Guarded: a racing unfriend (from either side) removes both
+        // rows first; the loser deletes nothing and 404s instead of
+        // staging a duplicate friend.removed event.
+        if (deleted.count === 0) throw Errors.notFound("friendship");
+        // Fires under the friendship's originating gameId so the webhook
+        // subscribers in that game see the removal even when the action
+        // was triggered from a sibling game.
+        return stageEvent<FriendRemovedEvent>(tx, {
+          type: "friend.removed",
+          gameId: forward.gameId as GameId,
+          removedByJunjoUserId: userId,
+          otherJunjoUserId: otherUserId,
+        });
       }),
-      prisma.userRelationship.deleteMany({
-        where: {
-          gameId: forward.gameId,
-          actorJunjoUserId: otherJid,
-          targetJunjoUserId: actorJid,
-          type: "friend",
-        },
-      }),
-    ]);
+    );
 
-    // Fires under the friendship's originating gameId so the webhook
-    // subscribers in that game see the removal even when the action
-    // was triggered from a sibling game.
-    await dispatchEvent<FriendRemovedEvent>(prisma, hub, {
-      type: "friend.removed",
-      gameId: forward.gameId as GameId,
-      removedByJunjoUserId: userId,
-      otherJunjoUserId: otherUserId,
-    });
-
+    publishStagedEvents(hub, event);
     return c.body(null, 204);
   };
 }
@@ -919,35 +978,54 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
 
     // Cleanup deletes spans the visible scope (a friendship from a
     // sibling game in the same network must also disappear).
-    const [block] = await prisma.$transaction([
-      prisma.userRelationship.create({
-        data: {
-          gameId,
+    try {
+      const { block, event } = await prisma.$transaction(async (tx) => {
+        const created = await tx.userRelationship.create({
+          data: {
+            gameId,
+            actorJunjoUserId: actorJid,
+            targetJunjoUserId: targetJid,
+            type: "blocked",
+          },
+        });
+        await tx.userRelationship.deleteMany({
+          where: {
+            gameId: { in: visibleGameIds },
+            type: { in: ["friend", "request"] },
+            OR: [
+              { actorJunjoUserId: actorJid, targetJunjoUserId: targetJid },
+              { actorJunjoUserId: targetJid, targetJunjoUserId: actorJid },
+            ],
+          },
+        });
+        const staged = await stageEvent<FriendBlockedEvent>(tx, {
+          type: "friend.blocked",
+          gameId: gameId as GameId,
+          byJunjoUserId: userId,
+          otherJunjoUserId: targetJunjoUserId,
+        });
+        return { block: created, event: staged };
+      });
+
+      publishStagedEvents(hub, event);
+      return c.json<WireBlock>(toWireBlockFromActorPOV(block, externals), 201);
+    } catch (err) {
+      // Loser of a concurrent duplicate block: the winner's row landed
+      // after the idempotency check above. Answer like a sequential
+      // second caller: return the existing row without re-firing the
+      // event. The rollback also drops the staged webhook deliveries.
+      if (!isUniqueViolation(err)) throw err;
+      const winner = await prisma.userRelationship.findFirst({
+        where: {
+          gameId: { in: visibleGameIds },
           actorJunjoUserId: actorJid,
           targetJunjoUserId: targetJid,
           type: "blocked",
         },
-      }),
-      prisma.userRelationship.deleteMany({
-        where: {
-          gameId: { in: visibleGameIds },
-          type: { in: ["friend", "request"] },
-          OR: [
-            { actorJunjoUserId: actorJid, targetJunjoUserId: targetJid },
-            { actorJunjoUserId: targetJid, targetJunjoUserId: actorJid },
-          ],
-        },
-      }),
-    ]);
-
-    await dispatchEvent<FriendBlockedEvent>(prisma, hub, {
-      type: "friend.blocked",
-      gameId: gameId as GameId,
-      byJunjoUserId: userId,
-      otherJunjoUserId: targetJunjoUserId,
-    });
-
-    return c.json<WireBlock>(toWireBlockFromActorPOV(block, externals), 201);
+      });
+      if (!winner) throw err;
+      return c.json<WireBlock>(toWireBlockFromActorPOV(winner, externals));
+    }
   };
 }
 
@@ -979,18 +1057,27 @@ export function removeBlockHandler(prisma: PrismaClient, hub: EventHub): Handler
     });
     if (!existing) throw Errors.notFound("block");
 
-    await prisma.userRelationship.delete({ where: { id: existing.id } });
-
-    // Fires under the block's originating gameId so the webhook
-    // subscribers in that game see the lifecycle close where it
-    // started (mirrors friend.removed under scope=network).
-    await dispatchEvent<FriendUnblockedEvent>(prisma, hub, {
-      type: "friend.unblocked",
-      gameId: existing.gameId as GameId,
-      byJunjoUserId: userId,
-      otherJunjoUserId: otherUserId,
+    const event = await prisma.$transaction(async (tx) => {
+      // Guarded delete: a racing unblock removes the row first; the
+      // loser matches zero rows and 404s like a sequential second
+      // caller (no event staged) instead of crashing on a missing
+      // record.
+      const deleted = await tx.userRelationship.deleteMany({
+        where: { id: existing.id, type: "blocked" },
+      });
+      if (deleted.count === 0) throw Errors.notFound("block");
+      // Fires under the block's originating gameId so the webhook
+      // subscribers in that game see the lifecycle close where it
+      // started (mirrors friend.removed under scope=network).
+      return stageEvent<FriendUnblockedEvent>(tx, {
+        type: "friend.unblocked",
+        gameId: existing.gameId as GameId,
+        byJunjoUserId: userId,
+        otherJunjoUserId: otherUserId,
+      });
     });
 
+    publishStagedEvents(hub, event);
     return c.body(null, 204);
   };
 }

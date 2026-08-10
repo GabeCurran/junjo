@@ -38,7 +38,8 @@ import { generateApiKey, hashSecret } from "../apiKey.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import {
-  dispatchEvent,
+  publishStagedEvents,
+  stageEvent,
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
@@ -46,11 +47,11 @@ import {
 } from "../events.js";
 import { findJunjoUserId } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
+import { isUniqueViolation } from "../prismaErrors.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS,
   ADMIN_GROUP_GROWTH_MAX_BUCKETS,
-  ADMIN_MAX_PARENT_DEPTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   ADMIN_PERMISSION_USAGE_TOP_N,
   ADMIN_ROLE_DISTRIBUTION_TOP_N,
@@ -79,11 +80,12 @@ import {
   memberActivityQuery,
   updateAdminGroupBody,
 } from "./admin.schema.js";
-import { serializeAuditEntry } from "./audit.js";
+import { auditBeforeFilter, serializeAuditEntry } from "./audit.js";
 import type { WireAuditEntry } from "./audit.js";
 import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import type { WireInvitation } from "./invitations.js";
+import { setGroupParentSafely } from "./parentCycle.js";
 import { resolvePermission } from "./permissions.js";
 import { serializeGroupRelationship } from "./relationships.js";
 import type { WireGroupRelationship } from "./relationships.js";
@@ -969,7 +971,7 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
       return c.json<WireAdminGroupMember>(wire);
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
+    const { row: updated, event } = await prisma.$transaction(async (tx) => {
       const result = await tx.groupMember.update({
         where: { id: member.id },
         data: { status: "kicked", leftAt: new Date() },
@@ -987,16 +989,17 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
           } as Prisma.InputJsonValue,
         },
       });
-      return result;
+      const staged = await stageEvent<MemberLeftEvent>(tx, {
+        type: "member.left",
+        gameId: gameId as GameId,
+        groupId: group.id as GroupId,
+        userId: userId as UserId,
+        reason: "kicked",
+      });
+      return { row: result, event: staged };
     });
 
-    await dispatchEvent<MemberLeftEvent>(prisma, hub, {
-      type: "member.left",
-      gameId: gameId as GameId,
-      groupId: group.id as GroupId,
-      userId: userId as UserId,
-      reason: "kicked",
-    });
+    publishStagedEvents(hub, event);
 
     const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
     return c.json<WireAdminGroupMember>(wire);
@@ -1305,43 +1308,46 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
     const targetUserId = body.targetUserId ?? null;
     const roleId = body.roleId ?? null;
 
-    const invitation: Invitation = await prisma.$transaction(async (tx) => {
-      const created = await tx.invitation.create({
-        data: {
-          groupId: group.id,
-          code: generateInvitationCode(),
-          roleId,
-          targetUserId,
-          createdByUserId: null,
-          expiresAt,
-        },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "member.invited",
-          targetId: targetUserId,
-          payload: {
-            invitationId: created.id,
-            code: created.code,
-            targetUserId,
+    const { invitation, event } = await prisma.$transaction(
+      async (tx): Promise<{ invitation: Invitation; event: MemberInvitedEvent }> => {
+        const created = await tx.invitation.create({
+          data: {
+            groupId: group.id,
+            code: generateInvitationCode(),
             roleId,
-            expiresAt: expiresAt ? expiresAt.toISOString() : null,
-            source: "admin",
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return created;
-    });
+            targetUserId,
+            createdByUserId: null,
+            expiresAt,
+          },
+        });
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: group.id,
+            actorUserId: null,
+            action: "member.invited",
+            targetId: targetUserId,
+            payload: {
+              invitationId: created.id,
+              code: created.code,
+              targetUserId,
+              roleId,
+              expiresAt: expiresAt ? expiresAt.toISOString() : null,
+              source: "admin",
+            } as Prisma.InputJsonValue,
+          },
+        });
+        const staged = await stageEvent<MemberInvitedEvent>(tx, {
+          type: "member.invited",
+          gameId: gameId as GameId,
+          groupId: group.id as GroupId,
+          invitation: toPublicInvitation(created),
+        });
+        return { invitation: created, event: staged };
+      },
+    );
 
-    await dispatchEvent<MemberInvitedEvent>(prisma, hub, {
-      type: "member.invited",
-      gameId: gameId as GameId,
-      groupId: group.id as GroupId,
-      invitation: toPublicInvitation(invitation),
-    });
+    publishStagedEvents(hub, event);
 
     return c.json<WireInvitation>(serializeInvitation(invitation), 201);
   };
@@ -1481,40 +1487,50 @@ export function createAdminGroupRoleHandler(prisma: PrismaClient, hub: EventHub)
     });
     if (duplicate) throw Errors.roleNameTaken();
 
-    const role = await prisma.$transaction(async (tx) => {
-      const created = await tx.role.create({
-        data: {
-          groupId: group.id,
-          name: body.name,
-          priority: body.priority,
-          color: body.color ?? null,
-          isDefault: body.isDefault ?? false,
-        },
+    const { role, event } = await prisma
+      .$transaction(async (tx) => {
+        const created = await tx.role.create({
+          data: {
+            groupId: group.id,
+            name: body.name,
+            priority: body.priority,
+            color: body.color ?? null,
+            isDefault: body.isDefault ?? false,
+          },
+        });
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: group.id,
+            actorUserId: null,
+            action: "role.created",
+            targetId: created.id,
+            payload: {
+              name: created.name,
+              priority: created.priority,
+              color: created.color,
+              isDefault: created.isDefault,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        const staged = await stageEvent<RoleCreatedEvent>(tx, {
+          type: "role.created",
+          gameId: gameId as GameId,
+          groupId: group.id as GroupId,
+          role: toPublicRole(created, []),
+        });
+        return { role: created, event: staged };
+      })
+      .catch((err) => {
+        // Loser of a concurrent same-name create: the winner's row
+        // landed after the duplicate check above. Same answer the
+        // sequential second caller gets. The rollback also drops the
+        // staged webhook deliveries.
+        if (isUniqueViolation(err)) throw Errors.roleNameTaken();
+        throw err;
       });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "role.created",
-          targetId: created.id,
-          payload: {
-            name: created.name,
-            priority: created.priority,
-            color: created.color,
-            isDefault: created.isDefault,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return created;
-    });
 
-    await dispatchEvent<RoleCreatedEvent>(prisma, hub, {
-      type: "role.created",
-      gameId: gameId as GameId,
-      groupId: group.id as GroupId,
-      role: toPublicRole(role, []),
-    });
+    publishStagedEvents(hub, event);
 
     return c.json<WireAdminRole>(toWireAdminRole(role, []), 201);
   };
@@ -1617,7 +1633,7 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
       throw Errors.roleHasMembers();
     }
 
-    await prisma.$transaction(async (tx) => {
+    const event = await prisma.$transaction(async (tx) => {
       await tx.role.delete({ where: { id: existing.id } });
       await tx.auditEntry.create({
         data: {
@@ -1634,15 +1650,16 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
           } as Prisma.InputJsonValue,
         },
       });
+      return stageEvent<RoleDeletedEvent>(tx, {
+        type: "role.deleted",
+        gameId: gameId as GameId,
+        groupId: existing.groupId as GroupId,
+        roleId: existing.id as RoleId,
+      });
     });
     permissionCache.invalidateGroup(existing.groupId);
 
-    await dispatchEvent<RoleDeletedEvent>(prisma, hub, {
-      type: "role.deleted",
-      gameId: gameId as GameId,
-      groupId: existing.groupId as GroupId,
-      roleId: existing.id as RoleId,
-    });
+    publishStagedEvents(hub, event);
 
     return c.body(null, 204);
   };
@@ -1686,38 +1703,49 @@ export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: Event
       return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.permissionDef.upsert({
-        where: { gameId_key: { gameId, key: permission } },
-        create: { gameId, key: permission },
-        update: {},
+    const event = await prisma
+      .$transaction(async (tx) => {
+        await tx.permissionDef.upsert({
+          where: { gameId_key: { gameId, key: permission } },
+          create: { gameId, key: permission },
+          update: {},
+        });
+        await tx.rolePermission.create({
+          data: { roleId: role.id, permissionKey: permission },
+        });
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: role.groupId,
+            actorUserId: null,
+            action: "permission.granted",
+            targetId: role.id,
+            payload: {
+              roleId: role.id,
+              permission,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        return stageEvent<PermissionGrantedEvent>(tx, {
+          type: "permission.granted",
+          gameId: gameId as GameId,
+          groupId: role.groupId as GroupId,
+          roleId: role.id as RoleId,
+          permission: permission as PermissionKey,
+        });
+      })
+      .catch((err) => {
+        // Loser of a concurrent duplicate grant: the winner's row
+        // landed after the idempotency check above. Same answer the
+        // sequential second caller gets (current role snapshot, no
+        // event); the rollback drops the staged delivery and audit row.
+        if (isUniqueViolation(err)) return null;
+        throw err;
       });
-      await tx.rolePermission.create({
-        data: { roleId: role.id, permissionKey: permission },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.granted",
-          targetId: role.id,
-          payload: {
-            roleId: role.id,
-            permission,
-          } as Prisma.InputJsonValue,
-        },
-      });
-    });
-    permissionCache.invalidateGroup(role.groupId);
-
-    await dispatchEvent<PermissionGrantedEvent>(prisma, hub, {
-      type: "permission.granted",
-      gameId: gameId as GameId,
-      groupId: role.groupId as GroupId,
-      roleId: role.id as RoleId,
-      permission: permission as PermissionKey,
-    });
+    if (event) {
+      permissionCache.invalidateGroup(role.groupId);
+      publishStagedEvents(hub, event);
+    }
 
     const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
     return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
@@ -1745,7 +1773,7 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
       return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
     }
 
-    await prisma.$transaction(async (tx) => {
+    const event = await prisma.$transaction(async (tx) => {
       await tx.rolePermission.delete({
         where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
       });
@@ -1762,16 +1790,17 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
           } as Prisma.InputJsonValue,
         },
       });
+      return stageEvent<PermissionRevokedEvent>(tx, {
+        type: "permission.revoked",
+        gameId: gameId as GameId,
+        groupId: role.groupId as GroupId,
+        roleId: role.id as RoleId,
+        permission: permission as PermissionKey,
+      });
     });
     permissionCache.invalidateGroup(role.groupId);
 
-    await dispatchEvent<PermissionRevokedEvent>(prisma, hub, {
-      type: "permission.revoked",
-      gameId: gameId as GameId,
-      groupId: role.groupId as GroupId,
-      roleId: role.id as RoleId,
-      permission: permission as PermissionKey,
-    });
+    publishStagedEvents(hub, event);
 
     const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
     return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
@@ -1840,7 +1869,7 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
 
     const where: Prisma.AuditEntryWhereInput = {
       groupId: group.id,
-      ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+      AND: [await auditBeforeFilter(prisma, before, { groupId: group.id })],
       ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
     };
 
@@ -1852,7 +1881,7 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
     const hasMore = entries.length > limit;
     const sliced = hasMore ? entries.slice(0, limit) : entries;
     const lastItem = sliced[sliced.length - 1];
-    const nextCursor = hasMore && lastItem ? lastItem.createdAt.toISOString() : null;
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
 
     return c.json<{ items: WireAuditEntry[]; nextCursor: string | null }>({
       items: sliced.map(serializeAuditEntry),
@@ -1904,17 +1933,14 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
     }
     const { limit, before, since, actions, actorUserId, targetId } = parsed.data;
 
-    const createdAtFilter: Prisma.DateTimeFilter = {};
-    if (before) createdAtFilter.lt = new Date(before);
-    if (since) createdAtFilter.gte = new Date(since);
-
     // Filter on the denormalized AuditEntry.gameId so game-scoped rows
     // (groupId=null) appear in the per-game admin feed alongside per-
     // group rows. The prior `group: { gameId }` join would have hidden
     // the null-groupId rows.
     const where: Prisma.AuditEntryWhereInput = {
       gameId,
-      ...(before || since ? { createdAt: createdAtFilter } : {}),
+      AND: [await auditBeforeFilter(prisma, before, { gameId })],
+      ...(since ? { createdAt: { gte: new Date(since) } } : {}),
       ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
       ...(actorUserId ? { actorUserId } : {}),
       ...(targetId ? { targetId } : {}),
@@ -1932,7 +1958,7 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
     const lastItem = sliced[sliced.length - 1];
-    const nextCursor = hasMore && lastItem ? lastItem.createdAt.toISOString() : null;
+    const nextCursor = hasMore && lastItem ? lastItem.id : null;
 
     return c.json<WireAdminGameAuditPage>({
       items: sliced.map(serializeAdminAuditEntry),
@@ -1986,7 +2012,7 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
 
     const result = await prisma.$transaction(async (tx) => {
       let primary: GroupRelationship | null = null;
-      const changed: GroupRelationship[] = [];
+      const events: GroupRelationshipChangedEvent[] = [];
       for (const dir of directions) {
         const existing = await tx.groupRelationship.findUnique({
           where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
@@ -2002,7 +2028,6 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
           update: { type, since: new Date() },
         });
         if (dir.aId === a) primary = upserted;
-        changed.push(upserted);
 
         const auditPayload: Record<string, unknown> = {
           groupAId: dir.aId,
@@ -2021,6 +2046,15 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
             payload: auditPayload as Prisma.InputJsonValue,
           },
         });
+        events.push(
+          await stageEvent<GroupRelationshipChangedEvent>(tx, {
+            type: "group.relationship.changed",
+            gameId: gameId as GameId,
+            groupId: upserted.groupAId as GroupId,
+            otherGroupId: upserted.groupBId as GroupId,
+            relationship: toPublicGroupRelationship(upserted),
+          }),
+        );
       }
       if (!primary) {
         const reloaded = await tx.groupRelationship.findUnique({
@@ -2029,18 +2063,10 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
         if (!reloaded) throw new Error("relationship row missing after no-op upsert");
         primary = reloaded;
       }
-      return { primary, changed };
+      return { primary, events };
     });
 
-    for (const rel of result.changed) {
-      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
-        type: "group.relationship.changed",
-        gameId: gameId as GameId,
-        groupId: rel.groupAId as GroupId,
-        otherGroupId: rel.groupBId as GroupId,
-        relationship: toPublicGroupRelationship(rel),
-      });
-    }
+    publishStagedEvents(hub, ...result.events);
 
     return c.json<WireGroupRelationship>(serializeGroupRelationship(result.primary));
   };
@@ -2075,17 +2101,22 @@ export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Ev
     const directions: Array<{ aId: string; bId: string }> = [{ aId: a, bId: b }];
     if (mutual) directions.push({ aId: b, bId: a });
 
-    const cleared = await prisma.$transaction(async (tx) => {
-      const removed: Array<{ aId: string; bId: string }> = [];
+    const stagedEvents = await prisma.$transaction(async (tx) => {
+      const events: GroupRelationshipChangedEvent[] = [];
       for (const dir of directions) {
         const existing = await tx.groupRelationship.findUnique({
           where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
         });
         if (!existing) continue;
 
-        await tx.groupRelationship.delete({
-          where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
+        // Guarded delete: a racing clear removes the row between the
+        // findUnique and the delete; the loser matches zero rows and
+        // skips the audit/event for this direction, same as a
+        // sequential second caller (idempotent 204).
+        const deleted = await tx.groupRelationship.deleteMany({
+          where: { groupAId: dir.aId, groupBId: dir.bId },
         });
+        if (deleted.count === 0) continue;
         await tx.auditEntry.create({
           data: {
             gameId,
@@ -2101,20 +2132,20 @@ export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Ev
             } as Prisma.InputJsonValue,
           },
         });
-        removed.push({ aId: dir.aId, bId: dir.bId });
+        events.push(
+          await stageEvent<GroupRelationshipChangedEvent>(tx, {
+            type: "group.relationship.changed",
+            gameId: gameId as GameId,
+            groupId: dir.aId as GroupId,
+            otherGroupId: dir.bId as GroupId,
+            relationship: null,
+          }),
+        );
       }
-      return removed;
+      return events;
     });
 
-    for (const dir of cleared) {
-      await dispatchEvent<GroupRelationshipChangedEvent>(prisma, hub, {
-        type: "group.relationship.changed",
-        gameId: gameId as GameId,
-        groupId: dir.aId as GroupId,
-        otherGroupId: dir.bId as GroupId,
-        relationship: null,
-      });
-    }
+    publishStagedEvents(hub, ...stagedEvents);
 
     return c.body(null, 204);
   };
@@ -2173,7 +2204,7 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
 }
 
 // Cycle detection walks the candidate parent's ancestor chain bounded
-// at `ADMIN_MAX_PARENT_DEPTH = 100`; self-parent and any cycle 400
+// at `MAX_PARENT_DEPTH = 100` (see parentCycle.ts); self-parent and any cycle 400
 // `parent_cycle`. Dispatches `group.updated` (there is no dedicated
 // `GroupParentChangedEvent` in the union).
 export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub): Handler {
@@ -2193,71 +2224,12 @@ export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub):
     }
     const { parentGroupId } = parsed.data;
 
-    const group = await prisma.group.findFirst({
-      where: { id: groupId, gameId, softDeletedAt: null },
+    const { row, memberCount } = await setGroupParentSafely(prisma, hub, {
+      gameId,
+      groupId,
+      parentGroupId,
     });
-    if (!group) throw Errors.notFound("group");
-
-    if (parentGroupId !== null) {
-      if (parentGroupId === group.id) throw Errors.parentCycle();
-
-      const parent = await prisma.group.findFirst({
-        where: { id: parentGroupId, gameId, softDeletedAt: null },
-        select: { id: true, parentGroupId: true },
-      });
-      if (!parent) throw Errors.notFound("group");
-
-      let cursor: { id: string; parentGroupId: string | null } | null = parent;
-      let depth = 0;
-      while (cursor && cursor.parentGroupId !== null && depth < ADMIN_MAX_PARENT_DEPTH) {
-        if (cursor.parentGroupId === group.id) throw Errors.parentCycle();
-        cursor = await prisma.group.findUnique({
-          where: { id: cursor.parentGroupId },
-          select: { id: true, parentGroupId: true },
-        });
-        depth++;
-      }
-    }
-
-    if (group.parentGroupId === parentGroupId) {
-      const memberCount = await prisma.groupMember.count({
-        where: { groupId: group.id, status: "active" },
-      });
-      return c.json<WireAdminGroup>(toWireAdminGroup(group, memberCount));
-    }
-
-    const previous = group.parentGroupId;
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.group.update({
-        where: { id: group.id },
-        data: { parentGroupId },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: parentGroupId === null ? "group.parent.cleared" : "group.parent.set",
-          targetId: parentGroupId,
-          payload: {
-            before: previous,
-            after: parentGroupId,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return result;
-    });
-
-    const memberCount = await prisma.groupMember.count({
-      where: { groupId: updated.id, status: "active" },
-    });
-    await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
-      type: "group.updated",
-      gameId: gameId as GameId,
-      groupId: updated.id as GroupId,
-      group: toPublicGroup(updated, memberCount),
-    });
-    return c.json<WireAdminGroup>(toWireAdminGroup(updated, memberCount));
+    return c.json<WireAdminGroup>(toWireAdminGroup(row, memberCount));
   };
 }
 
@@ -2336,7 +2308,7 @@ export function updateAdminGroupHandler(prisma: PrismaClient, hub: EventHub): Ha
       }
 
       if (Object.keys(data).length === 0) {
-        return { row: existing, changed: false };
+        return { row: existing, event: null, memberCount: null };
       }
 
       const result = await tx.group.update({
@@ -2369,19 +2341,28 @@ export function updateAdminGroupHandler(prisma: PrismaClient, hub: EventHub): Ha
         });
       }
 
-      return { row: result, changed: true };
-    });
-
-    const memberCount = await prisma.groupMember.count({
-      where: { groupId: updated.row.id, status: "active" },
-    });
-    if (updated.changed) {
-      await dispatchEvent<GroupUpdatedEvent>(prisma, hub, {
+      // Counted inside the transaction so the staged group.updated
+      // payload reflects the committed row.
+      const memberCount = await tx.groupMember.count({
+        where: { groupId: result.id, status: "active" },
+      });
+      const event = await stageEvent<GroupUpdatedEvent>(tx, {
         type: "group.updated",
         gameId: gameId as GameId,
-        groupId: updated.row.id as GroupId,
-        group: toPublicGroup(updated.row, memberCount),
+        groupId: result.id as GroupId,
+        group: toPublicGroup(result, memberCount),
       });
+
+      return { row: result, event, memberCount };
+    });
+
+    const memberCount =
+      updated.memberCount ??
+      (await prisma.groupMember.count({
+        where: { groupId: updated.row.id, status: "active" },
+      }));
+    if (updated.event) {
+      publishStagedEvents(hub, updated.event);
     }
     return c.json<WireAdminGroup>(toWireAdminGroup(updated.row, memberCount));
   };
@@ -2507,7 +2488,7 @@ function pickChurnBin(tenureMs: number): number {
     if (maxMs !== null && tenureMs >= maxMs) continue;
     return i;
   }
-  // Unreachable - the last bin's `maxMs: null` always matches.
+  // Unreachable: the last bin's `maxMs: null` always matches.
   return ANALYTICS_GROUP_CHURN_BINS.length - 1;
 }
 

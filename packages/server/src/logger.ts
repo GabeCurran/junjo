@@ -18,6 +18,32 @@ export function createLogger(opts: CreateLoggerOptions = {}): Logger {
     level,
     base: { service: "junjo-server" },
     timestamp: pino.stdTimeFunctions.isoTime,
+    // Defense-in-depth: no call site logs credentials today, but if a
+    // future log line ever includes a request/config object, these
+    // paths are censored rather than shipped to the log sink.
+    redact: {
+      paths: [
+        "authorization",
+        "*.authorization",
+        "headers.authorization",
+        "*.headers.authorization",
+        "apiKey",
+        "*.apiKey",
+        "secret",
+        "*.secret",
+        "passcode",
+        "*.passcode",
+        "token",
+        "*.token",
+        // Webhook endpoint URLs carry their delivery credential in the
+        // path (discord / slack tokens). No call site logs a raw `url`
+        // today (endpoint logging uses `endpointOrigin`), so censoring
+        // `url` here is pure defense-in-depth and over-redacts nothing.
+        "url",
+        "*.url",
+      ],
+      censor: "[redacted]",
+    },
   };
 
   if (opts.destination) {

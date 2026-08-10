@@ -355,7 +355,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as WireAdminGameAuditPage;
     expect(firstBody.items).toHaveLength(2);
-    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.createdAt);
+    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.id);
 
     const second = await listAudit(
       seed.gameId,
@@ -366,7 +366,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     expect(secondBody.items.map((i) => i.createdAt)).not.toEqual(
       firstBody.items.map((i) => i.createdAt),
     );
-    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.createdAt);
+    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.id);
 
     const third = await listAudit(
       seed.gameId,
@@ -375,6 +375,33 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/audit", () => {
     const thirdBody = (await third.json()) as WireAdminGameAuditPage;
     expect(thirdBody.items).toHaveLength(1);
     expect(thirdBody.nextCursor).toBeNull();
+  });
+
+  it("does not skip or repeat rows that share a createdAt millisecond", async () => {
+    const seed = await seedGroup("Alpha", "g1");
+    const sharedTs = new Date("2026-05-01T12:00:00.000Z");
+    for (let i = 0; i < 5; i++) {
+      await seedAudit(seed.gameId, seed.groupId, {
+        action: "group.updated",
+        createdAt: sharedTs,
+      });
+    }
+
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page++) {
+      const query = cursor ? `limit=2&before=${encodeURIComponent(cursor)}` : "limit=2";
+      const res = await listAudit(seed.gameId, query);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as WireAdminGameAuditPage;
+      for (const item of body.items) {
+        expect(seen.has(item.id)).toBe(false);
+        seen.add(item.id);
+      }
+      cursor = body.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen.size).toBe(5);
   });
 
   it("uses default limit of 50 when no limit query supplied", async () => {

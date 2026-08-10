@@ -27,8 +27,41 @@ export function serializeAuditEntry(entry: AuditEntry): WireAuditEntry {
   };
 }
 
-// Caller pages by passing `nextCursor` (the ISO timestamp of the last
-// item) back as `before` on the next call.
+// Resolves the `before` query param into a Prisma filter. `before`
+// accepts either an audit entry id (what `nextCursor` returns: exact
+// keyset pagination on the `(createdAt, id)` sort, immune to rows
+// sharing a millisecond) or a bare ISO timestamp (the original
+// contract, kept working for stored cursors and hand-written calls;
+// strictly-older-than semantics). The id lookup is scoped so a cursor
+// from another game or group reads as invalid rather than leaking
+// whether the row exists.
+// Only strings that LOOK like ISO dates take the timestamp path;
+// Date.parse alone is too lenient ("123" parses as year 123 and would
+// silently return an empty page instead of the invalid-cursor 400).
+const ISO_DATE_PREFIX = /^\d{4}-\d{2}-\d{2}/;
+
+export async function auditBeforeFilter(
+  prisma: PrismaClient,
+  before: string | undefined,
+  scope: Prisma.AuditEntryWhereInput,
+): Promise<Prisma.AuditEntryWhereInput> {
+  if (!before) return {};
+  if (ISO_DATE_PREFIX.test(before)) {
+    if (Number.isNaN(Date.parse(before))) throw Errors.badRequest("invalid cursor");
+    return { createdAt: { lt: new Date(before) } };
+  }
+  const row = await prisma.auditEntry.findFirst({
+    where: { id: before, ...scope },
+    select: { id: true, createdAt: true },
+  });
+  if (!row) throw Errors.badRequest("invalid cursor");
+  return {
+    OR: [{ createdAt: { lt: row.createdAt } }, { createdAt: row.createdAt, id: { lt: row.id } }],
+  };
+}
+
+// Caller pages by passing `nextCursor` (the id of the last item) back
+// as `before` on the next call.
 export async function listAuditForGroup(c: Context, prisma: PrismaClient, groupId: string) {
   const gameId = c.var.gameId as string;
 
@@ -53,7 +86,7 @@ export async function listAuditForGroup(c: Context, prisma: PrismaClient, groupI
 
   const where: Prisma.AuditEntryWhereInput = {
     groupId: group.id,
-    ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+    AND: [await auditBeforeFilter(prisma, before, { groupId: group.id })],
     ...(actions && actions.length > 0 ? { action: { in: actions } } : {}),
   };
 
@@ -65,7 +98,7 @@ export async function listAuditForGroup(c: Context, prisma: PrismaClient, groupI
   const hasMore = entries.length > limit;
   const sliced = hasMore ? entries.slice(0, limit) : entries;
   const lastItem = sliced[sliced.length - 1];
-  const nextCursor = hasMore && lastItem ? lastItem.createdAt.toISOString() : null;
+  const nextCursor = hasMore && lastItem ? lastItem.id : null;
 
   return c.json({
     items: sliced.map(serializeAuditEntry),

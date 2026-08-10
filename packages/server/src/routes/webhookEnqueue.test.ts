@@ -153,6 +153,32 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook delivery enqueue from mutation rout
     expect(payload.groupId).toBe(group.id);
   });
 
+  it("enqueues a user-scoped event to an endpoint subscribed to that specific type", async () => {
+    // Regression: user-scoped and ban types were once missing from
+    // WEBHOOK_EVENT_TYPES, so only match-all endpoints could receive them.
+    await makeEndpoint({
+      url: "https://bans.example/hook",
+      events: ["game.user.banned"],
+    });
+    await makeEndpoint({
+      url: "https://members.example/hook",
+      events: ["member.joined"],
+    });
+
+    const res = await app.request("/v1/bans", {
+      method: "POST",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify({ userId: "player-1", reason: "cheating" }),
+    });
+    expect(res.status).toBe(201);
+
+    const deliveries = await prisma.webhookDelivery.findMany({ include: { endpoint: true } });
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.endpoint.url).toBe("https://bans.example/hook");
+    const payload = deliveries[0]?.payload as Record<string, unknown>;
+    expect(payload.type).toBe("game.user.banned");
+  });
+
   it("creates one delivery per matching endpoint when multiple match", async () => {
     await makeEndpoint({ url: "https://a.example/hook" });
     await makeEndpoint({ url: "https://b.example/hook" });

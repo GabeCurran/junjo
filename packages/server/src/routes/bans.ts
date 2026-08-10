@@ -3,8 +3,9 @@ import type { BanHistory, GameBan, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent } from "../events.js";
+import { publishStagedEvents, stageEvent } from "../events.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { retryOnUniqueViolation } from "../prismaErrors.js";
 import {
   createGameBanBody,
   deleteGameBanBody,
@@ -106,82 +107,87 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       : null;
 
     const now = new Date();
-    const ban = await prisma.$transaction(async (tx) => {
-      const existing = await tx.gameBan.findUnique({
-        where: { gameId_junjoUserId: { gameId, junjoUserId } },
-      });
-      const isExistingActive = existing
-        ? existing.expiresAt === null || existing.expiresAt > now
-        : false;
-      // GameBan row carries bannedAt + reason + bannedByUserId by
-      // design; the audit row below is the same event in the generic
-      // /admin/audit feed (filterable by `actions=game.user.banned`).
-      const result = existing
-        ? await tx.gameBan.update({
-            where: { id: existing.id },
-            data: {
-              expiresAt: expiresAtValue,
+    // retryOnUniqueViolation: two concurrent first-time bans of the same
+    // user both miss the findUnique; the rerun takes the update branch.
+    const ban = await retryOnUniqueViolation(() =>
+      prisma.$transaction(async (tx) => {
+        const existing = await tx.gameBan.findUnique({
+          where: { gameId_junjoUserId: { gameId, junjoUserId } },
+        });
+        const isExistingActive = existing
+          ? existing.expiresAt === null || existing.expiresAt > now
+          : false;
+        // GameBan row carries bannedAt + reason + bannedByUserId by
+        // design; the audit row below is the same event in the generic
+        // /admin/audit feed (filterable by `actions=game.user.banned`).
+        const result = existing
+          ? await tx.gameBan.update({
+              where: { id: existing.id },
+              data: {
+                expiresAt: expiresAtValue,
+                reason: reasonValue,
+                bannedByUserId: actorJunjoUserId,
+                // Refresh `bannedAt` only when re-banning after expiry;
+                // an in-place edit of an active ban keeps the original
+                // timestamp so the timeline reads cleanly.
+                ...(isExistingActive ? {} : { bannedAt: now }),
+              },
+            })
+          : await tx.gameBan.create({
+              data: {
+                gameId,
+                junjoUserId,
+                expiresAt: expiresAtValue,
+                reason: reasonValue,
+                bannedAt: now,
+                bannedByUserId: actorJunjoUserId,
+              },
+            });
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            // Game-scoped event: no per-group context. Drops out of
+            // per-group audit feeds; appears in the per-game and recent
+            // /admin/audit feeds.
+            groupId: null,
+            actorUserId: actorJunjoUserId,
+            action: "game.user.banned",
+            targetId: userId,
+            payload: {
+              gameBanId: result.id,
               reason: reasonValue,
-              bannedByUserId: actorJunjoUserId,
-              // Refresh `bannedAt` only when re-banning after expiry;
-              // an in-place edit of an active ban keeps the original
-              // timestamp so the timeline reads cleanly.
-              ...(isExistingActive ? {} : { bannedAt: now }),
-            },
-          })
-        : await tx.gameBan.create({
-            data: {
-              gameId,
-              junjoUserId,
-              expiresAt: expiresAtValue,
-              reason: reasonValue,
-              bannedAt: now,
-              bannedByUserId: actorJunjoUserId,
-            },
-          });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          // Game-scoped event: no per-group context. Drops out of
-          // per-group audit feeds; appears in the per-game and recent
-          // /admin/audit feeds.
-          groupId: null,
-          actorUserId: actorJunjoUserId,
-          action: "game.user.banned",
-          targetId: userId,
-          payload: {
-            gameBanId: result.id,
+              expiresAt: expiresAtValue ? expiresAtValue.toISOString() : null,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        // BanHistory append: structured ban-only timeline. Distinct from
+        // the audit row above (which is the generic event log) and from
+        // GameBan (which only carries current state).
+        await tx.banHistory.create({
+          data: {
+            gameId,
+            junjoUserId,
+            scope: "game",
+            groupId: null,
+            kind: "set",
             reason: reasonValue,
-            expiresAt: expiresAtValue ? expiresAtValue.toISOString() : null,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      // BanHistory append: structured ban-only timeline. Distinct from
-      // the audit row above (which is the generic event log) and from
-      // GameBan (which only carries current state).
-      await tx.banHistory.create({
-        data: {
-          gameId,
+            expiresAt: expiresAtValue,
+            actorJunjoUserId,
+          },
+        });
+        const event = await stageEvent<GameUserBannedEvent>(tx, {
+          type: "game.user.banned",
+          gameId: gameId as GameId,
           junjoUserId,
-          scope: "game",
-          groupId: null,
-          kind: "set",
           reason: reasonValue,
           expiresAt: expiresAtValue,
-          actorJunjoUserId,
-        },
-      });
-      return result;
-    });
+        });
+        return { ban: result, event };
+      }),
+    );
 
-    await dispatchEvent<GameUserBannedEvent>(prisma, hub, {
-      type: "game.user.banned",
-      gameId: gameId as GameId,
-      junjoUserId,
-      reason: reasonValue,
-      expiresAt: expiresAtValue,
-    });
-    return c.json(serializeGameBan(ban, userId, actorExternalId), 201);
+    publishStagedEvents(hub, ban.event);
+    return c.json(serializeGameBan(ban.ban, userId, actorExternalId), 201);
   });
 
   // DELETE /v1/bans/:userId
@@ -215,8 +221,13 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
       : null;
 
-    await prisma.$transaction(async (tx) => {
-      await tx.gameBan.delete({ where: { id: existing.id } });
+    const event = await prisma.$transaction(async (tx) => {
+      // Guarded delete: a racing unban removes the row first; the loser
+      // matches zero rows and 404s like a sequential second caller
+      // (rolling back its audit/history/event staging) instead of
+      // crashing on a missing record.
+      const deleted = await tx.gameBan.deleteMany({ where: { id: existing.id } });
+      if (deleted.count === 0) throw Errors.notFound("ban");
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -239,13 +250,14 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
           actorJunjoUserId,
         },
       });
+      return stageEvent<GameUserUnbannedEvent>(tx, {
+        type: "game.user.unbanned",
+        gameId: gameId as GameId,
+        junjoUserId,
+      });
     });
 
-    await dispatchEvent<GameUserUnbannedEvent>(prisma, hub, {
-      type: "game.user.unbanned",
-      gameId: gameId as GameId,
-      junjoUserId,
-    });
+    publishStagedEvents(hub, event);
     return c.body(null, 204);
   });
 

@@ -3,7 +3,11 @@ import type { PrismaClient, WebhookEndpoint } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import { assertSafeWebhookUrl } from "../webhookUrlGuard.js";
-import { createWebhookEndpointBody, updateWebhookEndpointBody } from "./webhooks.schema.js";
+import {
+  createWebhookEndpointBody,
+  listWebhookEndpointsQuery,
+  updateWebhookEndpointBody,
+} from "./webhooks.schema.js";
 
 export interface WebhooksRouterOptions {
   // Operator escape hatch for self-host development. Production cloud
@@ -85,13 +89,49 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
 
   r.get("/", async (c) => {
     const gameId = c.var.gameId;
-    const endpoints = await prisma.webhookEndpoint.findMany({
-      where: { gameId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    const parsed = listWebhookEndpointsQuery.safeParse({
+      limit: c.req.query("limit"),
+      cursor: c.req.query("cursor"),
     });
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid query");
+    }
+    const { limit, cursor } = parsed.data;
+
+    let cursorRow: { id: string; createdAt: Date } | null = null;
+    if (cursor) {
+      const row = await prisma.webhookEndpoint.findFirst({
+        where: { id: cursor, gameId },
+        select: { id: true, createdAt: true },
+      });
+      if (!row) throw Errors.badRequest("invalid cursor");
+      cursorRow = row;
+    }
+
+    const endpoints = await prisma.webhookEndpoint.findMany({
+      where: {
+        gameId,
+        ...(cursorRow
+          ? {
+              OR: [
+                { createdAt: { lt: cursorRow.createdAt } },
+                { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const hasMore = endpoints.length > limit;
+    const sliced = hasMore ? endpoints.slice(0, limit) : endpoints;
+    const lastItem = sliced[sliced.length - 1];
     return c.json({
-      items: endpoints.map(serializeWebhookEndpoint),
-      nextCursor: null,
+      items: sliced.map(serializeWebhookEndpoint),
+      nextCursor: hasMore && lastItem ? lastItem.id : null,
     });
   });
 

@@ -21,6 +21,7 @@ import type { Handler } from "hono";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { retryOnUniqueViolation } from "../prismaErrors.js";
 import {
   createFriendTagBody,
   setFriendTagsBody,
@@ -275,16 +276,23 @@ export function setFriendTagsHandler(prisma: PrismaClient): Handler {
 
     // Replace the tag set in one transaction: delete all existing
     // joins for this friendship row, then create the new ones.
-    await prisma.$transaction([
-      prisma.userRelationshipTag.deleteMany({
-        where: { userRelationshipId: friendship.id },
-      }),
-      ...requestedTagIds.map((tagId) =>
-        prisma.userRelationshipTag.create({
-          data: { userRelationshipId: friendship.id, friendTagId: tagId },
+    // retryOnUniqueViolation: two concurrent set calls can interleave
+    // so the loser's creates collide with the winner's committed rows
+    // (P2002); the rerun deletes those and applies this call's set,
+    // which is the last-writer-wins outcome a sequential second call
+    // produces.
+    await retryOnUniqueViolation(() =>
+      prisma.$transaction([
+        prisma.userRelationshipTag.deleteMany({
+          where: { userRelationshipId: friendship.id },
         }),
-      ),
-    ]);
+        ...requestedTagIds.map((tagId) =>
+          prisma.userRelationshipTag.create({
+            data: { userRelationshipId: friendship.id, friendTagId: tagId },
+          }),
+        ),
+      ]),
+    );
 
     return c.json<WireFriendTagAssignment>({
       friendJunjoUserId: otherUserId,

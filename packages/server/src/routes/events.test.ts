@@ -120,6 +120,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/events/:groupId", () => {
   let app: Hono;
   let authHeader: string;
   let gameId: string;
+  let apiKeyId: string;
   let hub: EventHub;
 
   beforeAll(() => {
@@ -134,6 +135,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/events/:groupId", () => {
     gameId = game.id;
     const seeded = await createApiKey(game.id, prisma);
     authHeader = `Bearer ${seeded.raw.full}`;
+    apiKeyId = seeded.apiKey.id;
     hub = new EventHub();
     app = createApp({ prisma, events: { hub, heartbeatIntervalMs: 30_000 } });
   });
@@ -270,6 +272,30 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/events/:groupId", () => {
     });
     const res = await openStream(group.id);
     expect(res.status).toBe(404);
+  });
+
+  it("closes the stream after its API key is revoked mid-stream", async () => {
+    // Fast heartbeat so the post-revocation re-check fires quickly.
+    const fastApp = createApp({ prisma, events: { hub, heartbeatIntervalMs: 30 } });
+    const group = await createGroup();
+    const res = await fastApp.request(`/v1/events/${group.id}`, {
+      headers: { authorization: authHeader },
+    });
+    await waitForSubscriber(hub, group.id as GroupId);
+    expect(hub.subscriberCount(group.id as GroupId)).toBe(1);
+
+    // Revoke mid-stream; the next heartbeat tick must tear it down rather
+    // than leaving the group-scoped stream open until the TCP drop.
+    await prisma.apiKey.update({
+      where: { id: apiKeyId },
+      data: { revokedAt: new Date() },
+    });
+
+    await waitForUnsubscribe(hub, group.id as GroupId);
+    expect(hub.subscriberCount(group.id as GroupId)).toBe(0);
+
+    // Drain the (now-closed) response so the reader is cancelled cleanly.
+    await readSSE(res, 100);
   });
 
   it("rejects requests without an API key", async () => {

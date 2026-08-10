@@ -28,6 +28,7 @@ export function subscribeEventsHandler(
   return async (c) => {
     const groupId = c.req.param("groupId") ?? "";
     const gameId = c.var.gameId;
+    const apiKeyPrefix = c.var.apiKeyPrefix;
     const group = await prisma.group.findFirst({
       where: { id: groupId, gameId, softDeletedAt: null },
       select: { id: true },
@@ -59,13 +60,40 @@ export function subscribeEventsHandler(
         wakeup();
       });
 
+      const closeStream = () => {
+        closed = true;
+        unsubscribe();
+        wakeup();
+      };
+
       const heartbeat = setInterval(() => {
         if (closed) return;
-        stream.write(":heartbeat\n\n").catch(() => {
-          closed = true;
-          unsubscribe();
-          wakeup();
-        });
+        // The API key is validated once at connect; without this re-check
+        // a revoked (or deleted) key would keep its group-scoped stream
+        // alive until the TCP connection happens to drop. One indexed
+        // lookup by the unique prefix per heartbeat tick bounds the
+        // post-revocation window to at most one heartbeat interval.
+        void (async () => {
+          if (closed) return;
+          let key: { revokedAt: Date | null } | null | undefined;
+          try {
+            key = await prisma.apiKey.findUnique({
+              where: { prefix: apiKeyPrefix },
+              select: { revokedAt: true },
+            });
+          } catch {
+            // Transient lookup failure: leave the stream up and re-check
+            // on the next tick rather than dropping a healthy connection.
+            key = undefined;
+          }
+          if (closed) return;
+          // null = key row gone; revokedAt set = revoked. Either closes.
+          if (key === null || (key && key.revokedAt !== null)) {
+            closeStream();
+            return;
+          }
+          stream.write(":heartbeat\n\n").catch(closeStream);
+        })();
       }, heartbeatMs);
       // Never let the heartbeat keep the Node process alive on its own.
       heartbeat.unref?.();

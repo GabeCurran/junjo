@@ -212,22 +212,22 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/audit", () => {
     const first = await listAudit(group.id, "limit=2");
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as {
-      items: Array<{ createdAt: string }>;
+      items: Array<{ id: string; createdAt: string }>;
       nextCursor: string | null;
     };
     expect(firstBody.items).toHaveLength(2);
-    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.createdAt);
+    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.id);
 
     const second = await listAudit(
       group.id,
       `limit=2&before=${encodeURIComponent(firstBody.nextCursor as string)}`,
     );
     const secondBody = (await second.json()) as {
-      items: Array<{ createdAt: string }>;
+      items: Array<{ id: string; createdAt: string }>;
       nextCursor: string | null;
     };
     expect(secondBody.items).toHaveLength(2);
-    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.createdAt);
+    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.id);
     expect(secondBody.items.map((i) => i.createdAt)).not.toEqual(
       firstBody.items.map((i) => i.createdAt),
     );
@@ -242,6 +242,66 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/audit", () => {
     };
     expect(thirdBody.items).toHaveLength(1);
     expect(thirdBody.nextCursor).toBeNull();
+  });
+
+  it("still accepts an ISO timestamp as `before` (pre-cursor contract)", async () => {
+    const group = await seedGroup();
+    const t0 = new Date("2026-04-01T00:00:00Z");
+    const t1 = new Date("2026-04-02T00:00:00Z");
+    await seedAudit(group.id, { action: "group.created", createdAt: t0 });
+    await seedAudit(group.id, { action: "group.updated", createdAt: t1 });
+
+    const res = await listAudit(group.id, `before=${encodeURIComponent(t1.toISOString())}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: Array<{ createdAt: string }> };
+    expect(body.items).toHaveLength(1);
+    expect(new Date(body.items[0]?.createdAt as string).toISOString()).toBe(t0.toISOString());
+  });
+
+  it("does not skip or repeat rows that share a createdAt millisecond", async () => {
+    // Several writes in one transaction (e.g. group.updated +
+    // group.passcode.set) land with the same createdAt. The id-based
+    // cursor pages through them exactly; the old timestamp-only filter
+    // dropped the boundary rows.
+    const group = await seedGroup();
+    const sharedTs = new Date("2026-05-01T12:00:00.000Z");
+    for (let i = 0; i < 5; i++) {
+      await seedAudit(group.id, { action: "group.updated", createdAt: sharedTs });
+    }
+
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page++) {
+      const query = cursor ? `limit=2&before=${encodeURIComponent(cursor)}` : "limit=2";
+      const res = await listAudit(group.id, query);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        items: Array<{ id: string }>;
+        nextCursor: string | null;
+      };
+      for (const item of body.items) {
+        expect(seen.has(item.id)).toBe(false);
+        seen.add(item.id);
+      }
+      cursor = body.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen.size).toBe(5);
+  });
+
+  it("rejects a cursor id belonging to another group", async () => {
+    const group = await seedGroup();
+    const other = await prisma.group.create({
+      data: { gameId, kind: "guild", name: "Other", visibility: "invite-only", metadata: {} },
+    });
+    const foreign = await seedAudit(other.id, { action: "group.created" });
+    await seedAudit(group.id, { action: "group.created" });
+
+    const res = await listAudit(group.id, `before=${encodeURIComponent(foreign.id)}`);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("bad_request");
+    expect(body.message).toBe("invalid cursor");
   });
 
   it("defaults to limit=50 when no limit is supplied", async () => {
@@ -278,6 +338,17 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/audit", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("bad_request");
+  });
+
+  it("rejects a numeric `before` instead of misreading it as an ancient date", async () => {
+    // Date.parse("123") is year 123; without the ISO-prefix gate the
+    // filter silently returned an empty page for garbage cursors.
+    const group = await seedGroup();
+    await seedAudit(group.id, { action: "group.created" });
+    const res = await listAudit(group.id, "before=123");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toBe("invalid cursor");
   });
 
   it("rejects an unknown `actions` value", async () => {

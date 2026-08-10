@@ -1,13 +1,18 @@
+import type { JunjoEventType } from "@junjo.io/shared";
 import { z } from "zod";
+import { pageLimit } from "./page.schema.js";
 
-// Mirrors the `JunjoEventType` union in `@junjo.io/shared`. Kept in lockstep
-// by hand: every published event type must appear here so the server can
-// reject typo'd subscriptions on the create / update flow before they
-// silently fail to match.
+// Mirrors the `JunjoEventType` union in `@junjo.io/shared`. Every published
+// event type must appear here so the server can reject typo'd subscriptions
+// on the create / update flow before they silently fail to match. The
+// `_exhaustive` assertions below turn any drift in either direction into a
+// typecheck failure, so the mirror cannot rot silently again.
 export const WEBHOOK_EVENT_TYPES = [
   "member.joined",
   "member.left",
   "member.invited",
+  "member.banned",
+  "member.unbanned",
   "role.created",
   "role.changed",
   "role.deleted",
@@ -16,9 +21,28 @@ export const WEBHOOK_EVENT_TYPES = [
   "group.updated",
   "group.deleted",
   "group.relationship.changed",
+  "friend.request.sent",
+  "friend.request.accepted",
+  "friend.request.declined",
+  "friend.request.cancelled",
+  "friend.removed",
+  "friend.blocked",
+  "friend.unblocked",
+  "game.user.banned",
+  "game.user.unbanned",
 ] as const;
 
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];
+
+// Compile-time lockstep guard: both directions must be `never`. If a type is
+// added to `JunjoEventType` without being listed above (or vice versa), the
+// assignments below stop compiling.
+type MissingFromList = Exclude<JunjoEventType, WebhookEventTypeString>;
+type ExtraInList = Exclude<WebhookEventTypeString, JunjoEventType>;
+const _exhaustiveMissing: MissingFromList[] = [] satisfies never[];
+const _exhaustiveExtra: ExtraInList[] = [] satisfies never[];
+void _exhaustiveMissing;
+void _exhaustiveExtra;
 
 // Wire formats the worker can serialize a JunjoEvent into. "junjo" is the
 // raw JunjoEvent JSON with HMAC headers; "discord" and "slack" are
@@ -52,6 +76,15 @@ const secretSchema = z.string().min(WEBHOOK_SECRET_MIN_LENGTH).max(WEBHOOK_SECRE
 const eventsSchema = z.array(z.enum(WEBHOOK_EVENT_TYPES));
 
 const formatSchema = z.enum(WEBHOOK_FORMATS);
+
+// GET /v1/webhooks. Keyset pagination on (createdAt DESC, id DESC);
+// `cursor` is the id of the last item from the previous page.
+export const listWebhookEndpointsQuery = z.object({
+  limit: pageLimit(50),
+  cursor: z.string().min(1).optional(),
+});
+
+export type ListWebhookEndpointsQuery = z.infer<typeof listWebhookEndpointsQuery>;
 
 export const createWebhookEndpointBody = z.object({
   url: urlSchema,

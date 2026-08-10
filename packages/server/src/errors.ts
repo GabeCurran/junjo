@@ -1,6 +1,8 @@
+import type { JunjoErrorCode } from "@junjo.io/shared";
+
 export class JunjoError extends Error {
   constructor(
-    readonly code: string,
+    readonly code: JunjoErrorCode,
     readonly status: number,
     message: string,
   ) {
@@ -8,7 +10,7 @@ export class JunjoError extends Error {
     this.name = "JunjoError";
   }
 
-  toJSON(): { code: string; status: number; message: string } {
+  toJSON(): { code: JunjoErrorCode; status: number; message: string } {
     return { code: this.code, status: this.status, message: this.message };
   }
 }

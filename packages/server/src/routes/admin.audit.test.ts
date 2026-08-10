@@ -215,7 +215,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as WireAuditPage;
     expect(firstBody.items).toHaveLength(2);
-    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.createdAt);
+    expect(firstBody.nextCursor).toBe(firstBody.items[1]?.id);
 
     const second = await listAudit(
       seed.gameId,
@@ -227,7 +227,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/groups/:groupId
     expect(secondBody.items.map((i) => i.createdAt)).not.toEqual(
       firstBody.items.map((i) => i.createdAt),
     );
-    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.createdAt);
+    expect(secondBody.nextCursor).toBe(secondBody.items[1]?.id);
 
     const third = await listAudit(
       seed.gameId,

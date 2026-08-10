@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
 import { createApiKey, createGame } from "../seed";
+import { WEBHOOK_EVENT_TYPES } from "./webhooks.schema";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
@@ -135,6 +136,19 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
       expect(body.events).toEqual(["member.joined", "group.deleted"]);
       const stored = await prisma.webhookEndpoint.findUnique({ where: { id: body.id } });
       expect(stored?.events).toEqual(["member.joined", "group.deleted"]);
+    });
+
+    it("accepts a subscription to every published event type", async () => {
+      // Regression: the accepted-types list once omitted the ban and
+      // user-scoped (friend.*, game.user.*) event types, making them
+      // impossible to subscribe to individually.
+      const res = await jsonRequest("POST", "/v1/webhooks", {
+        url: "https://dev.example.com/hook",
+        events: [...WEBHOOK_EVENT_TYPES],
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as WireWebhookEndpointWithSecret;
+      expect([...body.events].sort()).toEqual([...WEBHOOK_EVENT_TYPES].sort());
     });
 
     it("rejects an unknown event type", async () => {
@@ -315,6 +329,63 @@ describe.skipIf(!TEST_DATABASE_URL)("webhook endpoint CRUD", () => {
         nextCursor: string | null;
       };
       expect(body.items[0]?.disabledAt).toBe(disabledAt.toISOString());
+    });
+
+    it("paginates via limit + cursor without skipping or repeating rows", async () => {
+      const sharedTs = new Date("2026-05-01T12:00:00.000Z");
+      for (let i = 0; i < 5; i++) {
+        await prisma.webhookEndpoint.create({
+          data: {
+            gameId,
+            url: `https://dev.example.com/hook-${i}`,
+            secret: `page-secret-123456789-${i}`,
+            events: [],
+            // Same createdAt on purpose: the id tiebreaker must carry
+            // the ordering across page boundaries.
+            createdAt: sharedTs,
+          },
+        });
+      }
+
+      const seen = new Set<string>();
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page++) {
+        const query = cursor ? `?limit=2&cursor=${encodeURIComponent(cursor)}` : "?limit=2";
+        const res = await jsonRequest("GET", `/v1/webhooks${query}`);
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+          items: WireWebhookEndpoint[];
+          nextCursor: string | null;
+        };
+        for (const item of body.items) {
+          expect(seen.has(item.id)).toBe(false);
+          seen.add(item.id);
+        }
+        cursor = body.nextCursor;
+        if (cursor === null) break;
+      }
+      expect(seen.size).toBe(5);
+    });
+
+    it("rejects a cursor from another game", async () => {
+      const otherGame = await createGame("Other Game", prisma);
+      const foreign = await prisma.webhookEndpoint.create({
+        data: {
+          gameId: otherGame.id,
+          url: "https://other.example.com/hook",
+          secret: "other-secret-1234567890",
+          events: [],
+        },
+      });
+      const res = await jsonRequest("GET", `/v1/webhooks?cursor=${foreign.id}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { message: string };
+      expect(body.message).toBe("invalid cursor");
+    });
+
+    it("rejects an out-of-range limit", async () => {
+      const res = await jsonRequest("GET", "/v1/webhooks?limit=0");
+      expect(res.status).toBe(400);
     });
 
     it("returns 401 without auth", async () => {

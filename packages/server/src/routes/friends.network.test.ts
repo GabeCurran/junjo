@@ -180,8 +180,8 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
   });
 
   it("scope=network: duplicate friendship guard spans the network", async () => {
-    // Send from A; then try sending from B (same network) - should reject
-    // as already friends.
+    // Send from A; then try sending from B (same network), which should
+    // reject as already friends.
     const a = await setupGame("A", { networkId: "studio", scope: "network" });
     const b = await setupGame("B", { networkId: "studio", scope: "network" });
     const u1 = await makeUser([a.gameId, b.gameId]);
@@ -207,7 +207,7 @@ describe.skipIf(!TEST_DATABASE_URL)("friends scope=network query expansion", () 
       headers: authHeaders(a.apiKey),
       body: JSON.stringify({ targetJunjoUserId: u1 }),
     });
-    // u1 tries to friend u2 from game B - should 404 (block crosses network).
+    // u1 tries to friend u2 from game B; should 404 (block crosses network).
     const res = await app.request(`/v1/users/${u1}/friend-requests`, {
       method: "POST",
       headers: authHeaders(b.apiKey),

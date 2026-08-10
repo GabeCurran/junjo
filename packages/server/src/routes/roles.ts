@@ -11,8 +11,9 @@ import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent } from "../events.js";
+import { publishStagedEvents, stageEvent } from "../events.js";
 import { permissionCache } from "../permissionCache.js";
+import { isUniqueViolation } from "../prismaErrors.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
 export interface WireRole {
@@ -201,38 +202,49 @@ export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Han
       return c.json(serializeRole(role, permissions));
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.permissionDef.upsert({
-        where: { gameId_key: { gameId, key: permission } },
-        create: { gameId, key: permission },
-        update: {},
+    const event = await prisma
+      .$transaction(async (tx) => {
+        await tx.permissionDef.upsert({
+          where: { gameId_key: { gameId, key: permission } },
+          create: { gameId, key: permission },
+          update: {},
+        });
+        await tx.rolePermission.create({
+          data: { roleId: role.id, permissionKey: permission },
+        });
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: role.groupId,
+            actorUserId: null,
+            action: "permission.granted",
+            targetId: role.id,
+            payload: {
+              roleId: role.id,
+              permission,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        return stageEvent<PermissionGrantedEvent>(tx, {
+          type: "permission.granted",
+          gameId: gameId as GameId,
+          groupId: role.groupId as GroupId,
+          roleId: role.id as RoleId,
+          permission: permission as PermissionKey,
+        });
+      })
+      .catch((err) => {
+        // Loser of a concurrent duplicate grant: the winner's row
+        // landed after the idempotency check above. Same answer the
+        // sequential second caller gets (current role snapshot, no
+        // event); the rollback drops the staged delivery and audit row.
+        if (isUniqueViolation(err)) return null;
+        throw err;
       });
-      await tx.rolePermission.create({
-        data: { roleId: role.id, permissionKey: permission },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.granted",
-          targetId: role.id,
-          payload: {
-            roleId: role.id,
-            permission,
-          } as Prisma.InputJsonValue,
-        },
-      });
-    });
-    permissionCache.invalidateGroup(role.groupId);
-
-    await dispatchEvent<PermissionGrantedEvent>(prisma, hub, {
-      type: "permission.granted",
-      gameId: gameId as GameId,
-      groupId: role.groupId as GroupId,
-      roleId: role.id as RoleId,
-      permission: permission as PermissionKey,
-    });
+    if (event) {
+      permissionCache.invalidateGroup(role.groupId);
+      publishStagedEvents(hub, event);
+    }
 
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
@@ -258,7 +270,7 @@ export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Ha
       return c.json(serializeRole(role, permissions));
     }
 
-    await prisma.$transaction(async (tx) => {
+    const event = await prisma.$transaction(async (tx) => {
       await tx.rolePermission.delete({
         where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
       });
@@ -275,16 +287,17 @@ export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Ha
           } as Prisma.InputJsonValue,
         },
       });
+      return stageEvent<PermissionRevokedEvent>(tx, {
+        type: "permission.revoked",
+        gameId: gameId as GameId,
+        groupId: role.groupId as GroupId,
+        roleId: role.id as RoleId,
+        permission: permission as PermissionKey,
+      });
     });
     permissionCache.invalidateGroup(role.groupId);
 
-    await dispatchEvent<PermissionRevokedEvent>(prisma, hub, {
-      type: "permission.revoked",
-      gameId: gameId as GameId,
-      groupId: role.groupId as GroupId,
-      roleId: role.id as RoleId,
-      permission: permission as PermissionKey,
-    });
+    publishStagedEvents(hub, event);
 
     const permissions = await loadRolePermissionKeys(prisma, role.id);
     return c.json(serializeRole(role, permissions));
@@ -304,7 +317,7 @@ export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Hand
       throw Errors.roleHasMembers();
     }
 
-    await prisma.$transaction(async (tx) => {
+    const event = await prisma.$transaction(async (tx) => {
       await tx.role.delete({ where: { id: existing.id } });
       await tx.auditEntry.create({
         data: {
@@ -321,15 +334,16 @@ export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Hand
           } as Prisma.InputJsonValue,
         },
       });
+      return stageEvent<RoleDeletedEvent>(tx, {
+        type: "role.deleted",
+        gameId: gameId as GameId,
+        groupId: existing.groupId as GroupId,
+        roleId: existing.id as RoleId,
+      });
     });
     permissionCache.invalidateGroup(existing.groupId);
 
-    await dispatchEvent<RoleDeletedEvent>(prisma, hub, {
-      type: "role.deleted",
-      gameId: gameId as GameId,
-      groupId: existing.groupId as GroupId,
-      roleId: existing.id as RoleId,
-    });
+    publishStagedEvents(hub, event);
 
     return c.body(null, 204);
   };

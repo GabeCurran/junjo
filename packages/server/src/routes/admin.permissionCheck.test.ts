@@ -255,7 +255,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/permissions/che
   });
 
   it("isolates ExternalIdentity scope to the path :gameId (cross-game user resolves to source=none)", async () => {
-    // Same external user id registered in *another* game - the admin
+    // Same external user id registered in *another* game; the admin
     // route's :gameId scoping must NOT find it via the calling game.
     const otherGame = await createGame("Other Game", prisma);
     const group = await seedGroup();
@@ -362,7 +362,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/permissions/che
 
   it("rejects requests where the per-game API key would otherwise authenticate", async () => {
     // The admin route lives BEFORE `apiKeyMiddleware` in `app.ts`, so a
-    // per-game `junjo_pk_...` key cannot reach this endpoint - the
+    // per-game `junjo_pk_...` key cannot reach this endpoint: the
     // adminAuthMiddleware checks Bearer before the apiKey middleware
     // runs at all.
     const group = await seedGroup();

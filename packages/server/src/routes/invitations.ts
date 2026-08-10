@@ -5,8 +5,9 @@ import type { Handler } from "hono";
 import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { dispatchEvent, toPublicMember } from "../events.js";
+import { publishStagedEvents, stageEvent, toPublicMember } from "../events.js";
 import { findOrCreateJunjoUser } from "../identity.js";
+import { isUniqueViolation } from "../prismaErrors.js";
 import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
 import { serializeMember } from "./members.js";
 
@@ -151,60 +152,76 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
     const banState = await checkBanState(prisma, gameId, junjoUserId, invitation.groupId);
     if (banState.banned) throw Errors.banned(banErrorMessage(banState));
 
-    const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.groupMember.findUnique({
-        where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
+    const result = await prisma
+      .$transaction(async (tx) => {
+        const existing = await tx.groupMember.findUnique({
+          where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
+        });
+        if (existing?.status === "active") throw Errors.alreadyMember();
+
+        // Consume the invitation before touching membership, guarded on
+        // usedAt still being null. Two racing redeemers both pass the
+        // loadRedemptionTarget check above; the row lock serializes them
+        // here and the loser's updateMany matches zero rows, so a
+        // single-use code can never admit two users.
+        const consumed = await tx.invitation.updateMany({
+          where: { id: invitation.id, usedAt: null },
+          data: { usedAt: new Date(), usedByUserId: junjoUserId },
+        });
+        if (consumed.count === 0) throw Errors.invitationUsed();
+
+        const member = existing
+          ? await tx.groupMember.update({
+              where: { id: existing.id },
+              // Reactivate from left/kicked. bannedUntil clears
+              // defensively even though the ban check above rejects
+              // banned rows (state hygiene).
+              data: { status: "active", leftAt: null, bannedUntil: null },
+            })
+          : await tx.groupMember.create({
+              data: {
+                groupId: invitation.groupId,
+                junjoUserId,
+                status: "active",
+              },
+            });
+
+        await tx.auditEntry.create({
+          data: {
+            gameId,
+            groupId: invitation.groupId,
+            actorUserId: junjoUserId,
+            action: "member.joined",
+            targetId: userId,
+            payload: {
+              memberId: member.id,
+              invitationId: invitation.id,
+              code: invitation.code,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        const event = await stageEvent<MemberJoinedEvent>(tx, {
+          type: "member.joined",
+          gameId: gameId as GameId,
+          groupId: invitation.groupId as GroupId,
+          userId: userId as UserId,
+          member: toPublicMember(member, userId, []),
+        });
+
+        return { member, event };
+      })
+      .catch((err) => {
+        // Loser of a concurrent same-user join (e.g. this accept racing
+        // a public join): the winner's membership row landed after our
+        // findUnique. The rollback also un-consumes the invitation and
+        // drops the staged webhook deliveries.
+        if (isUniqueViolation(err)) throw Errors.alreadyMember();
+        throw err;
       });
-      if (existing?.status === "active") throw Errors.alreadyMember();
 
-      const member = existing
-        ? await tx.groupMember.update({
-            where: { id: existing.id },
-            // Reactivate from left/kicked. bannedUntil clears
-            // defensively even though the ban check above rejects
-            // banned rows (state hygiene).
-            data: { status: "active", leftAt: null, bannedUntil: null },
-          })
-        : await tx.groupMember.create({
-            data: {
-              groupId: invitation.groupId,
-              junjoUserId,
-              status: "active",
-            },
-          });
-
-      await tx.invitation.update({
-        where: { id: invitation.id },
-        data: { usedAt: new Date(), usedByUserId: junjoUserId },
-      });
-
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: invitation.groupId,
-          actorUserId: junjoUserId,
-          action: "member.joined",
-          targetId: userId,
-          payload: {
-            memberId: member.id,
-            invitationId: invitation.id,
-            code: invitation.code,
-          } as Prisma.InputJsonValue,
-        },
-      });
-
-      return member;
-    });
-
-    await dispatchEvent<MemberJoinedEvent>(prisma, hub, {
-      type: "member.joined",
-      gameId: gameId as GameId,
-      groupId: invitation.groupId as GroupId,
-      userId: userId as UserId,
-      member: toPublicMember(result, userId, []),
-    });
-
-    return c.json(serializeMember(result, userId), 201);
+    publishStagedEvents(hub, result.event);
+    return c.json(serializeMember(result.member, userId), 201);
   };
 }
 
@@ -232,12 +249,13 @@ export function declineInvitationByCodeHandler(prisma: PrismaClient): Handler {
 
     const junjoUserId = userId ? await findOrCreateJunjoUser(prisma, gameId, userId) : null;
 
-    await prisma.$transaction(async (tx) => {
-      await tx.invitation.update({
-        where: { id: invitation.id },
-        data: { usedAt: new Date(), usedByUserId: junjoUserId },
-      });
+    // Guarded on usedAt: a decline racing an accept (or another decline)
+    // must not overwrite the winner's redemption record.
+    const consumed = await prisma.invitation.updateMany({
+      where: { id: invitation.id, usedAt: null },
+      data: { usedAt: new Date(), usedByUserId: junjoUserId },
     });
+    if (consumed.count === 0) throw Errors.invitationUsed();
 
     return c.body(null, 204);
   };

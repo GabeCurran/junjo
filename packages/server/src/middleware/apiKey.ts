@@ -12,6 +12,10 @@ export interface ApiKeyStore {
 declare module "hono" {
   interface ContextVariableMap {
     gameId: string;
+    // The authenticated key's unique prefix, kept in scope so long-lived
+    // handlers (e.g. the SSE stream) can re-check the key's revocation
+    // state after connect with a single indexed lookup.
+    apiKeyPrefix: string;
   }
 }
 
@@ -33,6 +37,7 @@ export function apiKeyMiddleware(store: ApiKeyStore): MiddlewareHandler {
     if (!ok) throw Errors.invalidApiKey("invalid API key");
 
     c.set("gameId", record.gameId);
+    c.set("apiKeyPrefix", parsed.prefix);
     await next();
   };
 }

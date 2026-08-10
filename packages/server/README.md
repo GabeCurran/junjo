@@ -4,9 +4,14 @@ The Junjo HTTP API, SSE event stream, and webhook dispatcher. Hono on Node, Post
 
 ## Self-host
 
+There is no published registry image yet. Build one from the repo's root `Dockerfile` (its default `WORKSPACE=server` target is this server; the image applies pending migrations on boot):
+
 ```
-docker run -e DATABASE_URL=postgres://... -p 8787:8787 ghcr.io/junjo/server:latest
+docker build -t junjo-server .
+docker run -e DATABASE_URL=postgres://... -p 8787:8787 junjo-server
 ```
+
+The full walkthrough (compose recipe, env vars, key issuance, reverse proxy) lives at [docs.junjo.io/self-host](https://docs.junjo.io/self-host).
 
 ## Local dev
 
@@ -38,12 +43,14 @@ The `postinstall` script runs `prisma generate` automatically after every `npm i
 | `TEST_DATABASE_URL` | yes (for DB-backed tests) | Postgres connection string used by Vitest tests that touch the database. Leave unset to skip those tests; non-DB tests still run. |
 | `PORT` | no | HTTP listen port. Defaults to `8787`. Must be a positive integer. |
 | `NODE_ENV` | no | One of `development`, `test`, `production`. Defaults to `development`. Controls the Prisma client globalThis cache (only enabled outside production). |
-| `JUNJO_BASE_URL` | no | Public base URL of this server. Used when building links (e.g., invitation share URLs). Optional during local dev. |
+| `JUNJO_BASE_URL` | no | Public base URL of this deployment. Parsed and validated by `loadEnv()` but reserved: no server code path reads it today (the cloud dashboard consumes it). Unrelated to the SDK's `inviteBaseUrl`, which is client-side config for `inviteByLink`. Safe to leave unset. |
 | `JUNJO_ADMIN_TOKEN` | no | Server-wide bearer token that gates the cross-game admin endpoints (`GET /v1/users/:junjoUserId/games`, see [`apps/docs/pages/api-reference/admin.mdx`](../../apps/docs/pages/api-reference/admin.mdx)). When unset the admin endpoints return `401 invalid_admin_token` for every request, which is the right default for self-hosters with one game per server. Cloud / dashboard deployments set this to a long random string. The token is compared in constant time. |
-| `RATE_LIMIT_PER_MINUTE` | no | Sustained refill rate of the per-API-key token-bucket rate limit on `/v1/*` routes. Defaults to `600`. Set to `0` to disable rate limiting entirely (useful for self-hosters running behind their own gateway). Must be a non-negative integer. |
+| `RATE_LIMIT_PER_MINUTE` | no | Sustained refill rate of the token-bucket rate limit on `/v1/*` routes. Every request drains a shared per-source bucket sized at 20x the per-key budget (so fleets and dashboards behind one egress fit, while one source cannot mint fresh budgets by rotating fabricated keys or headers); requests carrying a parseable API key also drain that key prefix's bucket before the scrypt verify cost. Defaults to `600`. Set to `0` to disable rate limiting entirely (useful for self-hosters running behind their own gateway). Must be a non-negative integer. |
+| `TRUST_PROXY` | no | Set to `true` when a trusted proxy fronts the server and appends the client address to `x-forwarded-for` (Railway, nginx, any standard LB); the rate limiter then keys keyless traffic on the rightmost header hop, the one value clients cannot forge. Default `false` ignores the header entirely and uses the socket address, which is correct for direct exposure. Cloud deployments behind Railway must set this to `true`, or all keyless traffic shares the proxy's socket-address bucket. |
 | `RATE_LIMIT_BURST` | no | Maximum bucket capacity for the per-API-key rate limit. Defaults to `100`: a saturated bucket lets up to 100 requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Must be a non-negative integer. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active; setting either to zero disables the middleware. |
 | `LOG_LEVEL` | no | Minimum level emitted by the structured logger. One of `error`, `warn`, `info`, `debug`, `silent`. Defaults to `info`. `silent` suppresses every line; useful for tests and noisy CI runs. The runtime emits one JSON object per line on stdout when `NODE_ENV=production`; in any other environment lines are pretty-printed via `pino-pretty` for readability. |
 | `WEBHOOK_ALLOW_PRIVATE_HOSTS` | no | When unset / `false`, `POST /v1/webhooks` and `PATCH /v1/webhooks/:id` reject URLs whose hostname is loopback (`localhost`, `127/8`, `::1`), link-local (`169.254/16`, `fe80::/10`, includes the AWS / GCP / Azure metadata endpoint), RFC1918 private (`10/8`, `172.16/12`, `192.168/16`), RFC6598 CGNAT, IPv6 ULA, or `0.0.0.0`. The check is lexical (no DNS resolution, so DNS rebinding still wins; the V1 backstop is operator network policy). Set to `true` or `1` ONLY for self-host development where receivers run on the same machine. |
+| `JUNJO_MAX_PAGE_SIZE` | no | Upper bound on the `?limit=` query parameter for every list endpoint (`/v1/groups`, members, invitations, audit, friends, admin lists, etc.). Defaults to `100`, matching cloud's abuse-protection ceiling. Read at boot; the SDK and webhook delivery worker honor whatever the server accepts, so raising it is purely a server-side decision. Must be a positive integer. |
 | `BENCH_DATABASE_URL` | no (for `npm run bench`) | Postgres connection string for `vitest bench`. Falls back to `TEST_DATABASE_URL` when unset. Bench runs seed ~10K groups, 100K members, 50K audit entries on first invocation (the seed is keyed by a marker game and skipped on subsequent runs); pointing this at a database you care about is destructive. |
 
 `loadEnv()` in `src/env.ts` validates every variable above through a Zod schema; missing or malformed values throw a single readable error at startup.

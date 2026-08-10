@@ -196,7 +196,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/group
     const a = await seedGroup(game.id, "A", { createdAt: new Date("2026-01-05T00:00:00Z") });
     const b = await seedGroup(game.id, "B", { createdAt: new Date("2026-03-01T00:00:00Z") });
     // A: 1 departure (lands in <1h).
-    // B: 1 departure (would land in <1h) - but B is outside the window.
+    // B: 1 departure (would land in <1h), but B is outside the window.
     await seedDeparture(a.id, 30 * 60 * 1000);
     await seedDeparture(b.id, 30 * 60 * 1000);
 

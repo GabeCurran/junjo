@@ -1,11 +1,13 @@
 import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { prisma as defaultPrisma } from "./db.js";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { type RateLimiter, buildRateLimiter, rateLimitMiddleware } from "./middleware/rateLimit.js";
+import { requestIdMiddleware } from "./middleware/requestId.js";
 import { getAdminGameConfigHandler, updateAdminGameConfigHandler } from "./routes/admin.config.js";
 import {
   checkAdminPermissionHandler,
@@ -105,6 +107,9 @@ export interface CreateAppOptions {
   // Null or a zero field disables rate limiting; tests can pass a
   // pre-built `RateLimiter` for fixed-clock control.
   rateLimit?: { perMinute?: number; burst?: number } | RateLimiter | null;
+  // See TRUST_PROXY in env.ts. Controls which source address the rate
+  // limiter trusts for keyless traffic.
+  trustProxy?: boolean;
   // When `worker` is omitted the worker leg of `/healthz` reports ok
   // (the deployment did not configure a worker to check).
   healthz?: {
@@ -138,6 +143,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
       : buildRateLimiter(opts.rateLimit ?? undefined);
 
   const app = new Hono();
+  app.use("*", requestIdMiddleware());
   app.onError(errorHandler);
 
   app.get("/", (c) => c.json({ name: "junjo-server", version: "0.0.0" }));
@@ -151,6 +157,21 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   );
 
   const v1 = new Hono();
+  // Rate limit covers the ENTIRE /v1 surface, including the
+  // unauthenticated invitation preview and the admin-token routes:
+  // per-game keys bucket on their prefix (a cheap string parse, so
+  // noisy keys are rejected before paying the scrypt verify cost);
+  // everything else buckets per source IP. Registered first because
+  // Hono's wildcard composes onion-style over routes registered after
+  // it.
+  v1.use("*", rateLimitMiddleware(limiter, { trustProxy: opts.trustProxy }));
+  // Request-body-size cap across the whole /v1 surface. Normal API bodies
+  // are tiny (a handful of JSON fields), so 1 MB is already generous. The
+  // largest legitimate body is bulk-invite at its row cap: 1000 rows x the
+  // 255-char userId ceiling is ~256 KB, comfortably under 1 MB, so a
+  // single global cap covers every route and no route needs its own
+  // higher limit. Hono's bodyLimit returns 413 when exceeded.
+  v1.use("*", bodyLimit({ maxSize: 1024 * 1024 }));
   // Every public + admin route below MUST register before the per-game
   // `apiKeyMiddleware` further down. Hono runs middleware in registration
   // order, and the wildcard apiKey middleware would otherwise reject these
@@ -351,12 +372,6 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     adminAuthMiddleware(opts.adminToken),
     getPermissionUsageHandler(prisma),
   );
-  // Rate limit must run BEFORE the apiKey middleware: it buckets on the
-  // raw key prefix (a cheap string parse) so noisy keys are rejected
-  // before paying the scrypt verify cost. Hono's wildcard composes onion-
-  // style, so this only applies to routes registered after this line; the
-  // public + admin routes above are unaffected.
-  v1.use("*", rateLimitMiddleware(limiter));
   v1.use("*", apiKeyMiddleware(store));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));

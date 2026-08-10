@@ -1,6 +1,9 @@
 import { createHmac } from "node:crypto";
+import { type LookupAddress, lookup as dnsLookup } from "node:dns";
 import type { PrismaClient } from "@prisma/client";
+import { Agent, type RequestInit as UndiciRequestInit, fetch as undiciFetch } from "undici";
 import { formatJunjoEventForDiscord } from "./discordFormatter.js";
+import { isPublicUnicastAddress } from "./ipGuard.js";
 import { logger } from "./logger.js";
 import { formatJunjoEventForSlack } from "./slackFormatter.js";
 
@@ -51,6 +54,20 @@ export interface WebhookFetchResult {
 
 export type WebhookFetch = (url: string, init: WebhookFetchInit) => Promise<WebhookFetchResult>;
 
+// Log-safe rendering of an endpoint URL. For discord / slack targets the
+// URL path IS the delivery credential (the webhook token lives in the
+// path), so only the origin (scheme + host, no path or query) is ever
+// logged. A URL that fails to parse renders as a fixed placeholder rather
+// than falling back to the raw string, so a malformed value cannot leak
+// its path either.
+function endpointOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "(unparseable url)";
+  }
+}
+
 export interface WorkerOptions {
   fetch?: WebhookFetch;
   intervalMs?: number;
@@ -78,8 +95,80 @@ export function signWebhookBody(secret: string, body: string, timestamp: string)
   return `${WEBHOOK_SIGNATURE_SCHEME}=${sig}`;
 }
 
+// Delivery-time SSRF backstop (TOCTOU close). `dns.lookup`-shaped function
+// wired into the dispatcher's socket connect: it resolves every address for
+// the target host and rejects the connection if ANY resolved address is not
+// public unicast (private / loopback / link-local / metadata / reserved).
+// Because undici connects to the exact address(es) validated here, there is
+// no window for a second resolution to swap in a private IP. A rejection
+// surfaces as a network error that flows through the normal retry /
+// auto-disable policy. The hostname is included in the error but never the
+// URL path (which is the delivery credential).
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number,
+) => void;
+
+export function safeWebhookLookup(
+  hostname: string,
+  options: { family?: number; hints?: number; all?: boolean; verbatim?: boolean } | LookupCallback,
+  callback?: LookupCallback,
+): void {
+  const opts = typeof options === "function" ? {} : options;
+  const cb = (typeof options === "function" ? options : callback) as LookupCallback;
+  const wantAll = opts.all === true;
+  dnsLookup(
+    hostname,
+    { family: opts.family ?? 0, hints: opts.hints, all: true, verbatim: opts.verbatim ?? true },
+    (err, addresses) => {
+      if (err) {
+        cb(err, "", 0);
+        return;
+      }
+      for (const entry of addresses) {
+        if (!isPublicUnicastAddress(entry.address)) {
+          cb(new Error(`webhook target host ${hostname} resolved to a non-public address`), "", 0);
+          return;
+        }
+      }
+      if (wantAll) {
+        cb(null, addresses);
+      } else {
+        const first = addresses[0];
+        if (first === undefined) {
+          cb(new Error(`webhook target host ${hostname} did not resolve`), "", 0);
+          return;
+        }
+        cb(null, first.address, first.family);
+      }
+    },
+  );
+}
+
+// One dispatcher for all real deliveries; its connector runs
+// `safeWebhookLookup` on every socket connect. Tests that inject a custom
+// `WebhookFetch` never reach this dispatcher.
+// undici forwards unknown connect options to the socket connector at
+// runtime, which is how the custom lookup takes effect, but the lookup
+// property is not in undici's exported connect option type, so the object
+// is asserted to that option type. safeWebhookLookup implements the
+// dns.lookup runtime contract undici invokes it under.
+const webhookDispatcher = new Agent({
+  connect: { lookup: safeWebhookLookup } as unknown as Agent.Options["connect"],
+});
+
 const defaultWebhookFetch: WebhookFetch = async (url, init) => {
-  const res = await fetch(url, init as RequestInit);
+  // redirect: "manual" so a 3xx does not silently follow to a different
+  // host after the lexical URL guard already vetted the original target
+  // (the blind-SSRF guard runs against the pre-redirect URL only). A
+  // redirect surfaces as a non-2xx status that flows through the normal
+  // retry / auto-disable policy instead of an un-guarded hop.
+  const res = await undiciFetch(url, {
+    ...(init as UndiciRequestInit),
+    redirect: "manual",
+    dispatcher: webhookDispatcher,
+  });
   res.body?.cancel().catch(() => {});
   return { ok: res.ok, status: res.status };
 };
@@ -163,8 +252,17 @@ export async function deliverOne(
   } catch (err) {
     httpStatus = null;
     httpOk = false;
+    // Log only the error message, never the raw error object: a fetch /
+    // undici failure can carry the full request URL (whose path is the
+    // delivery credential) on nested properties. The endpoint is
+    // identified by id + origin instead.
     logger.error(
-      { err, deliveryId: delivery.id, endpointId: delivery.endpoint.id },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        deliveryId: delivery.id,
+        endpointId: delivery.endpoint.id,
+        endpointOrigin: endpointOrigin(delivery.endpoint.url),
+      },
       "webhook delivery failed (network/abort)",
     );
   } finally {
@@ -226,7 +324,7 @@ export async function deliverOne(
     logger.warn(
       {
         endpointId: delivery.endpoint.id,
-        url: delivery.endpoint.url,
+        endpointOrigin: endpointOrigin(delivery.endpoint.url),
         consecutiveFailures: newConsecutive,
         lastResponseStatus: httpStatus,
       },

@@ -6,7 +6,7 @@
 // visibility. The two middlewares never run on the same route.
 //
 // An undefined `configuredToken` (self-host setups that never set one)
-// 401s every request - the routes are disabled rather than open.
+// 401s every request; the routes are disabled rather than open.
 
 import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";

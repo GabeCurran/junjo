@@ -14,6 +14,7 @@ import {
   deliverOne,
   pollDueDeliveries,
   runWorkerOnce,
+  safeWebhookLookup,
   signWebhookBody,
   startWebhookWorker,
 } from "./webhookWorker.js";
@@ -103,6 +104,56 @@ describe("signWebhookBody", () => {
     const a = signWebhookBody("s", "body", "ts");
     const b = signWebhookBody("s", "body", "ts");
     expect(a).toBe(b);
+  });
+});
+
+// The dispatcher wires safeWebhookLookup into the socket connect, so a
+// delivery to a host resolving to a private / reserved address fails as a
+// network error before any bytes leave the process. Numeric hosts are used
+// so dns.lookup short-circuits without a live DNS query (no CI flake).
+describe("safeWebhookLookup (delivery-time SSRF guard)", () => {
+  function runLookup(
+    host: string,
+    opts: { all?: boolean } = {},
+  ): Promise<{ err: Error | null; result: unknown }> {
+    return new Promise((resolve) => {
+      safeWebhookLookup(host, opts, (err, address, family) => {
+        resolve({ err: err ?? null, result: { address, family } });
+      });
+    });
+  }
+
+  it("passes a public IPv4 through (all: false shape)", async () => {
+    const { err, result } = await runLookup("8.8.8.8");
+    expect(err).toBeNull();
+    expect(result).toEqual({ address: "8.8.8.8", family: 4 });
+  });
+
+  it("passes a public IPv4 through (all: true shape)", async () => {
+    const { err, result } = await runLookup("1.1.1.1", { all: true });
+    expect(err).toBeNull();
+    expect(result).toEqual({ address: [{ address: "1.1.1.1", family: 4 }], family: undefined });
+  });
+
+  it("blocks a loopback address", async () => {
+    const { err } = await runLookup("127.0.0.1", { all: true });
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("non-public address");
+  });
+
+  it("blocks the cloud metadata IP", async () => {
+    const { err } = await runLookup("169.254.169.254");
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("blocks an RFC1918 address", async () => {
+    const { err } = await runLookup("10.0.0.1", { all: true });
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("blocks 'localhost' (resolves to loopback without a network query)", async () => {
+    const { err } = await runLookup("localhost", { all: true });
+    expect(err).toBeInstanceOf(Error);
   });
 });
 
@@ -993,8 +1044,12 @@ describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain", () => {
   });
 
   it("does not pick up new deliveries after stop() is called", async () => {
+    // The second delivery is enqueued only AFTER stop() below. With two
+    // due rows up front, an extra tick could legitimately claim the
+    // second one in the gap between the first fetch starting and the
+    // test regaining the event loop to call stop() (a scheduling race
+    // that flaked under full-suite load, not a worker bug).
     await makeDueEndpoint("https://example.test/a");
-    await makeDueEndpoint("https://example.test/b");
     await enqueueDueDelivery();
 
     let callCount = 0;
@@ -1018,6 +1073,8 @@ describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain", () => {
     try {
       await firstStarted;
       const stopPromise = handle.stop({ drainMs: 5_000 });
+      // Becomes due after stop; nothing may ever claim it.
+      await enqueueDueDelivery();
       // Late ticks (cleared interval) must not fire while we wait.
       await new Promise((r) => setTimeout(r, 30));
       releaseFirst?.();

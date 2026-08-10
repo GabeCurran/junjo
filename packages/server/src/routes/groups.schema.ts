@@ -3,6 +3,19 @@ import { pageLimit } from "./page.schema.js";
 
 const VISIBILITY = ["public", "invite-only", "secret"] as const;
 
+// Group metadata is a free-form JSON object; cap its serialized size so it
+// cannot become a large covert data store carried on every group read.
+// 16 KB fits generous structured metadata (flags, cosmetic ids, small
+// nested config) while staying well under the 1 MB global body cap.
+// Measured on JSON.stringify length (UTF-16 code units), which is the
+// documented cap unit rather than exact byte count.
+export const GROUP_METADATA_MAX_SERIALIZED = 16 * 1024;
+const groupMetadata = z
+  .record(z.unknown())
+  .refine((m) => JSON.stringify(m).length <= GROUP_METADATA_MAX_SERIALIZED, {
+    message: `metadata exceeds ${GROUP_METADATA_MAX_SERIALIZED} serialized characters`,
+  });
+
 // Passcode bounds. 4 chars is low enough to allow short numeric PINs
 // (room codes, "1234"-style); 128 is generous enough to fit a phrase
 // without becoming a covert long-form data field.
@@ -15,7 +28,7 @@ export const createGroupBody = z
     kind: z.string().min(1).max(64),
     name: z.string().min(1).max(120),
     visibility: z.enum(VISIBILITY).optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: groupMetadata.optional(),
     defaultRoleId: z.string().min(1).optional(),
     // Same external-userId validation as joinGroupBody.
     creatorUserId: z.string().min(1).optional(),
@@ -59,7 +72,7 @@ export const updateGroupBody = z
   .object({
     name: z.string().min(1).max(120).optional(),
     visibility: z.enum(VISIBILITY).optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: groupMetadata.optional(),
     defaultRoleId: z.string().min(1).nullable().optional(),
     // String = set new passcode (replaces any prior); null = clear.
     // Omit to leave the existing passcode (if any) untouched.
@@ -170,6 +183,6 @@ export type SetParentBody = z.infer<typeof setParentBody>;
 
 // Hard upper bound on how deep the cycle-detection walk goes when
 // resolving a candidate ancestor chain. Practical hierarchies are a
-// handful of levels deep (faction -> guild -> sub-guild); the cap is
-// a defensive guard against a corrupted state with unbounded recursion.
+// handful of levels deep; the cap is a defensive guard against a
+// corrupted state with unbounded recursion.
 export const MAX_PARENT_DEPTH = 100;

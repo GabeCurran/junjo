@@ -1,5 +1,6 @@
-// Junjo data model. Postgres only. No migrations yet (the schema is
-// still moving). Run `prisma format` after edits.
+// Junjo data model. Postgres only. Committed migrations live in
+// prisma/migrations; schema edits go through `npm run db:migrate:dev`.
+// Run `prisma format` after edits.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,13 +16,13 @@ datasource db {
 // =====================================================================
 
 model Game {
-  id   String @id @default(cuid())
-  name String
+  id        String   @id @default(cuid())
+  name      String
   // Per-game configuration (Friends subsystem toggles + related knobs).
   // Validated against `PartialGameConfig` from `@junjo.io/shared` on write.
   // Read paths run the value through `resolveGameConfig` to fill missing
   // branches with defaults, so handlers always see a fully-populated tree.
-  config Json @default("{}")
+  config    Json     @default("{}")
   // Optional shared identifier for `friends.scope = "network"`. Two
   // Game rows with the same `networkId` AND `friends.scope = "network"`
   // share visibility on UserRelationship rows.
@@ -75,8 +76,8 @@ model JunjoUser {
   banHistory         BanHistory[]
 }
 
-// Maps a dev's external user id (Clerk sub, Supabase uuid, Roblox
-// UserId-as-string) to a JunjoUser. Per game, so two different games
+// Maps a dev's external user id (whatever external id the game's auth
+// provider issues) to a JunjoUser. Per game, so two different games
 // can use the same external id without colliding.
 model ExternalIdentity {
   id             String    @id @default(cuid())
@@ -100,13 +101,13 @@ model ExternalIdentity {
 // =====================================================================
 
 model Group {
-  id            String  @id @default(cuid())
+  id            String    @id @default(cuid())
   gameId        String
-  game          Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  game          Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
   kind          String
   name          String
   visibility    String // "public" | "invite-only" | "secret"
-  metadata      Json    @default("{}")
+  metadata      Json      @default("{}")
   defaultRoleId String?
   // Optional shared-secret join gate. When non-null, `POST /:id/join`
   // requires the caller to send a matching `passcode` in the body in
@@ -117,11 +118,11 @@ model Group {
   // a passcode is harmless (the join path is already blocked).
   passcodeHash  String?
   passcodeSetAt DateTime?
-  // Sub-group / alliance parent. WoW-style guild alliances and
-  // multi-tier factions both use this.
+  // Optional parent for hierarchical group structures. Null means
+  // top-level. Cycle-checked at write time.
   parentGroupId String?
-  parentGroup   Group?  @relation("GroupParent", fields: [parentGroupId], references: [id])
-  childGroups   Group[] @relation("GroupParent")
+  parentGroup   Group?    @relation("GroupParent", fields: [parentGroupId], references: [id])
+  childGroups   Group[]   @relation("GroupParent")
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -158,14 +159,14 @@ model GroupMember {
   notesPublic  String?
   notesPrivate String?
 
-  joinedAt DateTime  @default(now())
-  leftAt   DateTime?
+  joinedAt    DateTime  @default(now())
+  leftAt      DateTime?
   // Only meaningful when status="banned". Null = permanent ban; a value
   // in the past is treated as expired at read time (lazy expiry, no
   // sweeper). Cleared whenever the row transitions back to active.
   bannedUntil DateTime?
 
-  // Multi-role per member (TERA-style). The join table sits below.
+  // A member can hold multiple roles at once. The join table sits below.
   memberRoles         MemberRole[]
   permissionOverrides MemberPermissionOverride[]
 
@@ -216,9 +217,9 @@ model MemberRole {
   @@index([roleId])
 }
 
-// Permission keys are dev-defined strings ("invite_member",
-// "claim_territory"). We register the set of keys per game so the
-// dashboard can list them and the SDK can validate them client-side.
+// Permission keys are open strings the game defines. We register the
+// set of keys per game so the dashboard can list them and the SDK can
+// validate them client-side.
 model PermissionDef {
   id          String   @id @default(cuid())
   gameId      String
@@ -380,12 +381,12 @@ model UserRelationshipTag {
 // values. Reads fall back to `config.friends.visibility.default` when
 // no row exists.
 model UserVisibility {
-  gameId      String
-  game        Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  junjoUserId String
-  junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
-  friendsListVisibility String @default("private")
-  updatedAt   DateTime  @updatedAt
+  gameId                String
+  game                  Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId           String
+  junjoUser             JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  friendsListVisibility String    @default("private")
+  updatedAt             DateTime  @updatedAt
 
   @@id([gameId, junjoUserId])
   @@index([junjoUserId])
@@ -451,28 +452,28 @@ model AuditEntry {
 // =====================================================================
 
 model WebhookEndpoint {
-  id         String    @id @default(cuid())
-  gameId     String
-  game       Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  url        String
+  id                  String    @id @default(cuid())
+  gameId              String
+  game                Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  url                 String
   // HMAC signing secret. Stored in recoverable form (HMAC requires the
   // secret on the signing side, unlike the API-key path which stores a
   // one-way hash). Surfaced to the dev only at create time.
-  secret     String
+  secret              String
   // Subset of event types this endpoint cares about. Empty = all.
-  events     String[]
+  events              String[]
   // Wire format applied at delivery time. "junjo" (default) sends the raw
   // JunjoEvent JSON with HMAC headers; "discord" sends a Discord embed
   // payload and skips the HMAC (Discord webhooks authenticate via URL).
   // Slack and other targets land here in later phases.
-  format     String    @default("junjo")
-  createdAt  DateTime  @default(now())
-  disabledAt DateTime?
+  format              String    @default("junjo")
+  createdAt           DateTime  @default(now())
+  disabledAt          DateTime?
   // Rolling counter of consecutive failed delivery attempts (network
   // error, timeout, 5xx, retriable 4xx). Reset to 0 on any successful
   // delivery. The worker auto-flips `disabledAt` when this crosses the
   // configured threshold so a permanently-dead URL stops spamming logs.
-  consecutiveFailures Int @default(0)
+  consecutiveFailures Int       @default(0)
 
   deliveries WebhookDelivery[]
 
@@ -536,30 +537,30 @@ model GameBan {
 // writes one row here. Re-bans don't overwrite predecessors -- the
 // row from the prior ban survives so the timeline reads cleanly.
 model BanHistory {
-  id            String    @id @default(cuid())
-  gameId        String
-  game          Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  id               String    @id @default(cuid())
+  gameId           String
+  game             Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
   // The party affected. References JunjoUser; the dev's external id
   // can be resolved via ExternalIdentity at read time.
-  junjoUserId   String
-  junjoUser     JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  junjoUserId      String
+  junjoUser        JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
   // "game" for /v1/bans rows (gameId only); "group" for groups.ban
   // rows (groupId set).
-  scope         String
+  scope            String
   // Set on group-scope rows; null on game-scope rows. Cascades when
   // the group is hard-deleted (preserves the timeline otherwise).
-  groupId       String?
-  group         Group?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  groupId          String?
+  group            Group?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   // "set" for ban issued; "lifted" for ban removed (manual unban or
   // expiry-based lift recorded by an operator).
-  kind          String
+  kind             String
   // Snapshot of the ban's reason at the time of the event; null on
   // lifts and on bans issued without a reason.
-  reason        String?
+  reason           String?
   // Snapshot of the ban's expiry at the time of the event; null on
   // lifts and on permanent bans.
-  expiresAt     DateTime?
-  eventAt       DateTime  @default(now())
+  expiresAt        DateTime?
+  eventAt          DateTime  @default(now())
   // Resolved actor JunjoUser id when the dev's auth adapter is wired;
   // null otherwise (mirrors AuditEntry.actorUserId).
   actorJunjoUserId String?
