@@ -38,7 +38,10 @@ jobs:
       matrix:
         include:
           - name: windows-msvc
-            os: windows-latest
+            # Pinned to 2022 rather than windows-latest: the newer runner
+            # image the label points at does not expose the Visual Studio
+            # 17 2022 generator this build asks for.
+            os: windows-2022
           - name: linux-gcc
             os: ubuntu-latest
             cc: gcc

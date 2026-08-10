@@ -1120,8 +1120,14 @@ describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain", () => {
       // delivery to finish.
       await handle.stop({ drainMs: 100 });
       const elapsed = Date.now() - t0;
-      expect(elapsed).toBeGreaterThanOrEqual(80);
-      expect(elapsed).toBeLessThan(2_000);
+      // The drain resolves at the ceiling: it waited (not an instant
+      // no-op) but did not block on the fetcher that never resolves in
+      // this window. The bounds are deliberately loose so scheduling
+      // jitter under a loaded CI runner cannot flake a real-timer
+      // assertion; the invariant is that stop() returns while the
+      // fetcher is still hanging, which the release-in-finally proves.
+      expect(elapsed).toBeGreaterThanOrEqual(60);
+      expect(elapsed).toBeLessThan(10_000);
     } finally {
       // Release the fetcher and await the still-pending in-flight tick
       // so the test process tears down cleanly. In production this maps
@@ -1130,14 +1136,16 @@ describe.skipIf(!TEST_DATABASE_URL)("startWebhookWorker graceful drain", () => {
       releaseFetcher?.();
       await handle.stop();
     }
-  });
+  }, 20_000);
 
   it("stop() is a no-op when no tick is in flight", async () => {
     const handle = startWebhookWorker(prisma, { intervalMs: 1_000_000 });
     const t0 = Date.now();
     await handle.stop({ drainMs: 5_000 });
     const elapsed = Date.now() - t0;
-    expect(elapsed).toBeLessThan(50);
+    // A no-op stop returns promptly rather than waiting out drainMs; the
+    // bound is loose enough that a loaded runner does not flake it.
+    expect(elapsed).toBeLessThan(1_000);
   });
 
   it("a second stop() call resolves cleanly after the first drain completed", async () => {

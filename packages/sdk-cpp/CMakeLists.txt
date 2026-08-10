@@ -223,7 +223,12 @@ endif()
 # Warnings: strict for our own translation units, never exported to
 # consumers. JUNJO_DEV escalates to errors for tests/CI.
 set(JUNJO_MSVC_WARNINGS /W4 /permissive-)
-set(JUNJO_OTHER_WARNINGS -Wall -Wextra -Wpedantic)
+# -Wno-missing-field-initializers: the Error and other value types are
+# built with designated initializers that intentionally omit trailing
+# fields whose default member value is correct (optionals default to
+# empty). -Wextra flags that on GCC and Clang; the omission is deliberate
+# and well-defined, so it is not an error here.
+set(JUNJO_OTHER_WARNINGS -Wall -Wextra -Wno-missing-field-initializers -Wpedantic)
 if(JUNJO_DEV)
   list(APPEND JUNJO_MSVC_WARNINGS /WX)
   list(APPEND JUNJO_OTHER_WARNINGS -Werror)

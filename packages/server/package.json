@@ -20,7 +20,7 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:reset": "prisma migrate reset --force --skip-generate --skip-seed",
     "db:seed": "tsx src/seed.cli.ts",
-    "db:seed:demo": "tsx --env-file=../../.env src/seed-demo.cli.ts"
+    "db:seed:demo": "tsx --env-file-if-exists=../../.env src/seed-demo.cli.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
