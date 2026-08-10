@@ -37,7 +37,7 @@ body:
       options:
         - SDK (TypeScript)
         - React hooks
-        - Roblox SDK (Luau)
+        - Junjo.io SDK for Roblox (Luau)
         - Server / HTTP API
         - Dashboard
         - Docs

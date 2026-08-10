@@ -1,7 +1,8 @@
-# Roblox SDK: Luau tests on every change, and a Junjo.rbxm model
-# attached to GitHub releases. The model is the distribution channel
-# for packages/sdk-roblox (it is not published to npm).
-name: Roblox SDK
+# Junjo.io SDK for Roblox: Luau tests on every change, and a Junjo.rbxm
+# model attached to GitHub releases tagged roblox-vX.Y.Z. The model is
+# the distribution channel for packages/sdk-roblox (it is not published
+# to npm).
+name: Junjo.io SDK for Roblox
 
 on:
   push:
@@ -26,13 +27,22 @@ env:
 
 jobs:
   test:
+    # push / pull_request runs are unconditional. For release events,
+    # only Roblox SDK releases (tag scheme roblox-vX.Y.Z) run the suite;
+    # other release tags in this repo skip it (mirrors the release job's
+    # guard so those releases do not re-run tests at an unrelated tag).
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'roblox-v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install lune ${{ env.LUNE_VERSION }}
         run: |
           curl -sSfLo lune.zip "https://github.com/lune-org/lune/releases/download/v${LUNE_VERSION}/lune-${LUNE_VERSION}-linux-x86_64.zip"
+          # Pinned SHA-256 of lune-0.10.4-linux-x86_64.zip (cross-checked
+          # against the GitHub release asset digest). Fail before extracting
+          # so a tampered download cannot poison the build.
+          echo "ffba0bd404ae078c9543ef5ac12479938a741aab255768a11a08517ae963b288  lune.zip" | sha256sum -c -
           unzip -o lune.zip lune
           chmod +x lune
           sudo mv lune /usr/local/bin/lune
@@ -43,21 +53,23 @@ jobs:
         run: lune run tests/run.luau
 
   release:
-    if: github.event_name == 'release'
+    # Only Roblox SDK releases (tag scheme roblox-vX.Y.Z) build and
+    # attach the model; other release tags in this repo are ignored.
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'roblox-v')
     needs: test
     runs-on: ubuntu-latest
     permissions:
       # gh release upload needs write on the release's assets.
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Verify Junjo.VERSION matches the release tag
         run: |
           TAG="${{ github.event.release.tag_name }}"
-          # Tags look like sdk-roblox-v0.1.0 or v0.1.0; compare the
-          # numeric tail against the VERSION constant in init.lua.
-          TAG_VERSION="${TAG##*v}"
+          # Tags follow the canonical roblox-vX.Y.Z scheme; strip the
+          # roblox-v prefix and compare against Junjo.VERSION in init.lua.
+          TAG_VERSION="${TAG#roblox-v}"
           LUA_VERSION=$(grep -oP 'Junjo\.VERSION = "\K[0-9]+\.[0-9]+\.[0-9]+' packages/sdk-roblox/src/init.lua)
           echo "tag=$TAG_VERSION init.lua=$LUA_VERSION"
           if [ "$TAG_VERSION" != "$LUA_VERSION" ]; then
@@ -68,6 +80,11 @@ jobs:
       - name: Install rojo ${{ env.ROJO_VERSION }}
         run: |
           curl -sSfLo rojo.zip "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/rojo-${ROJO_VERSION}-linux-x86_64.zip"
+          # Pinned SHA-256 of rojo-7.5.1-linux-x86_64.zip (verified
+          # reproducible across independent downloads; this asset predates
+          # GitHub's recorded digest). rojo builds the shipped Junjo.rbxm, so
+          # fail before extracting if the download does not match.
+          echo "0d600df6c4c48a9d09c701d0c2a109c55c2db833cd9766fd7d1e6e2684843d53  rojo.zip" | sha256sum -c -
           unzip -o rojo.zip rojo
           chmod +x rojo
           sudo mv rojo /usr/local/bin/rojo

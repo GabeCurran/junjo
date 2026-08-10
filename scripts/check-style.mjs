@@ -2,6 +2,30 @@
 // source files. Em-dash mojibake breaks under PowerShell 5.1 console
 // encoding, and the project standard is plain ASCII in code and docs.
 //
+// Scoped rule for .mdx files: the sequence " -- " (space, two hyphens,
+// space) is forbidden outside fenced code blocks. The docs site typographs
+// it into a dash glyph at render time, which reintroduces the dashes the
+// rules above forbid. Fenced code blocks are exempt (shell `--` argument
+// separators, Lua comments, mermaid edge syntax), and inline code spans
+// (backtick-delimited, incl. multi-backtick forms) are stripped from a
+// line before it is scanned. Fence tracking is line-based and remembers
+// the opening fence's character and length, so a ~~~ line inside a
+// ```-fence (or ``` inside a ````-fence) does not mis-toggle. Known
+// limitation: indented code blocks and indented fences are not modeled;
+// any leading-whitespace ``` / ~~~ run toggles fence state.
+//
+// Scoped rule for .md and .mdx files: a spaced single hyphen splicing
+// two clauses mid-sentence ("this - that") is forbidden in prose. It is
+// a dash-style separator in disguise; use a comma, colon, semicolon,
+// parentheses, or split the sentence. The scan shares the fence model
+// and inline-code stripping above, and additionally exempts:
+//   - list markers (lines starting with optional whitespace then "- ")
+//   - table rows (any line containing "|" after inline code is stripped)
+//   - numeric ranges and arithmetic ("1 - 100"): the rule only fires
+//     when a letter sits on both sides of the hyphen (an optional
+//     closing quote/paren/backtick may trail the left letter, and an
+//     opening one may precede the right letter)
+//
 // Run: node scripts/check-style.mjs
 // Exits 0 on clean, 1 on any violation.
 
@@ -71,6 +95,91 @@ function isText(path) {
   return true;
 }
 
+// .mdx-only rule: " -- " outside fenced code blocks renders as a dash
+// glyph on the docs site. Fence-aware line scan; a line that opens or
+// closes a fence is itself exempt, and inline code spans are stripped
+// before the scan (see the header comment for the fence model).
+const MDX_SEPARATOR = {
+  name: 'spaced double hyphen " -- " (MDX prose)',
+  fix: "use a colon, semicolon, parentheses, or split the sentence",
+};
+
+// .md/.mdx rule: a spaced single hyphen splicing clauses mid-sentence.
+// Fires only with a letter on each side of the hyphen so numeric ranges
+// and arithmetic ("1 - 100") stay legal; list markers and table rows are
+// exempted at the line level in checkProseSeparators.
+const HYPHEN_SEPARATOR = {
+  name: 'spaced single hyphen " - " clause separator (md/mdx prose)',
+  fix: "use a comma, colon, semicolon, parentheses, or split the sentence",
+};
+const HYPHEN_SEPARATOR_RE = /[A-Za-z][)"'`]? - ["'`(]?[A-Za-z]/g;
+
+// Replace inline code spans with same-length filler so commands like
+// `npm run x -- --flag` are not scanned, while reported columns stay
+// aligned with the source line. A span opens with a run of backticks
+// and closes with a run of the same length; the (?!`) keeps a longer
+// closing run from terminating a shorter opener mid-run. The filler
+// contains no spaces or hyphens, so stripping cannot manufacture a
+// " -- " that was not in the prose.
+function stripInlineCode(line) {
+  return line.replace(/(`+)(.*?)\1(?!`)/g, (m) => "x".repeat(m.length));
+}
+
+function checkProseSeparators(path, lines, { doubleHyphen }) {
+  const violations = [];
+  // Non-null while inside a fenced code block: the opening fence's
+  // character ("`" or "~") and run length.
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const run = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence !== null) {
+      if (run !== null && run[1][0] === fence.char && run[1].length >= fence.len) {
+        fence = null; // closing fence: same char, at least as long
+      }
+      continue;
+    }
+    if (run !== null) {
+      fence = { char: run[1][0], len: run[1].length };
+      continue;
+    }
+    const scannable = stripInlineCode(line);
+    if (doubleHyphen) {
+      let idx = scannable.indexOf(" -- ");
+      while (idx !== -1) {
+        violations.push({
+          file: path,
+          line: i + 1,
+          col: idx + 1,
+          name: MDX_SEPARATOR.name,
+          char: "--",
+          codepoint: "U+002D U+002D",
+          fix: MDX_SEPARATOR.fix,
+        });
+        idx = scannable.indexOf(" -- ", idx + 1);
+      }
+    }
+    // Spaced single hyphen: skip list markers and table rows outright.
+    if (/^\s*- /.test(line)) continue;
+    if (scannable.includes("|")) continue;
+    HYPHEN_SEPARATOR_RE.lastIndex = 0;
+    let m = HYPHEN_SEPARATOR_RE.exec(scannable);
+    while (m !== null) {
+      violations.push({
+        file: path,
+        line: i + 1,
+        col: m.index + 1,
+        name: HYPHEN_SEPARATOR.name,
+        char: "-",
+        codepoint: "U+002D",
+        fix: HYPHEN_SEPARATOR.fix,
+      });
+      m = HYPHEN_SEPARATOR_RE.exec(scannable);
+    }
+  }
+  return violations;
+}
+
 function checkFile(path) {
   let content;
   try {
@@ -80,6 +189,10 @@ function checkFile(path) {
   }
   const violations = [];
   const lines = content.split("\n");
+  const ext = extname(path).toLowerCase();
+  if (ext === ".mdx" || ext === ".md") {
+    violations.push(...checkProseSeparators(path, lines, { doubleHyphen: ext === ".mdx" }));
+  }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     for (const { name, regex, fix } of FORBIDDEN) {

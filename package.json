@@ -23,6 +23,7 @@
     "format": "biome format --write .",
     "check": "biome check .",
     "check:style": "node scripts/check-style.mjs",
+    "check:unreal-sync": "node scripts/sync-unreal-sdk.mjs --check",
     "typecheck": "npm run build -w @junjo.io/shared && npm run build -w @junjo.io/sdk && npm run typecheck --workspaces --if-present",
     "screenshots": "npm run screenshots -w @junjo/screenshots --",
     "screenshots:dashboard": "npm run screenshots -w @junjo/screenshots -- --target=dashboard",

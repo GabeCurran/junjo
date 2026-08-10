@@ -31,6 +31,11 @@ playwright/.cache/
 packages/server/bench-results/
 **/*.bench-results.json
 
+# Unreal build outputs (UBT writes into the plugin folder when a host
+# project references it)
+packages/sdk-unreal/JunjoIO/Binaries/
+packages/sdk-unreal/JunjoIO/Intermediate/
+
 # Env
 .env
 .env.local
@@ -81,6 +86,9 @@ postgres-data/
 
 # npm pack artifacts
 *.tgz
+
+# Rojo model builds (local verification output)
+*.rbxm
 
 # Prisma
 packages/server/prisma/migrations/.queries/

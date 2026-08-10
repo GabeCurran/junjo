@@ -1,0 +1,187 @@
+# Junjo.io SDK for C++: build, test, and install/consume proof.
+#
+# Dependency-mode coverage is deliberate. The SDK's curl transport has
+# two supported modes: a system libcurl found via find_package(CURL),
+# and a pinned FetchContent curl built HTTP-only when no system curl
+# exists. The Linux legs apt-get install libcurl4-openssl-dev so the
+# system path is exercised end to end (including the installed
+# package's find_dependency(CURL) re-resolution on the consumer side).
+# The Windows leg passes -DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON so the
+# FetchContent path is exercised deterministically (runner images carry
+# an incidental libcurl, via Strawberry Perl, that FindCURL can
+# discover by accident) and the installed package's vendored-curl
+# export is what the consumer build proves. Together the matrix covers
+# both modes.
+
+name: C++ SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/sdk-cpp/**"
+      - "examples/cpp-consumer/**"
+      - ".github/workflows/cpp.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/sdk-cpp/**"
+      - "examples/cpp-consumer/**"
+      - ".github/workflows/cpp.yml"
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-msvc
+            os: windows-latest
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: linux-clang
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install system libcurl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      # FetchContent re-downloads are the slowest part of a cold
+      # configure. The source and subbuild (download stamp) dirs are
+      # keyed by the CMakeLists that carry the version pins, so bumping
+      # a pin invalidates the cache. Build outputs are not cached.
+      - name: Cache FetchContent sources
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            packages/sdk-cpp/build*/_deps/*-src
+            packages/sdk-cpp/build*/_deps/*-subbuild
+          key: fetchcontent-${{ matrix.name }}-${{ hashFiles('packages/sdk-cpp/CMakeLists.txt', 'packages/sdk-cpp/tests/CMakeLists.txt') }}
+
+      # ---- Windows: one multi-config tree, Debug and Release ----
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S packages/sdk-cpp -B packages/sdk-cpp/build -G "Visual Studio 17 2022" -DJUNJO_DEV=ON -DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON
+
+      - name: Build Debug (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build packages/sdk-cpp/build --config Debug --parallel
+
+      - name: Build Release (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build packages/sdk-cpp/build --config Release --parallel
+
+      - name: Test Debug (Windows)
+        if: runner.os == 'Windows'
+        run: ctest --test-dir packages/sdk-cpp/build -C Debug --output-on-failure
+
+      - name: Test Release (Windows)
+        if: runner.os == 'Windows'
+        run: ctest --test-dir packages/sdk-cpp/build -C Release --output-on-failure
+
+      # ---- Linux: one single-config tree per configuration ----
+
+      - name: Configure Debug (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S packages/sdk-cpp -B packages/sdk-cpp/build-debug -DCMAKE_BUILD_TYPE=Debug -DJUNJO_DEV=ON
+
+      - name: Build Debug (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build packages/sdk-cpp/build-debug --parallel
+
+      - name: Test Debug (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir packages/sdk-cpp/build-debug --output-on-failure
+
+      - name: Configure Release (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S packages/sdk-cpp -B packages/sdk-cpp/build-release -DCMAKE_BUILD_TYPE=Release -DJUNJO_DEV=ON
+
+      - name: Build Release (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build packages/sdk-cpp/build-release --parallel
+
+      - name: Test Release (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir packages/sdk-cpp/build-release --output-on-failure
+
+      # ---- Install + external consumer proof ----
+      #
+      # Installs the Release SDK to a scratch prefix, builds
+      # examples/cpp-consumer against it via find_package(JunjoIO), and
+      # runs the binary with no server listening. The expected outcome
+      # IS the typed failure: exit code 2 and a network_error line,
+      # proving the whole install/export/link/run chain plus the
+      # no-exceptions error contract.
+
+      - name: Install SDK to prefix (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --install packages/sdk-cpp/build --config Release --prefix $env:RUNNER_TEMP/junjo-prefix
+
+      - name: Install SDK to prefix (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --install packages/sdk-cpp/build-release --prefix "$RUNNER_TEMP/junjo-prefix"
+
+      - name: Build consumer (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S examples/cpp-consumer -B build-consumer -G "Visual Studio 17 2022" "-DCMAKE_PREFIX_PATH=$env:RUNNER_TEMP/junjo-prefix"
+          cmake --build build-consumer --config Release
+
+      - name: Build consumer (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S examples/cpp-consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$RUNNER_TEMP/junjo-prefix"
+          cmake --build build-consumer --parallel
+
+      - name: Run consumer, expect typed network_error (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $out = & .\build-consumer\Release\junjo-consumer.exe 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 2) {
+            Write-Error "expected exit code 2 (typed error), got $LASTEXITCODE"
+            exit 1
+          }
+          if ($out -notmatch "network_error") {
+            Write-Error "expected network_error in output"
+            exit 1
+          }
+          # The consumer exe intentionally exits 2, and pwsh steps end with
+          # an implicit "exit $LASTEXITCODE". Both assertions passed, so
+          # reset the step's exit code explicitly.
+          exit 0
+
+      - name: Run consumer, expect typed network_error (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set +e
+          out=$(./build-consumer/junjo-consumer 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 2 ]; then
+            echo "expected exit code 2 (typed error), got $code"
+            exit 1
+          fi
+          echo "$out" | grep -q network_error

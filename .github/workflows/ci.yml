@@ -9,12 +9,28 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The server's DB-backed suite (the bulk of its tests) runs against a
+    # real Postgres; without this service and TEST_DATABASE_URL those
+    # tests skip silently and CI green-lights untested behavior.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: junjo
+          POSTGRES_DB: junjo_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -30,8 +46,35 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
+      - name: Unreal vendored-mirror byte-lock
+        run: node scripts/sync-unreal-sdk.mjs --check
+
+      - name: Install lune 0.10.4
+        run: |
+          curl -sSfLo lune.zip "https://github.com/lune-org/lune/releases/download/v0.10.4/lune-0.10.4-linux-x86_64.zip"
+          # Pinned SHA-256 of lune-0.10.4-linux-x86_64.zip (cross-checked
+          # against the GitHub release asset digest). Fail before extracting
+          # so a tampered download cannot reach the test run.
+          echo "ffba0bd404ae078c9543ef5ac12479938a741aab255768a11a08517ae963b288  lune.zip" | sha256sum -c -
+          unzip -o lune.zip lune
+          chmod +x lune
+          sudo mv lune /usr/local/bin/lune
+          lune --version
+
+      - name: Roblox Luau tests
+        working-directory: packages/sdk-roblox
+        run: lune run tests/run.luau
+
+      - name: Apply migrations to the test database
+        run: npx prisma migrate deploy
+        working-directory: packages/server
+        env:
+          DATABASE_URL: postgres://postgres:junjo@localhost:5433/junjo_test
+
       - name: Test
         run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://postgres:junjo@localhost:5433/junjo_test
 
       - name: Changeset status
         if: github.event_name == 'pull_request'
