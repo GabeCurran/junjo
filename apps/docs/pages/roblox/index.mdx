@@ -2,7 +2,7 @@
 
 The Junjo.io SDK for Roblox is the Luau client for Roblox game servers. It wraps `HttpService` for outbound REST calls, mirrors the TypeScript SDK's `JunjoConfig` shape, exposes per-namespace methods that match the TS SDK surface, and surfaces server errors as a typed `JunjoError` table.
 
-Install from source with Rojo today: the module root is `packages/sdk-roblox/src`, and `default.project.json` builds the tree as a single `ModuleScript` named `Junjo` (point your own Rojo project at the source, or build `Junjo.rbxm` yourself with `rojo build`). Starting with the first GitHub release tagged `roblox-vX.Y.Z`, a prebuilt `Junjo.rbxm` model will also be attached to each release; no such release exists yet. The package is not on npm.
+Install the prebuilt `Junjo.rbxm` model attached to each GitHub release tagged `roblox-vX.Y.Z` (starting with `roblox-v0.1.0`): download it and insert it into Studio, or sync it with Rojo. You can also install from source: the module root is `packages/sdk-roblox/src`, and `default.project.json` builds the tree as a single `ModuleScript` named `Junjo` (point your own Rojo project at the source, or build `Junjo.rbxm` yourself with `rojo build`). The package is not on npm.
 
 Either way, mount the module in `ServerStorage` (or `ServerScriptService`) and require it from server `Script`s only. Never place the module or your API key in `ReplicatedStorage` or any other container that replicates to clients: the per-game `jk_` key grants full control of your game's Junjo data, and a client that can read it can act as your server.
 
@@ -427,7 +427,7 @@ Methods that return `nil` on 404 (`groups:get`, `groups:getRelationship`, `membe
 
 ## Manual verification
 
-A lune-based Luau suite (`packages/sdk-roblox/tests/`) runs in CI on every Roblox-touching change, covering construction and key validation, nil-input guards, URL encoding, `Junjo.Null` round-trips, and the HTTP error paths against a fake HttpService. The `Junjo.rbxm` model is built by rojo and will be attached to each GitHub release starting with the first `roblox-v*` tag (none has shipped yet). What CI cannot exercise is the real Roblox environment, so the following still need a manual pass in Roblox Studio after substantial changes:
+A lune-based Luau suite (`packages/sdk-roblox/tests/`) runs in CI on every Roblox-touching change, covering construction and key validation, nil-input guards, URL encoding, `Junjo.Null` round-trips, and the HTTP error paths against a fake HttpService. The `Junjo.rbxm` model is built by rojo and attached to each GitHub release under the `roblox-v*` tags. What CI cannot exercise is the real Roblox environment, so the following still need a manual pass in Roblox Studio after substantial changes:
 
 - `Junjo.new({ apiKey = "..." })` constructs without error in Roblox Studio.
 - `junjo.groups:create({ kind = "guild", name = "Test" })` returns a parsed Lua table whose `id` is a string.

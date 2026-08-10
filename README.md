@@ -34,7 +34,7 @@ const allowed = await junjo.can("user_123", guild.id, "invite_member");
 
 - **`@junjo.io/sdk`**: typed TypeScript client for any Node or browser app.
 - **`@junjo.io/react`**: React hooks (`useGroup`, `useMembers`, `useCan`, ...) with optimistic updates.
-- **Junjo.io SDK for Roblox** (`packages/sdk-roblox`, will ship as `Junjo.rbxm` on GitHub releases): Luau client for Roblox experiences.
+- **Junjo.io SDK for Roblox** (`packages/sdk-roblox`, distributed as `Junjo.rbxm` on GitHub releases): Luau client for Roblox experiences.
 - **Junjo.io SDK for C++** (`packages/sdk-cpp`): C++20 client library for game servers, installed as a CMake `find_package(JunjoIO)` package.
 - **Junjo.io SDK for Unreal Engine** (`packages/sdk-unreal`): source plugin over the C++ core with a game instance subsystem, Blueprint async nodes, and live SSE event streams.
 - **Cross-game admin dashboard**: Next.js app for inspecting and managing groups across games.
@@ -95,7 +95,7 @@ packages/
   server/       Hono HTTP API + Prisma schema + webhook worker
   sdk/          @junjo.io/sdk, typed TypeScript client
   react/        @junjo.io/react, React hooks
-  sdk-roblox/   Junjo.io SDK for Roblox, Luau client (will ship as Junjo.rbxm)
+  sdk-roblox/   Junjo.io SDK for Roblox, Luau client (Junjo.rbxm on releases)
   sdk-cpp/      Junjo.io SDK for C++, C++20 client (CMake package JunjoIO)
   sdk-unreal/   Junjo.io SDK for Unreal Engine, source plugin over the C++ core
   shared/       @junjo.io/shared, shared types

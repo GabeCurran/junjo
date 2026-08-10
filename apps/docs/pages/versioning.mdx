@@ -4,7 +4,7 @@ What version numbers promise, and what happens when a client and a server are no
 
 ## Semver stance, pre-1.0
 
-Every published package (`@junjo.io/sdk`, `@junjo.io/react`, `@junjo.io/shared`; the Roblox SDK will ship as `Junjo.rbxm` on GitHub releases with the same `0.x` versioning) is pre-1.0. Per semver, that means **minor releases may break**: `0.2.0` can change behavior that `0.1.x` had. Breaking changes are not sneaked into patches, and every change is recorded as a changeset in the repo (`.changeset/`, released via `changeset version` on merge), with breaking entries called out explicitly in the resulting per-package `CHANGELOG.md`. Pin exact versions if you cannot absorb a minor.
+Every published package (`@junjo.io/sdk`, `@junjo.io/react`, `@junjo.io/shared`; the Roblox SDK ships as `Junjo.rbxm` on GitHub releases with the same `0.x` versioning) is pre-1.0. Per semver, that means **minor releases may break**: `0.2.0` can change behavior that `0.1.x` had. Breaking changes are not sneaked into patches, and every change is recorded as a changeset in the repo (`.changeset/`, released via `changeset version` on merge), with breaking entries called out explicitly in the resulting per-package `CHANGELOG.md`. Pin exact versions if you cannot absorb a minor.
 
 The C++ SDK installs as CMake package `JunjoIO` at version `0.1.0`; its config-version file declares `SameMinorVersion` compatibility, so `find_package(JunjoIO 0.1)` matches `0.1.x` only. That widens to `SameMajorVersion` at 1.0. The Unreal Engine plugin (`VersionName` `0.1.0`) vendors the C++ core and follows its versioning; it is a source plugin that compiles with your project, and no ABI stability is promised pre-1.0.
 

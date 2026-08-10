@@ -1,6 +1,6 @@
 # Junjo.io SDK for Roblox
 
-Luau client for the [Junjo.io](https://junjo.io) API: groups, members, roles, invitations, audit, webhooks, bans, and friends for Roblox games. It runs in game servers (server `Script`s), wraps `HttpService` for outbound REST calls, and mirrors the TypeScript SDK's config shape and namespace surface. It will be distributed as a `Junjo.rbxm` model attached to GitHub releases (no release has shipped yet), not on npm.
+Luau client for the [Junjo.io](https://junjo.io) API: groups, members, roles, invitations, audit, webhooks, bans, and friends for Roblox games. It runs in game servers (server `Script`s), wraps `HttpService` for outbound REST calls, and mirrors the TypeScript SDK's config shape and namespace surface. It is distributed as a `Junjo.rbxm` model attached to GitHub releases, not on npm.
 
 ## Installation
 
