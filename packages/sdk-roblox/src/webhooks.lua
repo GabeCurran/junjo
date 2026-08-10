@@ -12,6 +12,7 @@
 -- receiver.
 
 local JunjoError = require(script.Parent.JunjoError)
+local pageAll = require(script.Parent.PageAll)
 
 local Webhooks = {}
 Webhooks.__index = Webhooks
@@ -43,16 +44,40 @@ function Endpoints:create(input: { url: string, events: { string }?, secret: str
 	return self._http:post("/v1/webhooks", body)
 end
 
--- Returns every endpoint configured for the calling game, newest first.
--- Server response shape is `{ items: [...], nextCursor: null }` (the
--- standard Page<T> envelope; pagination is not used today). The SDK
--- flattens to a plain array for ergonomics.
-function Endpoints:list()
-	local res = self._http:get("/v1/webhooks")
-	if type(res) == "table" and res.items ~= nil then
-		return res.items
+-- Endpoints configured for the calling game, newest first,
+-- cursor-paginated (server default limit 50; `nextCursor` is the id of
+-- the last item, fed back in as `opts.cursor` for the next page).
+--
+-- BEHAVIOR CHANGE (call out in release notes): earlier releases
+-- flattened the response to a bare array and discarded the cursor.
+-- Now that the server paginates this endpoint, `list` returns the full
+-- `{ items, nextCursor }` page envelope, matching the Junjo.io
+-- TypeScript SDK and every other paginated list in this SDK. Callers
+-- that iterated the old array should read `.items` or switch to
+-- `listAll`.
+function Endpoints:list(opts: { limit: number?, cursor: string? }?)
+	local query = {}
+	if opts and opts.limit ~= nil then
+		table.insert(query, "limit=" .. self._http:encode(opts.limit))
 	end
-	return {}
+	if opts and opts.cursor ~= nil then
+		table.insert(query, "cursor=" .. self._http:encode(opts.cursor))
+	end
+	local path = "/v1/webhooks"
+	if #query > 0 then
+		path = path .. "?" .. table.concat(query, "&")
+	end
+	return self._http:get(path)
+end
+
+-- Generic-for iterator over `list(...)` that walks every page until
+-- `nextCursor` is nil. Endpoint counts are small in practice, but this
+-- keeps the surface symmetric with the other paginated lists.
+function Endpoints:listAll(opts: { limit: number? }?)
+	local limit = opts and opts.limit
+	return pageAll(function(cursor)
+		return self:list({ limit = limit, cursor = cursor })
+	end)
 end
 
 -- Partial update. At least one field is required by the server (empty

@@ -1,4 +1,4 @@
--- Lune-based test runner for the Junjo Roblox SDK.
+-- Lune-based test runner for the Junjo.io SDK for Roblox.
 --
 -- The SDK source under src/ is Roblox-only Luau; lune executes it via
 -- the shim in helpers/roblox.luau (a fake `script` tree + `game`), and
@@ -14,10 +14,17 @@ local process = require("@lune/process")
 
 local specs = {
 	require("./specs/http"),
+	require("./specs/retry"),
+	require("./specs/adapter"),
 	require("./specs/urls"),
 	require("./specs/null"),
 	require("./specs/guards"),
 	require("./specs/apikey"),
+	require("./specs/moderation"),
+	require("./specs/queries"),
+	require("./specs/bans"),
+	require("./specs/friends"),
+	require("./specs/pageAll"),
 	require("./specs/version"),
 }
 

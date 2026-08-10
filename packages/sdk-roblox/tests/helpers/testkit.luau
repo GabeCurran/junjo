@@ -7,6 +7,7 @@ local M = {}
 
 M.loadJunjo = roblox.loadJunjo
 M.newFakeHttp = fakeHttp.new
+M.newSecretStub = fakeHttp.newSecretStub
 
 -- Builds a fully-wired client backed by a fake HttpService.
 -- Returns { junjo, fake, Junjo, warnings }.
@@ -18,6 +19,7 @@ function M.newClient(opts)
 		apiKey = opts.apiKey or "jk_test.secret",
 		baseUrl = opts.baseUrl or "https://api.test",
 		httpService = fake,
+		retries = opts.retries,
 	})
 	return {
 		junjo = junjo,

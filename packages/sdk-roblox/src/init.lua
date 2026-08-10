@@ -7,8 +7,9 @@
 -- Junjo Luau client. Mirrors the TypeScript SDK's `JunjoConfig` shape and
 -- wraps Roblox's HttpService for outbound REST calls. Provides the
 -- `Junjo.new` factory, per-namespace methods (groups / members / roles /
--- invitations / audit / webhooks), the top-level `:can` and `:check`
--- permission helpers, and `Junjo.RobloxUserIdAdapter`.
+-- invitations / audit / webhooks / bans / friends), the top-level `:can`,
+-- `:check`, and `:keyInfo` helpers, the `Junjo.pageAll` pagination
+-- utility, and `Junjo.RobloxUserIdAdapter`.
 --
 -- File layout under `packages/sdk-roblox/src/`:
 --   - init.lua             - this file (composes the namespaces)
@@ -16,12 +17,18 @@
 --   - Null.lua             - the JSON-null sentinel
 --   - Http.lua             - the internal HTTP wrapper exposed as junjo.http
 --   - TryGet.lua           - shared "404 -> nil" lookup helper
+--   - PageAll.lua          - cursor-pagination iterator (Junjo.pageAll)
+--   - Types.lua            - shared response-shape type exports
 --   - groups.lua           - groups namespace (groups + membership lifecycle)
 --   - members.lua          - members namespace (lookups + roles + overrides)
 --   - roles.lua            - roles namespace (CRUD + permission grants)
 --   - invitations.lua      - invitations namespace (list / get / revoke)
 --   - audit.lua            - audit namespace (list)
 --   - webhooks.lua         - webhooks.endpoints sub-namespace (CRUD)
+--   - bans.lua             - game-level bans namespace (add / remove /
+--                            get / list / history)
+--   - friends.lua          - friends namespace (requests / blocks /
+--                            tags / visibility sub-namespaces)
 --   - adapters/
 --     - RobloxUserId.lua   - the RobloxUserIdAdapter factory
 
@@ -30,12 +37,16 @@ local HttpService = game:GetService("HttpService")
 local JunjoError = require(script.JunjoError)
 local Null = require(script.Null)
 local Http = require(script.Http)
+local PageAll = require(script.PageAll)
+local Types = require(script.Types)
 local Groups = require(script.groups)
 local Members = require(script.members)
 local Roles = require(script.roles)
 local Invitations = require(script.invitations)
 local Audit = require(script.audit)
 local Webhooks = require(script.webhooks)
+local Bans = require(script.bans)
+local Friends = require(script.friends)
 local RobloxUserIdAdapter = require(script.adapters.RobloxUserId)
 
 local DEFAULT_BASE_URL = "https://api.junjo.io"
@@ -47,6 +58,30 @@ Junjo.Null = Null
 Junjo.JunjoError = JunjoError
 Junjo.DEFAULT_BASE_URL = DEFAULT_BASE_URL
 Junjo.RobloxUserIdAdapter = RobloxUserIdAdapter
+
+-- Cursor-pagination iterator for arbitrary list endpoints; the
+-- namespace `listAll` / `banHistoryAll` / `historyAll` methods are
+-- wired through it. See PageAll.lua for the iteration contract.
+Junjo.pageAll = PageAll
+
+-- Response-shape types, re-exported so consumers can annotate their own
+-- code via `Junjo.Group` etc. without requiring src/Types.lua directly.
+export type Group = Types.Group
+export type Member = Types.Member
+export type BanHistoryEntry = Types.BanHistoryEntry
+export type Page<T> = Types.Page<T>
+export type KeyInfo = Types.KeyInfo
+export type GameBan = Types.GameBan
+export type FriendRequest = Types.FriendRequest
+export type FriendRequestList = Types.FriendRequestList
+export type Friendship = Types.Friendship
+export type FriendRequestSendResult = Types.FriendRequestSendResult
+export type Block = Types.Block
+export type FriendTag = Types.FriendTag
+export type FriendTagAssignment = Types.FriendTagAssignment
+export type UserVisibilitySettings = Types.UserVisibilitySettings
+export type FriendSuggestion = Types.FriendSuggestion
+export type FriendshipRelationship = Types.FriendshipRelationship
 
 -- The SDK version baked into this source tree. Releases MUST keep this
 -- in sync with packages/sdk-roblox/package.json's "version" field and
@@ -65,10 +100,55 @@ export type JunjoConfig = {
 	inviteBaseUrl: string?,
 	-- Injection point for tests; defaults to game:GetService("HttpService").
 	httpService: any?,
+	-- Opt-in transport retries; see the policy header in Http.lua.
+	-- maxAttempts is the total attempt cap including the first request
+	-- (default 1 = no retry; > 1 opts in). backoffSeconds is the base
+	-- for exponential backoff with jitter (default 1). wait is a test
+	-- seam for the sleep between attempts; defaults to task.wait.
+	retries: {
+		maxAttempts: number?,
+		backoffSeconds: number?,
+		wait: ((seconds: number) -> ())?,
+	}?,
 }
 
 local function trimTrailingSlashes(s: string): string
 	return (string.gsub(s, "/+$", ""))
+end
+
+-- Validates config.retries at construction time so a bad retry policy
+-- surfaces as invalid_config before any request, not as a confusing
+-- runtime failure mid-retry. See Http.lua for the policy itself.
+local function validateRetries(retries: any)
+	if retries == nil then
+		return
+	end
+	if type(retries) ~= "table" then
+		JunjoError.raise("config.retries must be a table", "invalid_config", nil)
+	end
+	local maxAttempts = retries.maxAttempts
+	if maxAttempts ~= nil then
+		if type(maxAttempts) ~= "number" or maxAttempts < 1 or maxAttempts % 1 ~= 0 then
+			JunjoError.raise(
+				"config.retries.maxAttempts must be an integer >= 1",
+				"invalid_config",
+				nil
+			)
+		end
+	end
+	local backoffSeconds = retries.backoffSeconds
+	if backoffSeconds ~= nil then
+		if type(backoffSeconds) ~= "number" or backoffSeconds <= 0 then
+			JunjoError.raise(
+				"config.retries.backoffSeconds must be a positive number",
+				"invalid_config",
+				nil
+			)
+		end
+	end
+	if retries.wait ~= nil and type(retries.wait) ~= "function" then
+		JunjoError.raise("config.retries.wait must be a function", "invalid_config", nil)
+	end
 end
 
 -- Per-game API keys are issued by the server in the shape
@@ -105,12 +185,14 @@ local function validateApiKeyShape(apiKey: any)
 	if not string.match(apiKey, API_KEY_SHAPE) and not warnedNonStandardKeyShape then
 		warnedNonStandardKeyShape = true
 		warn(
-			"[junjo-roblox] apiKey does not match the expected jk_<prefix>.<secret> shape; "
+			"[junjo-sdk] apiKey does not match the expected jk_<prefix>.<secret> shape; "
 				.. "the server may reject it as malformed. Pass a per-game key minted via "
 				.. "/v1/admin/games/:gameId/api-keys."
 		)
 	end
 end
+
+local warnedSecretFallback = false
 
 local function resolveApiKey(config: JunjoConfig, httpService: any): any
 	-- If a secret name is configured, try GetSecret first. On failure
@@ -123,6 +205,20 @@ local function resolveApiKey(config: JunjoConfig, httpService: any): any
 		if ok and secret ~= nil then
 			validateApiKeyShape(secret)
 			return secret
+		end
+		if config.apiKey ~= nil and not warnedSecretFallback then
+			-- Falling back silently would hide a misconfigured secret
+			-- store in production. Warn once, naming the SECRET (never
+			-- the key value). The fallback should be a separate
+			-- low-privilege dev-game key, never a production key.
+			warnedSecretFallback = true
+			warn(
+				"[junjo-sdk] HttpService:GetSecret('"
+					.. config.apiKeySecret
+					.. "') failed; falling back to the literal config.apiKey. Register the "
+					.. "secret for production use, and make sure the fallback is a separate "
+					.. "low-privilege dev-game key, never a production key."
+			)
 		end
 		if config.apiKey == nil then
 			JunjoError.raise(
@@ -165,10 +261,13 @@ function Junjo.new(config: JunjoConfig)
 
 	local apiKey = resolveApiKey(config, httpService)
 
+	validateRetries(config.retries)
+
 	local http = Http.new({
 		apiKey = apiKey,
 		baseUrl = trimmedBaseUrl,
 		httpService = httpService,
+		retries = config.retries,
 	})
 
 	local self = setmetatable({}, Junjo)
@@ -183,6 +282,8 @@ function Junjo.new(config: JunjoConfig)
 	self.invitations = Invitations.new(http)
 	self.audit = Audit.new(http)
 	self.webhooks = Webhooks.new(http)
+	self.bans = Bans.new(http)
+	self.friends = Friends.new(http)
 	return self
 end
 
@@ -206,6 +307,18 @@ end
 function Junjo:can(userId: string, groupId: string, permission: string): boolean
 	local result = self:check(userId, groupId, permission)
 	return result.allowed == true
+end
+
+-- ============================================================
+-- Top-level key info
+-- ============================================================
+
+-- Asks the server which game the configured API key belongs to
+-- (GET /v1/whoami). Useful as a connectivity and credential check
+-- during setup and in health probes. Named `keyInfo` to match the
+-- TypeScript SDK, where "whoami" is reserved for token verification.
+function Junjo:keyInfo(): Types.KeyInfo
+	return self.http:get("/v1/whoami")
 end
 
 return Junjo

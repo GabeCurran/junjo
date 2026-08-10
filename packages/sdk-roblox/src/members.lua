@@ -8,12 +8,34 @@
 -- surface (member lookups + role / permission edits + metadata / notes
 -- mutations). Membership lifecycle (invite / accept / leave / kick) is
 -- exposed via `junjo.groups` to match the TS SDK shape.
+--
+-- Roblox game servers are TRUSTED callers: they hold the per-game
+-- `jk_` key, so the full members surface (roles, overrides, notes) is
+-- legitimately available server-side. Never ship the key to clients.
 
 local JunjoError = require(script.Parent.JunjoError)
 local tryGet = require(script.Parent.TryGet)
+local pageAll = require(script.Parent.PageAll)
+local Types = require(script.Parent.Types)
+
+type Member = Types.Member
+type Page<T> = Types.Page<T>
 
 local Members = {}
 Members.__index = Members
+
+-- Shallow-copies opts so a pageAll loop can vary the cursor without
+-- mutating the caller's table.
+local function withCursor(opts, cursor: string?)
+	local merged = {}
+	if opts then
+		for k, v in pairs(opts) do
+			merged[k] = v
+		end
+	end
+	merged.cursor = cursor
+	return merged
+end
 
 function Members.new(http)
 	local self = setmetatable({}, Members)
@@ -38,7 +60,11 @@ function Members:getById(id: string)
 	return tryGet(self._http, "/v1/members/" .. self._http:encode(id))
 end
 
-function Members:list(groupId: string, opts: { limit: number?, cursor: string? }?)
+-- `opts.status` filters to one or more member statuses (sent to the
+-- server as a comma-separated list). Omit it (or pass an empty array)
+-- for all statuses. Common shapes: { "active" } for "show me current
+-- members", { "banned" } for a moderation panel.
+function Members:list(groupId: string, opts: { limit: number?, cursor: string?, status: { string }? }?): Page<Member>
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))
@@ -46,11 +72,24 @@ function Members:list(groupId: string, opts: { limit: number?, cursor: string? }
 	if opts and opts.cursor ~= nil then
 		table.insert(query, "cursor=" .. self._http:encode(opts.cursor))
 	end
+	if opts and opts.status ~= nil and #opts.status > 0 then
+		table.insert(query, "status=" .. self._http:encode(table.concat(opts.status, ",")))
+	end
 	local path = "/v1/groups/" .. self._http:encode(groupId) .. "/members"
 	if #query > 0 then
 		path = path .. "?" .. table.concat(query, "&")
 	end
 	return self._http:get(path)
+end
+
+-- Generic-for iterator over `list(...)` that walks every page until
+-- `nextCursor` is nil. Combine with `opts.status` to iterate all
+-- banned members in a group, all kicked members, etc. `opts.cursor`
+-- is owned by the iterator and ignored if supplied.
+function Members:listAll(groupId: string, opts: { limit: number?, status: { string }? }?): () -> Member?
+	return pageAll(function(cursor)
+		return self:list(groupId, withCursor(opts, cursor))
+	end)
 end
 
 function Members:listForUser(userId: string, opts: { gameId: string? }?)

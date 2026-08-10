@@ -1,7 +1,7 @@
 {
   "name": "@junjo/sdk-roblox-meta",
   "version": "0.1.0",
-  "description": "Workspace placeholder. The real client is distributed as a Roblox model + GitHub release asset, not on npm. Source lives in src/ (init.lua is the module root).",
+  "description": "Workspace placeholder for the Junjo.io SDK for Roblox. The client is distributed as a Roblox model (Junjo.rbxm) attached to GitHub releases, not on npm. Source lives in src/ (init.lua is the module root).",
   "license": "MIT",
   "private": true,
   "scripts": {

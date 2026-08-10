@@ -14,13 +14,19 @@
 -- string (matching the cross-runtime user-id contract documented in
 -- `apps/docs/pages/auth/index.mdx`: numerics serialized as strings).
 --
--- Three call shapes:
---   - `adapter:resolve(player)` - server context: pass the Player
+-- The adapter is for SERVER-side use only, like the rest of the SDK:
+-- the module lives in a non-replicated container, clients never require
+-- it, and identity always comes from the `Player` argument Roblox
+-- passes to server-side handlers (PlayerAdded, RemoteEvent callbacks).
+--
+-- Call shapes:
+--   - `adapter:resolve(player)` (the production shape): pass the Player
 --     reference you already have on hand. Returns `tostring(player.UserId)`.
---   - `adapter:resolve()`       - client context: reads
---     `Players.LocalPlayer.UserId` and returns it as a string.
+--   - `adapter:resolve()`: reads `Players.LocalPlayer.UserId`,
+--     which is nil on servers, so this raises `invalid_config` in
+--     production server scripts; always pass the Player explicitly.
 --   - `RobloxUserIdAdapter({ explicitUserId = "..." })` then
---     `adapter:resolve()` - tests / scripted contexts: returns the
+--     `adapter:resolve()` (tests / scripted contexts): returns the
 --     hard-coded id without touching `Players`.
 --
 -- A bare `Player` userdata, a positive integer, or a non-empty string
@@ -76,11 +82,11 @@ end
 
 -- Construct an adapter. All options are optional.
 --
--- `explicitUserId` - hard-coded id returned by every `:resolve()` call
+-- `explicitUserId`: hard-coded id returned by every `:resolve()` call
 -- regardless of input. Bypasses the Players service entirely. Use only
 -- in tests or scripted automation where the consumer wants a fixed id.
 --
--- `players` - inject a fake `Players` service for testing. Defaults to
+-- `players`: inject a fake `Players` service for testing. Defaults to
 -- `game:GetService("Players")`.
 local function new(opts: { explicitUserId: any?, players: any? }?)
 	opts = opts or {}
