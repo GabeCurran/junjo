@@ -9,31 +9,23 @@ matches the junjo.io domain; dotted scopes are valid, like @socket.io):
 
 Everything else in the monorepo is `private: true` and will never publish.
 
-Published versions: `@junjo.io/sdk` 0.1.3, `@junjo.io/react` 0.1.2,
-`@junjo.io/shared` 0.1.2 (0.1.0 of all three first shipped 2026-08-04).
+Published versions: all three at 0.3.0 (0.1.0 first shipped 2026-08-04,
+0.2.0 on 2026-08-10, 0.3.0 on 2026-08-16). Per-release notes live in each
+package's `CHANGELOG.md`.
 
-The next release is already staged as four pending changesets under
-`.changeset/`:
+A release starts from the changesets pending under `.changeset/`. There is
+no fixed one-file-per-package rule: a package can carry several (a minor
+and a patch collapse into one minor bump), and a single changeset can name
+several packages. Read them before versioning, since they carry the
+behavior-change notes that become the release notes. `npm run
+version-packages` (changeset version) consumes every pending changeset,
+bumps the three package.json files together, and writes the CHANGELOGs.
 
-- `@junjo.io/sdk` (minor): typed transport errors (`network_error`,
-  `timeout`, `cancelled`), per-request `signal` / `timeoutMs`,
-  `Retry-After` surfacing, `verifyToken` / `keyInfo`, `subscribe` `onClose`,
-  new `listAll` iterators, `onUnknownType: "raw"`, and the breaking
-  `webhooks.endpoints.list` pagination change.
-- `@junjo.io/shared` (minor): the friends contract types, the canonical
-  `JUNJO_ERROR_CODES` union, removal of the dead `WebhookDelivery` type,
-  and corrected `exports` / `engines`.
-- `@junjo.io/react` (minor): new hooks (`useRoles`, `useBans`, `useGroups`),
-  shared refcounted live subscriptions, and server-side member / invitation
-  filtering.
-- `@junjo.io/react` (patch): resolve the workspace copy of `@junjo.io/sdk`
-  instead of a stale registry version, plus explicit branded-id casts.
-
-React carries two changesets (a minor and a patch), so it is not one file
-per package. Read them before versioning; they carry the behavior-change
-notes that belong in the release notes. `npm run version-packages`
-(changeset version) consumes all four and bumps the three package.json
-files together (react's two changesets collapse into a single minor bump).
+`changeset version` reformats the package.json files it rewrites, which
+trips the biome pre-commit hook. Run `npx biome check --write` on the three
+package.json files after versioning, and check the command's exit code
+rather than its trailing output: a clean biome run prints nothing useful on
+the last line, so `| tail -1` makes a failure look like a pass.
 
 Invariant that has broken before: `@junjo.io/react`'s dependency pin on
 `@junjo.io/sdk` must match the workspace sdk version. When it does not,
@@ -97,8 +89,15 @@ One-time setup, once per package, on npmjs.com:
    - Environment: (leave blank)
 3. Repeat for @junjo.io/react and @junjo.io/shared.
 
-Release flow: bump the versions in the three package.json files (keep the
-internal @junjo.io/* deps pinned to the new version), commit, push, then
-run the "Publish" workflow from the Actions tab (or `gh workflow run
-publish.yml`). Already-published versions are skipped, so re-runs are
-safe.
+Release flow: `npm run version-packages`, re-format the package.json files
+(see above), confirm the internal @junjo.io/* deps pin the new version,
+commit, push, then run the "Publish" workflow from the Actions tab (or
+`gh workflow run publish.yml --ref main`). Already-published versions are
+skipped, so re-runs are safe. The run takes roughly 3 minutes; it builds
+and tests before publishing, so a red test blocks the release.
+
+This is the only path that works from a non-interactive shell. Being
+logged in locally (`npm whoami` answering) is not enough: passkey 2FA
+needs a browser, so a headless `npm publish` asks for a TOTP that does not
+exist. 0.3.0 went out this way; 0.2.0 was published by hand and is the one
+release without a provenance attestation.
