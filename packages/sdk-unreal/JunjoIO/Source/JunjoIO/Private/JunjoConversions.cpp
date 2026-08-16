@@ -132,6 +132,7 @@ FJunjoPermissionCheck Convert(const junjo::PermissionCheckResult& Native)
 	Out.bAllowed = Native.allowed;
 	Out.Source = Convert(Native.source);
 	Out.ViaRoleId = ToFStringOrEmpty(Native.via_role_id);
+	Out.ViaGroupId = ToFStringOrEmpty(Native.via_group_id);
 	return Out;
 }
 

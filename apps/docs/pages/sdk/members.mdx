@@ -2,6 +2,50 @@
 
 The members namespace operates on `Member` rows: a member is one user's relationship to one group. The same external user id can be a member of many groups within the same game; each membership is a separate `Member` row.
 
+## `add(groupId, userId, opts?)`
+
+Adds a user to a group directly: the server-to-server counterpart to `groups.join`. Returns the `Member`.
+
+```ts
+await junjo.members.add(groupId, "user_alice" as UserId, { roleId: officerRoleId });
+```
+
+Unlike `join`, this **ignores the group's `visibility`**, so provisioning does not have to make internal authorization groups publicly joinable to populate them. That was the workaround the route exists to remove; see [Provisioning an existing app](/provisioning).
+
+What it does:
+
+- Creates the user's Junjo identity on demand, so the user does not have to exist yet.
+- Assigns `opts.roleId` in the **same transaction** as the membership, replacing the join-then-`assignRole` two-step and removing the window where a failed second call leaves a member role-less. The role must belong to this group.
+- Reactivates a member who `left` or was `kicked`, keeping their original `joinedAt`.
+- Is idempotent: re-adding an active member returns them unchanged, so a provisioning script is safe to re-run.
+
+What it does not do: **bypass bans**. A game-wide or per-group ban still refuses with `banned`, because a ban is state your game set deliberately. An expired timed ban does not block the add.
+
+### Options
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `roleId` | `RoleId` | Assigned in the same transaction. Must belong to `groupId`. |
+| `actorUserId` | `UserId` | External id of the acting moderator, recorded on the audit entries. |
+
+### Events
+
+Only an actual transition emits anything, so a re-run is silent: becoming active writes a `member.joined` audit entry tagged `via: "admin-add"` and emits `member.joined`; a newly assigned role writes `role.assigned` and emits `role.changed`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty `userId`. |
+| `role_group_mismatch` | 400 | `roleId` belongs to another group. No member is created. |
+| `not_found` | 404 | Group, or the supplied `roleId`, not found in the calling game. |
+| `banned` | 403 | The user is banned game-wide or from this group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`POST /v1/groups/:id/members`](/api-reference/groups) - the underlying HTTP route, including the `200` versus `201` split.
+
 ## `get(groupId, userId)`
 
 Fetches a single member by the dev's external user id within a group. Returns `Member | null`: the SDK turns the server's `404 not_found` response into `null` so callers can branch on `if (member)` without a try/catch. Other errors throw `JunjoError`.

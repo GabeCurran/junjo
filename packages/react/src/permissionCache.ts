@@ -8,12 +8,18 @@ export type PermissionCacheKey = string;
 // is deliberate: a raw NUL byte in source is invisible in editors.
 const KEY_DELIMITER = "\u0000";
 
+// `inherit` is the last segment so the userId / groupId segment
+// positions that invalidateSegment indexes stay put. Inherited and
+// direct answers must not share a key: the same triple can resolve
+// differently with and without the parent walk.
 export function makeCacheKey(
   userId: UserId,
   groupId: GroupId,
   permission: PermissionKey,
+  inherit = false,
 ): PermissionCacheKey {
-  return `${userId}${KEY_DELIMITER}${groupId}${KEY_DELIMITER}${permission}`;
+  const mode = inherit ? "i" : "d";
+  return `${userId}${KEY_DELIMITER}${groupId}${KEY_DELIMITER}${permission}${KEY_DELIMITER}${mode}`;
 }
 
 // Long sessions touching many (user, group, permission) triples would
@@ -35,6 +41,12 @@ export class PermissionCache {
 
   has(key: PermissionCacheKey): boolean {
     return this.entries.has(key);
+  }
+
+  // Lets a batching caller skip keys another fetch already owns, so it
+  // does not issue a request whose results `prefetch` would discard.
+  isInflight(key: PermissionCacheKey): boolean {
+    return this.inflight.has(key);
   }
 
   subscribe(key: PermissionCacheKey, listener: Listener): () => void {
@@ -147,7 +159,17 @@ export function usePermissionCache(): PermissionCache {
 }
 
 export interface UseInvalidatePermissionsResult {
-  invalidate: (userId: UserId, groupId: GroupId, permission: PermissionKey) => void;
+  /**
+   * Drops one answer. Pass `inherit` to target the inherited variant;
+   * the two are cached separately, so a call without it leaves an
+   * inherited answer for the same triple in place.
+   */
+  invalidate: (
+    userId: UserId,
+    groupId: GroupId,
+    permission: PermissionKey,
+    inherit?: boolean,
+  ) => void;
   invalidateUser: (userId: UserId) => void;
   invalidateGroup: (groupId: GroupId) => void;
   invalidateAll: () => void;
@@ -160,8 +182,8 @@ export function useInvalidatePermissions(): UseInvalidatePermissionsResult {
   const cache = usePermissionCache();
   return useMemo<UseInvalidatePermissionsResult>(
     () => ({
-      invalidate: (userId, groupId, permission) => {
-        cache.invalidate(makeCacheKey(userId, groupId, permission));
+      invalidate: (userId, groupId, permission, inherit = false) => {
+        cache.invalidate(makeCacheKey(userId, groupId, permission, inherit));
       },
       invalidateUser: (userId) => {
         cache.invalidateUser(userId);

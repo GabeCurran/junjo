@@ -19,6 +19,7 @@ function useCan(
   userId: UserId,
   groupId: GroupId,
   permission: PermissionKey,
+  opts?: { inherit?: boolean },
 ): boolean | undefined;
 ```
 
@@ -70,6 +71,50 @@ function GuildAdmin({ userId, groupId }: { userId: UserId; groupId: GroupId }) {
 }
 ```
 
+## Inherited checks
+
+Pass `{ inherit: true }` to resolve against the group's parents as well, nearest first, stopping at the first group that decides. Use it when authority lives on an ancestor: a "global admin" that exists only as a role on a root group is invisible to a direct check on a child.
+
+```tsx
+const canEdit = useCan(userId, campaignId, "campaign.edit", { inherit: true });
+```
+
+Inherited and direct answers are cached under separate keys, so the two spellings of the same triple do not overwrite each other. `useInvalidatePermissions().invalidate(...)` takes a matching fourth `inherit` argument; `invalidateUser`, `invalidateGroup`, and `invalidateAll` sweep both.
+
+See [Inherited checks](/sdk/permissions#inherited-checks) for the resolution rules.
+
+## useCanMany
+
+Gating a nav bar on six keys with `useCan` costs six requests. `useCanMany` answers a whole set in one, through the batch route, and returns the answers positionally.
+
+```tsx
+import { useCanMany } from "@junjo.io/react";
+
+function ShopList({ userId, shops }: { userId: UserId; shops: Group[] }) {
+  const allowed = useCanMany(
+    shops.map((shop) => ({ userId, groupId: shop.id, permission: "shop.view" })),
+  );
+  return (
+    <ul>
+      {shops.map((shop, i) => (allowed[i] === true ? <li key={shop.id}>{shop.name}</li> : null))}
+    </ul>
+  );
+}
+```
+
+```ts
+function useCanMany(
+  checks: Array<{ userId: UserId; groupId: GroupId; permission: PermissionKey }>,
+  opts?: { inherit?: boolean },
+): readonly (boolean | undefined)[];
+```
+
+- `checks` is read **by value**: a fresh array literal every render is fine and does not refetch. The hook keys on the tuple contents, not the array identity.
+- Entries already answered by `useCan` (or a previous `useCanMany`) are served from the shared cache, and only the remainder is sent. Invalidation reaches both hooks.
+- An entry is `undefined` while loading, and stays `undefined` if the batch rejects. The hook never throws to the consumer.
+- An empty array makes no request.
+- The returned array keeps a stable reference until a value actually changes, which is what keeps `useSyncExternalStore` from re-rendering in a loop.
+
 ## Testing
 
 The hook talks to the SDK exclusively through `useJunjo()`. Stub `junjo.can` directly on the instance:
@@ -84,4 +129,12 @@ const client = new Junjo({
   fetch: vi.fn() as unknown as typeof fetch,
 });
 Object.assign(client, { can: vi.fn().mockResolvedValue(true) });
+```
+
+`useCanMany` goes through `junjo.checkBatch`, which returns full `PermissionCheckResult` objects rather than booleans:
+
+```tsx
+Object.assign(client, {
+  checkBatch: vi.fn().mockResolvedValue([{ allowed: true, source: "role" }]),
+});
 ```

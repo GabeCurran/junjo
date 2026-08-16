@@ -295,6 +295,9 @@ Result<PermissionCheckResult> deserialize_permission_check_result(const Json& wi
   if (!read_nullable_string(wire, "viaRoleId", result.via_role_id)) {
     return wire_error("permission check field viaRoleId was not a string", status);
   }
+  if (!read_nullable_string(wire, "viaGroupId", result.via_group_id)) {
+    return wire_error("permission check field viaGroupId was not a string", status);
+  }
   return result;
 }
 

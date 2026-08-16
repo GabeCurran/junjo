@@ -82,7 +82,7 @@ import {
   getInvitationByCodeHandler,
 } from "./routes/invitations.js";
 import { getMemberByIdHandler, listMembersForUserHandler } from "./routes/members.js";
-import { checkPermissionHandler } from "./routes/permissions.js";
+import { checkPermissionBatchHandler, checkPermissionHandler } from "./routes/permissions.js";
 import {
   deleteRoleByIdHandler,
   getRoleByIdHandler,
@@ -387,6 +387,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
+  v1.post("/permissions/check-batch", checkPermissionBatchHandler(prisma));
   v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));
   v1.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));
   v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma, hub));

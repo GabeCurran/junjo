@@ -209,6 +209,25 @@ export interface PermissionCheckResult {
   // When source = "role", the role that granted it. When source =
   // "override", omitted (the override is by member).
   viaRoleId?: RoleId;
+  // The group the decision was read from. Only populated on inherited
+  // checks, and only when the result is decisive (source "role" or
+  // "override"); it equals the queried group when the decision was
+  // direct rather than inherited. Absent on non-inherited checks, so
+  // their wire shape is unchanged.
+  viaGroupId?: GroupId;
+}
+
+// One triple of a batch permission check. Mirrors the query parameters
+// of the single-check route.
+export interface PermissionCheckRequest {
+  userId: UserId;
+  groupId: GroupId;
+  permission: PermissionKey;
+}
+
+// Results come back positionally: `results[i]` answers `checks[i]`.
+export interface PermissionCheckBatchResult {
+  results: PermissionCheckResult[];
 }
 
 export interface MemberPermissionOverride {

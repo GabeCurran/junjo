@@ -86,6 +86,38 @@ export interface ListMembersOptions extends PageOptions {
 export class MembersApi {
   constructor(private readonly http: HttpClient) {}
 
+  /**
+   * Adds a user to a group directly (POST /v1/groups/:id/members), the
+   * server-to-server counterpart to `groups.join`. Unlike `join` it
+   * ignores the group's `visibility`, so provisioning does not have to
+   * make internal authorization groups publicly joinable. Bans are
+   * still enforced.
+   *
+   * Idempotent: re-adding an active member returns the existing member
+   * unchanged. Pass `roleId` to assign a role in the same transaction
+   * instead of following up with `assignRole`.
+   */
+  async add(
+    groupId: GroupId,
+    userId: UserId,
+    opts?: {
+      roleId?: RoleId;
+      actorUserId?: UserId;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    },
+  ): Promise<Member> {
+    const body: { userId: string; roleId?: string; actorUserId?: string } = { userId };
+    if (opts?.roleId !== undefined) body.roleId = opts.roleId;
+    if (opts?.actorUserId !== undefined) body.actorUserId = opts.actorUserId;
+    const wire = await this.http.post<WireMember>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members`,
+      body,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+    );
+    return deserializeMember(wire);
+  }
+
   async get(
     groupId: GroupId,
     userId: UserId,

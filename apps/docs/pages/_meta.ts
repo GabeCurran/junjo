@@ -5,6 +5,7 @@ export default {
   "core-concepts": "Core concepts",
   "security-model": "Security model",
   "self-host": "Self-hosting",
+  provisioning: "Provisioning an existing app",
   sdk: "SDK",
   react: "React",
   browser: "Browser (plain JS)",

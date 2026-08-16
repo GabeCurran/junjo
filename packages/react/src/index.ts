@@ -4,7 +4,8 @@ export { JunjoStreamClosedError, isStreamClosedError } from "./subscriptionHub.j
 export { useJunjo } from "./useJunjo.js";
 export { useGroup } from "./useGroup.js";
 export type { GroupSnapshot, GroupUpdater, UseGroupResult } from "./useGroup.js";
-export { useCan } from "./useCan.js";
+export { useCan, useCanMany } from "./useCan.js";
+export type { CanQuery, UseCanOptions } from "./useCan.js";
 export { useInvalidatePermissions } from "./permissionCache.js";
 export type { UseInvalidatePermissionsResult } from "./permissionCache.js";
 export { useMembers } from "./useMembers.js";

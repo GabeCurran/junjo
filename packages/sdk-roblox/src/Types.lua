@@ -190,4 +190,22 @@ export type KeyInfo = {
 	gameId: string,
 }
 
+-- GET /v1/permissions/check and each entry of the batch response.
+-- `source` is one of "role", "override", "default", "none".
+-- `viaRoleId` is present only when source is "role"; `viaGroupId` only
+-- on an inherited check that resolved to a decision.
+export type PermissionCheckResult = {
+	allowed: boolean,
+	source: string,
+	viaRoleId: string?,
+	viaGroupId: string?,
+}
+
+-- One entry of a POST /v1/permissions/check-batch request.
+export type PermissionCheckRequest = {
+	userId: string,
+	groupId: string,
+	permission: string,
+}
+
 return {}

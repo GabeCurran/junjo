@@ -22,6 +22,7 @@ local specs = {
 	require("./specs/apikey"),
 	require("./specs/moderation"),
 	require("./specs/queries"),
+	require("./specs/permissions"),
 	require("./specs/bans"),
 	require("./specs/friends"),
 	require("./specs/pageAll"),

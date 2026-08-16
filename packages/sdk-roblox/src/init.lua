@@ -51,6 +51,9 @@ local RobloxUserIdAdapter = require(script.adapters.RobloxUserId)
 
 local DEFAULT_BASE_URL = "https://api.junjo.io"
 
+-- Server-side cap on one POST /v1/permissions/check-batch body.
+local CHECK_BATCH_MAX_ENTRIES = 100
+
 local Junjo = {}
 Junjo.__index = Junjo
 
@@ -71,6 +74,8 @@ export type Member = Types.Member
 export type BanHistoryEntry = Types.BanHistoryEntry
 export type Page<T> = Types.Page<T>
 export type KeyInfo = Types.KeyInfo
+export type PermissionCheckResult = Types.PermissionCheckResult
+export type PermissionCheckRequest = Types.PermissionCheckRequest
 export type GameBan = Types.GameBan
 export type FriendRequest = Types.FriendRequest
 export type FriendRequestList = Types.FriendRequestList
@@ -295,18 +300,67 @@ end
 -- `:check` returns the full envelope `{ allowed, source, viaRoleId? }`
 -- so admin tooling can render "you don't have permission because role
 -- X is missing key Y" UX. `:can` is a boolean wrapper on top.
+--
+-- `inherit` opts into the server-side parent walk: resolution climbs
+-- the group's ancestors, nearest first, and stops at the first group
+-- that decides. The result then also carries `viaGroupId`.
 
-function Junjo:check(userId: string, groupId: string, permission: string)
+function Junjo:check(
+	userId: string,
+	groupId: string,
+	permission: string,
+	inherit: boolean?
+): Types.PermissionCheckResult
 	local path = "/v1/permissions/check"
 		.. "?userId=" .. self.http:encode(userId)
 		.. "&groupId=" .. self.http:encode(groupId)
 		.. "&permission=" .. self.http:encode(permission)
+	if inherit == true then
+		path = path .. "&inherit=true"
+	end
 	return self.http:get(path)
 end
 
-function Junjo:can(userId: string, groupId: string, permission: string): boolean
-	local result = self:check(userId, groupId, permission)
+function Junjo:can(
+	userId: string,
+	groupId: string,
+	permission: string,
+	inherit: boolean?
+): boolean
+	local result = self:check(userId, groupId, permission, inherit)
 	return result.allowed == true
+end
+
+-- Resolves many checks in one request. `checks` is an array of
+-- `{ userId, groupId, permission }` tables; results come back in the
+-- same order. The server caps a batch at 100 entries, so longer inputs
+-- are split across sequential requests and the answers concatenated.
+function Junjo:checkBatch(
+	checks: { Types.PermissionCheckRequest },
+	inherit: boolean?
+): { Types.PermissionCheckResult }
+	local results = {}
+	if #checks == 0 then
+		return results
+	end
+	local index = 1
+	while index <= #checks do
+		local slice = {}
+		local last = math.min(index + CHECK_BATCH_MAX_ENTRIES - 1, #checks)
+		for i = index, last do
+			table.insert(slice, checks[i])
+		end
+		local body: { [string]: any } = { checks = slice }
+		if inherit == true then
+			body.inherit = true
+		end
+		local response = self.http:post("/v1/permissions/check-batch", body)
+		for _, result in ipairs(response.results) do
+			table.insert(results, result)
+		end
+		index = last + 1
+	end
+	return results
 end
 
 -- ============================================================

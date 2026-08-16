@@ -3,7 +3,7 @@ export default {
   provider: "JunjoProvider + useJunjo",
   "use-group": "useGroup",
   "use-groups": "useGroups",
-  "use-can": "useCan",
+  "use-can": "useCan + useCanMany",
   "use-members": "useMembers",
   "use-invitations": "useInvitations",
   "use-roles": "useRoles",

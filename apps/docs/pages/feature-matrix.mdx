@@ -2,6 +2,8 @@
 
 What each SDK covers, verified against the SDK sources rather than their docs. Rows follow the server's per-game `/v1` surface. Java and Paper SDKs are planned but deferred; they have no columns because they do not exist yet.
 
+"Idiom" marks a cell where an SDK deliberately returns its language's natural shape rather than mirroring the TypeScript one; the capability is present, the surface differs.
+
 Column notes: **React** wraps the TypeScript client, so "Full, client" means the operation is fully reachable through `useJunjo()` (paired with `useMutation` for writes) without a dedicated hook. **UE BP** is the Unreal plugin's Blueprint and delegate surface; **Native-only** cells are reachable in Unreal today through `GetNativeClient()`, whose capabilities equal the C++ column exactly.
 
 ## Groups
@@ -11,6 +13,7 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 | Create | Full | Full, client | Full | Full | Full |
 | Get (viewer-scoped) | Full | Full, hook (`useGroup`, live) | Full | Full | Full |
 | List (cursor-paginated) | Full (+`listAll`) | Full, hook (`useGroups`, `fetchMore`) | Full (+`listAll`) | Full (`paginate`) | Full (manual cursor) |
+| List filtered by `kind` | Full | Full, client | Full | Full | Full (`Params.Kind`) |
 | Update | Full | Full, client | Full | Full | Native-only |
 | Delete (soft; `hard` option) | Full | Full, client | Full | Full | Native-only |
 | Restore | Full | Full, client | Full | Full | Native-only |
@@ -27,6 +30,7 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 
 | Operation | TS | React | Roblox | C++ | UE BP |
 |---|---|---|---|---|---|
+| Add directly (server-to-server, bypasses visibility) | Full (`members.add`) | Full, client | Full (`members:add`) | Full (`members().add`) | Full (`AddMember`) |
 | Get (group + user) | Full | Full, client | Full | Full | Native-only |
 | Get by member id | Full | Full, client | Full | Full | Native-only |
 | List (status filter, paginated) | Full (+`listAll`) | Full, hook (`useMembers`, live, optimistic) | Full (+`listAll`) | Full | Full |
@@ -41,6 +45,7 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 | Operation | TS | React | Roblox | C++ | UE BP |
 |---|---|---|---|---|---|
 | Create / get / list / update / delete | Full | Partial (`useRoles` live read; mutations via client) | Full | Full | Native-only |
+| `list` result carries the page shape | Full (array and `{items, nextCursor}`) | Full, client | Idiom (plain Lua array) | Idiom (`std::vector<Role>`) | Idiom (`std::vector<Role>`) |
 | Grant / revoke permission on role | Full | Full, client | Full | Full | Native-only |
 
 ## Permissions
@@ -49,6 +54,9 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 |---|---|---|---|---|---|
 | `check` (full decision + source) | Full | Full, client | Full | Full | Full |
 | `can` (boolean sugar) | Full | Full, hook (`useCan`, cached; manual invalidation via `useInvalidatePermissions`) | Full | Full | Full (read `bAllowed` from the check result) |
+| Inherited check (`inherit`, walks parents) | Full | Full, hook (`useCan(..., { inherit: true })`) | Full | Full (`CheckOptions::inherit`) | Full (`bInherit`) |
+| Batched check (one round-trip) | Full (`checkBatch`, auto-splits past 100) | Full, hook (`useCanMany`) | Full (`checkBatch`) | Full (`check_batch`, +`_async`) | Full (`CheckPermissionBatch`) |
+| Client-side answer cache | Full (5s TTL, opt-out, stale-on-429) | Full (provider-scoped, manual invalidation) | No | No | No |
 
 ## Invitations
 

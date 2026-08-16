@@ -905,3 +905,85 @@ describe("members.listPermissionOverrides", () => {
     await junjo.members.listPermissionOverrides("has/slash" as GroupId, "weird/user" as UserId);
   });
 });
+
+describe("members.add", () => {
+  const wireMember = {
+    id: "mem_1",
+    groupId: "grp_1",
+    userId: "user_alice",
+    status: "active",
+    roles: [] as string[],
+    metadata: {},
+    notesPublic: null,
+    notesPrivate: null,
+    joinedAt: "2026-04-28T05:00:00.000Z",
+    bannedUntil: null,
+  };
+
+  function newClient(fetchMock: unknown) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+    });
+  }
+
+  it("POSTs to the group members collection", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members");
+      expect(await req.json()).toEqual({ userId: "user_alice" });
+      return jsonResponse(wireMember, 201);
+    });
+
+    const member = await newClient(fetchMock).members.add(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    expect(member).toMatchObject({ id: "mem_1", userId: "user_alice", status: "active" });
+  });
+
+  it("sends roleId and actorUserId only when given", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({
+        userId: "user_alice",
+        roleId: "role_officer",
+        actorUserId: "user_admin",
+      });
+      return jsonResponse({ ...wireMember, roles: ["role_officer"] }, 201);
+    });
+
+    const member = await newClient(fetchMock).members.add(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+      { roleId: "role_officer" as RoleId, actorUserId: "user_admin" as UserId },
+    );
+    expect(member.roles).toEqual(["role_officer"]);
+  });
+
+  it("returns the member on the idempotent 200 path", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse(wireMember, 200));
+    const member = await newClient(fetchMock).members.add(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    expect(member.status).toBe("active");
+  });
+
+  it("percent-encodes the group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members");
+      return jsonResponse(wireMember, 201);
+    });
+    await newClient(fetchMock).members.add("has/slash" as GroupId, "user_alice" as UserId);
+  });
+
+  it("surfaces a ban as a JunjoError", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "banned", status: 403, message: "user is banned from this group" }, 403),
+    );
+    await expect(
+      newClient(fetchMock).members.add("grp_1" as GroupId, "user_alice" as UserId),
+    ).rejects.toMatchObject({ code: "banned" });
+  });
+});

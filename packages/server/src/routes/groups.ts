@@ -4,6 +4,7 @@ import type {
   GroupId,
   GroupRelationshipChangedEvent,
   GroupUpdatedEvent,
+  JunjoEvent,
   MemberBannedEvent,
   MemberInvitedEvent,
   MemberJoinedEvent,
@@ -39,6 +40,7 @@ import { listAuditForGroup } from "./audit.js";
 import { serializeBanHistoryEntry } from "./bans.js";
 import { listGroupBanHistoryQuery } from "./bans.schema.js";
 import {
+  addMemberBody,
   banMemberBody,
   bulkInviteQuery,
   clearRelationshipQuery,
@@ -47,6 +49,7 @@ import {
   kickMemberBody,
   leaveGroupBody,
   listGroupsQuery,
+  listRolesQuery,
   roleAssignBody,
   setParentBody,
   setRelationshipBody,
@@ -180,6 +183,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       cursor: c.req.query("cursor"),
       gameId: c.req.query("gameId"),
       viewer: c.req.query("viewer"),
+      kind: c.req.query("kind"),
     });
     if (!parsed.success) {
       const issues = parsed.error.issues
@@ -187,7 +191,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid query");
     }
-    const { limit, cursor, gameId: filterGameId, viewer } = parsed.data;
+    const { limit, cursor, gameId: filterGameId, viewer, kind } = parsed.data;
     if (filterGameId !== undefined && filterGameId !== gameId) {
       throw Errors.badRequest("gameId must match the calling game");
     }
@@ -235,6 +239,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const where: Prisma.GroupWhereInput = {
       gameId,
       softDeletedAt: null,
+      ...(kind !== undefined ? { kind } : {}),
       ...(conditions.length > 0 ? { AND: conditions } : {}),
     };
 
@@ -928,6 +933,158 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   // Open join for `visibility = "public"` groups. Invite-only and secret
   // groups still require an `Invitation`; secret groups 404 (existence is
   // invisible), invite-only returns 403 with a clear message.
+  // Server-to-server member creation, the provisioning counterpart to
+  // `join`. Ignores `visibility` (the API key is already admin-class,
+  // so gating this on discoverability only forces provisioners to make
+  // internal groups public) but still honors bans.
+  //
+  // Idempotent: `201` when the call made the member active, `200` when
+  // they already were, so a re-run of a provisioning script is a no-op
+  // that reports whether it changed anything. Events fire only on an
+  // actual transition.
+  r.post("/:id/members", async (c) => {
+    const id = c.req.param("id");
+    const gameId = c.var.gameId;
+    const json = await c.req.json().catch(() => null);
+    const parsed = addMemberBody.safeParse(json);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      throw Errors.badRequest(issues || "invalid request body");
+    }
+    const { userId, roleId, actorUserId } = parsed.data;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+    });
+    if (!group) throw Errors.notFound("group");
+
+    // Resolved before any write so a bad roleId fails the call rather
+    // than leaving a role-less member behind.
+    const role = roleId
+      ? await prisma.role.findUnique({
+          where: { id: roleId },
+          select: { id: true, groupId: true },
+        })
+      : null;
+    if (roleId) {
+      if (!role) throw Errors.notFound("role");
+      if (role.groupId !== group.id) throw Errors.roleGroupMismatch();
+    }
+
+    const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
+
+    const banState = await checkBanState(prisma, gameId, junjoUserId, group.id);
+    if (banState.banned) throw Errors.banned(banErrorMessage(banState));
+
+    const actorJunjoUserId = actorUserId
+      ? await findOrCreateJunjoUser(prisma, gameId, actorUserId)
+      : null;
+
+    // Retried rather than surfaced as a conflict: a concurrent add of
+    // the same user (or the same role) rolls this transaction back, and
+    // the second attempt takes the idempotent already-active path. The
+    // rollback drops the staged events and audit rows with it, so the
+    // retry cannot double-emit.
+    const outcome = await retryOnUniqueViolation(() =>
+      prisma.$transaction(async (tx) => {
+        const existing = await tx.groupMember.findUnique({
+          where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+        });
+        const wasActive = existing?.status === "active";
+
+        let member = existing;
+        if (!existing) {
+          member = await tx.groupMember.create({
+            data: { groupId: group.id, junjoUserId, status: "active" },
+          });
+        } else if (!wasActive) {
+          // Reactivate from left / kicked, keeping the original
+          // joinedAt. Matches the public join path.
+          member = await tx.groupMember.update({
+            where: { id: existing.id },
+            data: { status: "active", leftAt: null, bannedUntil: null },
+          });
+        }
+        if (!member) throw new Error("member row missing after upsert");
+
+        // Roles held before this call. The member.joined event carries
+        // these, and any role added below is reported separately as
+        // role.changed, so the event stream reads the same as the
+        // join-then-assign sequence this route replaces.
+        const priorRoleIds = existing ? await loadMemberRoleIds(tx, member.id) : [];
+        const roleAdded = role !== null && !priorRoleIds.includes(role.id);
+
+        const staged: JunjoEvent[] = [];
+        if (!wasActive) {
+          await tx.auditEntry.create({
+            data: {
+              gameId,
+              groupId: group.id,
+              actorUserId: actorJunjoUserId,
+              action: "member.joined",
+              targetId: userId,
+              payload: {
+                memberId: member.id,
+                via: "admin-add",
+              } as Prisma.InputJsonValue,
+            },
+          });
+          staged.push(
+            await stageEvent<MemberJoinedEvent>(tx, {
+              type: "member.joined",
+              gameId: gameId as GameId,
+              groupId: group.id as GroupId,
+              userId: userId as UserId,
+              member: toPublicMember(member, userId, priorRoleIds),
+            }),
+          );
+        }
+
+        if (role && roleAdded) {
+          await tx.memberRole.create({
+            data: { groupMemberId: member.id, roleId: role.id },
+          });
+          await tx.auditEntry.create({
+            data: {
+              gameId,
+              groupId: group.id,
+              actorUserId: actorJunjoUserId,
+              action: "role.assigned",
+              targetId: userId,
+              payload: {
+                memberId: member.id,
+                roleId: role.id,
+              } as Prisma.InputJsonValue,
+            },
+          });
+          staged.push(
+            await stageEvent<RoleChangedEvent>(tx, {
+              type: "role.changed",
+              gameId: gameId as GameId,
+              groupId: group.id as GroupId,
+              userId: userId as UserId,
+              added: [role.id as RoleId],
+              removed: [],
+              actorUserId: (actorUserId as UserId | undefined) ?? null,
+            }),
+          );
+        }
+
+        const roleIds = roleAdded && role ? [...priorRoleIds, role.id] : priorRoleIds;
+        return { member, roleIds, wasActive, roleAdded, staged };
+      }),
+    );
+
+    if (outcome.roleAdded) permissionCache.invalidateGroup(group.id);
+    publishStagedEvents(hub, ...outcome.staged);
+    return c.json(
+      serializeMember(outcome.member, userId, outcome.roleIds),
+      outcome.wasActive ? 200 : 201,
+    );
+  });
+
   r.post("/:id/join", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
@@ -2145,6 +2302,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   r.get("/:id/roles", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
+    const parsedQ = listRolesQuery.safeParse({ paged: c.req.query("paged") });
+    if (!parsedQ.success) throw Errors.badRequest("invalid query");
+    const { paged } = parsedQ.data;
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -2155,13 +2315,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { groupId: group.id },
       orderBy: [{ priority: "desc" }, { id: "desc" }],
     });
-    if (roles.length === 0) return c.json([]);
+    if (roles.length === 0) {
+      return c.json(paged ? { items: [], nextCursor: null } : []);
+    }
 
     const permissionMap = await batchLoadRolePermissionKeys(
       prisma,
       roles.map((r2) => r2.id),
     );
-    return c.json(roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? [])));
+    const items = roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? []));
+    return c.json(paged ? { items, nextCursor: null } : items);
   });
 
   // `mutual: true` writes both directions in one transaction; the
@@ -2394,6 +2557,12 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       groupId: id,
       parentGroupId,
     });
+    // Reparenting changes what an inherited check resolves against.
+    // Invalidating this group alone is sufficient: a descendant's
+    // cached inherited answer can only be affected if its walk reached
+    // this group, and any walk that reached it recorded it as a
+    // dependency.
+    permissionCache.invalidateGroup(row.id);
     return c.json(serializeGroup(row, memberCount));
   });
 

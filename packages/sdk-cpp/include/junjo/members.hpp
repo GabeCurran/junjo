@@ -48,6 +48,17 @@ struct ListMembersForUserOptions {
   std::optional<std::chrono::milliseconds> timeout;
 };
 
+// Options for MembersApi::add.
+struct AddMemberOptions {
+  // Assigned in the same transaction as the membership, so a
+  // provisioner needs no second call and cannot leave a member
+  // role-less if that second call fails.
+  std::optional<std::string> role_id;
+  // External user id of the acting moderator, for audit attribution.
+  std::optional<std::string> actor_user_id;
+  std::optional<std::chrono::milliseconds> timeout;
+};
+
 // Options for MembersApi::assign_role and MembersApi::remove_role.
 struct RoleAssignmentOptions {
   // External user id of the acting moderator, for audit attribution
@@ -60,6 +71,17 @@ struct RoleAssignmentOptions {
 // thread-safe to the same degree as the Client it came from.
 class JUNJO_API MembersApi {
  public:
+  // POST /v1/groups/:groupId/members: adds a user to a group
+  // directly, the server-to-server counterpart to GroupsApi::join.
+  // Ignores the group's visibility, so provisioning does not have to
+  // make internal authorization groups publicly joinable. Bans are
+  // still enforced and fail with ErrorCode::Banned.
+  //
+  // Idempotent: re-adding an active member returns them unchanged.
+  [[nodiscard]] Result<Member> add(std::string_view group_id, std::string_view user_id,
+                                   const AddMemberOptions& options = {},
+                                   const CancellationToken& token = {}) const;
+
   // GET /v1/groups/:groupId/members/:userId. An empty optional means
   // no membership row exists (null-on-404); every other failure is an
   // Error.

@@ -309,6 +309,31 @@ struct PermissionCheckResult {
   PermissionSource source = PermissionSource::None;
   // When source == Role, the role that granted it; absent otherwise.
   std::optional<std::string> via_role_id;
+  // The group the decision was read from. Populated only on an
+  // inherited check that reached a decision; it equals the queried
+  // group when the decision was direct rather than inherited.
+  std::optional<std::string> via_group_id;
+};
+
+// One entry of Client::check_batch. Mirrors the three arguments of the
+// single check.
+struct PermissionCheckRequest {
+  std::string user_id;
+  std::string group_id;
+  std::string permission;
+};
+
+// Options for Client::check, Client::can, and Client::check_batch.
+// Supersedes RequestOptions on those calls; it carries the same
+// `timeout` plus the permission-specific flag.
+struct CheckOptions {
+  // Resolve against the group's parents too, nearest first, stopping
+  // at the first group that decides. Off by default: a check answers
+  // for the queried group alone.
+  bool inherit = false;
+  // Per-request override of the client-level timeout. A value <= 0
+  // disables the timeout for this request.
+  std::optional<std::chrono::milliseconds> timeout;
 };
 
 // A per-member permission override (grant or revoke regardless of

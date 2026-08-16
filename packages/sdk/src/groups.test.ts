@@ -2156,3 +2156,54 @@ describe("groups.listChildren", () => {
     await junjo.groups.listChildren("has/slash" as GroupId);
   });
 });
+
+describe("groups.list kind filter", () => {
+  function newClient(fetchMock: unknown) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+    });
+  }
+
+  it("omits kind when not given", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).searchParams.has("kind")).toBe(false);
+      return jsonResponse({ items: [], nextCursor: null });
+    });
+    await newClient(fetchMock).groups.list();
+  });
+
+  it("sends kind when given", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).searchParams.get("kind")).toBe("instance");
+      return jsonResponse({ items: [], nextCursor: null });
+    });
+    await newClient(fetchMock).groups.list({ kind: "instance" });
+  });
+
+  it("encodes a kind containing reserved characters", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).searchParams.get("kind")).toBe("a b&c");
+      return jsonResponse({ items: [], nextCursor: null });
+    });
+    await newClient(fetchMock).groups.list({ kind: "a b&c" });
+  });
+
+  it("carries kind through every page of listAll", async () => {
+    const seen: (string | null)[] = [];
+    const fetchMock = makeFetch(async (req) => {
+      const params = new URL(req.url).searchParams;
+      seen.push(params.get("kind"));
+      if (params.get("cursor") === null) {
+        return jsonResponse({ items: [], nextCursor: "cur_1" });
+      }
+      return jsonResponse({ items: [], nextCursor: null });
+    });
+
+    for await (const _group of newClient(fetchMock).groups.listAll({ kind: "shop" })) {
+      // Drain the iterator; the pages themselves are empty on purpose.
+    }
+    expect(seen).toEqual(["shop", "shop"]);
+  });
+});

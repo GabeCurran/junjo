@@ -19,14 +19,15 @@ Either way, mount the module in `ServerStorage` (or `ServerScriptService`) and r
 | `junjo.groups` moderation: `ban / unban / banHistory / banHistoryAll` | Per-group bans (distinct from kick: a banned user cannot rejoin) plus the group's ban-event timeline. |
 | `junjo.groups` relationships: `setRelationship / clearRelationship / getRelationship / listRelationships` | Directed and mutual relationships between groups. |
 | `junjo.groups` sub-groups: `setParent / listChildren` | Sub-group / alliance hierarchy. |
-| `junjo.members:get / getById / list / listAll / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | Member surface, parity with the TS SDK. `list` takes an optional `status` filter (e.g. `{ "active" }`, `{ "banned" }`). |
+| `junjo.members:add / get / getById / list / listAll / listForUser / setMetadata / setNotes / assignRole / removeRole / overridePermission / clearPermissionOverride / listPermissionOverrides` | Member surface, parity with the TS SDK. `list` takes an optional `status` filter (e.g. `{ "active" }`, `{ "banned" }`). `add` is the server-to-server counterpart to `groups:join`: it ignores the group's visibility (bans still apply), is idempotent, and takes an optional `roleId`. |
 | `junjo.roles:create / get / list / update / delete / grantPermission / revokePermission` | Role CRUD + permission grants. |
 | `junjo.invitations:list / get / revoke` | Invitation listing and revocation. |
 | `junjo.audit:list` | Paginated audit feed for a group. |
 | `junjo.webhooks.endpoints:create / list / listAll / update / delete` | Webhook endpoint CRUD (no receiver-side helpers; see below). `list` is cursor-paginated and returns the `{ items, nextCursor }` envelope. |
 | `junjo.bans:add / remove / get / list / listAll / history / historyAll` | Game-wide bans (every group in the game), with optional expiry and an append-only per-user history. |
 | `junjo.friends:list / listAll / remove / getRelationship / suggestions` plus the `requests`, `blocks`, `tags`, and `visibility` sub-namespaces | Per-user social graph: friend requests, blocks, friend tags, list visibility, mutual-friend suggestions, and a single-pair relationship probe. |
-| `junjo:can(userId, groupId, permission)` and `junjo:check(...)` | Permission check helpers. |
+| `junjo:can(userId, groupId, permission, inherit?)` and `junjo:check(...)` | Permission check helpers. The optional fourth argument opts into the server-side parent walk; the result then also carries `viaGroupId`. |
+| `junjo:checkBatch(checks, inherit?)` | Resolves many `{ userId, groupId, permission }` entries in one request, answers returned in the same order. Inputs longer than the server's 100-entry cap are split automatically. |
 | `junjo:keyInfo()` | Which game the configured API key belongs to (`GET /v1/whoami`); useful as a setup / health probe. |
 | `Junjo.pageAll(fetchPage)` and the namespace `listAll` / `banHistoryAll` / `historyAll` variants | Generic-for iterators over cursor-paginated lists; pages are fetched lazily. |
 | `Junjo.RobloxUserIdAdapter(opts?)` | Built-in user-id adapter for Roblox `Player` instances. |

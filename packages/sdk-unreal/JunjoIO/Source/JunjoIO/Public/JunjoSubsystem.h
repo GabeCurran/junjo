@@ -82,7 +82,15 @@ public:
 	// full decision including its source. Wraps junjo::Client::check;
 	// permission keys are game-defined open strings.
 	UFUNCTION(BlueprintCallable, Category = "Junjo")
-	void CheckPermission(const FString& GroupId, const FString& UserId, const FString& Permission, FOnJunjoPermissionCheck Callback);
+	void CheckPermission(const FString& GroupId, const FString& UserId, const FString& Permission, bool bInherit, FOnJunjoPermissionCheck Callback);
+
+	// Resolves many checks in one round-trip. Results are positional
+	// against Checks. An empty input completes immediately with an
+	// empty result set and no request. bInherit applies to every
+	// entry. Inputs longer than the server cap are split across
+	// sequential requests by the native client.
+	UFUNCTION(BlueprintCallable, Category = "Junjo", meta = (AutoCreateRefTerm = "Checks"))
+	void CheckPermissionBatch(const TArray<FJunjoPermissionCheckRequest>& Checks, bool bInherit, FOnJunjoPermissionCheckBatch Callback);
 
 	// Fetches a group by id. Not-found is not an error: the callback
 	// reports bSuccess true with bFound false, mirroring the native
@@ -114,6 +122,14 @@ public:
 	// empty otherwise.
 	UFUNCTION(BlueprintCallable, Category = "Junjo")
 	void JoinGroup(const FString& GroupId, const FString& UserId, const FString& Passcode, FOnJunjoCompleted Callback);
+
+	// Adds a user to a group directly, the server-to-server
+	// counterpart to JoinGroup. Ignores the group's visibility, so
+	// provisioning does not have to make internal authorization groups
+	// publicly joinable; bans are still enforced. Idempotent. Leave
+	// RoleId empty to add with no role.
+	UFUNCTION(BlueprintCallable, Category = "Junjo", meta = (AutoCreateRefTerm = "RoleId,ActorUserId"))
+	void AddMember(const FString& GroupId, const FString& UserId, const FString& RoleId, const FString& ActorUserId, FOnJunjoCompleted Callback);
 
 	UFUNCTION(BlueprintCallable, Category = "Junjo")
 	void LeaveGroup(const FString& GroupId, const FString& UserId, FOnJunjoCompleted Callback);

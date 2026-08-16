@@ -170,21 +170,21 @@ template <typename T>
   return items;
 }
 
-// A 2xx response shaped { items: [...] } with no cursor (the friends
-// routes' un-paginated collection shape: blocks, tags, suggestions).
+// A 2xx response shaped { <field>: [...] } with no cursor.
 template <typename T>
-[[nodiscard]] Result<std::vector<T>> to_items_array(Result<JsonBody> response,
+[[nodiscard]] Result<std::vector<T>> to_named_array(Result<JsonBody> response,
+                                                    const std::string& field,
                                                     WireDeserializer<T> deserialize) {
   if (!response.has_value()) {
     return std::move(response).error();
   }
   const JsonBody& body = response.value();
   if (!body.value.has_value() || !body.value->is_object()) {
-    return wire_error("items response was not a JSON object", body.status);
+    return wire_error(field + " response was not a JSON object", body.status);
   }
-  const auto items_it = body.value->find("items");
+  const auto items_it = body.value->find(field);
   if (items_it == body.value->end() || !items_it->is_array()) {
-    return wire_error("items response is missing array field items", body.status);
+    return wire_error(field + " response is missing array field " + field, body.status);
   }
   std::vector<T> items;
   items.reserve(items_it->size());
@@ -196,6 +196,14 @@ template <typename T>
     items.push_back(std::move(item).value());
   }
   return items;
+}
+
+// A 2xx response shaped { items: [...] } with no cursor (the friends
+// routes' un-paginated collection shape: blocks, tags, suggestions).
+template <typename T>
+[[nodiscard]] Result<std::vector<T>> to_items_array(Result<JsonBody> response,
+                                                    WireDeserializer<T> deserialize) {
+  return to_named_array<T>(std::move(response), "items", deserialize);
 }
 
 // A 2xx response shaped { items: [...], nextCursor: string | null }.

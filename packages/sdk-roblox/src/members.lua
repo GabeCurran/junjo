@@ -49,6 +49,33 @@ local function memberPath(self, groupId: string, userId: string): string
 end
 
 -- ============================================================
+-- Membership
+-- ============================================================
+
+-- Adds a user to a group directly, the server-to-server counterpart to
+-- `groups:join`. Ignores the group's `visibility`, so provisioning does
+-- not have to make internal authorization groups publicly joinable.
+-- Bans are still enforced.
+--
+-- Idempotent: re-adding an active member returns them unchanged. Pass
+-- `opts.roleId` to assign a role in the same transaction instead of
+-- following up with `assignRole`.
+function Members:add(
+	groupId: string,
+	userId: string,
+	opts: { roleId: string?, actorUserId: string? }?
+): Member
+	local body: { [string]: any } = { userId = userId }
+	if opts and opts.roleId ~= nil then
+		body.roleId = opts.roleId
+	end
+	if opts and opts.actorUserId ~= nil then
+		body.actorUserId = opts.actorUserId
+	end
+	return self._http:post("/v1/groups/" .. self._http:encode(groupId) .. "/members", body)
+end
+
+-- ============================================================
 -- Lookups
 -- ============================================================
 

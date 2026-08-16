@@ -11,10 +11,12 @@
 #include "JunjoSubsystem.h"
 
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "Async/Async.h"
 #include "HAL/PlatformMisc.h"
@@ -234,18 +236,20 @@ void UJunjoSubsystem::KeyInfo(FOnJunjoKeyInfo Callback)
 // this exact pattern for game code that calls check() natively.
 #pragma push_macro("check")
 #undef check
-void UJunjoSubsystem::CheckPermission(const FString& GroupId, const FString& UserId, const FString& Permission, FOnJunjoPermissionCheck Callback)
+void UJunjoSubsystem::CheckPermission(const FString& GroupId, const FString& UserId, const FString& Permission, bool bInherit, FOnJunjoPermissionCheck Callback)
 {
 	if (!NativeClient.IsSet())
 	{
 		Callback.ExecuteIfBound(false, FJunjoPermissionCheck(), InactiveError());
 		return;
 	}
+	junjo::CheckOptions Options;
+	Options.inherit = bInherit;
 	RunJunjoCall(*Executor, this, ShutdownSource.token(),
 		// Native argument order is (user, group, permission).
-		[Client = NativeClient.GetValue(), User = ToUtf8(UserId), Group = ToUtf8(GroupId), Perm = ToUtf8(Permission)](const junjo::CancellationToken& Token)
+		[Client = NativeClient.GetValue(), User = ToUtf8(UserId), Group = ToUtf8(GroupId), Perm = ToUtf8(Permission), Options](const junjo::CancellationToken& Token)
 		{
-			return Client.check(User, Group, Perm, {}, Token);
+			return Client.check(User, Group, Perm, Options, Token);
 		},
 		[Callback](junjo::Result<junjo::PermissionCheckResult> CallResult)
 		{
@@ -256,6 +260,59 @@ void UJunjoSubsystem::CheckPermission(const FString& GroupId, const FString& Use
 			else
 			{
 				Callback.ExecuteIfBound(false, FJunjoPermissionCheck(), Convert(CallResult.error()));
+			}
+		});
+}
+
+void UJunjoSubsystem::CheckPermissionBatch(const TArray<FJunjoPermissionCheckRequest>& Checks, bool bInherit, FOnJunjoPermissionCheckBatch Callback)
+{
+	if (!NativeClient.IsSet())
+	{
+		Callback.ExecuteIfBound(false, FJunjoPermissionCheckBatch(), InactiveError());
+		return;
+	}
+	// An empty batch is a no-op the native client would answer without
+	// a request; short-circuiting here keeps the callback synchronous
+	// for the caller rather than round-tripping the executor.
+	if (Checks.Num() == 0)
+	{
+		Callback.ExecuteIfBound(true, FJunjoPermissionCheckBatch(), FJunjoError());
+		return;
+	}
+
+	std::vector<junjo::PermissionCheckRequest> Native;
+	Native.reserve(static_cast<std::size_t>(Checks.Num()));
+	for (const FJunjoPermissionCheckRequest& Entry : Checks)
+	{
+		Native.push_back(junjo::PermissionCheckRequest{
+			.user_id = ToUtf8(Entry.UserId),
+			.group_id = ToUtf8(Entry.GroupId),
+			.permission = ToUtf8(Entry.Permission),
+		});
+	}
+	junjo::CheckOptions Options;
+	Options.inherit = bInherit;
+
+	RunJunjoCall(*Executor, this, ShutdownSource.token(),
+		[Client = NativeClient.GetValue(), Native = MoveTemp(Native), Options](const junjo::CancellationToken& Token)
+		{
+			return Client.check_batch(Native, Options, Token);
+		},
+		[Callback](junjo::Result<std::vector<junjo::PermissionCheckResult>> CallResult)
+		{
+			if (CallResult)
+			{
+				FJunjoPermissionCheckBatch Batch;
+				Batch.Results.Reserve(static_cast<int32>(CallResult.value().size()));
+				for (const junjo::PermissionCheckResult& Entry : CallResult.value())
+				{
+					Batch.Results.Add(Convert(Entry));
+				}
+				Callback.ExecuteIfBound(true, Batch, FJunjoError());
+			}
+			else
+			{
+				Callback.ExecuteIfBound(false, FJunjoPermissionCheckBatch(), Convert(CallResult.error()));
 			}
 		});
 }
@@ -367,6 +424,10 @@ void UJunjoSubsystem::ListGroups(const FJunjoListGroupsParams& Params, FOnJunjoG
 	{
 		Options.viewer = ToUtf8(Params.Viewer);
 	}
+	if (!Params.Kind.IsEmpty())
+	{
+		Options.kind = ToUtf8(Params.Kind);
+	}
 	RunJunjoCall(*Executor, this, ShutdownSource.token(),
 		[Client = NativeClient.GetValue(), Options = MoveTemp(Options)](const junjo::CancellationToken& Token)
 		{
@@ -442,6 +503,33 @@ void UJunjoSubsystem::JoinGroup(const FString& GroupId, const FString& UserId, c
 		[Client = NativeClient.GetValue(), Group = ToUtf8(GroupId), User = ToUtf8(UserId), Options = MoveTemp(Options)](const junjo::CancellationToken& Token)
 		{
 			return Client.groups().join(Group, User, Options, Token);
+		},
+		[Callback](junjo::Result<junjo::Member> CallResult)
+		{
+			FireCompleted(Callback, CallResult);
+		});
+}
+
+void UJunjoSubsystem::AddMember(const FString& GroupId, const FString& UserId, const FString& RoleId, const FString& ActorUserId, FOnJunjoCompleted Callback)
+{
+	if (!NativeClient.IsSet())
+	{
+		Callback.ExecuteIfBound(false, InactiveError());
+		return;
+	}
+	junjo::AddMemberOptions Options;
+	if (!RoleId.IsEmpty())
+	{
+		Options.role_id = ToUtf8(RoleId);
+	}
+	if (!ActorUserId.IsEmpty())
+	{
+		Options.actor_user_id = ToUtf8(ActorUserId);
+	}
+	RunJunjoCall(*Executor, this, ShutdownSource.token(),
+		[Client = NativeClient.GetValue(), Group = ToUtf8(GroupId), User = ToUtf8(UserId), Options = MoveTemp(Options)](const junjo::CancellationToken& Token)
+		{
+			return Client.members().add(Group, User, Options, Token);
 		},
 		[Callback](junjo::Result<junjo::Member> CallResult)
 		{

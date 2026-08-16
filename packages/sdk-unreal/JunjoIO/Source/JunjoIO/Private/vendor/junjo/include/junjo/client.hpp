@@ -16,11 +16,13 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "junjo/audit.hpp"
 #include "junjo/bans.hpp"
@@ -78,6 +80,10 @@ struct ClientConfig {
 // transport is).
 class JUNJO_API Client {
  public:
+  // Server-side cap on one POST /v1/permissions/check-batch body.
+  // check_batch() splits longer inputs at this boundary.
+  static constexpr std::size_t CHECK_BATCH_MAX_ENTRIES = 100;
+
   // Validates `config` and builds a client. Fails with InvalidConfig
   // when: api_key is empty, api_key is an admin token (jadm_*),
   // base_url is empty, or no transport is available (see
@@ -90,20 +96,33 @@ class JUNJO_API Client {
 
   // GET /v1/permissions/check: does `user_id` hold `permission` in
   // `group_id`? Returns the full decision including where it came from
-  // (role / override / default / none) and, when role-derived, the
-  // granting role id. Permission keys are game-defined open strings.
+  // (role / override / default / none), when role-derived the granting
+  // role id, and with CheckOptions::inherit the group the decision came
+  // from. Permission keys are game-defined open strings.
   [[nodiscard]] Result<PermissionCheckResult> check(std::string_view user_id,
                                                     std::string_view group_id,
                                                     std::string_view permission,
-                                                    const RequestOptions& options = {},
+                                                    const CheckOptions& options = {},
                                                     const CancellationToken& token = {}) const;
 
   // Convenience wrapper over check() returning only the boolean
   // `allowed` result.
   [[nodiscard]] Result<bool> can(std::string_view user_id, std::string_view group_id,
-                                 std::string_view permission,
-                                 const RequestOptions& options = {},
+                                 std::string_view permission, const CheckOptions& options = {},
                                  const CancellationToken& token = {}) const;
+
+  // POST /v1/permissions/check-batch: resolves many checks in one
+  // round-trip. Results are positional: `results[i]` answers
+  // `checks[i]`. An empty input returns an empty vector without a
+  // request; an unknown group id fails the whole call with
+  // ErrorCode::NotFound, matching the single check.
+  //
+  // The server caps a batch at CHECK_BATCH_MAX_ENTRIES, so longer
+  // inputs are split across sequential requests and the answers
+  // concatenated. A failure on any slice fails the call.
+  [[nodiscard]] Result<std::vector<PermissionCheckResult>> check_batch(
+      const std::vector<PermissionCheckRequest>& checks, const CheckOptions& options = {},
+      const CancellationToken& token = {}) const;
 
   // ------ Async variants ------
   //
@@ -143,8 +162,15 @@ class JUNJO_API Client {
   // check, asynchronously. See the async contract above.
   [[nodiscard]] std::future<Result<PermissionCheckResult>> check_async(
       Executor& executor, std::string_view user_id, std::string_view group_id,
-      std::string_view permission, const RequestOptions& options = {},
+      std::string_view permission, const CheckOptions& options = {},
       const CancellationToken& token = {}) const;
+
+  // check_batch, asynchronously. See the async contract above. Earns
+  // an async variant because a batch is the call most likely to be
+  // issued off the critical path (nav gating, list scoping).
+  [[nodiscard]] std::future<Result<std::vector<PermissionCheckResult>>> check_batch_async(
+      Executor& executor, std::vector<PermissionCheckRequest> checks,
+      const CheckOptions& options = {}, const CancellationToken& token = {}) const;
 
   // The API surfaces. Each returned value shares this client's
   // internals and remains valid after the Client is destroyed.

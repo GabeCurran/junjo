@@ -39,13 +39,14 @@ FJunjoError UJunjoAsyncAction::NoSubsystemError()
 	return Error;
 }
 
-UJunjoCheckPermissionAction* UJunjoCheckPermissionAction::CheckPermissionAsync(UObject* WorldContextObject, const FString& GroupId, const FString& UserId, const FString& Permission)
+UJunjoCheckPermissionAction* UJunjoCheckPermissionAction::CheckPermissionAsync(UObject* WorldContextObject, const FString& GroupId, const FString& UserId, const FString& Permission, bool bInherit)
 {
 	UJunjoCheckPermissionAction* Action = NewObject<UJunjoCheckPermissionAction>();
 	Action->ContextObject = WorldContextObject;
 	Action->RequestGroupId = GroupId;
 	Action->RequestUserId = UserId;
 	Action->RequestPermission = Permission;
+	Action->bRequestInherit = bInherit;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -68,7 +69,7 @@ void UJunjoCheckPermissionAction::Activate()
 	// InvalidConfig error; the K2 node binds the pins before Activate,
 	// so the immediate OnFailure broadcast is delivered. Same for the
 	// other four actions.
-	Subsystem->CheckPermission(RequestGroupId, RequestUserId, RequestPermission, Callback);
+	Subsystem->CheckPermission(RequestGroupId, RequestUserId, RequestPermission, bRequestInherit, Callback);
 }
 
 void UJunjoCheckPermissionAction::HandleResult(bool bSuccess, const FJunjoPermissionCheck& Result, const FJunjoError& Error)

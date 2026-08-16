@@ -82,6 +82,7 @@ Result<Page<Group>> GroupsApi::list(const ListGroupsOptions& options,
   }
   if (options.cursor.has_value()) params.emplace_back("cursor", *options.cursor);
   if (options.viewer.has_value()) params.emplace_back("viewer", *options.viewer);
+  if (options.kind.has_value()) params.emplace_back("kind", *options.kind);
 
   const std::string path = "/v1/groups" + detail::build_query(params);
   return detail::to_page<Group>(

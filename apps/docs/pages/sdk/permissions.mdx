@@ -54,6 +54,7 @@ if (!result.allowed) {
 | `allowed` | boolean | True if the user has the permission. |
 | `source` | `"role" \| "override" \| "default" \| "none"` | See the source taxonomy below. |
 | `viaRoleId` | `RoleId` (optional) | Present only when `source === "role"`; the highest-priority role that granted the permission. |
+| `viaGroupId` | `GroupId` (optional) | Present only on an [inherited check](#inherited-checks) that reached a decision; names the group the decision came from. |
 
 ### Source taxonomy
 
@@ -68,7 +69,51 @@ if (!result.allowed) {
 
 Same as `can()`.
 
+## Inherited checks
+
+Groups nest (`groups.setParent` / `groups.listChildren`), but by default a check ignores the hierarchy: it resolves against direct membership in the group you asked about. Pass `{ inherit: true }` to walk the parents too.
+
+```ts
+// Alice holds "campaign.edit" via a role on the parent instance group,
+// not on this campaign directly.
+await junjo.can(alice, campaignId, "campaign.edit");
+// false: no membership in the campaign itself
+
+const result = await junjo.check(alice, campaignId, "campaign.edit", { inherit: true });
+// { allowed: true, source: "role", viaRoleId: "role_admin", viaGroupId: "grp_instance" }
+```
+
+The walk starts at the group you asked about and climbs, nearest first, stopping at the first group that decides. An override or a role grant decides; being a non-member (`none`) or a member without the grant (`default`) is inconclusive and the walk continues. Nearest wins, so a deny on the child is not undone by a grant on the parent, and `viaGroupId` tells you which level answered.
+
+This replaces the client-side walker the hierarchy otherwise forces, which costs two round-trips per level (a `check` plus a `groups.get` to find the parent) and pays that cost in full on every denial, since a deny walks to the root. The server does the whole chain in one query plus one resolution per level.
+
+Inherited and direct answers are cached separately, both client-side and server-side, so opting in for one call does not change what another call sees.
+
+## Batched checks
+
+`checkBatch(checks, opts?)` resolves many questions in one request. Answers are positional: `results[i]` corresponds to `checks[i]`.
+
+```ts
+const shops = await junjo.groups.list({ kind: "shop" });
+const results = await junjo.checkBatch(
+  shops.items.map((shop) => ({ userId, groupId: shop.id, permission: "shop.view" })),
+);
+const visible = shops.items.filter((_, i) => results[i]?.allowed);
+```
+
+Use it anywhere you would otherwise loop `can()`: filtering a list to what a player may see, gating a nav bar on five or six keys at once, scoping a roster. It also removes the temptation to call `can()` inside a render loop.
+
+Details worth knowing:
+
+- **Entries already cached** are answered locally and only the remainder is sent, so a partially warm batch still costs at most one request.
+- **Inputs longer than 100** (the server cap) are split across sequential requests automatically; you do not have to chunk.
+- **`{ inherit: true }`** applies to every entry in the call.
+- **An unknown `groupId` fails the whole call** with `not_found`, matching the single check rather than burying a typo as a denial.
+- An empty input returns `[]` without a request.
+
 ## Caching behavior
+
+The SDK caches permission answers in the client for 5 seconds by default, and the server caches them for 60. Both layers matter for different reasons; the client-side one is described under [Client-side cache](#client-side-cache) below.
 
 Each unique `(userId, groupId, permission)` answer is cached server-side for 60 seconds. The following mutations invalidate the cache for the affected group:
 
@@ -81,6 +126,40 @@ A stale cached answer can therefore persist for at most the TTL window if a row 
 
 The cache is in-memory and per-server-process; it is not a Redis dependency. A horizontally-scaled cluster gets eventual consistency across instances bounded by the TTL.
 
+## Client-side cache
+
+`can`, `check`, and `checkBatch` are cached in the client for 5 seconds, **on by default**.
+
+This exists because of a specific failure mode. A realtime app re-resolves the same permissions for every subscriber whenever clients reconnect at once: a redeploy, a laptop waking, a phone coming back from background, a flaky connection reconnecting a set of SSE hubs. That burst is what exhausts the rate limit, and the symptom is misleading: permission checks start failing, which reads as an authorization bug rather than a throttling one. A short TTL collapses the burst into one request per distinct question.
+
+```ts
+const junjo = new Junjo({
+  apiKey: process.env.JUNJO_API_KEY!,
+  permissionCache: {
+    ttlMs: 5000,               // default
+    maxEntries: 5000,          // default; oldest evicted first
+    serveStaleOnRateLimit: true, // default
+  },
+});
+```
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `enabled` | `true` | `false` resolves every check against the server. |
+| `ttlMs` | `5000` | How long an answer is reused. |
+| `maxEntries` | `5000` | Bound on distinct answers retained. |
+| `serveStaleOnRateLimit` | `true` | On a `429`, serve a recently-expired answer instead of throwing. |
+| `staleWhileRateLimitedMs` | `60000` | How far past the TTL a stale answer may still be served. |
+
+`serveStaleOnRateLimit` is the second half of the same problem. A `429` on a permission check throws, and a caller that treats a throw as "denied" turns a throttle into a phantom authorization failure. Riding it out on a recently-expired answer keeps behavior stable through the burst; the SDK never invents an answer it did not previously receive, and once the stale window elapses the `429` propagates.
+
+Call `junjo.clearPermissionCache()` after a mutation whose effect you need to see immediately, or set `ttlMs: 0` to keep only the stale-on-429 behavior.
+
+Two things the cache does not do: it is not shared across `Junjo` instances, and it does not observe mutations made by other processes. The TTL is deliberately short so both stay bounded.
+
+Self-hosting note: the rate limit itself is configurable (`RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST`), which a self-hoster has no dashboard to discover. See [Limits](/limits#rate-limits).
+
 ## See also
 
-- [`GET /v1/permissions/check`](/api-reference/permissions) - the underlying HTTP route.
+- [`GET /v1/permissions/check`](/api-reference/permissions) - the underlying HTTP route, including the batch route and inheritance semantics.
+- [Provisioning an existing app](/provisioning) - the backfill recipe these calls support.

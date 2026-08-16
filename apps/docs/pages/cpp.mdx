@@ -86,7 +86,7 @@ int main() {
     // group.value()->name
   }
 
-  auto page = client.groups().list({.limit = 50});
+  auto page = client.groups().list({.limit = 50, .kind = "guild"});
   if (page) {
     for (const auto& g : page.value().items) {
       // g.id, g.kind, g.name
@@ -94,6 +94,45 @@ int main() {
   }
 }
 ```
+
+### Permission checks
+
+`check` and `can` take a `CheckOptions` (which carries the per-request `timeout` that other calls take via `RequestOptions`, plus the permission-specific flag):
+
+```cpp
+// Direct: resolves against membership in this group alone.
+auto direct = client.can("user_alice", "grp_campaign", "campaign.edit");
+
+// Inherited: walks the group's ancestors, nearest first, stopping at
+// the first group that decides. The result carries via_group_id.
+auto walked = client.check("user_alice", "grp_campaign", "campaign.edit", {.inherit = true});
+if (walked && walked.value().via_group_id) {
+  // *walked.value().via_group_id names the group that decided
+}
+```
+
+`check_batch` resolves many questions in one round-trip, positionally:
+
+```cpp
+const std::vector<junjo::PermissionCheckRequest> checks{
+    {.user_id = "user_alice", .group_id = "grp_a", .permission = "shop.view"},
+    {.user_id = "user_alice", .group_id = "grp_b", .permission = "shop.view"},
+};
+auto results = client.check_batch(checks);
+// results.value()[i] answers checks[i]
+```
+
+Inputs longer than `Client::CHECK_BATCH_MAX_ENTRIES` (100, the server cap) are split across sequential requests and the answers concatenated. An empty input returns an empty vector without a request; an unknown group id fails the whole call with `ErrorCode::NotFound`, matching the single check. Both calls also ship `_async` variants.
+
+### Adding members server-side
+
+`members().add` is the server-to-server counterpart to `groups().join`. It ignores the group's visibility, so provisioning does not have to make internal authorization groups publicly joinable; bans are still enforced. It is idempotent, and an optional `role_id` is assigned in the same transaction:
+
+```cpp
+auto added = client.members().add("grp_campaign", "user_alice", {.role_id = "role_officer"});
+```
+
+See [Provisioning an existing app](/provisioning).
 
 `ClientConfig` also takes `base_url` (defaults to `https://api.junjo.io`), `timeout` (a whole-request default of 30 seconds; a value of zero or less disables it), `invite_base_url` (the frontend origin `invite_by_link` composes accept URLs from; see "Invitations" below), and `transport` (see "Bring your own transport" below). The `Client` is cheap to copy; copies share the same transport and configuration.
 

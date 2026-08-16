@@ -98,4 +98,94 @@ describe("PermissionCache", () => {
       viaRoleId: "role_officer",
     });
   });
+
+  it("does not let one tuple encode to another tuple's key", () => {
+    const cache = new PermissionCache();
+    const granted = { allowed: true, source: "role" as const };
+    // Same characters, different split between userId and permission.
+    // A delimiter-joined key would collide and hand the second tuple
+    // the first tuple's verdict.
+    cache.set("g1", "grp_1", "alice x", "read", granted);
+    expect(cache.get("g1", "grp_1", "alice", "x read")).toBeNull();
+    expect(cache.get("g1", "grp_1", "alice x", "read")).toEqual(granted);
+  });
+
+  it("keys inherited answers separately from direct ones", () => {
+    const cache = new PermissionCache();
+    const direct = { allowed: false, source: "default" as const };
+    const inherited = { allowed: true, source: "role" as const };
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", direct);
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", inherited, { inherit: true });
+    expect(cache.get("g1", "grp_child", "user_alice", "guild.kick")).toEqual(direct);
+    expect(cache.get("g1", "grp_child", "user_alice", "guild.kick", { inherit: true })).toEqual(
+      inherited,
+    );
+  });
+
+  it("drops an inherited answer when any group it depends on is invalidated", () => {
+    const cache = new PermissionCache();
+    const result = { allowed: true, source: "role" as const };
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", result, {
+      inherit: true,
+      dependsOn: ["grp_child", "grp_parent", "grp_root"],
+    });
+
+    cache.invalidateGroup("grp_parent");
+    expect(cache.get("g1", "grp_child", "user_alice", "guild.kick", { inherit: true })).toBeNull();
+    expect(cache.size()).toBe(0);
+  });
+
+  it("prunes an invalidated key from the index sets of its other dependencies", () => {
+    const cache = new PermissionCache();
+    cache.set(
+      "g1",
+      "grp_child",
+      "user_alice",
+      "guild.kick",
+      { allowed: true, source: "role" },
+      {
+        inherit: true,
+        dependsOn: ["grp_child", "grp_parent"],
+      },
+    );
+
+    // Invalidating one dependency must leave nothing behind for the
+    // other to resurrect or leak.
+    cache.invalidateGroup("grp_child");
+    expect(cache.size()).toBe(0);
+    cache.invalidateGroup("grp_parent");
+    expect(cache.size()).toBe(0);
+
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", { allowed: false, source: "default" });
+    cache.invalidateGroup("grp_parent");
+    expect(cache.get("g1", "grp_child", "user_alice", "guild.kick")).not.toBeNull();
+  });
+
+  it("defaults dependsOn to the queried group", () => {
+    const cache = new PermissionCache();
+    cache.set("g1", "grp_1", "user_alice", "guild.kick", { allowed: true, source: "role" });
+    cache.invalidateGroup("grp_1");
+    expect(cache.get("g1", "grp_1", "user_alice", "guild.kick")).toBeNull();
+  });
+
+  it("rewrites dependencies when a key is set again with a shorter chain", () => {
+    const cache = new PermissionCache();
+    const first = { allowed: true, source: "role" as const };
+    const second = { allowed: false, source: "default" as const };
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", first, {
+      inherit: true,
+      dependsOn: ["grp_child", "grp_parent"],
+    });
+    cache.set("g1", "grp_child", "user_alice", "guild.kick", second, {
+      inherit: true,
+      dependsOn: ["grp_child"],
+    });
+
+    // grp_parent is no longer on the chain, so its invalidation must
+    // not drop the newer answer.
+    cache.invalidateGroup("grp_parent");
+    expect(cache.get("g1", "grp_child", "user_alice", "guild.kick", { inherit: true })).toEqual(
+      second,
+    );
+  });
 });

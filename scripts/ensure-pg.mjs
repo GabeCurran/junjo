@@ -114,6 +114,67 @@ function waitReady(maxSeconds = 30) {
   fail(`postgres did not become ready within ${maxSeconds}s`);
 }
 
+// What port the container actually publishes 5432 on, or null when
+// docker reports no mapping. A container created during an earlier run
+// keeps its original mapping: `docker restart` cannot move a published
+// port, so an existing container plus a changed JUNJO_DB_PORT leaves
+// DATABASE_URL pointing somewhere else entirely.
+function publishedPort() {
+  const r = run("docker", ["port", CONTAINER, "5432/tcp"]);
+  if (r.status !== 0) return null;
+  const line = r.stdout.trim().split("\n")[0] ?? "";
+  const m = line.match(/:(\d+)\s*$/);
+  return m ? m[1] : null;
+}
+
+// `pg_isready` runs INSIDE the container, so it proves the database is
+// up but says nothing about the host reaching it on DB_PORT with these
+// credentials. When another Postgres holds that port (a second project's
+// container, or a native install bound to 127.0.0.1 while docker binds
+// 0.0.0.0), every check above passes and the first real connection fails
+// with an opaque `P1000: Authentication failed`. Probing the actual
+// DATABASE_URL here turns that into a diagnosis.
+function verifyHostConnection() {
+  const mapped = publishedPort();
+  if (mapped !== null && mapped !== DB_PORT) {
+    fail(
+      [
+        `${CONTAINER} publishes postgres on host port ${mapped}, but DATABASE_URL targets ${DB_PORT}.`,
+        `The container keeps the port it was created with. Either run with JUNJO_DB_PORT=${mapped},`,
+        `or recreate the container: docker rm -f ${CONTAINER} && npm run dev`,
+      ].join("\n[pg] "),
+    );
+  }
+
+  log(`verifying the host can reach postgres on :${DB_PORT}...`);
+  const r = run("npx", ["prisma", "db", "execute", "--url", DATABASE_URL, "--stdin"], {
+    cwd: "packages/server",
+    input: "SELECT 1;",
+    shell: process.platform === "win32",
+  });
+  if (r.status === 0) {
+    log("host connection ok");
+    return;
+  }
+
+  const detail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+  const authFailed = detail.includes("P1000") || /authentication failed/i.test(detail);
+  const lines = [`cannot reach the dev database at ${DATABASE_URL.replace(DB_PASS, "***")}`];
+  if (authFailed) {
+    lines.push(
+      `postgres answered on :${DB_PORT} but rejected the dev credentials.`,
+      `${CONTAINER} is healthy, so something else is almost certainly listening on that port`,
+      "(another project's container, or a native postgres bound to 127.0.0.1).",
+      `Check with: docker ps --filter publish=${DB_PORT}`,
+      "Then pick a free port: JUNJO_DB_PORT=5439 npm run dev",
+    );
+  } else {
+    lines.push("the connection attempt failed before authentication.");
+  }
+  if (detail) lines.push(`underlying error: ${detail.split("\n")[0]}`);
+  fail(lines.join("\n[pg] "));
+}
+
 function generateAdminToken() {
   return `jadm_${randomBytes(32).toString("base64url")}`;
 }
@@ -250,5 +311,6 @@ ensureDocker();
 bootContainer();
 waitReady();
 ensureEnvFiles();
+verifyHostConnection();
 applyMigrations();
 seedDemo();

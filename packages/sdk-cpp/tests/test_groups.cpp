@@ -733,3 +733,26 @@ TEST_CASE("an integer field above the int64 range maps to InvalidWireData") {
   REQUIRE_FALSE(group.has_value());
   CHECK(group.error().code == ErrorCode::InvalidWireData);
 }
+
+TEST_CASE("groups.list appends the kind filter only when set") {
+  Harness h;
+  h.transport->enqueue_json(200, R"({"items":[],"nextCursor":null})");
+  Result<Page<Group>> listed = h.client.groups().list();
+  REQUIRE(listed.has_value());
+  CHECK(h.transport->last_request().url == "https://api.junjo.io/v1/groups");
+
+  h.transport->enqueue_json(200, R"({"items":[],"nextCursor":null})");
+  listed = h.client.groups().list({.kind = "instance"});
+  REQUIRE(listed.has_value());
+  CHECK(h.transport->last_request().url == "https://api.junjo.io/v1/groups?kind=instance");
+}
+
+TEST_CASE("groups.list percent-encodes the kind filter and orders it after viewer") {
+  Harness h;
+  h.transport->enqueue_json(200, R"({"items":[],"nextCursor":null})");
+  const Result<Page<Group>> listed =
+      h.client.groups().list({.viewer = "user_1", .kind = "raid team"});
+  REQUIRE(listed.has_value());
+  CHECK(h.transport->last_request().url ==
+        "https://api.junjo.io/v1/groups?viewer=user_1&kind=raid%20team");
+}

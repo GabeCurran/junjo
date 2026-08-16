@@ -56,6 +56,12 @@ function Roles:delete(id: string)
 	self._http:delete("/v1/roles/" .. self._http:encode(id))
 end
 
+-- Returns every role in the group as a plain array, not a page. The
+-- TypeScript SDK additionally exposes `items` / `nextCursor` on this
+-- result because JavaScript callers share page-shaped helpers across
+-- list calls; a Lua array is already consumed with `ipairs` and `#`, so
+-- mirroring that here would only add a self-referencing field that
+-- breaks JSONEncode.
 function Roles:list(groupId: string)
 	return self._http:get("/v1/groups/" .. self._http:encode(groupId) .. "/roles")
 end

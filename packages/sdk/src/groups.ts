@@ -223,10 +223,18 @@ export class GroupsApi {
     }
   }
 
+  /**
+   * Lists groups, newest first. Pass `kind` to return only groups of
+   * that kind; the match is exact, and an unused kind returns an empty
+   * page rather than an error. Filtering server-side matters because
+   * `name` is unique per game, not per kind, so a client-side match on
+   * name alone can confuse two groups of different kinds.
+   */
   async list(
     opts?: PageOptions & {
       gameId?: GameId;
       viewer?: UserId;
+      kind?: string;
       signal?: AbortSignal;
       timeoutMs?: number;
     },
@@ -236,6 +244,7 @@ export class GroupsApi {
     if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
     if (opts?.gameId !== undefined) params.set("gameId", opts.gameId);
     if (opts?.viewer !== undefined) params.set("viewer", opts.viewer);
+    if (opts?.kind !== undefined) params.set("kind", opts.kind);
     const qs = params.toString();
     const path = qs ? `/v1/groups?${qs}` : "/v1/groups";
     const wire = await this.http.get<{ items: WireGroup[]; nextCursor: string | null }>(path, {
@@ -250,7 +259,7 @@ export class GroupsApi {
 
   /**
    * Async-iterator wrapper over `list(...)` that walks every page until
-   * `nextCursor` is null. Use when you genuinely need every group --
+   * `nextCursor` is null. Use when you genuinely need every group;
    * prefer `list(...)` with explicit pagination for UI surfaces. The
    * underlying server still caps `limit` at JUNJO_MAX_PAGE_SIZE.
    */
@@ -258,6 +267,7 @@ export class GroupsApi {
     limit?: number;
     gameId?: GameId;
     viewer?: UserId;
+    kind?: string;
     signal?: AbortSignal;
     timeoutMs?: number;
   }): AsyncGenerator<Group> {

@@ -334,3 +334,34 @@ TEST_CASE("a mistyped override row (grant as string) maps to InvalidWireData") {
   REQUIRE_FALSE(rows.has_value());
   CHECK(rows.error().code == ErrorCode::InvalidWireData);
 }
+
+TEST_CASE("members.add POSTs the group members collection with just userId") {
+  Harness h;
+  h.transport->enqueue_json(201, kMemberJson);
+
+  const Result<Member> added = h.client.members().add("grp/1", "user one");
+  REQUIRE(added.has_value());
+  CHECK(h.transport->last_request().method == "POST");
+  CHECK(h.transport->last_request().url == "https://api.junjo.io/v1/groups/grp%2F1/members");
+  REQUIRE(h.transport->last_request().body.has_value());
+  CHECK(body_of(h.transport->last_request()) == Json{{"userId", "user one"}});
+}
+
+TEST_CASE("members.add includes roleId and actorUserId only when set") {
+  Harness h;
+  h.transport->enqueue_json(201, kMemberJson);
+  const Result<Member> added = h.client.members().add(
+      "grp_1", "user_1", {.role_id = "role_1", .actor_user_id = "user_admin"});
+  REQUIRE(added.has_value());
+  CHECK(body_of(h.transport->last_request()) ==
+        Json{{"userId", "user_1"}, {"roleId", "role_1"}, {"actorUserId", "user_admin"}});
+}
+
+TEST_CASE("members.add surfaces a ban as an error rather than a null member") {
+  Harness h;
+  h.transport->enqueue_json(
+      403, R"({"code":"banned","status":403,"message":"user is banned from this group"})");
+  const Result<Member> added = h.client.members().add("grp_1", "user_1");
+  REQUIRE_FALSE(added.has_value());
+  CHECK(added.error().code == ErrorCode::Banned);
+}

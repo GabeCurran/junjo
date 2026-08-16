@@ -50,6 +50,11 @@ struct ListGroupsOptions {
   // Same visibility scoping as GetGroupOptions::viewer: secret groups
   // the viewer is not a member of are filtered out.
   std::optional<std::string> viewer;
+  // Return only groups of this kind, matched exactly. Filtering
+  // server-side matters because Group::name is unique per game, not
+  // per kind, so matching on name alone can confuse two groups of
+  // different kinds. An unused kind yields an empty page.
+  std::optional<std::string> kind;
   std::optional<std::chrono::milliseconds> timeout;
 };
 

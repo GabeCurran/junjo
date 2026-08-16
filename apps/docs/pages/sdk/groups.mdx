@@ -96,6 +96,13 @@ do {
 | `limit` | number | `50` | 1-100 inclusive. |
 | `cursor` | string | undefined | The `nextCursor` from a previous `list` call. Must point at a group in the calling game (soft-deleted is fine). |
 | `gameId` | `GameId` | the calling game | Optional. Must equal the calling key's game; cross-game queries return `400`. Provided for forward-compatibility with cloud-only admin tooling. |
+| `kind` | string | undefined | Optional exact-match filter on the group's `kind`. An unused kind returns an empty page, not an error. Also accepted by `listAll`. |
+
+Filtering on `kind` server-side matters for correctness, not just for volume: a group's `name` is unique per game but **not** per kind, so two groups of different kinds can share a name. Matching on name alone can pick up the wrong one. Match on the `(kind, name)` pair when you need find-or-create semantics; see [Provisioning an existing app](/provisioning).
+
+```ts
+const shops = await junjo.groups.list({ kind: "shop" });
+```
 
 ### Returns
 

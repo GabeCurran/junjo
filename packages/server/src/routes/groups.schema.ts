@@ -41,11 +41,15 @@ export const createGroupBody = z
 
 export type CreateGroupBody = z.infer<typeof createGroupBody>;
 
+// `kind` filters on exact match, bounded by the same length the create
+// body allows so an over-long value is a 400 rather than a guaranteed
+// empty page. An unknown kind is a valid query that matches nothing.
 export const listGroupsQuery = z.object({
   limit: pageLimit(50),
   cursor: z.string().min(1).optional(),
   gameId: z.string().min(1).optional(),
   viewer: z.string().min(1).optional(),
+  kind: z.string().min(1).max(64).optional(),
 });
 
 export type ListGroupsQuery = z.infer<typeof listGroupsQuery>;
@@ -84,6 +88,26 @@ export const updateGroupBody = z
   });
 
 export type UpdateGroupBody = z.infer<typeof updateGroupBody>;
+
+// Server-to-server member creation. Unlike `join` this ignores
+// `visibility`, so provisioning does not have to make internal
+// authorization groups publicly joinable to populate them. Bans are
+// still enforced: a ban is state the game set deliberately, and
+// silently overriding one during a bulk provision would be wrong.
+export const addMemberBody = z
+  .object({
+    userId: z.string().min(1),
+    // Assigned in the same transaction as the membership, so a
+    // provisioner does not need a second call and cannot leave a
+    // member role-less if the second call fails.
+    roleId: z.string().min(1).optional(),
+    // Attributes the audit entry to a moderator. Mirrors the ban /
+    // unban / role-assign actor pattern.
+    actorUserId: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type AddMemberBody = z.infer<typeof addMemberBody>;
 
 export const leaveGroupBody = z.object({
   userId: z.string().min(1),
@@ -145,6 +169,20 @@ export const roleAssignBody = z
   .transform((b) => b ?? {});
 
 export type RoleAssignBody = z.infer<typeof roleAssignBody>;
+
+// Opt-in page envelope for the group role list. The route historically
+// answers with a bare array, and a published client deserializes it as
+// one, so the envelope cannot become the default without breaking those
+// callers against an upgraded server. `nextCursor` is always null: the
+// route returns every role in the group, it does not paginate.
+export const listRolesQuery = z.object({
+  paged: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((s) => s === "true"),
+});
+
+export type ListRolesQuery = z.infer<typeof listRolesQuery>;
 
 export const bulkInviteQuery = z.object({
   roleId: z.string().min(1).optional(),

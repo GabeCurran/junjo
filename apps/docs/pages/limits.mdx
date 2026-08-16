@@ -21,6 +21,8 @@ The server paginates with a per-route default `limit` and a global cap. The cap 
 | `GET /v1/admin/games` | 100 | 200 (hardcoded; ignores `JUNJO_MAX_PAGE_SIZE`) |
 | `GET /v1/admin/audit` | 20 | `JUNJO_MAX_PAGE_SIZE` |
 
+One route takes a batch rather than a page: `POST /v1/permissions/check-batch` accepts 1 to 100 entries per request (`MAX_BATCH_CHECKS`, hardcoded) and answers them positionally. It counts as a single request against the rate limit regardless of how many entries it carries, which is what the entry cap bounds.
+
 One list endpoint refuses rather than paginates: the admin group list sorted by `sort=memberCount` returns `400` past 500 matching rows (`ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS`, hardcoded).
 
 ## Field lengths
@@ -45,7 +47,7 @@ Validation is zod on every write route; violations are `400 bad_request` with a 
 Two deliberate non-limits worth knowing about:
 
 - `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows and admin invitation bodies. External ids are opaque to Junjo; keep them sane on your side.
-- Group and member `metadata` have no size cap, and the server sets no request-body size limit of its own. If you self-host behind a reverse proxy, its body limit is the effective one; keep metadata small regardless, it is returned inline on every read.
+- Member `metadata` has no size cap of its own (group `metadata` is capped above). The server applies a global 1 MB request-body limit across `/v1`, and a body over it is rejected with `413`. If you self-host behind a reverse proxy, whichever limit is lower is the effective one; keep metadata small regardless, it is returned inline on every read.
 
 ## Bulk invite
 
@@ -79,6 +81,8 @@ The server runs an in-memory token-bucket limiter per process, applied to the wh
 
 Every request drains the source-IP bucket; requests with a parseable API key also drain the key bucket. Whichever denies first returns `429` with a `Retry-After` header (floored at 1 s). Behind a reverse proxy, set `TRUST_PROXY=true` so the source bucket keys on the rightmost `x-forwarded-for` hop instead of the proxy's own address.
 
+**Realtime and high-frequency apps.** The bucket that bites in practice is not steady-state traffic, it is reconnect churn: a redeploy, laptops waking, phones returning from background, or a set of SSE hubs reconnecting all re-resolve the same permissions for every subscriber at once. The symptom is misleading, because a rate-limited permission check surfaces as a failed check and reads like an authorization bug. Two mitigations, both on by default in the TypeScript SDK: a short-TTL client-side permission cache, and serving a recently-expired answer through a `429` rather than throwing. See [Client-side cache](/sdk/permissions#client-side-cache). Batch what you can with [`checkBatch`](/sdk/permissions#batched-checks): one request, up to 100 answers.
+
 ## Friends
 
 These are per-game config values, changeable at runtime via `PATCH /v1/admin/games/:gameId/config` (admin token required; see [Admin](/api-reference/admin)).
@@ -110,6 +114,7 @@ These are per-game config values, changeable at runtime via `PATCH /v1/admin/gam
 | Soft-deleted group restore window | 7 days (`SOFT_DELETE_RETENTION_DAYS`); restore after that is `410 restore_window_expired` | no (hard-delete sweeper runs hourly) |
 | Invitation default expiry | none; invitations live until used or revoked unless `expiresIn` is set | per invitation |
 | Invitation code entropy | 16 hex chars (64 bits) | no |
-| Parent-chain depth (sub-groups) | 100 (`MAX_PARENT_DEPTH`, cycle-detection walk) | no |
+| Parent-chain depth (sub-groups) | 100 (`MAX_PARENT_DEPTH`, cycle-detection walk and the `inherit=true` permission walk) | no |
 | Roles per group, groups per game, members per group | unbounded | - |
+| Client-side permission cache (TypeScript SDK) | 5 s TTL, 5000 entries, stale-on-429 for 60 s | yes: `permissionCache` on the client config; `enabled: false` turns it off |
 | Request timeout (TypeScript, C++, and Unreal SDKs) | 30 s default | yes: `timeoutMs` (TypeScript, per client or per call) or `timeout` (C++ config, Unreal project settings); `0` (TypeScript) or zero-or-less (C++ / Unreal) disables. Roblox is the exception: `RequestAsync` has a fixed ~30 s platform timeout |

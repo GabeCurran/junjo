@@ -170,6 +170,42 @@ struct FJunjoPermissionCheck
 	// otherwise (role ids are non-empty, so empty means absent).
 	UPROPERTY(BlueprintReadOnly, Category = "Junjo")
 	FString ViaRoleId;
+
+	// The group the decision was read from. Populated only on an
+	// inherited check that reached a decision; empty otherwise. It
+	// equals the queried group when the decision was direct rather
+	// than inherited.
+	UPROPERTY(BlueprintReadOnly, Category = "Junjo")
+	FString ViaGroupId;
+};
+
+// Mirror of junjo::PermissionCheckRequest: one entry of a batched
+// permission check.
+USTRUCT(BlueprintType)
+struct FJunjoPermissionCheckRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Junjo")
+	FString UserId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Junjo")
+	FString GroupId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Junjo")
+	FString Permission;
+};
+
+// Results of a batched permission check, positional: Results[i]
+// answers the request at index i. Wrapped in a struct because a
+// dynamic delegate cannot carry a bare TArray.
+USTRUCT(BlueprintType)
+struct FJunjoPermissionCheckBatch
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Junjo")
+	TArray<FJunjoPermissionCheck> Results;
 };
 
 // Mirror of junjo::Group. What a group means is the game's choice; the
@@ -442,6 +478,13 @@ struct FJunjoListGroupsParams
 	// the server-side (admin) view that sees everything.
 	UPROPERTY(BlueprintReadWrite, Category = "Junjo")
 	FString Viewer;
+
+	// Return only groups of this kind, matched exactly. Empty means
+	// every kind. Filtering server-side matters because a group's Name
+	// is unique per game, not per kind, so matching on name alone can
+	// confuse two groups of different kinds.
+	UPROPERTY(BlueprintReadWrite, Category = "Junjo")
+	FString Kind;
 };
 
 // Options for UJunjoSubsystem::ListMembers. Leave a field at its
@@ -504,6 +547,10 @@ DECLARE_DYNAMIC_DELEGATE_ThreeParams(FOnJunjoKeyInfo, bool, bSuccess, const FJun
 
 // Fired by UJunjoSubsystem::CheckPermission.
 DECLARE_DYNAMIC_DELEGATE_ThreeParams(FOnJunjoPermissionCheck, bool, bSuccess, const FJunjoPermissionCheck&, Result, const FJunjoError&, Error);
+
+// Fired once for a whole batch; Batch.Results is positional against
+// the requests that were sent.
+DECLARE_DYNAMIC_DELEGATE_ThreeParams(FOnJunjoPermissionCheckBatch, bool, bSuccess, const FJunjoPermissionCheckBatch&, Batch, const FJunjoError&, Error);
 
 // Fired by UJunjoSubsystem::GetGroup and CreateGroup. bFound
 // distinguishes "the call worked and there is no such group"

@@ -394,3 +394,68 @@ describe("roles.revokePermission", () => {
     ).rejects.toBeInstanceOf(JunjoError);
   });
 });
+
+describe("roles.list result shape", () => {
+  function newClient(fetchMock: unknown) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+    });
+  }
+
+  it("still behaves as the array published clients expect", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([roleFixture]));
+    const roles = await newClient(fetchMock).roles.list("grp_1" as GroupId);
+
+    expect(Array.isArray(roles)).toBe(true);
+    expect(roles).toHaveLength(1);
+    expect(roles[0]?.name).toBe("Officer");
+    expect(roles.map((r) => r.id)).toEqual(["role_1"]);
+    expect(roles.filter((r) => r.priority > 10)).toHaveLength(1);
+    expect([...roles]).toHaveLength(1);
+  });
+
+  it("also exposes the page shape the other list calls use", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([roleFixture]));
+    const roles = await newClient(fetchMock).roles.list("grp_1" as GroupId);
+
+    expect(roles.items).toHaveLength(1);
+    expect(roles.items[0]?.id).toBe("role_1");
+    expect(roles.nextCursor).toBeNull();
+    // The two views are the same object, so neither can drift.
+    expect(roles.items).toBe(roles as unknown);
+  });
+
+  it("keeps items and nextCursor off the enumerable surface", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse([roleFixture]));
+    const roles = await newClient(fetchMock).roles.list("grp_1" as GroupId);
+
+    expect(Object.keys(roles)).toEqual(["0"]);
+    expect(JSON.parse(JSON.stringify(roles))).toEqual([expect.objectContaining({ id: "role_1" })]);
+  });
+
+  it("accepts a page envelope from the server too", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ items: [roleFixture], nextCursor: null }),
+    );
+    const roles = await newClient(fetchMock).roles.list("grp_1" as GroupId);
+
+    expect(Array.isArray(roles)).toBe(true);
+    expect(roles).toHaveLength(1);
+    expect(roles.items[0]?.id).toBe("role_1");
+  });
+
+  it("handles an empty list in both shapes", async () => {
+    const bare = makeFetch(async () => jsonResponse([]));
+    const paged = makeFetch(async () => jsonResponse({ items: [], nextCursor: null }));
+
+    const fromBare = await newClient(bare).roles.list("grp_1" as GroupId);
+    const fromPaged = await newClient(paged).roles.list("grp_1" as GroupId);
+
+    expect(fromBare).toEqual([]);
+    expect(fromBare.items).toEqual([]);
+    expect(fromPaged).toEqual([]);
+    expect(fromPaged.nextCursor).toBeNull();
+  });
+});

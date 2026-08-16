@@ -38,12 +38,14 @@ Fetch the subsystem with `GetGameInstance()->GetSubsystem<UJunjoSubsystem>()` in
 | Method | Callback | Notes |
 |--------|----------|-------|
 | `KeyInfo` | `FOnJunjoKeyInfo` | `GET /v1/whoami`; cheap credential and connectivity probe for server boot. |
-| `CheckPermission` | `FOnJunjoPermissionCheck` | Full decision including its source (role, override, default, none). |
+| `CheckPermission` | `FOnJunjoPermissionCheck` | Full decision including its source (role, override, default, none). `bInherit` walks the group's ancestors, nearest first, and populates `ViaGroupId` with the group that decided. |
+| `CheckPermissionBatch` | `FOnJunjoPermissionCheckBatch` | Resolves many checks in one round-trip; `Batch.Results` is positional against the requests sent. Inputs longer than the server's 100-entry cap are split automatically. An empty input completes immediately with no request. |
 | `GetGroup` | `FOnJunjoGroup` | Not-found is not an error: `bSuccess` true with `bFound` false. Optional `Viewer` (the requesting player's user id) scopes visibility: secret groups the viewer is not a member of come back not-found. |
 | `CreateGroup` | `FOnJunjoGroup` | Optional fields (visibility, passcode, metadata JSON, `CreatorUserId`, `DefaultRoleId`) ride in `FJunjoCreateGroupParams`. The server default visibility is invite-only; pass `public` explicitly for open-join groups. With the invite-only default, `CreatorUserId` (added atomically as an active member) is how the creating player gets membership. |
-| `ListGroups` | `FOnJunjoGroupPage` | Cursor-paginated; feed `NextCursor` back through `Params.Cursor`. |
+| `ListGroups` | `FOnJunjoGroupPage` | Cursor-paginated; feed `NextCursor` back through `Params.Cursor`. `Params.Kind` filters to one group kind, matched exactly. |
 | `ListMembers` | `FOnJunjoMemberPage` | Cursor-paginated, optional status filter. |
 | `JoinGroup` | `FOnJunjoCompleted` | Open join of public groups; passcode required when the group has one set. |
+| `AddMember` | `FOnJunjoCompleted` | Server-to-server add. Ignores the group's visibility so provisioning does not have to make internal groups public; bans are still enforced. Idempotent, and an optional `RoleId` is assigned in the same transaction. |
 | `LeaveGroup` | `FOnJunjoCompleted` | |
 | `KickMember` | `FOnJunjoCompleted` | A kicked user may rejoin; bans are separate. |
 | `BanUser` | `FOnJunjoCompleted` | Game-wide ban with optional expiry and audit attribution. |
@@ -65,7 +67,7 @@ if (Junjo->IsActive())
 {
     FOnJunjoPermissionCheck OnChecked;
     OnChecked.BindDynamic(this, &AMyGameMode::HandleChecked);
-    Junjo->CheckPermission(GroupId, UserId, TEXT("invite_member"), OnChecked);
+    Junjo->CheckPermission(GroupId, UserId, TEXT("invite_member"), /*bInherit=*/false, OnChecked);
 }
 ```
 

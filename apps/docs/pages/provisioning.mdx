@@ -1,0 +1,131 @@
+# Provisioning an existing app
+
+Most Junjo integrations do not start from an empty database. You already have users, and something that already means "team" or "party" or "campaign" in your own tables, and you want Junjo to become the authorization layer over it. That is a backfill, and it has a different shape from the runtime API most of these docs describe.
+
+This page is the recipe. It assumes a server-side script with an admin token and a per-game API key, run once (and safely re-run) against a live application database.
+
+## The order things have to happen in
+
+```
+game -> API key -> groups -> roles -> permission grants -> members
+```
+
+Each step depends on the one before it. Roles belong to a group, permission grants belong to a role, and a member's role assignment needs both the member and the role to exist.
+
+### 1. Create the game and mint a key
+
+The game and its API keys come from the admin surface, which uses the cross-game admin token (`jadm_...`), **not** the per-game SDK key:
+
+```
+POST /v1/admin/games                      Authorization: Bearer jadm_...
+POST /v1/admin/games/:gameId/api-keys     Authorization: Bearer jadm_...
+```
+
+The response carries the full key (`jk_<prefix>.<secret>`) exactly once. Everything after this step uses that key. See [Admin](/api-reference/admin).
+
+Self-hosters set `JUNJO_ADMIN_TOKEN`; see [Self-hosting](/self-host).
+
+### 2. Create the groups
+
+Map each row of your existing structure to a group. Give each one a `kind` that names what it is in your domain:
+
+```ts
+const instance = await junjo.groups.create({ kind: "instance", name: appName });
+const campaign = await junjo.groups.create({
+  kind: "campaign",
+  name: row.name,
+  metadata: { legacyId: row.id },
+});
+await junjo.groups.setParent(campaign.id, instance.id);
+```
+
+Two things worth doing here:
+
+**Keep your own id in `metadata`.** It makes the script re-runnable and gives you a join key back to your tables. Group `metadata` is a free-form JSON object (capped at 16 KB serialized).
+
+**Do not leave `visibility` at the default by accident, and do not set it to `"public"` to make provisioning work.** More on that below.
+
+### 3. Find-or-create has to match on `(kind, name)`
+
+A group's `name` is unique per game, **not** per kind. Two groups of different kinds can share a name, and if your users name things, they will. A campaign a player names "Skyreach" collides with the `instance` group of the same name, and a find-or-create that matches on name alone silently adopts the wrong group as the root of your authorization tree.
+
+Filter server-side on both:
+
+```ts
+const existing = await junjo.groups.list({ kind: "campaign" });
+const match = existing.items.find((g) => g.name === row.name);
+```
+
+The `kind` filter is an exact match and is backed by an index. See [`GET /v1/groups`](/api-reference/groups).
+
+### 4. Roles and grants
+
+Roles belong to a group, and permissions attach to roles through the dedicated grant route, never at creation time:
+
+```ts
+const officer = await junjo.roles.create(group.id, { name: "officer", priority: 80 });
+await junjo.roles.grantPermission(officer.id, "campaign.edit");
+```
+
+`priority` is both the display order and the can-act-on order (higher wins ties during resolution), so give yourself room between values.
+
+### 5. Add the members
+
+Use `members.add`. It is the server-to-server counterpart to `join`:
+
+```ts
+await junjo.members.add(group.id, user.externalId, { roleId: officer.id });
+```
+
+It ignores the group's `visibility`, creates the user's Junjo identity on demand, assigns the role in the same transaction, and is idempotent: re-adding an active member returns them unchanged, so a re-run of the whole script is a no-op. `201` means the call made them active, `200` means they already were, which is all a script needs to report what it actually changed.
+
+Bans are still enforced. If your game banned someone in Junjo, provisioning will not silently walk that back.
+
+## The visibility trap
+
+`visibility` is `"public" | "invite-only" | "secret"`, and it reads like pure end-user discoverability. It is also the gate on `POST /v1/groups/:id/join`, which is the route a first provisioning attempt naturally reaches for. The default is `invite-only`, so that first attempt fails:
+
+```
+403 permission_denied: this group requires an invitation to join
+```
+
+The tempting fix is to create every group as `"public"`. **Do not.** These are internal authorization groups; making them publicly discoverable and self-joinable to satisfy a provisioning script weakens a real access-control property for a reason that has nothing to do with access control.
+
+Use `members.add` instead. It exists precisely so `visibility` can keep meaning what it should:
+
+| Route | Respects `visibility` | For |
+|-------|----------------------|-----|
+| `POST /v1/groups/:id/join` | yes: public only | A player choosing to join something they found |
+| `POST /v1/groups/:id/members` | no | Your backend deciding someone belongs |
+
+Both require the same admin-class `jk_` key, so the gate on `join` was never a security boundary between them; it is a semantic one. See [Security model](/security-model).
+
+## Making the script re-runnable
+
+Provisioning scripts get run twice. Plan for it:
+
+- **Groups**: find-or-create on `(kind, name)`, or on your own id in `metadata`.
+- **Roles**: `name` is unique per group, so a create on an existing name fails; list first.
+- **Grants**: granting a permission a role already has is idempotent.
+- **Members**: `members.add` is idempotent by design.
+
+## Verifying the result
+
+Once the data is in, check the authorization matrix you expect rather than trusting the backfill. `checkBatch` makes that one request instead of dozens:
+
+```ts
+const expectations = [
+  { userId: dm, groupId: campaign.id, permission: "campaign.edit" },
+  { userId: player, groupId: campaign.id, permission: "campaign.edit" },
+];
+const results = await junjo.checkBatch(expectations, { inherit: true });
+```
+
+Pass `{ inherit: true }` if your model expresses authority on a parent group. A "global admin" that exists only as a role on the root instance group is invisible to a direct check on a child; see [Inherited checks](/sdk/permissions#inherited-checks).
+
+## See also
+
+- [Security model](/security-model) - why the `jk_` key is admin-class and your backend is the authorization layer.
+- [`POST /v1/groups/:id/members`](/api-reference/groups) - the route this page leans on.
+- [Core concepts](/core-concepts) - what groups, roles, and members mean.
+- [Self-hosting](/self-host) - running the server the script points at.

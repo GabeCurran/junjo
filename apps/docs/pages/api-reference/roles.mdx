@@ -77,7 +77,7 @@ One `role.created` entry, written in the same transaction:
 
 ## `GET /v1/groups/:id/roles`
 
-Lists every role in a group. Returns a bare array (no pagination wrapper); roles are conventionally a small list (10s, not 1000s).
+Lists every role in a group. Returns a bare array by default (no pagination wrapper); roles are conventionally a small list (10s, not 1000s).
 
 ### Path parameters
 
@@ -85,14 +85,32 @@ Lists every role in a group. Returns a bare array (no pagination wrapper); roles
 |-------|------|-------|
 | `id` | string | The group id. URL-decoded by the router. |
 
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `paged` | `"true" \| "false"` | `false` | Wrap the roles in the `{ items, nextCursor }` envelope the other list routes use. Any other value returns `400`. |
+
 ### Response
 
 `200 OK` with a `Role[]` body. Items are ordered by `priority` desc with `id` desc as a tiebreaker, so the highest-authority roles appear first. Permissions are batch-loaded for the page.
+
+### The two response shapes
+
+This route is the one list endpoint that answers with a bare array rather than a `Page`. That asymmetry is real, and it is the kind that surfaces as a runtime `TypeError` rather than a compile error when a caller reaches for a shared page helper.
+
+Both halves of the fix are non-breaking:
+
+- **On the wire**, `?paged=true` returns `{ "items": [...], "nextCursor": null }`. The bare array stays the default, because a published client deserializes this route's body as an array and flipping the default would break it against an upgraded server. `nextCursor` is always `null`: the route returns every role in the group, it does not paginate. See [Pagination](/pagination#non-paginated-endpoints).
+- **In the TypeScript SDK**, `roles.list()` already returns a value that is *both*. It is a real array, so `.filter` / `.map` / indexing keep working, and it also carries `items` and `nextCursor`. Nothing to opt into. See the [SDK roles reference](/sdk/roles).
+
+Other SDKs return their language's natural collection: a Lua array in Roblox, a `std::vector<Role>` in C++ and Unreal. Neither ecosystem shares page-shaped helpers across list calls the way JavaScript does, so there is no asymmetry there to close.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | `paged` was neither `"true"` nor `"false"`. |
 | `not_found` | 404 | No group with that id in the calling game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 

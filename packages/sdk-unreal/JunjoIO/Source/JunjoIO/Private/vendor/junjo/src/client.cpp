@@ -2,11 +2,14 @@
 
 #include "junjo/client.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <future>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "junjo/error.hpp"
 
@@ -23,6 +26,7 @@ namespace junjo {
 
 namespace {
 
+using detail::Json;
 using detail::JsonBody;
 
 [[nodiscard]] Error invalid_config(std::string message) {
@@ -116,22 +120,71 @@ Result<KeyInfo> Client::key_info(const CancellationToken& token) const {
 Result<PermissionCheckResult> Client::check(std::string_view user_id,
                                             std::string_view group_id,
                                             std::string_view permission,
-                                            const RequestOptions& options,
+                                            const CheckOptions& options,
                                             const CancellationToken& token) const {
-  const std::string path =
-      "/v1/permissions/check" + detail::build_query({{"userId", user_id},
-                                                     {"groupId", group_id},
-                                                     {"permission", permission}});
+  std::vector<std::pair<std::string_view, std::string_view>> params{
+      {"userId", user_id}, {"groupId", group_id}, {"permission", permission}};
+  if (options.inherit) {
+    params.emplace_back("inherit", "true");
+  }
+  const std::string path = "/v1/permissions/check" + detail::build_query(params);
   return detail::to_value<PermissionCheckResult>(
       executor_->execute_json("GET", path, std::nullopt, token, options.timeout),
       detail::deserialize_permission_check_result);
 }
 
 Result<bool> Client::can(std::string_view user_id, std::string_view group_id,
-                         std::string_view permission, const RequestOptions& options,
+                         std::string_view permission, const CheckOptions& options,
                          const CancellationToken& token) const {
   return check(user_id, group_id, permission, options, token)
       .map([](PermissionCheckResult&& result) { return result.allowed; });
+}
+
+Result<std::vector<PermissionCheckResult>> Client::check_batch(
+    const std::vector<PermissionCheckRequest>& checks, const CheckOptions& options,
+    const CancellationToken& token) const {
+  std::vector<PermissionCheckResult> results;
+  if (checks.empty()) {
+    return results;
+  }
+  results.reserve(checks.size());
+
+  for (std::size_t offset = 0; offset < checks.size(); offset += CHECK_BATCH_MAX_ENTRIES) {
+    const std::size_t end = std::min(offset + CHECK_BATCH_MAX_ENTRIES, checks.size());
+
+    Json body = Json::object();
+    Json entries = Json::array();
+    for (std::size_t i = offset; i < end; ++i) {
+      Json entry = Json::object();
+      entry["userId"] = checks[i].user_id;
+      entry["groupId"] = checks[i].group_id;
+      entry["permission"] = checks[i].permission;
+      entries.push_back(std::move(entry));
+    }
+    body["checks"] = std::move(entries);
+    if (options.inherit) {
+      body["inherit"] = true;
+    }
+
+    Result<std::vector<PermissionCheckResult>> slice =
+        detail::to_named_array<PermissionCheckResult>(
+            executor_->execute_json("POST", "/v1/permissions/check-batch", body, token,
+                                    options.timeout),
+            "results", detail::deserialize_permission_check_result);
+    if (!slice.has_value()) {
+      return std::move(slice).error();
+    }
+    std::vector<PermissionCheckResult> values = std::move(slice).value();
+    if (values.size() != end - offset) {
+      return Error{.code = ErrorCode::InvalidWireData,
+                   .message = "permission check-batch returned a result count that does not "
+                              "match the checks sent"};
+    }
+    for (PermissionCheckResult& value : values) {
+      results.push_back(std::move(value));
+    }
+  }
+  return results;
 }
 
 std::future<Result<KeyInfo>> Client::key_info_async(Executor& executor,
@@ -144,12 +197,19 @@ std::future<Result<KeyInfo>> Client::key_info_async(Executor& executor,
 
 std::future<Result<PermissionCheckResult>> Client::check_async(
     Executor& executor, std::string_view user_id, std::string_view group_id,
-    std::string_view permission, const RequestOptions& options,
+    std::string_view permission, const CheckOptions& options,
     const CancellationToken& token) const {
   return detail::post_task(
       executor, [client = *this, user_id = std::string(user_id),
                  group_id = std::string(group_id), permission = std::string(permission), options,
                  token] { return client.check(user_id, group_id, permission, options, token); });
+}
+
+std::future<Result<std::vector<PermissionCheckResult>>> Client::check_batch_async(
+    Executor& executor, std::vector<PermissionCheckRequest> checks, const CheckOptions& options,
+    const CancellationToken& token) const {
+  return detail::post_task(executor, [client = *this, checks = std::move(checks), options,
+                                      token] { return client.check_batch(checks, options, token); });
 }
 
 GroupsApi Client::groups() const noexcept { return GroupsApi(executor_); }

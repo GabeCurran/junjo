@@ -26,6 +26,19 @@ using detail::Json;
 MembersApi::MembersApi(std::shared_ptr<const detail::RequestExecutor> executor) noexcept
     : executor_(std::move(executor)) {}
 
+Result<Member> MembersApi::add(std::string_view group_id, std::string_view user_id,
+                               const AddMemberOptions& options,
+                               const CancellationToken& token) const {
+  Json body = Json::object();
+  body["userId"] = std::string(user_id);
+  if (options.role_id.has_value()) body["roleId"] = *options.role_id;
+  if (options.actor_user_id.has_value()) body["actorUserId"] = *options.actor_user_id;
+  const std::string path = "/v1/groups/" + detail::percent_encode(group_id) + "/members";
+  return detail::to_value<Member>(
+      executor_->execute_json("POST", path, body, token, options.timeout),
+      detail::deserialize_member);
+}
+
 Result<std::optional<Member>> MembersApi::get(std::string_view group_id,
                                               std::string_view user_id,
                                               const RequestOptions& options,

@@ -2,6 +2,7 @@ import type {
   AuthAdapter,
   GameId,
   GroupId,
+  PermissionCheckRequest,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,
@@ -16,6 +17,7 @@ import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
+import { PermissionCache, type PermissionCacheOptions } from "./permissionCache.js";
 import { RolesApi } from "./roles.js";
 import { WebhooksApi } from "./webhooks.js";
 
@@ -68,6 +70,15 @@ export interface JunjoConfig {
    * event stream stays open by design.
    */
   timeoutMs?: number;
+  /**
+   * Client-side cache over `can` / `check` / `checkBatch`, on by
+   * default with a 5 second TTL. Realtime apps re-resolve the same
+   * permissions for every subscriber whenever clients reconnect (a
+   * redeploy, a laptop waking, phones coming back from background),
+   * and that burst is what exhausts the rate limit. Pass
+   * `{ enabled: false }` to resolve every check against the server.
+   */
+  permissionCache?: PermissionCacheOptions;
 }
 
 const DEFAULT_BASE_URL = "https://api.junjo.io";
@@ -130,7 +141,33 @@ interface WirePermissionCheckResult {
   allowed: boolean;
   source: PermissionSource;
   viaRoleId?: string;
+  viaGroupId?: string;
 }
+
+function deserializeCheckResult(wire: WirePermissionCheckResult): PermissionCheckResult {
+  const result: PermissionCheckResult = {
+    allowed: wire.allowed,
+    source: wire.source,
+  };
+  if (wire.viaRoleId !== undefined) result.viaRoleId = wire.viaRoleId as RoleId;
+  if (wire.viaGroupId !== undefined) result.viaGroupId = wire.viaGroupId as GroupId;
+  return result;
+}
+
+/** Shared options for the permission-check methods. */
+export interface CheckOptions {
+  /**
+   * Resolve against the group's parents too, nearest first, stopping at
+   * the first group that decides. Off by default: a check answers for
+   * the queried group alone.
+   */
+  inherit?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/** Maximum entries the server accepts in one {@link Junjo.checkBatch}. */
+export const CHECK_BATCH_MAX_ENTRIES = 100;
 
 /**
  * Top-level Junjo API client. Construct one per game with a per-game
@@ -149,6 +186,7 @@ export class Junjo {
   readonly bans: BansApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
+  private readonly permissionCache: PermissionCache;
 
   constructor(config: JunjoConfig) {
     let apiKey: string | undefined;
@@ -196,6 +234,7 @@ export class Junjo {
     this.friends = new FriendsApi(this.http);
     this.bans = new BansApi(this.http);
     this.authAdapter = config.authAdapter;
+    this.permissionCache = new PermissionCache(config.permissionCache);
   }
 
   /**
@@ -206,7 +245,7 @@ export class Junjo {
     userId: UserId,
     groupId: GroupId,
     permission: PermissionKey,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: CheckOptions,
   ): Promise<boolean> {
     const result = await this.check(userId, groupId, permission, opts);
     return result.allowed;
@@ -215,29 +254,131 @@ export class Junjo {
   /**
    * Checks whether a user holds a permission in a group
    * (GET /v1/permissions/check). Returns the full result including the
-   * source of the decision and, when role-derived, the role id.
+   * source of the decision, the granting role when role-derived, and
+   * with `inherit`, the group the decision came from.
+   *
+   * Answers are cached client-side for a few seconds unless the cache
+   * is disabled; see `permissionCache` on {@link JunjoConfig}.
    */
   async check(
     userId: UserId,
     groupId: GroupId,
     permission: PermissionKey,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: CheckOptions,
   ): Promise<PermissionCheckResult> {
-    const params = new URLSearchParams({
-      userId,
-      groupId,
-      permission,
-    });
-    const wire = await this.http.get<WirePermissionCheckResult>(
-      `/v1/permissions/check?${params.toString()}`,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
-    );
-    const result: PermissionCheckResult = {
-      allowed: wire.allowed,
-      source: wire.source,
-    };
-    if (wire.viaRoleId !== undefined) result.viaRoleId = wire.viaRoleId as RoleId;
+    const inherit = opts?.inherit ?? false;
+    const key = this.permissionCache.key(userId, groupId, permission, inherit);
+    const cached = this.permissionCache.get(key);
+    if (cached) return cached;
+
+    const params = new URLSearchParams({ userId, groupId, permission });
+    if (inherit) params.set("inherit", "true");
+
+    let wire: WirePermissionCheckResult;
+    try {
+      wire = await this.http.get<WirePermissionCheckResult>(
+        `/v1/permissions/check?${params.toString()}`,
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      );
+    } catch (err) {
+      const stale = this.staleOnRateLimit(err, key);
+      if (stale) return stale;
+      throw err;
+    }
+
+    const result = deserializeCheckResult(wire);
+    this.permissionCache.set(key, result);
     return result;
+  }
+
+  /**
+   * Resolves many checks in one round-trip
+   * (POST /v1/permissions/check-batch). Results come back positionally:
+   * `results[i]` answers `checks[i]`.
+   *
+   * Cached entries are answered locally and only the remainder is sent,
+   * so a partially warm batch still costs at most one request. An
+   * unknown group id fails the whole call with `not_found`, matching
+   * the single check. At most {@link CHECK_BATCH_MAX_ENTRIES} entries
+   * per call; longer inputs are split across sequential requests.
+   */
+  async checkBatch(
+    checks: PermissionCheckRequest[],
+    opts?: CheckOptions,
+  ): Promise<PermissionCheckResult[]> {
+    if (checks.length === 0) return [];
+    const inherit = opts?.inherit ?? false;
+
+    const results = new Array<PermissionCheckResult | undefined>(checks.length);
+    const keys = checks.map((c) =>
+      this.permissionCache.key(c.userId, c.groupId, c.permission, inherit),
+    );
+    const pending: number[] = [];
+    for (let i = 0; i < checks.length; i++) {
+      const cached = this.permissionCache.get(keys[i] as string);
+      if (cached) {
+        results[i] = cached;
+      } else {
+        pending.push(i);
+      }
+    }
+
+    for (let offset = 0; offset < pending.length; offset += CHECK_BATCH_MAX_ENTRIES) {
+      const slice = pending.slice(offset, offset + CHECK_BATCH_MAX_ENTRIES);
+      const body: { checks: PermissionCheckRequest[]; inherit?: boolean } = {
+        checks: slice.map((i) => checks[i] as PermissionCheckRequest),
+      };
+      if (inherit) body.inherit = true;
+
+      let wire: { results: WirePermissionCheckResult[] };
+      try {
+        wire = await this.http.post<{ results: WirePermissionCheckResult[] }>(
+          "/v1/permissions/check-batch",
+          body,
+          { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+        );
+      } catch (err) {
+        // Serve stale only when every entry in the slice has one; a
+        // partial answer would silently mix fresh and stale verdicts
+        // in a way the caller cannot see.
+        const stale = slice.map((i) => this.staleOnRateLimit(err, keys[i] as string));
+        if (stale.every((s): s is PermissionCheckResult => s !== null)) {
+          slice.forEach((i, n) => {
+            results[i] = stale[n];
+          });
+          continue;
+        }
+        throw err;
+      }
+
+      if (wire.results.length !== slice.length) {
+        throw new JunjoError(
+          `permission check-batch returned ${wire.results.length} results for ${slice.length} checks`,
+          "invalid_wire_data",
+        );
+      }
+      slice.forEach((i, n) => {
+        const result = deserializeCheckResult(wire.results[n] as WirePermissionCheckResult);
+        this.permissionCache.set(keys[i] as string, result);
+        results[i] = result;
+      });
+    }
+
+    return results as PermissionCheckResult[];
+  }
+
+  /** Drops every locally cached permission answer. */
+  clearPermissionCache(): void {
+    this.permissionCache.clear();
+  }
+
+  // A 429 on a permission check surfaces to the caller as a thrown
+  // error, and a caller that treats a throw as "denied" turns a
+  // throttle into a phantom authorization failure. Riding it out on a
+  // recently-expired answer keeps behavior stable through the burst.
+  private staleOnRateLimit(err: unknown, key: string): PermissionCheckResult | null {
+    if (!(err instanceof JunjoError) || err.code !== "rate_limit_exceeded") return null;
+    return this.permissionCache.getStale(key);
   }
 
   /**
@@ -324,7 +465,15 @@ export { MembersApi } from "./members.js";
 export type { ListMembersOptions } from "./members.js";
 export { UNKNOWN_EVENT_TYPE } from "./events.js";
 export { paginate } from "./pagination.js";
+export {
+  PermissionCache,
+  DEFAULT_PERMISSION_CACHE_TTL_MS,
+  DEFAULT_PERMISSION_CACHE_MAX_ENTRIES,
+  DEFAULT_STALE_WHILE_RATE_LIMITED_MS,
+} from "./permissionCache.js";
+export type { PermissionCacheOptions } from "./permissionCache.js";
 export { RolesApi } from "./roles.js";
+export type { RoleList } from "./roles.js";
 export {
   WebhookEndpointsApi,
   WebhooksApi,
@@ -358,6 +507,8 @@ export type {
   JunjoEventType,
   ListAuditOptions,
   Member,
+  PermissionCheckBatchResult,
+  PermissionCheckRequest,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,

@@ -60,6 +60,8 @@ Permission checks (`junjo.can` / `junjo.check`) resolve in a fixed order:
 2. **Role**: otherwise, if any of the member's roles grants the key, allowed via the highest-priority such role, `source: "role"`.
 3. **Default**: otherwise denied, `source: "default"`.
 
+By default the resolver looks **only at the queried group**: a grant on a parent group does not apply to its children. Pass `inherit` to walk the parent chain instead, nearest group first; see [Inherited checks](/sdk/permissions#inherited-checks).
+
 Non-members, and members whose status is not `active`, resolve to denied with `source: "none"`. The full mechanics, including the resolution diagram, are on the [permissions reference](/api-reference/permissions).
 
 ## Invitations

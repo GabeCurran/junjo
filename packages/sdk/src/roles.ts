@@ -1,6 +1,7 @@
 import type {
   CreateRoleInput,
   GroupId,
+  Page,
   PermissionKey,
   Role,
   RoleId,
@@ -51,6 +52,22 @@ function buildCreateBody(input: CreateRoleInput): {
   if (input.color !== undefined) body.color = input.color;
   if (input.isDefault !== undefined) body.isDefault = input.isDefault;
   return body;
+}
+
+/**
+ * What {@link RolesApi.list} returns: an array of roles that also
+ * carries the `items` / `nextCursor` shape the other list calls use.
+ */
+export type RoleList = Role[] & Page<Role>;
+
+// `items` points back at the array itself rather than a copy, so the
+// two views cannot drift. Both properties are non-enumerable so the
+// value still spreads, serializes, and compares as a plain array.
+function asRoleList(roles: Role[]): RoleList {
+  return Object.defineProperties(roles, {
+    items: { value: roles, enumerable: false },
+    nextCursor: { value: null, enumerable: false },
+  }) as RoleList;
 }
 
 /**
@@ -106,15 +123,28 @@ export class RolesApi {
     });
   }
 
+  /**
+   * Lists every role in a group, highest priority first.
+   *
+   * The result is both an array and a {@link Page}: it indexes,
+   * iterates, and carries `filter` / `map` like the array this returned
+   * before, and it also exposes `items` and `nextCursor` so the same
+   * page-shaped helper works across `groups.list`, `members.list`, and
+   * this call. `nextCursor` is always null; a group's roles come back
+   * in one response.
+   */
   async list(
     groupId: GroupId,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Role[]> {
-    const wire = await this.http.get<WireRole[]>(
+  ): Promise<RoleList> {
+    const wire = await this.http.get<WireRole[] | { items: WireRole[] }>(
       `/v1/groups/${encodeURIComponent(groupId)}/roles`,
       { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
-    return wire.map(deserializeRole);
+    // Tolerates both wire shapes: the bare array this route has always
+    // returned, and the page envelope it returns under `?paged=true`.
+    const rows = Array.isArray(wire) ? wire : wire.items;
+    return asRoleList(rows.map(deserializeRole));
   }
 
   async grantPermission(

@@ -152,6 +152,18 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
 | `cursor` | string | none | The `nextCursor` from a prior response. Must point at a group in the calling game; soft-deleted is fine, the cursor row is used purely as a sort position. |
 | `gameId` | string | the calling game | Optional. If provided, must equal the calling key's game id; mismatches return `400`. |
 | `viewer` | string | none | Optional external user id. When supplied, groups with `visibility = "secret"` are filtered out unless `viewer` is an active member. Omitting `viewer` is treated as a server-to-server / admin call and returns every non-deleted group regardless of visibility. |
+| `kind` | string | none | Optional exact-match filter on the group's `kind`. 1-64 characters; longer or empty values return `400`. A kind no group uses is a valid query that returns an empty page, not an error. Matching is exact: neither prefix nor case-insensitive. Composes with `cursor`, `limit`, and `viewer`. |
+
+### Filtering by kind
+
+`name` is unique per game, **not** per kind, so two groups of different kinds can share a name. Finding a group by name alone can therefore pick up the wrong one: a player-named `campaign` called "Skyreach" collides with an `instance` group of the same name. Filter on `kind` server-side, and match on the `(kind, name)` pair when you need find-or-create semantics.
+
+```
+GET /v1/groups?kind=instance
+GET /v1/groups?kind=campaign&viewer=user_alice&limit=25
+```
+
+The filter is backed by the `(gameId, kind)` index, so it stays cheap as the group count grows.
 
 ### Response
 
@@ -185,7 +197,7 @@ Lists groups for the calling game, newest-first. Cursor-based pagination via the
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `limit` invalid, `cursor` not found in this game, or `gameId` does not match the calling game. |
+| `bad_request` | 400 | `limit` invalid, `cursor` not found in this game, `gameId` does not match the calling game, or `kind` is empty or over 64 characters. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `PATCH /v1/groups/:id`
@@ -472,6 +484,66 @@ By default the response excludes invitations that have already been used (`usedA
 |------|--------|------|
 | `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members`
+
+Adds a user to a group directly. This is the server-to-server counterpart to `join`: it **ignores `visibility`**, so an `invite-only` or `secret` group can be populated without making it publicly joinable and without running the two-call invitation handshake.
+
+Use it for provisioning: backfilling groups from an existing application database, seeding internal authorization groups, or any flow where your backend has already decided the user belongs.
+
+The `jk_` key is already admin-class (see [Security model](/security-model)), so a caller holding it could create an invitation and accept it on the user's behalf anyway. Gating this path on discoverability would add steps without adding a boundary, so it does not. Bans are a different matter and **are** still enforced: a ban is state your game set deliberately, and silently overriding it during a bulk provision would be wrong.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. Must belong to the calling game and not be soft-deleted. |
+
+### Body
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | The dev's external user id. Its `JunjoUser` and `ExternalIdentity` are created on demand, so the user does not have to exist in Junjo yet. |
+| `roleId` | no | Assigned in the same transaction as the membership. Must belong to this group. Saves the join-then-assign two-step and cannot leave a member role-less if a second call fails. |
+| `actorUserId` | no | External user id of the acting moderator, recorded on the audit entries. |
+
+Unknown fields are rejected with `400`.
+
+```json
+{ "userId": "user_alice", "roleId": "role_officer" }
+```
+
+### Response
+
+The `Member` row, with a status code that reports whether the call changed anything:
+
+| Status | When |
+|--------|------|
+| `201 Created` | The call made the user an active member: a new row, or a reactivation from `left` / `kicked` (which keeps the original `joinedAt`). |
+| `200 OK` | The user was already an active member. Nothing changed, except that a supplied `roleId` they did not hold is still assigned. |
+
+That split makes the route idempotent while still letting a provisioning script report how many members it actually added on a re-run.
+
+Concurrent identical adds resolve themselves: the loser's transaction rolls back and retries, and the retry takes the already-active path. The rollback drops its staged events and audit rows with it, so a race cannot double-emit `member.joined`.
+
+### Events and audit
+
+Fired only on an actual transition, so a re-run is silent:
+
+- becoming active writes a `member.joined` audit entry with `via: "admin-add"` and emits `member.joined`;
+- a newly assigned `roleId` writes a `role.assigned` audit entry and emits `role.changed`.
+
+The `member.joined` event carries the roles the member held **before** this call, and any new role is reported separately by `role.changed`, so the event stream reads exactly like the join-then-assign sequence this route replaces.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `userId` missing or empty, or an unknown field was sent. |
+| `role_group_mismatch` | 400 | `roleId` exists but belongs to another group. No member is created. |
+| `not_found` | 404 | The group, or a supplied `roleId`, does not exist in the calling game. No member is created. |
+| `banned` | 403 | The user is banned game-wide or from this group. An expired timed ban does not block the add. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/join`

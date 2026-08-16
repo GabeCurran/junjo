@@ -67,7 +67,7 @@ role.color;
 
 ## `list(groupId)`
 
-Returns every role in the group as a bare `Role[]`, ordered by `priority` desc with `id` desc as a tiebreaker.
+Returns every role in the group, ordered by `priority` desc with `id` desc as a tiebreaker.
 
 ```ts
 const roles = await junjo.roles.list("grp_xyz" as GroupId);
@@ -77,6 +77,24 @@ for (const role of roles) {
 ```
 
 Roles are a small list per group (10s, not 1000s); pagination is not provided.
+
+### The result is both an array and a page
+
+Every other list call in the SDK returns `{ items, nextCursor }`. This one has always returned a bare array, which defeats a shared page helper and fails at runtime (`roles.filter is not a function`) rather than at compile time.
+
+The returned value is now `Role[] & Page<Role>`: a real array that also carries `items` and `nextCursor`. Both spellings work, so existing code is unaffected and page-shaped helpers now apply:
+
+```ts
+const roles = await junjo.roles.list(groupId);
+
+roles.filter((r) => r.priority > 50);  // array, as before
+roles.items;                            // the same array
+roles.nextCursor;                       // always null: no pagination
+```
+
+`items` points at the array itself rather than a copy, so the two views cannot drift, and both properties are non-enumerable, so the value still spreads, `JSON.stringify`s, and compares as a plain array.
+
+On the wire the route still answers with a bare array by default; the SDK accepts either shape, so it works against any server version. See [`GET /v1/groups/:id/roles`](/api-reference/roles#the-two-response-shapes).
 
 ### Errors
 

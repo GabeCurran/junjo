@@ -81,7 +81,11 @@ end
 
 -- `opts.viewer` filters out secret groups the viewer isn't an active
 -- member of (same semantics as `get`).
-function Groups:list(opts: { limit: number?, cursor: string?, gameId: string?, viewer: string? }?): Page<Group>
+-- `kind` filters to one group kind, matched exactly. Filtering
+-- server-side matters because `name` is unique per game, not per
+-- kind, so matching on name alone can confuse two groups of
+-- different kinds.
+function Groups:list(opts: { limit: number?, cursor: string?, gameId: string?, viewer: string?, kind: string? }?): Page<Group>
 	local query = {}
 	if opts and opts.limit ~= nil then
 		table.insert(query, "limit=" .. self._http:encode(opts.limit))
@@ -95,6 +99,9 @@ function Groups:list(opts: { limit: number?, cursor: string?, gameId: string?, v
 	if opts and opts.viewer ~= nil then
 		table.insert(query, "viewer=" .. self._http:encode(opts.viewer))
 	end
+	if opts and opts.kind ~= nil then
+		table.insert(query, "kind=" .. self._http:encode(opts.kind))
+	end
 	local path = "/v1/groups"
 	if #query > 0 then
 		path = path .. "?" .. table.concat(query, "&")
@@ -107,7 +114,7 @@ end
 -- `list(...)` with explicit pagination for UI surfaces. `opts.limit`
 -- is the per-page size hint (server-capped); `opts.cursor` is owned by
 -- the iterator and ignored if supplied.
-function Groups:listAll(opts: { limit: number?, gameId: string?, viewer: string? }?): () -> Group?
+function Groups:listAll(opts: { limit: number?, gameId: string?, viewer: string?, kind: string? }?): () -> Group?
 	return pageAll(function(cursor)
 		return self:list(withCursor(opts, cursor))
 	end)

@@ -326,6 +326,65 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/groups/:id/roles", () => {
     const res = await app.request(`/v1/groups/${group.id}/roles`, { method: "GET" });
     expect(res.status).toBe(401);
   });
+
+  describe("paged=true", () => {
+    function listRolesPaged(groupId: string, value = "true", header = authHeader) {
+      return app.request(`/v1/groups/${groupId}/roles?paged=${value}`, {
+        method: "GET",
+        headers: { authorization: header },
+      });
+    }
+
+    it("wraps the roles in a page envelope", async () => {
+      const group = await seedGroup();
+      await prisma.role.create({ data: { groupId: group.id, name: "Officer", priority: 80 } });
+
+      const res = await listRolesPaged(group.id);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        items: Array<{ name: string }>;
+        nextCursor: string | null;
+      };
+      expect(body.items.map((r) => r.name)).toEqual(["Officer"]);
+      // The route returns every role; it does not paginate.
+      expect(body.nextCursor).toBeNull();
+    });
+
+    it("returns an empty page when the group has no roles", async () => {
+      const group = await seedGroup();
+      const res = await listRolesPaged(group.id);
+      expect(await res.json()).toEqual({ items: [], nextCursor: null });
+    });
+
+    it("carries the same items in the same order as the bare array", async () => {
+      const group = await seedGroup();
+      await prisma.role.create({ data: { groupId: group.id, name: "Officer", priority: 80 } });
+      await prisma.role.create({ data: { groupId: group.id, name: "Member", priority: 10 } });
+
+      const bare = (await (await listRoles(group.id)).json()) as unknown[];
+      const paged = (await (await listRolesPaged(group.id)).json()) as { items: unknown[] };
+      expect(paged.items).toEqual(bare);
+    });
+
+    it("keeps the bare array as the default so published clients are unaffected", async () => {
+      const group = await seedGroup();
+      await prisma.role.create({ data: { groupId: group.id, name: "Officer", priority: 80 } });
+
+      expect(Array.isArray(await (await listRoles(group.id)).json())).toBe(true);
+      expect(Array.isArray(await (await listRolesPaged(group.id, "false")).json())).toBe(true);
+    });
+
+    it("rejects a non-boolean paged value", async () => {
+      const group = await seedGroup();
+      const res = await listRolesPaged(group.id, "yes");
+      expect(res.status).toBe(400);
+    });
+
+    it("still 404s an unknown group", async () => {
+      const res = await listRolesPaged("grp_missing");
+      expect(res.status).toBe(404);
+    });
+  });
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /v1/roles/:id", () => {

@@ -92,7 +92,7 @@ class JUNJOIO_API UJunjoCheckPermissionAction final : public UJunjoAsyncAction
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Junjo|Async", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"))
-	static UJunjoCheckPermissionAction* CheckPermissionAsync(UObject* WorldContextObject, const FString& GroupId, const FString& UserId, const FString& Permission);
+	static UJunjoCheckPermissionAction* CheckPermissionAsync(UObject* WorldContextObject, const FString& GroupId, const FString& UserId, const FString& Permission, bool bInherit);
 
 	UPROPERTY(BlueprintAssignable)
 	FOnJunjoPermissionCheckPin OnSuccess;
@@ -109,6 +109,7 @@ private:
 	FString RequestGroupId;
 	FString RequestUserId;
 	FString RequestPermission;
+	bool bRequestInherit = false;
 };
 
 // Get Group Async: fetch a group by id. Three exec pins: OnSuccess

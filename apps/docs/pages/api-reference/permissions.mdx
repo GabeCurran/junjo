@@ -85,6 +85,7 @@ The diagram above is committed at `tools/diagrams/source/permission-resolution.m
 | `allowed` | boolean | True if the user has the permission, false otherwise. |
 | `source` | `"role" \| "override" \| "default" \| "none"` | See [Source taxonomy](#source-taxonomy) below. |
 | `viaRoleId` | string | Present only when `source === "role"`; the highest-priority role that granted it. |
+| `viaGroupId` | string | Present only on an [inherited check](#inheritance) that reached a decision. It names the group the decision was read from, and equals the queried group when the decision was direct. Absent entirely when `inherit` was not requested, so the non-inherited wire shape is unchanged. |
 
 ### Source taxonomy
 
@@ -108,6 +109,7 @@ Returns the canonical `PermissionCheckResult`. Read-through cache.
 | `userId` | yes | The dev's external user id. |
 | `groupId` | yes | The group to check against. Must belong to the calling game and not be soft-deleted. |
 | `permission` | yes | The permission key. 1-128 characters. |
+| `inherit` | no | `"true"` or `"false"` (any other value is a `400`). `"true"` walks the group's ancestors; see [Inheritance](#inheritance). Defaults to false. |
 
 ### Response
 
@@ -136,9 +138,83 @@ Returns the canonical `PermissionCheckResult`. Read-through cache.
 | `not_found` | 404 | Group does not exist in the calling game (cross-game and soft-deleted both collapse here). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
+### Inheritance
+
+Groups form a parent/child hierarchy (`setParent` / `listChildren`). By default a check ignores it entirely: resolution runs against direct membership in the queried group and nothing else. Pass `inherit=true` to opt into a server-side walk.
+
+The walk visits the queried group first, then its ancestors, nearest first, and **stops at the first group that decides**:
+
+- an `override` at that level, in either direction, decides;
+- a `role` granting the key at that level decides;
+- `none` (not an active member there) and `default` (member, no grant) are inconclusive, and the walk continues to the parent.
+
+Nearest wins, so a child's explicit deny is **not** undone by a grant further up. If nothing on the chain decides, the queried group's own result is returned unchanged, which preserves the `none` versus `default` distinction that tells "not a member" apart from "member without the grant".
+
+Two boundaries the walk will not cross: a **soft-deleted** ancestor terminates the chain, and an ancestor belonging to a **different game** terminates it too. Depth is bounded by `MAX_PARENT_DEPTH` (100); writes are cycle-checked, so that bound only matters against corrupted state.
+
+The whole chain resolves in one recursive CTE plus one resolution per level, server-side. That replaces the two HTTP round-trips per level (a `check` and a `groups.get`) that a client-side walker costs.
+
+```json
+{
+  "allowed": true,
+  "source": "role",
+  "viaRoleId": "role_admin",
+  "viaGroupId": "grp_instance"
+}
+```
+
+Inherited answers are cached under a separate key from direct ones, and are filed against **every** group on the walked chain, so a grant change at any ancestor drops them.
+
+## `POST /v1/permissions/check-batch`
+
+Resolves many checks in one round-trip. Answers are positional: `results[i]` corresponds to `checks[i]`.
+
+### Body
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `checks` | yes | Array of 1 to 100 `{ userId, groupId, permission }` objects. Unknown fields on an entry are a `400`. |
+| `inherit` | no | Boolean. Applies to every entry; there is no per-entry flag. |
+
+```json
+{
+  "checks": [
+    { "userId": "user_alice", "groupId": "grp_shop_a", "permission": "shop.view" },
+    { "userId": "user_alice", "groupId": "grp_shop_b", "permission": "shop.view" }
+  ]
+}
+```
+
+### Response
+
+`200 OK` with `{ "results": [...] }`, each element the same `PermissionCheckResult` the single-check route returns:
+
+```json
+{
+  "results": [
+    { "allowed": true, "source": "role", "viaRoleId": "role_shopper" },
+    { "allowed": false, "source": "none" }
+  ]
+}
+```
+
+### Errors
+
+| code | status | when |
+|------|--------|------|
+| `bad_request` | 400 | `checks` missing, empty, over 100 entries, or an entry is malformed. |
+| `not_found` | 404 | Any `groupId` is unknown, soft-deleted, or belongs to another game. The message names the offending entry's index (`group for checks[3] not found`). |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+An unknown group fails the **whole** request rather than resolving that entry as denied, so a typo surfaces instead of silently reading as a denial.
+
+### Cost
+
+A batch is one rate-limited request regardless of how many entries it carries, which is the point: the 100-entry cap is what bounds the server-side work one request can buy. Entries are resolved sequentially, sharing the same identity lookups and the same cache the single-check route uses, so a repeated triple inside a batch costs a map lookup rather than another resolution.
+
 ### Caching
 
-The route caches each `(gameId, groupId, userId, permission)` answer for 60 seconds (the `PERMISSION_CACHE_TTL_MS` constant in `packages/server/src/permissionCache.ts`). The cache is per-process, in-memory, and unbounded in size; it is not a Redis dependency.
+The route caches each `(gameId, groupId, userId, permission)` answer for 60 seconds (the `PERMISSION_CACHE_TTL_MS` constant in `packages/server/src/permissionCache.ts`). The cache is per-process, in-memory, and unbounded in size; it is not a Redis dependency. `check-batch` shares the same cache, and inherited answers occupy a separate keyspace from direct ones.
 
 The following mutations invalidate the cache for the affected group on commit:
 
