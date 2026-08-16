@@ -1,6 +1,6 @@
 {
   "name": "@junjo.io/react",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "React hooks for Junjo. Built on @junjo.io/sdk.",
   "license": "MIT",
   "type": "module",
@@ -30,8 +30,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@junjo.io/sdk": "0.2.0",
-    "@junjo.io/shared": "0.2.0"
+    "@junjo.io/sdk": "0.3.0",
+    "@junjo.io/shared": "0.3.0"
   },
   "peerDependencies": {
     "react": "^18 || ^19"

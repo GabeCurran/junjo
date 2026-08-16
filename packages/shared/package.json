@@ -1,6 +1,6 @@
 {
   "name": "@junjo.io/shared",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared TypeScript contracts for Junjo: types plus a few constant code lists.",
   "license": "MIT",
   "type": "module",
