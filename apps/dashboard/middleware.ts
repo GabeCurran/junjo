@@ -2,19 +2,37 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 export const config = {
-  // /healthz is excluded so the orchestrator's healthcheck can reach it
-  // without credentials; /license and /privacy are public legal pages; and
-  // the exact root path "/" is excluded because it serves the public
-  // marketing landing page (the capture group uses ".+" instead of ".*",
-  // so a request for "/" - an empty capture - never matches). Every admin
-  // surface (/overview, /games, /audit, ...) still goes through the
-  // basic-auth gate below.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz|license|privacy).+)"],
+  // Everything except static build assets runs through this middleware. The
+  // public pages are allowlisted by exact path in `isPublicRequest` below
+  // rather than excluded here: a matcher exclusion is a prefix match (it also
+  // skipped auth for "/healthzX", "/license-anything", ...), and an excluded
+  // path skips the gate for every method, including Server Action POSTs.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
 
 const REALM = "Junjo Dashboard";
 
+// /healthz lets the orchestrator's healthcheck through without credentials;
+// /license and /privacy are public legal pages; "/" is the public marketing
+// landing page. Every admin surface (/overview, /games, /audit, ...) still
+// goes through the basic-auth gate.
+const PUBLIC_PATHS = new Set(["/", "/healthz", "/license", "/privacy"]);
+
+// Only plain page reads are public. A Server Action is a POST carrying a
+// `Next-Action` header, and Next runs it on whatever route it is posted to,
+// so a POST to "/" must not be able to invoke admin actions (createApiKey,
+// kickMember, ...) without credentials.
+function isPublicRequest(req: NextRequest): boolean {
+  if (!PUBLIC_PATHS.has(req.nextUrl.pathname)) return false;
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  return !req.headers.has("next-action");
+}
+
 export function middleware(req: NextRequest): NextResponse {
+  if (isPublicRequest(req)) {
+    return NextResponse.next();
+  }
+
   const expectedUser = process.env.DASHBOARD_ADMIN_USER;
   const expectedPassword = process.env.DASHBOARD_ADMIN_PASSWORD;
 
