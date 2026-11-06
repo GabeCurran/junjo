@@ -9,7 +9,7 @@ import {
   type CreateRoleResult,
   createRoleAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_ROLE_NAME_MAX_LENGTH } from "../../lib/admin-shared";
+import { ADMIN_ROLE_AFFIX_MAX_LENGTH, ADMIN_ROLE_NAME_MAX_LENGTH } from "../../lib/admin-shared";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -46,6 +46,8 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
   const priorityId = useId();
   const colorId = useId();
   const isDefaultId = useId();
+  const prefixId = useId();
+  const suffixId = useId();
 
   useEffect(() => {
     if (state.ok && state.role) {
@@ -109,6 +111,35 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
             />
             <p className="text-xs text-muted-foreground">
               A six-digit hex color. The role shows in it everywhere. Leave blank for none.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor={prefixId}>Prefix</Label>
+              <Input
+                id={prefixId}
+                name="prefix"
+                defaultValue={""}
+                maxLength={ADMIN_ROLE_AFFIX_MAX_LENGTH}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={suffixId}>Suffix</Label>
+              <Input
+                id={suffixId}
+                name="suffix"
+                defaultValue={""}
+                maxLength={ADMIN_ROLE_AFFIX_MAX_LENGTH}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+            </div>
+            <p className="col-span-2 text-xs text-muted-foreground">
+              Shown around member names by your game. Stored as written, formatting codes included.
             </p>
           </div>
           <div className="flex items-center gap-2">

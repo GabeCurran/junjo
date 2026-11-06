@@ -6,6 +6,7 @@ import {
   formatPermissionContext,
   isContextual,
   permissionEntryId,
+  roleAffix,
   roleEntries,
 } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
@@ -63,6 +64,17 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
                       <div className="flex flex-col items-start gap-1">
                         <RoleChip name={role.name} color={role.color} />
                         <span className="font-mono text-xs text-muted-foreground">{role.id}</span>
+                        {roleAffix(role, "prefix") || roleAffix(role, "suffix") ? (
+                          <span className="text-xs text-muted-foreground">
+                            <span className="font-mono text-foreground">
+                              {roleAffix(role, "prefix")}
+                            </span>
+                            name
+                            <span className="font-mono text-foreground">
+                              {roleAffix(role, "suffix")}
+                            </span>
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="py-2.5 pr-4 text-right align-top tabular-nums">
