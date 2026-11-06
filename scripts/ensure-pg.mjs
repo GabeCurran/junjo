@@ -49,7 +49,7 @@ function run(cmd, args, opts = {}) {
 function ensureDocker() {
   const r = run("docker", ["version", "--format", "{{.Server.Version}}"]);
   if (r.error || r.status !== 0) {
-    fail("docker is not available; start Docker Desktop and try again");
+    fail("Docker Engine is unavailable; check docker info and start your container runtime");
   }
 }
 
