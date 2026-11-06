@@ -1,17 +1,33 @@
 # bans
 
-Methods on `junjo.bans`. Game-level bans apply across every group in
+Methods on `junjo.bans`. Game bans apply across every group in
 the game: a banned user cannot accept invitations or public-join any
 group in the game while the ban is active.
 
 For per-group bans (scoped to one group, leaves the user reachable
 elsewhere in the game), see [`junjo.groups.ban`](/sdk/groups#bangroupid-userid-opts).
-The two compose: enforcement on the server checks game-level first,
+The two compose: enforcement on the server checks game bans first,
 then per-group.
 
-## `add(input)`
+## Moderation version
 
-Bans a user across every group in the calling game.
+Each person has a moderation version per game: 0 until they are first
+moderated, then one higher after every game ban create, change or
+lift, and after every [sanction](/sdk/sanctions) create, replace or lift. It is `version` on every `Ban`, on
+[`moderation(userId)`](#moderationuserid), and `moderationVersion` on
+`game.user.banned` / `game.user.unbanned` events. Per-group bans change
+the [member version](/sdk/members) instead.
+
+`add` and `remove` take `ifMatch` (the version you last saw) and
+`idempotencyKey` in their options. A stale version rejects with
+`precondition_failed` and changes nothing, which keeps a queued unban,
+replayed after staff banned the player again, from lifting the new ban.
+See [Safe writes](/sdk#safe-writes).
+
+## `add(input, opts?)`
+
+Bans a user across every group in the calling game, or changes their
+active ban.
 
 ```ts
 const ban = await junjo.bans.add({
@@ -32,6 +48,32 @@ ban.expiresAt;  // Date | null
 | `reason` | string \| null | Optional. Lands on audit, the dashboard, and the ban-history timeline. |
 | `expiresAt` | `Date \| string \| null` | Optional ISO timestamp or `Date` for time-bounded bans. Omit / `null` for a permanent ban. Lazy expiry: read paths treat an elapsed value as not-banned, no event fires on expiry. |
 | `actorUserId` | `UserId` | Optional moderator attribution. Surfaces as `Ban.bannedBy` and on the ban-history timeline. Auto-creates a `JunjoUser` for the actor if unseen. |
+| `bannedAt` | `Date \| string` | Optional start of the ban, for bans carried over from another system. At most 60 seconds in the future. Recorded as the history row's `eventAt`; when sent it also replaces an active ban's original start. |
+| `issuer` | string | Optional free text, 1 to 128 characters, naming who issued the ban when that is not a Junjo user. Returned verbatim as `Ban.issuer` and on the history row; never resolved to a user. Independent of `actorUserId`. |
+
+Carrying a ban over from another system:
+
+```ts
+await junjo.bans.add(
+  {
+    userId: "mc:0f8fad5b-d9cb-469f-a165-70867728950e" as UserId,
+    reason: "x-ray",
+    bannedAt: "2024-03-01T12:00:00Z",
+    issuer: "console",
+  },
+  { idempotencyKey: "ban-import-0f8fad5b", ifMatch: 0 },
+);
+```
+
+`ifMatch: 0` applies the ban only if the person was never moderated in
+this game.
+
+### Options
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `ifMatch` | number \| string | The person's moderation version. A mismatch rejects with `precondition_failed`. |
+| `idempotencyKey` | string | Sent as `Idempotency-Key`. |
 
 ### Returns
 
@@ -46,20 +88,23 @@ ban.expiresAt;  // Date | null
 | `expiresAt` | `Date \| null` | `null` for permanent. |
 | `reason` | string \| null | |
 | `bannedBy` | `UserId \| null` | Actor at issue time. |
+| `issuer` | string \| null | Free-text issuer, when one was sent. |
+| `version` | number | The person's moderation version after the call. |
 
-Idempotent on a still-active ban for the same user: it returns the
-existing row. Replacing an expired ban with a fresh one writes a new
-row with the supplied fields.
+On a still-active ban the row is updated in place (the original
+`bannedAt` is kept unless `bannedAt` is sent); an expired ban is
+replaced with a fresh one. Every call raises the moderation version by
+one.
 
-Fires `game.user.banned` (webhook only; no `groupId`, not delivered
-over SSE). The event carries `userId`, the banned person's external id
+Fires `game.user.banned` on webhooks and the [game stream](/sdk/events)
+(no `groupId`, so no group stream carries it). The event carries `userId`, the banned person's external id
 (rendered for each endpoint's [preferred namespaces](/sdk/webhooks#preferrednamespaces)),
 alongside the internal `junjoUserId`. `game.user.unbanned` carries the
 same two fields.
 
 ## `remove(userId, opts?)`
 
-Lift the active game-level ban for `userId`. The row stays in the
+Lift the active game ban for `userId`. The row stays in the
 database but `bannedAt`/`expiresAt` are no longer enforced by the
 runtime ban-check; it's listed only on `history(...)`.
 
@@ -73,18 +118,36 @@ await junjo.bans.remove("user_alice" as UserId, {
 |-------|------|-------|
 | `userId` | `UserId` | Banned user's external id. |
 | `opts.actorUserId` | `UserId` | Optional moderator attribution. Lands on the audit entry and the ban-history `lifted` row. |
+| `opts.ifMatch` | number \| string | The person's moderation version. Checked only when there is a ban to lift. |
+| `opts.idempotencyKey` | string | Sent as `Idempotency-Key`. |
+
+A lift with nothing to lift, also for an id the game has never seen,
+rejects with `not_found`, which `isNotActive` recognises. A replayed
+lift can treat it as done
+([safe retries](/api-reference#safe-retries-for-queued-writes)):
+
+```ts
+import { isNotActive } from "@junjo.io/sdk";
+
+try {
+  await junjo.bans.remove(userId, { ifMatch: queued.version, idempotencyKey: queued.key });
+} catch (e) {
+  if (!isNotActive(e)) throw e;
+}
+```
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `not_found` | 404 | No active game-level ban for this user. |
+| `not_found` | 404 | No active game ban for this user. `isNotActive(err)` is `true`. |
+| `precondition_failed` | 412 | A ban exists but `ifMatch` does not match the person's moderation version (typically: the player was banned again after the unban was queued). |
 
-Fires `game.user.unbanned` (webhook only).
+Fires `game.user.unbanned` on webhooks and the [game stream](/sdk/events).
 
 ## `get(userId)`
 
-Fetch the current active game-level ban for a user. Returns `Ban` or
+Fetch the current active game ban for a user. Returns `Ban` or
 `null`. Returns `null` for: never-banned users, lifted bans, and
 expired bans (lazy expiry; the row may still exist in `history`).
 
@@ -95,9 +158,29 @@ if (ban) {
 }
 ```
 
+## `moderation(userId)`
+
+Reads a person's moderation state in one call: `{ userId, version, ban, sanctions }`.
+`ban` is the active game ban, or `null` (an expired ban counts as
+none). `sanctions` lists the active [sanctions](/sdk/sanctions), newest
+first. A user the game has never seen returns version `0`, no ban and no
+sanctions, so the result is always usable as the `ifMatch` of the next
+ban or sanction write.
+
+```ts
+const state = await junjo.bans.moderation("user_alice" as UserId);
+if (state.ban) {
+  await junjo.bans.remove(state.userId, { ifMatch: state.version });
+}
+```
+
+### Returns
+
+`UserModeration`: `{ userId: UserId; version: number; ban: Ban | null; sanctions: Sanction[] }`.
+
 ## `list(opts?)`
 
-Cursor-paginated list of every active game-level ban. By default
+Cursor-paginated list of every active game ban. By default
 excludes expired rows; pass `includeExpired: true` to surface them
 (useful for moderation dashboards that show recently-expired bans).
 
@@ -161,6 +244,7 @@ for (const entry of page.items) {
 | `scope` | `"game" \| "group"` | Which surface the row was written for. |
 | `groupId` | `GroupId \| null` | Set on `scope: "group"` rows, `null` on game-scope rows. |
 | `actorUserId` | `UserId \| null` | The moderator at transition time, when supplied. |
+| `issuer` | string \| null | Free-text issuer of a game ban. `null` on lifts, on group rows, and on bans issued without one. |
 | `reason`, `expiresAt`, `eventAt` | string \| null / Date | Snapshot at transition time. |
 
 ## `historyAll(userId, opts?)`
@@ -172,5 +256,6 @@ Async-iterator wrapper over `history`. Accepts the same options minus `cursor`.
 ## See also
 
 - [Bans API reference](/api-reference/bans) - HTTP routes, enforcement semantics, error envelope details.
+- [`junjo.sanctions`](/sdk/sanctions) - game-defined restrictions such as mutes, sharing the moderation version.
 - [`junjo.groups.ban`](/sdk/groups#bangroupid-userid-opts) - per-group bans (scoped to one group).
 - [`junjo.groups.banHistory`](/sdk/groups#banhistorygroupid-opts) - per-group ban timeline (every user, one group).

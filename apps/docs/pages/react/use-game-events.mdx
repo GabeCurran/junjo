@@ -1,0 +1,145 @@
+# useGameEvents
+
+Delivers events from the provider's shared game stream to a handler (see [`junjo.events`](/sdk/events)). Every `useGameEvents` under one `<JunjoProvider>` rides a single connection and filters by type on the client, which matters because the server allows only 10 open game streams per API key. The SDK reconnects and resumes on its own; the hook reports the connection state.
+
+```tsx
+import { useGameEvents } from "@junjo.io/react";
+
+function BanFeed() {
+  const [bans, setBans] = useState<string[]>([]);
+  const { status, error } = useGameEvents(
+    (event) => {
+      if (event.type === "game.user.banned") setBans((b) => [event.userId, ...b]);
+    },
+    { types: ["game.user.banned"] },
+  );
+  if (error) return <div>Feed stopped: {error.message}</div>;
+  return (
+    <div>
+      {status === "reconnecting" && <p>Reconnecting...</p>}
+      <ul>{bans.map((id) => <li key={id}>{id}</li>)}</ul>
+    </div>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useGameEvents(
+  handler: (event: JunjoEvent, meta: { position: string }) => void,
+  opts?: UseGameEventsOptions,
+): UseGameEventsResult;
+
+interface UseGameEventsOptions {
+  types?: JunjoEventType[];
+  enabled?: boolean;
+  onResync?: (info: { position: string }) => void;
+}
+
+interface UseGameEventsResult {
+  status: "connecting" | "open" | "reconnecting" | "closed";
+  error: Error | null;
+  position: string | null;
+}
+```
+
+| Option | Meaning |
+|--------|---------|
+| `types` | Deliver only these event types. Omitted or empty: every type. Compared by sorted value, so a new array literal on each render is fine. |
+| `enabled` | `false` detaches the hook and reports `status: "closed"`. Defaults to `true`. |
+| `onResync` | The SDK could not resume and opened a new live stream instead; events in the gap were not delivered. Reload any state you built from events. |
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `"connecting"` until the first connection is up, `"open"` while connected, `"reconnecting"` while the SDK waits to reconnect, `"closed"` when disabled or after a fatal error. |
+| `error` | The fatal error that stopped the stream (for example `too_many_streams`, `invalid_api_key`, or a resume position that expired with no `onResync`); `null` otherwise. |
+| `position` | The newest position this hook knows: the start or resume position, or the position of the last event delivered to it. `null` until the stream is open. A string; compare with `BigInt`, never `Number`. |
+
+The latest `handler`, `types`, and `onResync` are read when each event arrives, so passing an inline function or a new array does not reopen the stream.
+
+## Load state without missing events
+
+Load your snapshot once `status` first reaches `"open"`, and reload on `onResync`. The stream is already open when the snapshot loads, so every later change reaches the handler. Events from just before the snapshot can arrive too; see [Snapshots and the stream](/api-reference/events#snapshots-and-the-stream).
+
+```tsx
+function BannedPlayers() {
+  const junjo = useJunjo();
+  const [banned, setBanned] = useState<Set<string>>(new Set());
+  const loaded = useRef(false);
+
+  const reload = useCallback(async () => {
+    const page = await junjo.bans.list();
+    setBanned(new Set(page.items.map((b) => b.userId)));
+  }, [junjo]);
+
+  const { status } = useGameEvents(
+    (event) => {
+      if (event.type === "game.user.banned") {
+        setBanned((s) => new Set(s).add(event.userId));
+      }
+      if (event.type === "game.user.unbanned") {
+        setBanned((s) => {
+          const next = new Set(s);
+          next.delete(event.userId);
+          return next;
+        });
+      }
+    },
+    { types: ["game.user.banned", "game.user.unbanned"], onResync: () => void reload() },
+  );
+
+  useEffect(() => {
+    if (status !== "open" || loaded.current) return;
+    loaded.current = true;
+    void reload();
+  }, [status, reload]);
+
+  return <p>{banned.size} banned players</p>;
+}
+```
+
+Waiting for `"open"` matters: loading on mount would race the stream's connection, and a change committed between the snapshot read and the stream opening would be missed. A single page of bans keeps the example short; page through `bans.listAll()` for a full list.
+
+## Errors and recovery
+
+The hook never throws; errors land in `error`. Called outside a `<JunjoProvider>`, it throws synchronously, like every hook. Network drops and server restarts are not errors: the SDK reconnects and resumes after the last position it saw, and `status` moves to `"reconnecting"` and back to `"open"`.
+
+A fatal error (a rejected first connection, a refused reconnect, a malformed frame) sets `status: "closed"` and `error` on every hook sharing the stream. To try again, remount the hook or toggle `enabled`; the next mount opens a fresh stream.
+
+A handler that throws is isolated: other hooks and the shared stream keep running, and the error is not reported.
+
+## `member.updated`
+
+The game stream carries `member.updated`, a change signal for a member's metadata, notes, or overrides. The group hooks ([`useMembers`](/react/use-members), [`useGroup`](/react/use-group)) do not act on it. To keep a member view fresh, handle it here and refetch:
+
+```tsx
+const { refetch } = useMembers(groupId);
+useGameEvents(
+  (event) => {
+    if (event.type === "member.updated" && event.groupId === groupId) void refetch();
+  },
+  { types: ["member.updated"] },
+);
+```
+
+## Proxy mode
+
+In [proxy mode](/react/provider#browser-apps-proxy-mode), the proxy must forward `GET /v1/events` with the `Last-Event-ID` request header and the `Junjo-Stream-Position` response header, without buffering the response.
+
+## Testing
+
+Stub `junjo.events.subscribe` on the client instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+const subscribe = vi.fn().mockResolvedValue({ close: vi.fn(), position: "0" });
+Object.assign(client.events, { subscribe });
+// Deliver an event: subscribe.mock.calls[0][0](event, { position: "1" })
+```

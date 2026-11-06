@@ -11,6 +11,7 @@ export default {
   browser: "Browser (plain JS)",
   roblox: "Roblox",
   cpp: "C++",
+  java: "Java",
   unreal: "Unreal Engine",
   "api-reference": "API",
   auth: "Auth",

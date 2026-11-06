@@ -2,7 +2,7 @@
 
 Every mutation that changes a group's state writes one or more rows to that group's audit log. Reads return the entries that were written for a single group, newest first, with optional filtering by action and timestamp.
 
-The audit log is the durable counterpart to the [SSE event stream](./events). SSE delivers events to live subscribers but does not replay across reconnects; the audit log is the source of truth for "what has happened to this group" and supports pagination over the full history.
+The audit log is the durable record behind the [event streams](./events). Group streams do not replay across reconnects, and the game stream keeps events only for its retention window (24 hours by default). The audit log is the source of truth for "what has happened to this group" and supports pagination over the full history.
 
 ## `GET /v1/groups/:id/audit`
 

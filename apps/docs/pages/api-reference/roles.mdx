@@ -243,7 +243,7 @@ Roles that inherited from the deleted role lose it as a parent, and each gets a 
 
 ## `POST /v1/roles/:id/permissions`
 
-Adds or changes one entry on a role. Without `value`, or with `value: true`, the entry grants the key; with `value: false` it denies it. The route is **idempotent**: writing an entry the role already holds with the same value returns the unchanged role with no audit entry and no DB write.
+Adds or changes one entry on a role. Without `value`, or with `value: true`, the entry grants the key; with `value: false` it denies it. The route is idempotent: writing an entry the role already holds with the same value returns the unchanged role with no audit entry and no DB write.
 
 The first time a permission key is written on a given game, it is auto-registered into `PermissionDef` (the per-game catalog of "known keys" the dashboard and SDK validators consult). Subsequent writes of the same key reuse the existing `PermissionDef` row; removing the entry later does not remove the def.
 
@@ -266,7 +266,7 @@ A role holds at most 5,000 entries; adding a new key to a full role returns `400
 
 ### Events
 
-- A key that becomes granted emits `permission.granted`, exactly as before denies existed.
+- A key that becomes granted emits `permission.granted`.
 - A grant that becomes a deny emits `permission.revoked` and then `role.updated`.
 - A new deny entry emits `role.updated` only.
 
@@ -299,9 +299,9 @@ One `permission.granted` entry per write that makes the key granted (a deny turn
 
 ## `DELETE /v1/roles/:id/permissions/:permission`
 
-Removes the role's entry for a key, whether it grants or denies. The route is **idempotent**: removing an entry the role does not have returns the unchanged role with no audit entry. In `"nodes"` mode the key is lowercased before lookup. The `PermissionDef` registry is preserved (removal does not "forget" the key for the game).
+Removes the role's entry for a key, whether it grants or denies. The route is idempotent: removing an entry the role does not have returns the unchanged role with no audit entry. In `"nodes"` mode the key is lowercased before lookup. The `PermissionDef` registry is preserved (removal does not "forget" the key for the game).
 
-Removing a grant emits `permission.revoked` and records a `permission.revoked` audit entry, as before. Removing a deny emits `role.updated` and records `role.entries.changed`.
+Removing a grant emits `permission.revoked` and records a `permission.revoked` audit entry. Removing a deny emits `role.updated` and records `role.entries.changed`.
 
 ### Path parameters
 
@@ -391,7 +391,7 @@ One `role.updated` event with `changed: ["entries"]`. A replace does not emit pe
 
 A role inherits the entries of its parent roles, one layer further from the member than the role itself; a parent's parents sit one layer further again. The first layer with a matching entry decides a check, so a role's own entries always beat what it inherits. A role reachable through several paths counts at its shortest distance.
 
-Limits: up to **32 parents per role**, and inheritance chains up to **100 levels** deep. Parents must be in the same group. Cycles are rejected when written.
+Limits: up to 32 parents per role, and inheritance chains up to 100 levels deep. Parents must be in the same group. Cycles are rejected when written.
 
 ## `PUT /v1/roles/:id/parents`
 
@@ -458,7 +458,7 @@ Returns `404 not_found` for a missing, cross-game or soft-deleted group.
 
 ## `GET /v1/groups/:id/members/:userId/access`
 
-One member's inputs to resolution, in one read: their status, the roles they hold directly, and their overrides. Roles reached through inheritance come from the role graph.
+One member's inputs to resolution, in one read: their status, the roles they hold directly, their overrides and their metadata. Roles reached through inheritance come from the role graph.
 
 ```json
 {
@@ -475,11 +475,32 @@ One member's inputs to resolution, in one read: their status, the roles they hol
       "setAt": "2026-11-05T12:00:00.000Z",
       "setBy": null
     }
-  ]
+  ],
+  "version": 4,
+  "displayName": "Alice",
+  "metadata": { "prefix": "[VIP]" }
 }
 ```
 
+`version` is the member's [version](/api-reference/groups#member-versions), also sent as the `ETag` header, so an access snapshot can be paired with conditional writes.
+
 Only `active` members exercise permissions; the status is returned so a local resolver can apply the same gate. Returns `404 not_found` when the group, the user's identity, or the membership row does not exist.
+
+## `POST /v1/groups/:id/members/access`
+
+The same read for up to 100 users in one request, for a cache that loads many members at once (a game server after a restart, for example).
+
+```json
+{ "userIds": ["mc:2f0c6a1e-0b6f-4f0e-9c1a-5d2b7e8f9a10", "mc:9d3b1c2a-4e5f-4a6b-8c7d-0e1f2a3b4c5d"] }
+```
+
+The answer lines up with `userIds`: entry `i` is the access object for `userIds[i]`, or `null` when that id names no member of the group. Any of a person's linked ids finds them; the object names the person by your [rendering rule](/api-reference/identity#the-rendering-rule), so match entries by position, not by `userId`.
+
+```json
+{ "items": [{ "groupId": "grp_network", "userId": "mc:2f0c6a1e-0b6f-4f0e-9c1a-5d2b7e8f9a10", "status": "active", "roleIds": ["role_vip"], "overrides": [], "version": 4, "displayName": "Alice", "metadata": {} }, null] }
+```
+
+The response carries `Junjo-Stream-Position`, read before the data (see [snapshots and the stream](/api-reference/events#snapshots-and-the-stream)), and no `ETag`; each item carries its own `version`. One to 100 ids, otherwise `400 bad_request`. `404 not_found` when the group does not exist.
 
 ## The `role.updated` event
 
@@ -488,7 +509,7 @@ Only `active` members exercise permissions; the status is returned so a local re
 ```json
 {
   "type": "role.updated",
-  "id": "evt_...",
+  "id": "a41c9e07d2b85f3e6c10d4a7",
   "occurredAt": "2026-11-05T12:00:00.000Z",
   "gameId": "game_...",
   "groupId": "grp_network",
@@ -497,4 +518,4 @@ Only `active` members exercise permissions; the status is returned so a local re
 }
 ```
 
-`changed` lists any of `name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`. Single-route changes that only add or remove a grant keep emitting just `permission.granted` / `permission.revoked`, so a game that never uses denies, parents or metadata sees the same events as before.
+`changed` lists any of `name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`. Single-route changes that only add or remove a grant emit `permission.granted` / `permission.revoked` and no `role.updated`.

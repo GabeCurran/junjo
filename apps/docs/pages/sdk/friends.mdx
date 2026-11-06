@@ -81,7 +81,7 @@ const page = await junjo.friends.list("user_alice" as UserId, {
   tagId: "tag_close",
   viewer: "user_bob" as UserId,
 });
-for (const f of page.items) console.log(f.junjoUserId, f.since);
+for (const f of page.items) console.log(f.junjoUserId, f.displayName ?? "(no name)", f.since);
 ```
 
 ### Options
@@ -105,7 +105,7 @@ list", not "the user does not exist".
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `items` | `Friendship[]` | One row per friend (the OTHER party), sorted by `since` desc. |
+| `items` | `Friendship[]` | One row per friend (the OTHER party), sorted by `since` desc. Each carries the friend's `displayName` (`string \| null`), picked by the [display name rule](/sdk/identities#display-names). The `Friendship` returned by `requests.accept` and an auto-accepted `requests.send` has no `displayName` field. |
 | `nextCursor` | string \| null | `null` when this is the last page. |
 
 ## `listAll(userId, opts?)`

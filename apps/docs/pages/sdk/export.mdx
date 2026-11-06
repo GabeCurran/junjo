@@ -1,0 +1,138 @@
+# export
+
+`junjo.export()` streams a whole game out of Junjo as parsed records:
+every person, group, role, membership, invitation, ban, sanction,
+friendship and audit entry. The [Export API reference](/api-reference/export)
+covers the route and the file it produces.
+
+```ts
+import { createWriteStream } from "node:fs";
+import { Junjo } from "@junjo.io/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_EXPORT_KEY! });
+const out = createWriteStream("survival.partial.ndjson");
+
+try {
+  for await (const record of junjo.export()) {
+    out.write(`${JSON.stringify(record)}\n`);
+  }
+} finally {
+  out.end();
+}
+// Reaching here means the end record arrived and its counts matched:
+// rename survival.partial.ndjson to survival.ndjson.
+```
+
+## The key needs `canExport`
+
+The export contains member notes, ban reasons and the audit log, so only
+API keys marked `canExport` may read it. Every key starts without it.
+Set it when minting the key, later through the
+[admin API](/api-reference/admin) (`{ "canExport": true }` on the key), or
+with the "Can export" toggle on the key in the dashboard. Without it the
+first `next()` rejects with `permission_denied` (403).
+
+Keep the export key separate from your game server's everyday key.
+
+## `junjo.export(opts?)`
+
+```ts
+export(opts?: { signal?: AbortSignal }): AsyncGenerator<ExportRecord>;
+```
+
+Opens `GET /v1/export` with the client's base URL, key and `fetch`, and
+yields one parsed record per line as it arrives. The body is read as a
+stream: at most one line is held in memory, so exporting a large game
+does not grow your process. Breaking out of the loop closes the
+connection.
+
+The client timeout does not apply, since a large game streams for as
+long as it takes. Pass `signal` to bound or cancel it; an abort rejects
+with `cancelled`.
+
+### Records
+
+Each record is a JSON object discriminated on `kind`. They arrive in this
+order:
+
+1. `header` (first): `{ kind, format: "junjo-export", version: 1, gameId, exportedAt, position }`. `position` is the game's [stream position](/sdk/events#positions), read before any record.
+2. Records grouped by kind: `game`, `person`, `group`, `role`, `member`, `invitation`, `relationship`, `ban`, `banHistory`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, `audit`. A kind with no rows has no records.
+3. `end` (last): `{ kind: "end", counts }`, the number of records per kind.
+
+```ts
+for await (const record of junjo.export()) {
+  switch (record.kind) {
+    case "header":
+      saveResumePosition(record.position);
+      break;
+    case "person":
+      for (const id of record.identities) indexName(id.userId, id.displayName);
+      break;
+    case "member":
+      // record.personId, record.groupId, record.roles, record.version, ...
+      break;
+    case "unknown":
+      // A kind newer than this SDK: record.rawKind, record.record.
+      break;
+  }
+}
+```
+
+Records are passed through as the server wrote them: timestamps stay ISO
+strings and ids stay plain strings, so a file can be written back out
+unchanged. They refer to each other by internal ids (`id`, `personId` and
+fields ending in `PersonId`); `userId`, `actorUserId` and `targetUserId`
+hold external ids. A group's kind is `groupKind` and a history row's kind
+is `historyKind`, because `kind` names the record. The field list for
+every kind is in the [Export API reference](/api-reference/export#record-kinds),
+and each has a type exported from `@junjo.io/sdk`
+(`ExportPersonRecord`, `ExportMemberRecord`, and so on).
+
+A line whose `kind` this SDK version does not know arrives as
+`{ kind: "unknown", rawKind, record }`, so a newer server does not break
+an older reader.
+
+### Truncation and errors
+
+A file without its end record was cut short. `junjo.export()` checks this for
+you: when the stream ends without the end record, or the end record's
+counts disagree with the records that arrived, it rejects with
+`invalid_wire_data`. That rejection comes after every record that did
+arrive has been yielded, so write to a temporary file and keep it only
+once the loop finishes without throwing.
+
+| Code | When |
+|------|------|
+| `permission_denied` | The key does not have `canExport`. |
+| `invalid_wire_data` | The stream ended without the end record, the counts disagree, the first line is not the header, data follows the end record, or a line is not a JSON object with a string `kind`. |
+| `network_error` | The connection failed mid-stream. Export again; the export does not resume. |
+| `cancelled` | `opts.signal` aborted. |
+| `stream_overflow` | A single line passed `EXPORT_MAX_LINE_CHARS` (about 16 MiB of text) without a newline. |
+
+## Staying exact
+
+The export is not one database snapshot: a write made while it runs may
+or may not be in it. To stay exact, restore the file and then replay the
+[game stream](/sdk/events) from the header's `position`; every change made
+during the export is in that range.
+
+```ts
+let position: string | undefined;
+for await (const record of junjo.export()) {
+  if (record.kind === "header") position = record.position;
+  await restore(record);
+}
+const sub = await junjo.events.subscribe(applyChange, { from: position });
+```
+
+## Never exported
+
+API keys, group passcode hashes (only `hasPasscode`), webhook endpoints
+and deliveries, link codes, idempotency records and the event log.
+
+---
+
+## See also
+
+- [Export API reference](/api-reference/export): the route, the file layout and every record kind.
+- [`junjo.events`](/sdk/events): the game stream to replay after a restore.

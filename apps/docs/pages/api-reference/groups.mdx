@@ -21,6 +21,48 @@ A `Group` is the unit Junjo organizes players around: guild, clan, faction, part
 | `updatedAt` | string | ISO 8601 timestamp. |
 | `softDeletedAt` | string \| null | Set when the group is soft-deleted; null otherwise. |
 
+## Kind limits
+
+A game can set limits per group kind in its config (`groups.kinds`, edited with [`PATCH /v1/admin/games/:gameId/config`](/api-reference/admin) or the dashboard). Junjo ships no defaults: a kind that is not listed has no limits.
+
+```json
+{
+  "groups": {
+    "kinds": {
+      "party": { "maxMembers": 8, "maxPerUser": 1, "deleteWhenEmpty": true, "idleDeleteHours": 24 }
+    }
+  }
+}
+```
+
+| Field | Range | Effect |
+|-------|-------|--------|
+| `maxMembers` | 1 to 100000 | Active members one group of the kind may hold. Over the cap: `409 group_full`. |
+| `maxPerUser` | 1 to 1000 | Active memberships one person may hold across live (not soft-deleted) groups of the kind. Over the cap: `409 group_limit_reached`. |
+| `deleteWhenEmpty` | boolean | When a leave, kick or ban removes the last active member, the same transaction soft-deletes the group (audit `group.deleted` with `reason: "empty"`) and emits `group.deleted`. A write that removes no active member never deletes. |
+| `idleDeleteHours` | 1 to 8760 | A background sweeper (every 10 minutes) soft-deletes live groups of the kind whose membership has not changed for that long (audit `reason: "idle"`, event `group.deleted`). |
+
+Every field is optional. At most 32 kinds may be listed; a kind name is 1 to 64 characters, like `kind` on create.
+
+### Where the caps apply
+
+The caps are checked on these paths:
+
+- Join, add (`POST /v1/groups/:id/members`), invitation accept and [import](#post-v1groupsidmembersimport) check `maxMembers` and `maxPerUser`. A refused invitation accept leaves the invitation unused.
+- Create with `creatorUserId` checks `maxPerUser`.
+- Restoring a soft-deleted group checks `maxPerUser`. When any of its active members has since reached the kind's cap elsewhere, the restore answers `409 group_limit_reached` with `details.members`, how many members are affected. The group stays deleted until they leave a group.
+- An [identity link](/api-reference/identity#who-keeps-their-person) checks `maxPerUser`. When the merged person would hold more groups of a kind than the cap, the link answers `409 link_refused`. A merge cannot break `maxMembers`, because every moved membership was already counted by its group.
+
+Re-adding someone who is already an active member is not a new membership and is never refused. Checks run under a lock on the group (and, for `maxPerUser`, on the person within the kind), so concurrent joins cannot overshoot a cap. Group creation has no kind-specific limit; it is covered by the general per-key rate limit.
+
+### Membership activity
+
+Each group tracks when its membership last changed: a member joining, being added, accepting an invitation, being imported, leaving, being kicked, banned or unbanned. Edits to the group itself (name, metadata) do not count. Restoring a soft-deleted group starts a fresh idle period.
+
+### Config patches
+
+`groups.kinds` is stated in full: a `PATCH` that sends `kinds` replaces the stored map, the same as `identity.formats`, so removing a kind from the map removes its limits. A patch that does not send `groups` leaves it alone. Lowering a cap does not remove members already over it; it only refuses new activations.
+
 ## `POST /v1/groups`
 
 Creates a new group scoped to the calling game. Writes a `group.created` audit entry in the same transaction.
@@ -486,6 +528,20 @@ By default the response excludes invitations that have already been used (`usedA
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
+## Member versions
+
+Every membership carries a `version`: 1 when the row is created, and one higher after every write that changes it. Joins, adds, invitation accepts, imports, leaves, kicks, group bans and unbans, role assigns and unassigns, override sets and clears, metadata and notes edits, and identity merges that move a membership to another person all count, including the same writes from the dashboard. A write that changes nothing (a repeated assign, a kick of someone already gone) leaves the version alone, and so do role-level edits such as changing a role's entries, parents or name.
+
+The version is on every `Member` object (including the `member` inside `member.joined`), on `GET /v1/groups/:id/members/:userId/access`, and in the `ETag` header of single-member reads and member-scoped write responses:
+
+```
+ETag: "4"
+```
+
+Member-scoped writes accept `If-Match` with that version (quoted, or a bare integer): `PATCH /v1/groups/:id/members/:userId`, role assign and unassign, override set and clear, kick, and group ban and unban. The check runs inside the write's transaction. A mismatch answers `412 precondition_failed` and writes nothing, a malformed value answers `400 bad_request`, and a missing member answers `404`. The check also applies when the write would be a no-op, so a stale queued write is reported instead of silently succeeding.
+
+Member events carry `memberVersion`, the version after the write (see [Events](/api-reference/events#versions-on-events)). See [Safe retries for queued writes](/api-reference#safe-retries-for-queued-writes) for pairing `If-Match` with `Idempotency-Key`.
+
 ## `POST /v1/groups/:id/members`
 
 Adds a user to a group directly. This is the server-to-server counterpart to `join`: it **ignores `visibility`**, so an `invite-only` or `secret` group can be populated without making it publicly joinable and without running the two-call invitation handshake.
@@ -523,7 +579,7 @@ The `Member` row, with a status code that reports whether the call changed anyth
 | `201 Created` | The call made the user an active member: a new row, or a reactivation from `left` / `kicked` (which keeps the original `joinedAt`). |
 | `200 OK` | The user was already an active member. Nothing changed, except that a supplied `roleId` they did not hold is still assigned. |
 
-That split makes the route idempotent while still letting a provisioning script report how many members it actually added on a re-run.
+That split makes the route idempotent while still letting a provisioning script report how many members it actually added on a re-run. The response carries the member's version as `ETag`; one call raises the version by one at most (a new member starts at 1 even when `roleId` is assigned in the same call).
 
 Concurrent identical adds resolve themselves: the loser's transaction rolls back and retries, and the retry takes the already-active path. The rollback drops its staged events and audit rows with it, so a race cannot double-emit `member.joined`.
 
@@ -534,7 +590,7 @@ Fired only on an actual transition, so a re-run is silent:
 - becoming active writes a `member.joined` audit entry with `via: "admin-add"` and emits `member.joined`;
 - a newly assigned `roleId` writes a `role.assigned` audit entry and emits `role.changed`.
 
-The `member.joined` event carries the roles the member held **before** this call, and any new role is reported separately by `role.changed`, so the event stream reads exactly like the join-then-assign sequence this route replaces.
+Any new role is reported by `role.changed`, so the event stream reads like the join-then-assign sequence this route replaces. Both events carry one `memberVersion` ([versions on events](/api-reference/events#versions-on-events)), and the `member` inside `member.joined` already lists the new role.
 
 ### Errors
 
@@ -544,6 +600,111 @@ The `member.joined` event carries the roles the member held **before** this call
 | `role_group_mismatch` | 400 | `roleId` exists but belongs to another group. No member is created. |
 | `not_found` | 404 | The group, or a supplied `roleId`, does not exist in the calling game. No member is created. |
 | `banned` | 403 | The user is banned game-wide or from this group. An expired timed ban does not block the add. |
+| `group_full` | 409 | Adding the user would exceed the kind's `maxMembers` ([Kind limits](#kind-limits)). |
+| `group_limit_reached` | 409 | The user already holds the kind's `maxPerUser` active memberships. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/groups/:id/members/import`
+
+Imports up to 500 memberships in one call, with their roles, overrides and metadata. Built for moving an existing permission setup into Junjo: like `POST /v1/groups/:id/members` it ignores `visibility`, and it runs in one transaction, so either every row applies or none does.
+
+### Body
+
+```json
+{
+  "members": [
+    {
+      "userId": "mc:0f8fad5b-d9cb-469f-a165-70867728950e",
+      "roleIds": ["role_a", "role_b"],
+      "overrides": [{ "permission": "fly", "value": true }],
+      "metadata": { "prefix": "[VIP]" }
+    }
+  ],
+  "allowBanned": false,
+  "actorUserId": "web:mod_jane"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `members` | yes | 1 to 500 rows. Each `userId` may appear once, and two linked ids of the same person may not both appear. |
+| `members[].userId` | yes | The dev's external user id. Unknown users are created. |
+| `members[].roleIds` | no | Replaces the member's roles. Every id must be a role of this group. `[]` removes all roles. |
+| `members[].overrides` | no | Replaces the member's overrides, in the role-entry shape `{ permission, value }`. `[]` clears them all. Keys follow the game's [permission mode](/api-reference/permissions#permission-modes). |
+| `members[].metadata` | no | Replaces the member's metadata. |
+| `allowBanned` | no | `true` imports banned people without changing any ban. Default `false`. |
+| `actorUserId` | no | External user id of the acting moderator, recorded on the audit entries and on `role.changed`. |
+
+Each row ensures an active membership: a new member is created, and a `left`, `kicked` or `invited` row is reactivated. A field that is present replaces the current value; a field that is absent is left as it is. Like `POST /v1/groups/:id/members`, join and invitation accept, the import never assigns the group's `defaultRoleId`. A created member holds the roles in `roleIds` (none when it is omitted), and a reactivated member keeps the roles it already had unless `roleIds` is sent.
+
+Bans: a person banned from the game or from this group fails their row with `banned`. With `allowBanned: true` their roles, entries and metadata are imported and no ban changes: a group-banned member keeps status `banned`, and a game-banned person becomes (or stays) an active member while the game ban still applies.
+
+### Validation
+
+Every row is checked before anything is written. If any row fails, nothing is written and the call answers `400 bad_request`, or, when every failing row has the same one of these codes, `403 banned`, `409 group_full` or `409 group_limit_reached`. `details.rows` lists every failing row:
+
+```json
+{
+  "code": "bad_request",
+  "status": 400,
+  "message": "2 of 120 rows failed; see details.rows",
+  "details": {
+    "rows": [
+      { "index": 3, "userId": "mc:not-a-uuid", "code": "invalid_user_id", "message": "userId does not match its namespace's declared format" },
+      { "index": 7, "userId": "mc:7c9e6679-7425-40de-944b-e07fc1f90ae7", "code": "banned", "message": "user is banned from this game" }
+    ]
+  }
+}
+```
+
+| Row code | When |
+|----------|------|
+| `bad_request` | The row is malformed, repeats an earlier `userId` or person, names a role of another group, or has an invalid or repeated permission key. |
+| `invalid_user_id` | `userId` breaks its namespace's [declared format](/api-reference/identity#canonical-formats). |
+| `not_found` | A `roleIds` entry names no role. |
+| `banned` | The person is banned from the game or the group and `allowBanned` is not set. |
+| `group_full` | The row would make someone an active member beyond the kind's `maxMembers`. Rows are admitted in order, so the rows past the remaining room fail. |
+| `group_limit_reached` | The person already holds the kind's `maxPerUser` active memberships in other groups. |
+
+Only rows that would make someone active (new members and reactivations) count against [kind limits](#kind-limits); rows for existing active members and for group-banned people kept banned do not.
+
+`index` is the row's position in `members`, from 0.
+
+### Response
+
+`200 OK`:
+
+```json
+{
+  "created": 1,
+  "reactivated": 0,
+  "updated": 3,
+  "unchanged": 116,
+  "items": [{ "userId": "mc:0f8fad5b-d9cb-469f-a165-70867728950e", "status": "created", "version": 1 }]
+}
+```
+
+`items` follows the order of `members`. `status` is `created`, `reactivated`, `updated` (an existing member whose roles, entries or metadata changed) or `unchanged`. `version` is the member's version after the call; it rises by one for each member the call changed, however many of their fields changed. Running the same import again reports every row `unchanged` and writes nothing, so a failed import can be retried.
+
+### Events and audit
+
+The same events and audit entries the equivalent single calls produce, staged in the import's transaction:
+
+- `member.joined` (audit `via: "import"`) for each created or reactivated member;
+- `role.changed` with the roles added and removed, and `role.assigned` / `role.unassigned` audit entries;
+- `member.updated` with `changed` listing `metadata` and / or `overrides`, and `member.metadata.updated`, `permission.override.set` and `permission.override.cleared` audit entries.
+
+The events for one member carry one `memberVersion` ([versions on events](/api-reference/events#versions-on-events)), and the `member` inside `member.joined` is the member as the import leaves it (final roles and metadata). Unchanged members produce nothing.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `members` is missing, empty or longer than 500 rows, an unknown top-level field was sent, or a row failed (see `details.rows`). |
+| `banned` | 403 | Every failing row is a ban (see `details.rows`). |
+| `group_full` | 409 | Every failing row is `group_full`. |
+| `group_limit_reached` | 409 | Every failing row is `group_limit_reached`. |
+| `not_found` | 404 | No group with that id in the calling game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/join`
@@ -614,6 +775,8 @@ Fires `member.joined` with the new `Member` body, mirroring the invitation-accep
 | `banned` | 403 | The user is game-banned or per-group-banned (with an active `bannedUntil`). |
 | `not_found` | 404 | No group with that id in the calling game, or the group is soft-deleted, or the group's `visibility` is `"secret"` (existence stays invisible to non-members). |
 | `already_member` | 409 | The user already has an active `GroupMember` row in this group. Also the losing outcome when two concurrent joins for the same user race: the winner gets 201, the loser gets this 409. If the goal is "make sure the user is a member", treat it as success. |
+| `group_full` | 409 | The group is at its kind's `maxMembers` ([Kind limits](#kind-limits)). |
+| `group_limit_reached` | 409 | The user already holds the kind's `maxPerUser` active memberships. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/leave`
@@ -699,9 +862,11 @@ The body is optional; an empty body, `{}`, and `{ "reason": null }` are all acce
 
 ### Response
 
-`200 OK` with the post-state `Member` body. Shape is identical to `POST /v1/groups/:id/leave`'s response.
+`200 OK` with the post-state `Member` body and its version as `ETag`. Shape is identical to `POST /v1/groups/:id/leave`'s response.
 
 For an idempotent call (member already kicked, or in `left`/`invited` state) the response body is the unchanged member; the `status` field tells the caller what happened.
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Audit log (active -> kicked transition only)
 
@@ -717,8 +882,9 @@ For an idempotent call (member already kicked, or in `left`/`invited` state) the
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed. |
+| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed, or a malformed `If-Match`. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## Per-group bans
@@ -728,7 +894,7 @@ invitation-accept flow; a banned member cannot. Per-group bans live as
 `GroupMember.status = "banned"` with optional `bannedUntil` (lazy
 expiry: read paths treat an expired value as not-banned).
 
-For game-wide bans that apply across every group in the game, see the
+For game bans that apply across every group in the game, see the
 [Bans reference](/api-reference/bans).
 
 ### `POST /v1/groups/:id/members/:userId/ban`
@@ -750,8 +916,13 @@ preemptively ban a user who hasn't joined.
 Writes a `member.banned` audit entry with `{ memberId, reason, bannedUntil }`
 and fires the `member.banned` webhook event with `{ userId, reason, bannedUntil }`.
 
-**Response** `200 OK` with the post-state `Member` body. `status` is
-`"banned"`, `bannedUntil` is the configured expiry (or `null`).
+**Response** `200 OK` with the post-state `Member` body and its version
+as `ETag`. `status` is `"banned"`, `bannedUntil` is the configured
+expiry (or `null`).
+
+Accepts `If-Match` ([member version](#member-versions)). The header
+applies only when the person already has a membership row; banning
+someone with no row creates one, with or without the header.
 
 ### `DELETE /v1/groups/:id/members/:userId/ban`
 
@@ -760,13 +931,16 @@ Lift a per-group ban. Reverts the row to `status = "left"` and clears
 re-invited normally afterward).
 
 Writes a `member.unbanned` audit entry; fires the `member.unbanned`
-webhook event.
+webhook event. Responds `200 OK` with the post-state `Member` and its
+version as `ETag`. Accepts `If-Match` ([member version](#member-versions)).
 
 **Errors**
 
 | Code | Status | When |
 |------|--------|------|
-| `not_found` | 404 | Unknown group, or the user has no `GroupMember` row, or the row is not currently banned. |
+| `not_found` | 404 | No ban is active: the user has never been seen in this game, has no `GroupMember` row, or the row is not currently banned. Carries `details.reason: "not_active"` (see [Safe retries](/api-reference#safe-retries-for-queued-writes)). |
+| `not_found` | 404 | Unknown group (no `details`). |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 
 ### `GET /v1/groups/:id/bans/history`
 
@@ -906,7 +1080,7 @@ The response includes members in any status (`active`, `left`, `kicked`, `invite
 
 ### Response
 
-`200 OK` with the same `Member` wire format documented under [`POST /v1/invitations/:code/accept`](/api-reference/invitations).
+`200 OK` with the same `Member` wire format documented under [`POST /v1/invitations/:code/accept`](/api-reference/invitations), and the member's version as `ETag`.
 
 ### Errors
 
@@ -976,7 +1150,9 @@ The route writes up to two audit entries in one transaction depending on which s
 
 ### Response
 
-`200 OK` with the post-state `Member` body (same wire format as the other member endpoints). Terminal-status members (`left`, `kicked`) can also be updated; the route does not gate on `status`.
+`200 OK` with the post-state `Member` body (same wire format as the other member endpoints) and its version as `ETag`. Terminal-status members (`left`, `kicked`) can also be updated; the route does not gate on `status`.
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Audit log
 
@@ -993,7 +1169,8 @@ Up to two entries are written, both with `actorUserId` set to `null` (V1 has no 
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Empty body, malformed JSON, notes longer than 5000 chars. |
+| `bad_request` | 400 | Empty body, malformed JSON, notes longer than 5000 chars, or a malformed `If-Match`. |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -1089,7 +1266,9 @@ Body is optional. An empty body, `{}`, or `{ "actorUserId": "user_mod_jane" }` a
 
 ### Response
 
-`200 OK` with the post-state `Member` body. `roles` includes the newly assigned role id alongside any existing role ids. Members in any status (`active`, `left`, `kicked`, `invited`) can be assigned roles; the route does not gate on `status` (matches the metadata / notes precedent).
+`200 OK` with the post-state `Member` body and its version as `ETag`. `roles` includes the newly assigned role id alongside any existing role ids. Members in any status (`active`, `left`, `kicked`, `invited`) can be assigned roles; the route does not gate on `status` (matches the metadata / notes precedent).
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Audit log
 
@@ -1109,7 +1288,8 @@ The matching `role.changed` SSE / webhook event carries `actorUserId: UserId | n
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | The role exists but belongs to a different group (`role_group_mismatch`). |
+| `bad_request` | 400 | The role exists but belongs to a different group (`role_group_mismatch`), or a malformed `If-Match`. |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `not_found` | 404 | The group / member / role does not exist (the four cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group; no `Role` row at all). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -1127,7 +1307,9 @@ Body is optional and matches the POST: `{ "actorUserId"?: string }`. Populates t
 
 ### Response
 
-`200 OK` with the post-state `Member` body. `roles` excludes the removed role id; other role assignments are preserved.
+`200 OK` with the post-state `Member` body and its version as `ETag`. `roles` excludes the removed role id; other role assignments are preserved.
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Audit log
 
@@ -1146,6 +1328,7 @@ A no-op (the role was not assigned) does not write an audit entry.
 | Code | Status | When |
 |------|--------|------|
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row in this group. The role's existence is *not* validated; an unknown role id collapses to a no-op. |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/members/:userId/permissions/:permission`
@@ -1168,7 +1351,10 @@ Sets or updates a member-level permission override. The override wins over any r
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `grant` | yes | `true` to grant regardless of roles, `false` to revoke regardless of roles. |
+| `grant` | yes (or `value`) | `true` to grant regardless of roles, `false` to revoke regardless of roles. |
+| `value` | no | Alias of `grant`, matching the role-entry shape `{ permission, value }`. If both are sent they must agree. |
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Response
 
@@ -1185,7 +1371,7 @@ Sets or updates a member-level permission override. The override wins over any r
 }
 ```
 
-`setBy` is the dev's external id of the actor that set the override; it is `null` (no auth-adapter actor wired yet).
+`setBy` is the dev's external id of the actor that set the override; it is `null` (no auth-adapter actor wired yet). The member's version after the call is in the `ETag` header.
 
 ### Audit log
 
@@ -1203,7 +1389,8 @@ A no-op (the override already had the same `grant`) writes no audit entry. The f
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing or non-boolean `grant`, malformed JSON, or `permission` is empty / over 128 characters. |
+| `bad_request` | 400 | Missing or non-boolean `grant` (and no `value`), `grant` and `value` disagree, malformed JSON, `permission` is empty / over 128 characters or breaks the [nodes key rules](/api-reference/permissions#permission-modes), or a malformed `If-Match`. |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `not_found` | 404 | The group / member does not exist (the cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -1217,7 +1404,9 @@ Same as `POST /v1/groups/:id/members/:userId/permissions/:permission`.
 
 ### Response
 
-`204 No Content`. The route does not echo the deleted row; consumers that need the previous `grant` value can pull it from the `permission.override.cleared` audit entry.
+`204 No Content`, with the member's version after the call as `ETag`. The route does not echo the deleted row; consumers that need the previous `grant` value can pull it from the `permission.override.cleared` audit entry.
+
+Accepts `If-Match` ([member version](#member-versions)).
 
 ### Audit log
 
@@ -1235,8 +1424,9 @@ A no-op (no existing override to clear) writes no audit entry. The `PermissionDe
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `permission` path parameter is empty. |
+| `bad_request` | 400 | `permission` path parameter is empty, or a malformed `If-Match`. |
 | `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
+| `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `GET /v1/groups/:id/members/:userId/permissions`

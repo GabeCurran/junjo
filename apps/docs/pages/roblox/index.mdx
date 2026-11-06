@@ -24,7 +24,7 @@ Either way, mount the module in `ServerStorage` (or `ServerScriptService`) and r
 | `junjo.invitations:list / get / revoke` | Invitation listing and revocation. |
 | `junjo.audit:list` | Paginated audit feed for a group. |
 | `junjo.webhooks.endpoints:create / list / listAll / update / delete` | Webhook endpoint CRUD (no receiver-side helpers; see below). `list` is cursor-paginated and returns the `{ items, nextCursor }` envelope. |
-| `junjo.bans:add / remove / get / list / listAll / history / historyAll` | Game-wide bans (every group in the game), with optional expiry and an append-only per-user history. |
+| `junjo.bans:add / remove / get / list / listAll / history / historyAll` | Game bans (every group in the game), with optional expiry and an append-only per-user history. |
 | `junjo.friends:list / listAll / remove / getRelationship / suggestions` plus the `requests`, `blocks`, `tags`, and `visibility` sub-namespaces | Per-user social graph: friend requests, blocks, friend tags, list visibility, mutual-friend suggestions, and a single-pair relationship probe. |
 | `junjo:can(userId, groupId, permission, inherit?)` and `junjo:check(...)` | Permission check helpers. The optional fourth argument opts into the server-side parent walk; the result then also carries `viaGroupId`. |
 | `junjo:checkBatch(checks, inherit?)` | Resolves many `{ userId, groupId, permission }` entries in one request, answers returned in the same order. Inputs longer than the server's 100-entry cap are split automatically. |

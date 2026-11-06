@@ -22,8 +22,10 @@ npm install @junjo.io/sdk @junjo.io/react
 | [`useMembers`](/react/use-members) | Paginated roster with server-side status filter and live event updates. |
 | [`useInvitations`](/react/use-invitations) | Paginated invitation list with status filter and live event updates. |
 | [`useRoles`](/react/use-roles) | The group's role definitions, kept live including per-role permission changes. |
-| [`useBans`](/react/use-bans) | Paginated game-wide ban list; refetch-driven (game ban events are webhook-only). |
-| [`useIdentities`](/react/use-identities) | A person's linked ids, earliest-linked first; refetch-driven (identity events are webhook-only). |
+| [`useBans`](/react/use-bans) | Paginated game ban list; refetch-driven (game ban events reach no group stream; pair it with [`useGameEvents`](/react/use-game-events) for live updates). |
+| [`useSanctions`](/react/use-sanctions) | A person's active sanctions, newest first; refetch-driven (sanction events reach no group stream; pair it with [`useGameEvents`](/react/use-game-events) for live updates). |
+| [`useIdentities`](/react/use-identities) | A person's linked ids, earliest-linked first; refetch-driven (identity events reach no group stream; pair it with [`useGameEvents`](/react/use-game-events) for live updates). |
+| [`useGameEvents`](/react/use-game-events) | Game-wide events from one shared, self-reconnecting stream per provider, filtered by type per hook. |
 | [`useAuditLog`](/react/use-audit-log) | Paginated audit log with action filter; refetch-driven (no SSE subscription). |
 | [`useFriends`](/react/use-friends) | A user's friend list with tag filter and viewer-perspective visibility; refetch-driven. |
 | [`useFriendRequests`](/react/use-friend-requests) | Pending inbound + outbound friend requests; refetch-driven. |

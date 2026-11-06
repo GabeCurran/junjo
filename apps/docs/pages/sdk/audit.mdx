@@ -90,7 +90,7 @@ interface AuditApiKey {
 }
 ```
 
-`apiKey` names the API key whose request wrote the entry, so a game with several backends can tell them apart; it is `null` for dashboard and system writes, and the SDK maps it to `null` when an older server omits the field.
+`apiKey` names the API key whose request wrote the entry, so a game with several backends can tell them apart. It is `null` for dashboard and system writes, and the SDK maps it to `null` when an older server omits the field.
 
 ```ts
 for await (const entry of junjo.audit.listAll(groupId)) {

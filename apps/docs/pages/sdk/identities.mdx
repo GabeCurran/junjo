@@ -1,6 +1,6 @@
 # `junjo.identities`
 
-Identity linking. One person can hold several external ids in one game, for example a game client id and a website account id. A code requested for one id and redeemed for another joins the two ids into one person, so roles, memberships, friends, and bans follow the person rather than a single id. `unlink` splits an id back out.
+Identity linking and display names. One person can hold several external ids in one game, for example a game client id and a website account id. A code requested for one id and redeemed for another joins the two ids into one person, so roles, memberships, friends, and bans follow the person rather than a single id. `unlink` splits an id back out.
 
 ```ts
 import { Junjo } from "@junjo.io/sdk";
@@ -9,17 +9,17 @@ import type { UserId } from "@junjo.io/sdk";
 const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
 
 // In the game: show the player a short code.
-const { code, expiresAt } = await junjo.identities.requestLinkCode("game:7f3c" as UserId);
+const { code, expiresAt } = await junjo.identities.requestLinkCode("mc:069a79f4-44e9-4726-a5be-fca90e38aaf5" as UserId);
 
 // On the website: the signed-in user types the code.
 const result = await junjo.identities.redeemLinkCode({
   code: "7kq2 m9xd",
   userId: "web:user_42" as UserId,
 });
-result.identities.map((i) => i.userId); // ["game:7f3c", "web:user_42"]
+result.identities.map((i) => i.userId); // ["mc:069a79f4-44e9-4726-a5be-fca90e38aaf5", "web:user_42"]
 ```
 
-The namespace of an id is the text before its first `:` (`game:7f3c` is in `game`). Once a person holds more than one id, every response names them by the rendering rule: the earliest-linked id in the first [preferred namespace](/api-reference/identity#preferred-namespaces) they have an id in, otherwise their earliest-linked id overall. Your code must handle ids outside its own namespaces. The full rules, including which fields are never rewritten, live in the [Identity API reference](/api-reference/identity).
+The namespace of an id is the text before its first `:` (`mc:069a...` is in `mc`). Once a person holds more than one id, every response names them by the rendering rule: the earliest-linked id in the first [preferred namespace](/api-reference/identity#preferred-namespaces) they have an id in, otherwise their earliest-linked id overall. Your code must handle ids outside its own namespaces. The full rules, including which fields are never rewritten, live in the [Identity API reference](/api-reference/identity).
 
 ## `list(userId, opts?)`
 
@@ -32,17 +32,83 @@ interface LinkedIdentity {
   userId: UserId;
   namespace: string | null; // null when the id has no ":"
   linkedAt: Date; // when the id joined the person
+  displayName: string | null; // this id's own display name
 }
 ```
 
 ```ts
 const ids = await junjo.identities.list("web:user_42" as UserId);
-const gameId = ids.find((i) => i.namespace === "game")?.userId;
+const mcId = ids.find((i) => i.namespace === "mc")?.userId;
 ```
+
+## Display names
+
+Each id can carry a display name of 1 to 64 characters: the name the player goes by on the platform that id belongs to. Junjo stores it and does not check uniqueness or content.
+
+Where a response names a whole person rather than one id, `displayName` is picked like this:
+
+1. the name of the id the rendering rule picked for you;
+2. when that id has none, the most recently set name among the person's ids;
+3. otherwise `null`.
+
+That person-level name is on [`Member`](/sdk/members) objects (reads and write responses, not the `member` inside `member.joined`), on [`MemberAccess`](/sdk/members), and on [friends list](/sdk/friends) entries. `list` carries each id's own name instead.
+
+### `setDisplayName(userId, displayName, opts?)`
+
+Sets the display name of `userId` alone, or clears it with `null`. The person's other ids keep theirs. An id the game has never seen becomes a new person first, like other writes.
+
+```ts
+setDisplayName(
+  userId: UserId,
+  displayName: string | null,
+  opts?: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string },
+): Promise<LinkedIdentity>;
+```
+
+```ts
+// On join, record the name the platform reports for this id.
+await junjo.identities.setDisplayName("mc:069a79f4-44e9-4726-a5be-fca90e38aaf5" as UserId, "Steve");
+```
+
+Sending the name the id already has is a no-op. A change fires `identity.updated` on webhooks and the [game stream](/sdk/events). No audit entry is written, since names change often.
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | The name is empty or longer than 64 characters. |
+| `invalid_user_id` | 400 | The id does not match its namespace's declared format. |
+
+### `findByName(name, opts?)`
+
+Finds ids whose display name equals `name`, ignoring case, most recently named first, at most 20. Each match's `userId` is the matching id itself, never swapped for another id of its person by the rendering rule; pass it to `list` to see the rest of the person.
+
+```ts
+findByName(
+  name: string,
+  opts?: { namespace?: string; signal?: AbortSignal; timeoutMs?: number },
+): Promise<DisplayNameMatch[]>;
+
+interface DisplayNameMatch {
+  userId: UserId;
+  displayName: string;
+  displayNameUpdatedAt: Date;
+}
+```
+
+```ts
+// A "/msg Steve" command: resolve the name to an id in your namespace.
+const [match] = await junjo.identities.findByName("Steve", { namespace: "mc" });
+if (match) sendMessage(match.userId);
+```
+
+Names are not unique, so more than one id can match. `namespace` restricts the search to ids in that namespace.
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `name` is empty or longer than 64 characters, or `namespace` is malformed. |
 
 ## `requestLinkCode(userId, opts?)`
 
-Issues a single-use code for `userId`, creating the person if the id is new. A new code cancels that id's earlier codes. Codes are 8 characters shown as two groups of four (`ABCD-EFGH`) and expire after 5 minutes.
+Issues a single-use code for `userId`, creating the person for an id the game has never seen. A new code cancels that id's earlier codes. Codes are 8 characters shown as two groups of four (`ABCD-EFGH`) and expire after 5 minutes.
 
 ```ts
 requestLinkCode(userId: UserId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<LinkCode>;
@@ -76,7 +142,7 @@ interface IdentityLinkResult {
 }
 ```
 
-Which side keeps its person: when neither id holds anything beyond plain memberships, the code requester's person survives. When exactly one side holds state (roles, friends, metadata, ban history, other linked ids, and so on), that side survives and the other id joins it. When both do, the link is refused. The [Identity API reference](/api-reference/identity#who-keeps-their-person) has the full list.
+Which side keeps its person: when neither id holds anything beyond plain memberships, the code requester's person survives. When only one side holds state (roles, friends, metadata, ban history, other linked ids, and so on), that side survives and the other id joins it. When both do, the link is refused. The [Identity API reference](/api-reference/identity#who-keeps-their-person) has the full list.
 
 ```ts
 import { JunjoError } from "@junjo.io/sdk";
@@ -100,7 +166,7 @@ try {
 | `link_refused` | 409 | Both sides already hold state. A refused attempt does not consume the code. |
 | `rate_limit_exceeded` | 429 | Too many redeems for this id, or too many failed redeems for this API key. |
 
-Fires `identity.linked` ([webhook only](/sdk/webhooks)).
+Fires `identity.linked` on [webhooks](/sdk/webhooks) and the [game stream](/sdk/events).
 
 ## `unlink(userId, opts?)`
 
@@ -122,15 +188,15 @@ const { identities } = await junjo.identities.unlink("web:user_42" as UserId);
 
 | Code | Status | When |
 |------|--------|------|
-| `not_found` | 404 | The game has never seen this id. |
+| `not_found` | 404 | `userId` is an id the game has never seen. |
 | `bad_request` | 400 | The id is the person's only id in the game. |
 | `banned` | 403 | The person has an active game or group ban. |
 
-Fires `identity.unlinked` (webhook only).
+Fires `identity.unlinked` on webhooks and the [game stream](/sdk/events).
 
 ## Events
 
-`identity.linked` and `identity.unlinked` are game-scoped (no `groupId`) and arrive only through [webhooks](/sdk/webhooks). `userId` is rendered for each endpoint's preference; `linkedUserId`, `unlinkedUserId`, and `identities` are literal ids.
+`identity.linked`, `identity.unlinked` and `identity.updated` are game-scoped (no `groupId`), so they arrive through [webhooks](/sdk/webhooks) and the [game stream](/sdk/events) and never on a group stream. `userId` is rendered for each endpoint's preference; `linkedUserId`, `unlinkedUserId`, `changedUserId`, and `identities` are literal ids.
 
 ```ts
 switch (event.type) {
@@ -139,6 +205,10 @@ switch (event.type) {
     break;
   case "identity.unlinked":
     // event.userId, event.unlinkedUserId, event.identities: UserId[]
+    break;
+  case "identity.updated":
+    // event.userId (the person), event.changedUserId (the id whose name changed),
+    // event.displayName (string | null), event.changed: ["displayName"]
     break;
 }
 ```
@@ -153,3 +223,4 @@ Each API key and each webhook endpoint can carry an ordered `preferredNamespaces
 
 - [Identity API reference](/api-reference/identity): HTTP routes, the rendering rule, merge rules, rate limits.
 - [`useIdentities`](/react/use-identities): the React hook over `list`.
+- [Display names in the Identity API reference](/api-reference/identity#display-names): the HTTP routes and the picking rule.

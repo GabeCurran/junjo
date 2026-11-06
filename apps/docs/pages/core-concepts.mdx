@@ -28,12 +28,12 @@ Because identity is per-game unique but anchored on a shared JunjoUser, the same
 
 A JunjoUser is a **person**. A person can hold several external ids in one game, for example a game client id and a website login, so that every one of them resolves to the same memberships, roles, friends and bans. Ids are joined with a short **link code**: one id requests the code, the person enters it on the other surface, and that surface's backend redeems it. An id can later be unlinked, leaving everything with the remaining ids.
 
-An id's **namespace** is the text before its first `:` (`game:6f1c...` is in `game`, `web:user_42` in `web`). Namespaces matter in two places only:
+An id's **namespace** is the text before its first `:` (`mc:069a...` is in `mc`, `web:user_42` in `web`). Namespaces matter in two places only:
 
 - **Rendering.** API keys and webhook endpoints can list preferred namespaces. Wherever Junjo names a person, it shows the earliest-linked id in the first preferred namespace the person has an id in, otherwise the person's earliest-linked id in any namespace. Routes therefore do not echo the id a request used, and a caller must handle ids outside its own namespaces.
 - **Canonical formats.** A game can declare that every id in a namespace is, say, a lowercase hyphenated UUID; ids that break the format are rejected everywhere, so one account cannot be spelled two ways.
 
-People with a single id (everyone until a link) see no change. See the [identity reference](/api-reference/identity).
+A person with a single id is always named by that id. See the [identity reference](/api-reference/identity).
 
 ## Groups
 
@@ -83,7 +83,7 @@ The result reports `source: "override"` or `source: "role"` with `viaRoleId`, th
 Two consequences worth knowing:
 
 - A member's own deny beats any role grant, even an exact one, and a role's own wildcard grant beats a deny on a role it inherits from.
-- A member holding a low default role **alongside** a higher rank puts both in the same layer, so the default role's exact deny beats the rank's wildcard grant. Replace the default role on promotion rather than adding to it.
+- A member holding a low default role alongside a higher rank puts both in the same layer, so the default role's exact deny beats the rank's wildcard grant. Replace the default role on promotion rather than adding to it.
 
 ### Permission modes
 
@@ -94,9 +94,9 @@ Each game picks how keys are matched with the game config field `permissions.mod
 | `"exact"` (default) | Keys are opaque and case-sensitive. A check matches only an entry with the identical key. |
 | `"nodes"` | Keys are dot-separated and case-insensitive (stored lowercase). A trailing `.*` matches one or more further segments (`shop.*` matches `shop.buy` and `shop.buy.bulk`, not `shop`), and a bare `*` matches every key. Specificity: the exact key, then the longest matching `a.b.*`, down to `*`. |
 
-In `"nodes"` mode every write is validated: keys must be printable ASCII with no whitespace, must not start with `-` (store a deny entry instead), and may use `*` only as the whole last segment or as the whole key. Role names are also unique ignoring case. Switching a game into `"nodes"` lowercases stored keys and is refused (`409 permission_mode_conflict`) if any stored key would change meaning; switching back is refused while wildcard keys are stored. See [Permission modes](/api-reference/permissions#permission-modes).
+In `"nodes"` mode every write is validated: keys must be printable ASCII with no whitespace, must not start with `-` (store a deny entry instead), must not have an empty segment (`a..b`, `.a`, `a.`), and may use `*` only as the whole last segment or as the whole key. Role names are also unique ignoring case. Switching a game into `"nodes"` lowercases stored keys and is refused (`409 permission_mode_conflict`) if any stored key would change meaning; switching back is refused while wildcard keys are stored. See [Permission modes](/api-reference/permissions#permission-modes).
 
-By default the resolver looks **only at the queried group**: a grant on a parent group does not apply to its children. Pass `inherit` to walk the parent chain instead, nearest group first, resolving each group with the rules above; see [Inherited checks](/sdk/permissions#inherited-checks).
+By default the resolver looks only at the queried group: a grant on a parent group does not apply to its children. Pass `inherit` to walk the parent chain instead, nearest group first, resolving each group with the rules above; see [Inherited checks](/sdk/permissions#inherited-checks).
 
 Non-members, and members whose status is not `active`, resolve to denied with `source: "none"`. The full mechanics, including the resolution diagram, are on the [permissions reference](/api-reference/permissions).
 
@@ -136,13 +136,14 @@ Every set and lift, at either scope, appends a **BanHistory** row (`scope`, `kin
 
 ## Audit log
 
-Every mutating action writes an **AuditEntry**: `action` (a closed list of 34 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, the API key whose request wrote it, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban and identity actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
+Every mutating action writes an **AuditEntry**: `action` (a closed list of 34 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, the API key whose request wrote it, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game ban and identity actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
 
-## Events: SSE and webhooks
+## Events: streams and webhooks
 
-State changes emit typed events on two channels, and scope decides which:
+State changes emit typed events on three channels:
 
-- **Group-scoped events** (`member.joined`, `role.changed`, `role.updated`, `group.updated`, ...) are delivered to [SSE subscribers](/api-reference/events) of that group and to webhooks.
-- **User-scoped events** (`friend.request.sent`, `game.user.banned`, ...) have no group to subscribe to, so they are **webhook-only**.
+- The **game stream** ([`GET /v1/events`](/api-reference/events#get-v1events)) carries every event of the game in commit order, numbered by position, and resumes after a disconnect from the last position seen. Use it when an event must not be missed, for example a game server enforcing bans.
+- A **group stream** ([`GET /v1/events/:groupId`](/api-reference/events#get-v1eventsgroupid)) carries one group's events (`member.joined`, `role.changed`, `member.updated`, ...) for live UI. Events with no group (`friend.request.sent`, `game.user.banned`, `identity.linked`, ...) never appear on one.
+- **Webhooks** deliver every event type to an HTTP endpoint.
 
 Webhook endpoints choose event types (empty list = all), receive HMAC-signed deliveries with retries, and can output native Discord or Slack formats. Events are staged in the same transaction as the mutation and published only after commit, so a subscriber never sees a change that rolled back. See the [webhooks reference](/api-reference/webhooks).

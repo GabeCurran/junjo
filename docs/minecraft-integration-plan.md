@@ -1,8 +1,8 @@
 # Minecraft integration plan
 
-Status: approved Nov 5, 2026. First consumer: Kappable (Paper/Velocity plugin platform), first server: Merchant Villages (MV). Source requirements live in the Kappable repo (`kappable-mc/docs/JUNJO-REQUIREMENTS.md`, `JUNJO-HANDOFF.md`).
+Status: approved Nov 5, 2026. Phases 1 to 5 built by Nov 6, 2026 and committed on `feat/game-stream`; see [Status and follow-ups](#status-and-follow-ups). First consumer: KappaMC (Paper/Velocity plugin platform), first server: Merchant Villages (MV). Source requirements live in the KappaMC repo (`kappa-mc/docs/JUNJO-REQUIREMENTS.md`, `JUNJO-HANDOFF.md`).
 
-Guiding rule: every feature added here is a generic Junjo feature that any game can use. Minecraft-specific glue (Bukkit permission attachment, importing PermissionsEx data, world handling) stays in Kappable.
+Guiding rule: every feature added here is a generic Junjo feature that any game can use. Minecraft-specific glue (Bukkit permission attachment, importing PermissionsEx data, world handling) stays in KappaMC.
 
 ## Model mapping
 
@@ -20,7 +20,7 @@ Guiding rule: every feature added here is a generic Junjo feature that any game 
 
 ## Decisions
 
-1. Permission semantics are extended inside Junjo (not stored as opaque data), so Junjo's own checks, the dashboard and every SDK give the same answer as Kappable's local resolver.
+1. Permission semantics are extended inside Junjo (not stored as opaque data), so Junjo's own checks, the dashboard and every SDK give the same answer as KappaMC's local resolver.
 2. Precedence, applied in this order:
    1. Layer: the member's own overrides, then directly held roles, then their parents, then grandparents. A role reachable through several paths sits at its shortest distance. The first layer with any matching entry decides.
    2. Within that layer, the most specific match wins: exact key, then the longest `a.b.*`, down to `*`.
@@ -28,7 +28,7 @@ Guiding rule: every feature added here is a generic Junjo feature that any game 
 3. World and server contexts are deferred. The wire shape leaves room for a `context` field as an additive change.
 4. Identity linking v1 refuses a link when both sides hold a role above the default role, when either side is banned, or when the side being attached holds anything beyond its default-role membership.
 5. Read paths return the id in the caller's preferred namespace (see Phase 2).
-6. Game-wide ban events must reach game servers over a live stream no later than the Java SDK release.
+6. Game ban events must reach game servers over a live stream no later than the Java SDK release.
 7. Scoped (least-privilege) API keys are deferred.
 
 ## Phase 1: permission model
@@ -65,7 +65,7 @@ Guiding rule: every feature added here is a generic Junjo feature that any game 
 ## Phase 2: identity
 
 1. **Namespaces**: an id's namespace is the part before its first `:` (`mc:<uuid>`, `web:<id>`, `discord:<id>`). The namespace is only consulted when the caller has a preference or the game declares a format for it, so existing ids that happen to contain `:` behave exactly as today.
-2. **Canonical id formats**: game config can declare a format per namespace, from a small closed set (first: `uuid`, lowercase and hyphenated). Ids in a declared namespace that do not match are rejected with `400` on every path that accepts a user id, reads included, so `mc:ABC...` and `mc:abc...` can never become two users. Opt-in per game, independent of permission mode. Kappable declares `mc: uuid`.
+2. **Canonical id formats**: game config can declare a format per namespace, from a small closed set (first: `uuid`, lowercase and hyphenated). Ids in a declared namespace that do not match are rejected with `400` on every path that accepts a user id, reads included, so `mc:ABC...` and `mc:abc...` can never become two users. Opt-in per game, independent of permission mode. KappaMC declares `mc: uuid`.
 3. **Preferred namespaces**: a new optional ordered list on ApiKey (set at mint time) and on WebhookEndpoint, for example `["discord", "mc"]`. Read paths, SSE events and webhook payloads that name a user return:
    1. the oldest identity in the first listed namespace the person has an id in
    2. otherwise the oldest identity overall, which may be in any namespace (documented; callers must handle ids outside their namespaces)
@@ -77,18 +77,67 @@ Guiding rule: every feature added here is a generic Junjo feature that any game 
 7. **Unlink**: the removed id becomes a fresh, empty JunjoUser; roles stay with the remaining identities. Refused while the person is banned.
 8. **Audit**: new actions `identity.linked` and `identity.unlinked`. API keys get a display name, and audit entries record which key acted.
 
-## Phase 3: game-wide live stream
+## Phase 3: game stream
 
-Game-scoped events (`game.user.banned`, `game.user.unbanned`, `identity.linked`, and the other user-scoped events) are webhook-only today. Add a game-level SSE stream with the same ordering and resync guarantees as group streams, so every server on a network sees a ban immediately. Must ship with or before Phase 4.
+Game-scoped events (`game.user.banned`, `game.user.unbanned`, `identity.linked`, and the other user-scoped events) are webhook-only today. Add a game stream (SSE) so every server on a network sees a ban immediately. Must ship with or before Phase 4. Settled Nov 5, 2026 (with KappaMC's `JUNJO-MV-NEEDS.md` items 4 and 5 folded in):
+
+1. **`GET /v1/events`** carries every event of the game (group events included). Optional `?types=a,b` uses the same type list as webhook endpoints; an unknown type is `400`. Per game only: games sharing a `networkId` do not see each other's events. Any per-game API key may open it.
+2. **Durable event log.** Every event is written to an `EventLog` table in the transaction that caused it, numbered from a per-game counter. Positions are gapless and follow commit order within a game. Retention is 24 hours by default (`EVENT_LOG_RETENTION_HOURS`).
+3. **Positions and resume.** The game stream sends the position on the SSE `id:` line (the event's own random `id` is unchanged). A client resumes with `Last-Event-ID`; a position the log can no longer serve answers `410 stream_position_expired`, meaning "load a fresh snapshot". Heartbeats carry the stream's position.
+4. **Snapshot position.** `GET /v1/events/position` and a `Junjo-Stream-Position` header on the reads an SDK cache loads from. The position is read before the data, so a snapshot holds every event up to it and possibly a few after; applying an event twice must be harmless.
+5. **Several server instances.** Each instance reads new log rows for games with open streams on a local write and on a short poll (`EVENT_STREAM_POLL_MS`, default 1 s), so streams see writes from every instance.
+6. **Limits.** 10 open game streams per key and 200 per game per instance (`429 too_many_streams`); a client that stops reading is closed after 30 s and resumes from its position.
+7. **New event `member.updated`** (`changed`: `metadata`, `notes`, `overrides`), on group streams, the game stream and webhooks.
+8. **SDKs.** TS `junjo.events.subscribe` reconnects with backoff and resumes from its position; React gets a hook for game events. Group streams keep their behaviour.
+
+## Phase 3b: safe writes and import (before Phase 4)
+
+From KappaMC's `JUNJO-MV-NEEDS.md` items 1, 3, 6, 7 and 8; the Java SDK's offline write queue depends on these.
+
+1. `Idempotency-Key` on writes: a retry with the same key returns the original result.
+2. A version per member and conditional writes (`If-Match`, refused with `412` on a mismatch), so a queued write replayed after a newer change is refused.
+3. Bulk membership import (direct add with roles, overrides and metadata in one atomic call).
+4. An optional past `bannedAt` on game bans, so imported bans keep their original dates.
+5. Nodes mode rejects empty key segments (`a..b`, `a.`, `.a`), and switching to nodes mode is refused if stored keys have them.
 
 ## Phase 4: Java SDK (`packages/sdk-java`)
 
-Separate plan once Phases 1 to 3 fix the wire shapes. Settled: Java 21, Maven Central, own Gradle build, JDK `java.net.http` plus Gson, no Minecraft imports, local resolver that passes the conformance vectors (lowercasing with `Locale.ROOT`), local cache, offline write queue, SSE reconnect with resync, retries and timeouts.
+Separate plan once Phases 1 to 3b fix the wire shapes. Settled: Java 21, Maven Central, own Gradle build, JDK `java.net.http` plus Gson, no Minecraft imports, local resolver that passes the conformance vectors (lowercasing with `Locale.ROOT`), local cache, offline write queue, SSE reconnect with resync, retries and timeouts.
+
+## Phase 5: running well on a network
+
+KappaMC's tier 2 items, after the Java SDK:
+
+- Mutes with reason, issuer and expiry, built as typed sanctions
+- Parties: size caps per group kind, cleanup of empty and abandoned groups, limits on rapid create and delete
+- A last-known display name per linked id
+- A full game export (roles, members, bans, identities, audit)
+
+## Status and follow-ups
+
+| Phase | State |
+|---|---|
+| 1 Permission model | Committed on `feat/game-stream`. |
+| 2 Identity | Committed on `feat/game-stream`. |
+| 3 Game stream | Committed on `feat/game-stream`: server, TypeScript SDK (`junjo.events`), React (`useGameEvents`), docs. |
+| 3b Safe writes and import | Committed on `feat/game-stream`: server, TypeScript SDK, React, Java, docs. Ban and sanction lifts with nothing active answer `404 not_found` with `details.reason: "not_active"`. |
+| 4 Java SDK | Committed on `feat/game-stream` in `packages/sdk-java` (Gradle wrapper, Java 21 target, Gson only). Unit and conformance tests plus live tests against a real server. Not published. |
+| 5 Network features | Committed on `feat/game-stream`: sanctions, group kind limits, display names, game export; server, TypeScript SDK (`junjo.export()`), React (`useSanctions`), Java, docs. |
+
+Accepted gaps, documented:
+
+- Group streams stay single-instance and have no resume; the game stream covers both.
+- C++, Unreal and Roblox SDKs do not know the event types added since Phase 2 (`identity.*`, `member.updated`, sanctions); they skip unknown types safely.
+
+Follow-ups:
+
+- Publish the Java SDK to Maven Central (needs Gabe's signing key and Central account).
+- Dashboard screens for sanctions and group kind limits (the API and SDKs have them; the dashboard has only the `canExport` toggle).
 
 ## Later
 
-- Live-event ordering and resync review for cross-server signals (handoff question 4)
-- Hosting: Railway vs self-hosting per network (question 5)
-- Dev setup without Docker Desktop (question 6), after Gabe's Docker CLI/WSL migration. Junjo moves off 5433 to its own fixed range, 25600-25699 (Kappable owns 25700-25799). Until then, tests run against a Postgres container started with the Docker CLI on 25601, and the dev scripts stay untouched.
+- Postgres `LISTEN`/`NOTIFY` as the cross-instance wake-up for game streams, replacing the poll delay
+- Hosting: Railway vs self-hosting per network
+- Dev setup without Docker Desktop, after Gabe's Docker CLI/WSL migration. Junjo moves off 5433 to its own fixed range, 25600-25699 (KappaMC owns 25700-25799). Until then, tests run against a Postgres container started with the Docker CLI on 25601, and the dev scripts stay untouched.
 - World and server contexts on permission entries
 - Scoped API keys

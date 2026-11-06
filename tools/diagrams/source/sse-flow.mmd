@@ -19,7 +19,7 @@ sequenceDiagram
     Server-->>SDK: 200 text/event-stream
   end
 
-  Note over Hooks,HubS: Event frames. Group-scoped events only: user-scoped events<br/>(friend.*, game.user.*) have no groupId and go to webhooks, never SSE.
+  Note over Hooks,HubS: Event frames. Group-scoped events only: events with no groupId<br/>(friend.*, game.user.*, identity.*) reach webhooks and the game stream, never a group stream.
   loop while the stream is open
     HubS-->>Server: publish(event) from a mutation route
     Server-->>SDK: id: evt_...<br/>event: member.joined<br/>data: JSON event
@@ -35,4 +35,4 @@ sequenceDiagram
   HubR->>Hooks: fan onClose to every listener<br/>(surfaces as JunjoStreamClosedError)
   Hooks->>HubR: resubscribe (remount / groupId change opens a fresh stream)
 
-  Note over Hooks,HubS: No replay. The hub is in-memory and per-process: events published between<br/>the close and the resubscribe are lost, and lastEventId is not honored. That is why<br/>there is no silent auto-reconnect: a hidden gap would look like consistent state.<br/>Use webhooks or audit.list for durable delivery.
+  Note over Hooks,HubS: No replay. The hub is in-memory and per-process: events published between<br/>the close and the resubscribe are lost, and lastEventId is not honored. That is why<br/>there is no silent auto-reconnect: a hidden gap would look like consistent state.<br/>Use the game stream, webhooks or audit.list for durable delivery.

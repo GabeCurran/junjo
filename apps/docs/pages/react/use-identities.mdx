@@ -1,6 +1,6 @@
 # useIdentities
 
-Returns every id held by the person a user id belongs to, earliest-linked first. Fetch-on-mount and refetch-driven (no SSE subscription); `identity.linked` / `identity.unlinked` fire as [webhooks](/api-reference/webhooks) only. See [`junjo.identities`](/sdk/identities) for what linking does.
+Returns every id held by the person a user id belongs to, earliest-linked first. Fetch-on-mount and refetch-driven (no stream subscription of its own); `identity.linked` / `identity.unlinked` fire on [webhooks](/api-reference/webhooks) and the game stream, so a [`useGameEvents`](/react/use-game-events) handler filtered to them can call `refetch`. See [`junjo.identities`](/sdk/identities) for what linking does.
 
 ```tsx
 import { useIdentities, useJunjo } from "@junjo.io/react";
@@ -50,12 +50,13 @@ interface LinkedIdentity {
   userId: UserId;
   namespace: string | null;
   linkedAt: Date;
+  displayName: string | null;
 }
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `identities` | The person's ids, earliest-linked first. `[]` until the first response lands, and `[]` for an id the game has never seen. |
+| `identities` | The person's ids, earliest-linked first, each with its own `displayName` (or `null`). `[]` until the first response lands, and `[]` for an id the game has never seen. |
 | `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
 | `error` | The most recent fetch error (for example `invalid_user_id` when the id does not match its namespace's declared format). Cleared when the next fetch starts. |
 | `refetch` | Re-runs the fetch. |
@@ -64,7 +65,7 @@ Changing `userId` refetches. The shared fetch engine (argument-change refetches,
 
 ## Mutations
 
-`junjo.identities.requestLinkCode(userId)`, `junjo.identities.redeemLinkCode({ code, userId })`, and `junjo.identities.unlink(userId)` are the write surface; call `refetch` after a link or unlink. Pair them with [`useMutation`](/react/use-mutation) for pending and error state:
+`junjo.identities.requestLinkCode(userId)`, `junjo.identities.redeemLinkCode({ code, userId })`, `junjo.identities.unlink(userId)`, and `junjo.identities.setDisplayName(userId, name)` are the write surface; call `refetch` after a link, unlink, or name change. A name change fires `identity.updated` on the game stream. Pair them with [`useMutation`](/react/use-mutation) for pending and error state:
 
 ```tsx
 import { useIdentities, useJunjo, useMutation } from "@junjo.io/react";

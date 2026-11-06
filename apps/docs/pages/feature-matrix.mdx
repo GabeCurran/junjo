@@ -71,7 +71,7 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 | Revoke | Full | Full, client | Full | Full | Native-only |
 | Accept / decline | Full | Full, client | Full | Full | Native-only |
 
-## Game-wide bans
+## Game bans
 
 | Operation | TS | React | Roblox | C++ | UE BP |
 |---|---|---|---|---|---|
@@ -147,4 +147,4 @@ Identity linking ships in the TypeScript SDK and React first (`useIdentities` fo
 
 **C++** covers the full REST surface with a `Result`-based never-throw contract, cancellation tokens, a caller-owned-executor async facade, SSE, and webhook verification that accepts unknown event types verbatim by design. The one surface it does not bind is the Express-style webhook receiving middleware, which is a Node framework helper; verification and signing are present.
 
-**Unreal** binds a deliberately scoped gameplay slice to Blueprint and delegates (key info, permission checks, group get/create/list/join/leave/kick, member list, game-wide bans, live event streams), with everything else reachable through the native `junjo::` client, whose capabilities equal the C++ column exactly.
+**Unreal** binds a deliberately scoped gameplay slice to Blueprint and delegates (key info, permission checks, group get/create/list/join/leave/kick, member list, game bans, live event streams), with everything else reachable through the native `junjo::` client, whose capabilities equal the C++ column exactly.

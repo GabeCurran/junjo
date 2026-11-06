@@ -102,7 +102,7 @@ The diagram above is committed at `tools/diagrams/source/permission-resolution.m
 
 A non-active member short-circuits the resolver to `none` regardless of stored roles or overrides; the lifecycle gate is enforced here, not by mutating role / override rows on transition.
 
-Existing data keeps its old answers: a role with only grant entries and no parents resolves exactly as roles did before denies and inheritance existed.
+Denies and parent roles only change the answer for roles that use them: a role with only grant entries and no parents grants the keys it lists.
 
 ## Permission modes
 
@@ -112,7 +112,7 @@ Each game sets `permissions.mode` in its game config (`PATCH /v1/admin/games/:ga
 |---|---|---|
 | Key comparison | Verbatim, case-sensitive | Case-insensitive; keys are stored lowercase and checks are lowercased |
 | Wildcards | None; `*` is an ordinary character | A trailing `.*` matches one or more further segments; a bare `*` matches every key |
-| Key rules on write | 1-128 characters | Also: printable ASCII, no whitespace, no leading `-`, `*` only as the whole last segment or the whole key |
+| Key rules on write | 1-128 characters | Also: printable ASCII, no whitespace, no leading `-`, no empty segment (`a..b`, `.a`, `a.`), `*` only as the whole last segment or the whole key |
 | Role names | Unique per group | Unique per group ignoring case |
 
 Lowercasing covers ASCII letters only, so every implementation folds keys identically. In `"nodes"` mode, `shop.*` matches `shop.buy` and `shop.buy.bulk` but not `shop` itself.
@@ -123,7 +123,12 @@ Lowercasing covers ASCII letters only, so every implementation folds keys identi
 
 Switching modes never changes what a stored key means:
 
-- **`exact` to `nodes`** lowercases every stored entry and override key in the same transaction (merging catalog keys that collide). It is refused with `409 permission_mode_conflict` when any stored key contains `*`, breaks the key rules above, or collides with another key on the same role or member once lowercased, or when two role names in one group differ only by case. The message names the first few offending keys or roles.
+- **`exact` to `nodes`** lowercases every stored entry and override key in the same transaction (merging catalog keys that collide). It is refused with `409 permission_mode_conflict` when:
+  - any stored key contains `*` or breaks the key rules above;
+  - a stored key collides with another key on the same role or member once lowercased;
+  - two role names in one group differ only by case.
+
+  The message names the first few offending keys or roles.
 - **`nodes` to `exact`** is refused with `409 permission_mode_conflict` while any stored entry or override key contains `*`, since it would stop matching as a wildcard.
 
 A successful switch writes a `game.permissions.mode.set` audit entry (`{ before, after, rewrittenKeys }`) and drops every cached answer.
@@ -172,7 +177,7 @@ Returns the canonical `PermissionCheckResult`. Read-through cache.
 
 ### Inheritance
 
-This section is about **group** inheritance (parent groups). Role inheritance (parent roles inside one group) always applies and is part of resolving each group; see [roles](/api-reference/roles#role-parents).
+This section is about group inheritance (parent groups). Role inheritance (parent roles inside one group) always applies and is part of resolving each group; see [roles](/api-reference/roles#role-parents).
 
 Groups form a parent/child hierarchy (`setParent` / `listChildren`). By default a check ignores it entirely: resolution runs against direct membership in the queried group and nothing else. Pass `inherit=true` to opt into a server-side walk.
 
