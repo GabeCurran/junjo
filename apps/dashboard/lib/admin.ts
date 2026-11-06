@@ -381,15 +381,20 @@ export function setAdminMemberPermissionOverride(
   );
 }
 
+// `context` selects a contextual override; absent clears the global one.
 export function clearAdminMemberPermissionOverride(
   gameId: string,
   groupId: string,
   userId: string,
   permission: string,
   opts?: MutationOptions,
+  context?: Record<string, string>,
 ): Promise<void> {
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(context ?? {})) query.set(`context.${k}`, v);
+  const suffix = query.size > 0 ? `?${query}` : "";
   return adminDelete(
-    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+    `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}${suffix}`,
     opts,
   );
 }

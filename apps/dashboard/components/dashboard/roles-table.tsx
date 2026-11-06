@@ -3,7 +3,13 @@
 
 import { ShieldCheck } from "lucide-react";
 
-import { type AdminRole, roleEntries } from "../../lib/admin-shared";
+import {
+  type AdminRole,
+  formatPermissionContext,
+  isContextual,
+  permissionEntryId,
+  roleEntries,
+} from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { CreateRoleDialog } from "./create-role-dialog";
@@ -104,26 +110,30 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
                         <span className="text-xs text-muted-foreground">no entries</span>
                       ) : (
                         <div className="flex max-w-md flex-wrap gap-1">
-                          {roleEntries(role).map((e) =>
-                            e.value ? (
+                          {roleEntries(role).map((e) => {
+                            const where = isContextual(e) ? formatPermissionContext(e.context) : "";
+                            return e.value ? (
                               <Badge
-                                key={e.permission}
+                                key={permissionEntryId(e)}
                                 variant="muted"
                                 className="font-mono text-xs"
+                                title={where ? `granted in ${where}` : undefined}
                               >
                                 {e.permission}
+                                {where ? ` (${where})` : null}
                               </Badge>
                             ) : (
                               <Badge
-                                key={e.permission}
+                                key={permissionEntryId(e)}
                                 variant="destructive"
                                 className="font-mono text-xs"
-                                title="denied"
+                                title={where ? `denied in ${where}` : "denied"}
                               >
                                 deny {e.permission}
+                                {where ? ` (${where})` : null}
                               </Badge>
-                            ),
-                          )}
+                            );
+                          })}
                         </div>
                       )}
                     </td>

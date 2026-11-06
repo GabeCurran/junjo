@@ -12,8 +12,13 @@ import {
 import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   type AdminPermissionDef,
+  type AdminPermissionEntry,
   type AdminRole,
   type RoleEntryState,
+  formatPermissionContext,
+  isContextual,
+  permissionEntryId,
+  roleContextEntries,
   roleEntries,
   roleEntryState,
 } from "../../lib/admin-shared";
@@ -120,13 +125,16 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
     setOptimisticRoles((rs) =>
       rs.map((r) => {
         if (r.id !== roleId) return r;
-        const entries = roleEntries(r).filter((e) => e.permission !== permission);
+        // Cells edit the global entry; contextual entries for the key stay.
+        const entries = roleEntries(r).filter(
+          (e) => e.permission !== permission || isContextual(e),
+        );
         if (next !== "none") entries.push({ permission, value: next === "grant" });
         entries.sort((x, y) => (x.permission < y.permission ? -1 : 1));
         return {
           ...r,
           entries,
-          permissions: entries.filter((e) => e.value).map((e) => e.permission),
+          permissions: entries.filter((e) => e.value && !isContextual(e)).map((e) => e.permission),
         };
       }),
     );
@@ -200,12 +208,13 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
       <CardHeader className="space-y-1.5">
         <CardTitle className="text-base">Permissions matrix</CardTitle>
         <CardDescription>
-          Each cell shows the entry stored on that role for that key: granted, denied, or none.
-          Clicking a cell moves it from none to granted to denied and back to none. A role also
-          inherits its parent roles' entries, and in nodes mode a wildcard entry covers more
-          specific keys, so an empty cell does not mean the role lacks access. Use the permission
-          check to see a member's effective access. The first write of a never-before-seen key
-          registers it into this game's catalog automatically.{" "}
+          Each cell shows the global entry stored on that role for that key: granted, denied, or
+          none. Clicking a cell moves it from none to granted to denied and back to none. Entries
+          limited to a context are listed under the cell with their context and are not changed by
+          clicking. A role also inherits its parent roles' entries, and in nodes mode a wildcard
+          entry covers more specific keys, so an empty cell does not mean the role lacks access. Use
+          the permission check to see a member's effective access. The first write of a
+          never-before-seen key registers it into this game's catalog automatically.{" "}
           {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"} x{" "}
           {numberFormatter.format(allKeys.length)} {allKeys.length === 1 ? "key" : "keys"}.
         </CardDescription>
@@ -380,6 +389,7 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
                       onToggle={() => onToggle(role.id, key, state)}
                       ariaLabel={`${key} for ${role.name}: ${state === "none" ? "no entry" : state === "grant" ? "granted" : "denied"}. ${NEXT_ACTION[state]} ${key} for ${role.name}.`}
                     />
+                    <ContextEntries entries={roleContextEntries(role, key)} />
                   </td>
                 );
               })}
@@ -387,6 +397,26 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Read-only list of a cell's contextual entries.
+function ContextEntries({ entries }: { entries: AdminPermissionEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-1">
+      {entries.map((e) => (
+        <Badge
+          key={permissionEntryId(e)}
+          variant={e.value ? "outline" : "destructive"}
+          className="w-fit font-mono text-[10px]"
+          title={`${e.value ? "granted" : "denied"} in ${formatPermissionContext(e.context)}`}
+        >
+          {e.value ? "" : "deny "}
+          {formatPermissionContext(e.context)}
+        </Badge>
+      ))}
     </div>
   );
 }

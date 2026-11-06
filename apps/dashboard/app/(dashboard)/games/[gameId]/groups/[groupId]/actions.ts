@@ -250,10 +250,18 @@ export async function clearMemberPermissionOverrideAction(
   groupId: string,
   userId: string,
   permission: string,
+  context?: Record<string, string>,
 ): Promise<ClearPermissionOverrideResult> {
   if (permission.length === 0) return { ok: false, error: "permission must not be empty" };
   try {
-    await clearAdminMemberPermissionOverride(gameId, groupId, userId, permission);
+    await clearAdminMemberPermissionOverride(
+      gameId,
+      groupId,
+      userId,
+      permission,
+      undefined,
+      context,
+    );
     refreshGroup(gameId, groupId);
     return { ok: true };
   } catch (err) {
