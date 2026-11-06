@@ -197,7 +197,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.patch(
     "/admin/games/:gameId/config",
     adminAuthMiddleware(opts.adminToken),
-    updateAdminGameConfigHandler(prisma),
+    updateAdminGameConfigHandler(prisma, hub),
   );
   v1.get(
     "/admin/games/:gameId/api-keys",
