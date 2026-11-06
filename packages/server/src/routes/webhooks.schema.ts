@@ -15,6 +15,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "member.unbanned",
   "role.created",
   "role.changed",
+  "role.updated",
   "role.deleted",
   "permission.granted",
   "permission.revoked",

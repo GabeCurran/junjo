@@ -33,6 +33,9 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   blocks: {
     enabled: true,
   },
+  permissions: {
+    mode: "exact",
+  },
 };
 
 // Resolves a partial config against `DEFAULT_GAME_CONFIG`. Pure function;
@@ -51,8 +54,10 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
 export function resolveGameConfig(partial: PartialGameConfig | null | undefined): GameConfig {
   const f = partial?.friends;
   const b = partial?.blocks;
+  const p = partial?.permissions;
   const dF = DEFAULT_GAME_CONFIG.friends;
   const dB = DEFAULT_GAME_CONFIG.blocks;
+  const dP = DEFAULT_GAME_CONFIG.permissions;
 
   const visibilityAllowed = canonicalVisibility(f?.visibility?.allowed ?? dF.visibility.allowed);
   const visibilityDefault: FriendsListVisibility =
@@ -86,6 +91,9 @@ export function resolveGameConfig(partial: PartialGameConfig | null | undefined)
     },
     blocks: {
       enabled: b?.enabled ?? dB.enabled,
+    },
+    permissions: {
+      mode: p?.mode ?? dP.mode,
     },
   };
 }
@@ -126,6 +134,10 @@ export function mergeGameConfig(
 
   if (patch.blocks) {
     merged.blocks = { ...(existing?.blocks ?? {}), ...patch.blocks };
+  }
+
+  if (patch.permissions) {
+    merged.permissions = { ...(existing?.permissions ?? {}), ...patch.permissions };
   }
 
   return merged;

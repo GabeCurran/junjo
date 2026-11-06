@@ -487,16 +487,19 @@ export function fetchAdminGamePermissions(
   );
 }
 
+// `value` false stores a deny entry; omitted, the server stores a grant.
 export function grantAdminRolePermission(
   gameId: string,
   roleId: string,
   permission: string,
-  opts?: MutationOptions,
+  opts?: MutationOptions & { value?: boolean },
 ): Promise<AdminRole> {
-  return adminMutate<{ permission: string }, AdminRole>(
+  const body: { permission: string; value?: boolean } = { permission };
+  if (opts?.value !== undefined) body.value = opts.value;
+  return adminMutate<{ permission: string; value?: boolean }, AdminRole>(
     "POST",
     `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}/permissions`,
-    { permission },
+    body,
     opts,
   );
 }

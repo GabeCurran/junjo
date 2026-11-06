@@ -52,15 +52,40 @@ Rejoining after `left` or `kicked` reactivates the same row (keeping the origina
 
 ## Roles and permissions
 
-A **Role** belongs to a group and has a `name` (unique per group), an integer `priority` (higher = more authority; it orders lists and breaks resolution ties), an optional `color`, and a set of granted permission keys. There is no built-in permission list: permission keys are strings you invent (`"kick"`, `"edit-motd"`), auto-registered into a per-game catalog on first grant. A role with members cannot be deleted (`409 role_has_members`).
+A **Role** belongs to a group and has a `name` (unique per group), an integer `priority` (higher = more authority; it orders lists and breaks reporting ties), an optional `color`, free-form `metadata`, a list of **entries**, and optional **parent roles**. There is no built-in permission list: permission keys are strings you invent (`"kick"`, `"edit-motd"`), auto-registered into a per-game catalog on first write. A role with members cannot be deleted (`409 role_has_members`).
 
-Permission checks (`junjo.can` / `junjo.check`) resolve in a fixed order:
+- **Entries** are `{ permission, value }` pairs: `value: true` grants the key, `value: false` denies it. A role's `permissions` field lists only its granted keys; `entries` lists grants and denies.
+- **Parents**: a role can inherit from up to 32 other roles in the same group, and those from theirs, up to 100 levels. Cycles are rejected. A parent's entries apply to the child one layer further from the member.
+- **Members** can also carry per-member **overrides**, which work like entries of their own.
 
-1. **Override**: an explicit per-member override for that key wins in both directions (grant or deny), `source: "override"`.
-2. **Role**: otherwise, if any of the member's roles grants the key, allowed via the highest-priority such role, `source: "role"`.
-3. **Default**: otherwise denied, `source: "default"`.
+### How a check is resolved
 
-By default the resolver looks **only at the queried group**: a grant on a parent group does not apply to its children. Pass `inherit` to walk the parent chain instead, nearest group first; see [Inherited checks](/sdk/permissions#inherited-checks).
+A check answers one question for one member in one group. The member's own overrides come first, then the roles they hold directly, then those roles' parents, then grandparents, and so on. Each of these is a **layer**; a role reachable through several parent paths sits in the layer of its shortest path.
+
+1. **Layer**: the first layer with any matching entry decides. Later layers are never consulted.
+2. **Specificity**: within that layer, the most specific matching key wins (see wildcards below).
+3. **Deny wins** between entries of the same layer and specificity.
+4. Nothing matched: denied, `source: "default"`.
+
+The result reports `source: "override"` or `source: "role"` with `viaRoleId`, the role whose entry decided. When several roles in the deciding layer agree, the highest-priority one is reported (ties broken by role id).
+
+Two consequences worth knowing:
+
+- A member's own deny beats any role grant, even an exact one, and a role's own wildcard grant beats a deny on a role it inherits from.
+- A member holding a low default role **alongside** a higher rank puts both in the same layer, so the default role's exact deny beats the rank's wildcard grant. Replace the default role on promotion rather than adding to it.
+
+### Permission modes
+
+Each game picks how keys are matched with the game config field `permissions.mode`:
+
+| Mode | Matching |
+|---|---|
+| `"exact"` (default) | Keys are opaque and case-sensitive. A check matches only an entry with the identical key. |
+| `"nodes"` | Keys are dot-separated and case-insensitive (stored lowercase). A trailing `.*` matches one or more further segments (`shop.*` matches `shop.buy` and `shop.buy.bulk`, not `shop`), and a bare `*` matches every key. Specificity: the exact key, then the longest matching `a.b.*`, down to `*`. |
+
+In `"nodes"` mode every write is validated: keys must be printable ASCII with no whitespace, must not start with `-` (store a deny entry instead), and may use `*` only as the whole last segment or as the whole key. Role names are also unique ignoring case. Switching a game into `"nodes"` lowercases stored keys and is refused (`409 permission_mode_conflict`) if any stored key would change meaning; switching back is refused while wildcard keys are stored. See [Permission modes](/api-reference/permissions#permission-modes).
+
+By default the resolver looks **only at the queried group**: a grant on a parent group does not apply to its children. Pass `inherit` to walk the parent chain instead, nearest group first, resolving each group with the rules above; see [Inherited checks](/sdk/permissions#inherited-checks).
 
 Non-members, and members whose status is not `active`, resolve to denied with `source: "none"`. The full mechanics, including the resolution diagram, are on the [permissions reference](/api-reference/permissions).
 
@@ -100,13 +125,13 @@ Every set and lift, at either scope, appends a **BanHistory** row (`scope`, `kin
 
 ## Audit log
 
-Every mutating action writes an **AuditEntry**: `action` (a closed list of 29 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
+Every mutating action writes an **AuditEntry**: `action` (a closed list of 32 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
 
 ## Events: SSE and webhooks
 
 State changes emit typed events on two channels, and scope decides which:
 
-- **Group-scoped events** (`member.joined`, `role.changed`, `group.updated`, ...) are delivered to [SSE subscribers](/api-reference/events) of that group and to webhooks.
+- **Group-scoped events** (`member.joined`, `role.changed`, `role.updated`, `group.updated`, ...) are delivered to [SSE subscribers](/api-reference/events) of that group and to webhooks.
 - **User-scoped events** (`friend.request.sent`, `game.user.banned`, ...) have no group to subscribe to, so they are **webhook-only**.
 
 Webhook endpoints choose event types (empty list = all), receive HMAC-signed deliveries with retries, and can output native Discord or Slack formats. Events are staged in the same transaction as the mutation and published only after commit, so a subscriber never sees a change that rolled back. See the [webhooks reference](/api-reference/webhooks).

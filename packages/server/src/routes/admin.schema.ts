@@ -133,11 +133,19 @@ export const ADMIN_ROLE_NAME_MAX_LENGTH = 64;
 const ADMIN_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const ADMIN_HEX_COLOR_MESSAGE = "must be a 7-character hex color (e.g. #ff5050)";
 
+const ADMIN_ROLE_METADATA_MAX_SERIALIZED = 16 * 1024;
+const adminRoleMetadata = z
+  .record(z.unknown())
+  .refine((m) => JSON.stringify(m).length <= ADMIN_ROLE_METADATA_MAX_SERIALIZED, {
+    message: `metadata exceeds ${ADMIN_ROLE_METADATA_MAX_SERIALIZED} serialized characters`,
+  });
+
 export const adminCreateRoleBody = z.object({
   name: z.string().min(1).max(ADMIN_ROLE_NAME_MAX_LENGTH),
   priority: z.number().int(),
   color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).optional(),
   isDefault: z.boolean().optional(),
+  metadata: adminRoleMetadata.optional(),
 });
 
 export const adminUpdateRoleBody = z
@@ -146,6 +154,7 @@ export const adminUpdateRoleBody = z
     priority: z.number().int().optional(),
     color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).nullable().optional(),
     isDefault: z.boolean().optional(),
+    metadata: adminRoleMetadata.optional(),
   })
   .refine((d) => Object.values(d).some((v) => v !== undefined), {
     message: "at least one field is required",
@@ -154,6 +163,7 @@ export const adminUpdateRoleBody = z
 // Mirrors the per-game `grantPermissionBody`.
 export const adminGrantPermissionBody = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
+  value: z.boolean().optional(),
 });
 
 // Mirrors the per-game `setRelationshipBody` / `clearRelationshipQuery`;

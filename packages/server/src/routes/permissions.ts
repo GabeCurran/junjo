@@ -1,31 +1,45 @@
-import type { GroupId, PermissionCheckResult, RoleId } from "@junjo.io/shared";
+import type { GroupId, PermissionCheckResult, PermissionMode } from "@junjo.io/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
+import { loadPermissionMode } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
+import {
+  MAX_ROLE_DEPTH,
+  type ResolverRole,
+  candidateKeys,
+  resolveMemberPermission,
+} from "../permissionResolve.js";
 import { MAX_PARENT_DEPTH } from "./groups.schema.js";
 import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.schema.js";
 
 type PermissionsClient = PrismaClient | Prisma.TransactionClient;
 
-// Memoizes external userId -> JunjoUser id for the span of one request.
-// A batch repeats the same userId across most of its entries and an
+// Request-scoped lookups shared by every check in one request: the
+// game's permission mode, read once, and external userId -> JunjoUser
+// id. A batch repeats the same userId across most of its entries and an
 // inherited walk repeats it at every level; without this each repeat is
-// another identity lookup.
-export class IdentityMemo {
-  private readonly entries = new Map<string, string | null>();
+// another lookup.
+export class CheckContext {
+  private readonly identities = new Map<string, string | null>();
+  private modePromise: Promise<PermissionMode> | null = null;
 
   constructor(
     private readonly prisma: PermissionsClient,
     private readonly gameId: string,
   ) {}
 
+  mode(): Promise<PermissionMode> {
+    this.modePromise ??= loadPermissionMode(this.prisma, this.gameId);
+    return this.modePromise;
+  }
+
   async resolve(externalUserId: string): Promise<string | null> {
-    const hit = this.entries.get(externalUserId);
+    const hit = this.identities.get(externalUserId);
     if (hit !== undefined) return hit;
     const id = await findJunjoUserId(this.prisma, this.gameId, externalUserId);
-    this.entries.set(externalUserId, id);
+    this.identities.set(externalUserId, id);
     return id;
   }
 }
@@ -64,10 +78,52 @@ export class LevelMemo {
   }
 }
 
-// Resolution order for one group: missing membership / non-active status
-// returns `none`; an override (in either direction) wins; otherwise any
-// role with the permission grants it (highest-priority role wins, ties
-// broken by roleId desc for stability); finally `default`.
+interface ReachableRoleRow {
+  id: string;
+  priority: number;
+  depth: number;
+}
+
+// The roles a member holds directly plus every role reachable from them
+// through role parents, restricted to the member's group, as one
+// recursive CTE. UNION over (id, depth) keeps the working set bounded by
+// roles x depth even when many paths reach the same role. `depth` is
+// bounded by `MAX_ROLE_DEPTH`, which only matters against corrupted
+// state because parent writes are cycle-checked.
+async function loadReachableRoles(
+  prisma: PermissionsClient,
+  groupId: string,
+  groupMemberId: string,
+): Promise<ReachableRoleRow[]> {
+  return prisma.$queryRaw<ReachableRoleRow[]>(
+    Prisma.sql`
+      WITH RECURSIVE reach AS (
+        SELECT mr."roleId" AS id, 0 AS depth
+        FROM "MemberRole" mr
+        JOIN "Role" r ON r.id = mr."roleId"
+        WHERE mr."groupMemberId" = ${groupMemberId}
+          AND r."groupId" = ${groupId}
+        UNION
+        SELECT rp."parentRoleId", reach.depth + 1
+        FROM reach
+        JOIN "RoleParent" rp ON rp."roleId" = reach.id
+        JOIN "Role" p ON p.id = rp."parentRoleId"
+        WHERE reach.depth < ${MAX_ROLE_DEPTH}
+          AND p."groupId" = ${groupId}
+      )
+      SELECT r.id, r.priority, MIN(reach.depth)::int AS depth
+      FROM reach
+      JOIN "Role" r ON r.id = reach.id
+      GROUP BY r.id, r.priority
+    `,
+  );
+}
+
+// Resolution for one group. Membership and status gate first: a missing
+// membership or a non-active status returns `none`. Otherwise the
+// layered resolver in `permissionResolve.ts` decides from the member's
+// overrides and the roles reachable from their direct roles, reading
+// only the entries whose keys could match the queried permission.
 //
 // Non-active members (`left` / `kicked` / `invited`) intentionally do
 // NOT exercise permissions, even though their role rows survive the
@@ -75,6 +131,7 @@ export class LevelMemo {
 // status).
 async function resolveForJunjoUser(
   prisma: PermissionsClient,
+  mode: PermissionMode,
   groupId: string,
   junjoUserId: string,
   permission: string,
@@ -86,31 +143,72 @@ async function resolveForJunjoUser(
   if (!member) return { allowed: false, source: "none" };
   if (member.status !== "active") return { allowed: false, source: "none" };
 
-  const override = await prisma.memberPermissionOverride.findUnique({
-    where: {
-      groupMemberId_permissionKey: { groupMemberId: member.id, permissionKey: permission },
-    },
-    select: { grant: true },
+  const candidates = candidateKeys(mode, permission);
+  const overrideRows = await prisma.memberPermissionOverride.findMany({
+    where: { groupMemberId: member.id, permissionKey: { in: candidates } },
+    select: { permissionKey: true, grant: true },
   });
-  if (override) {
-    return { allowed: override.grant, source: "override" };
+  const overrides = new Map(overrideRows.map((o) => [o.permissionKey, o.grant]));
+  // The member layer decides before any role, so a matching override
+  // makes the role reads unnecessary.
+  if (overrides.size > 0) {
+    return resolveMemberPermission(
+      { mode, overrides, directRoleIds: [], roles: new Map() },
+      permission,
+    );
   }
 
-  const grant = await prisma.memberRole.findFirst({
-    where: {
-      groupMemberId: member.id,
-      role: {
-        rolePermissions: { some: { permissionKey: permission } },
-      },
-    },
-    select: { roleId: true },
-    orderBy: [{ role: { priority: "desc" } }, { roleId: "desc" }],
-  });
-  if (grant) {
-    return { allowed: true, source: "role", viaRoleId: grant.roleId as RoleId };
+  const reachable = await loadReachableRoles(prisma, groupId, member.id);
+  if (reachable.length === 0) return { allowed: false, source: "default" };
+  const roleIds = reachable.map((r) => r.id);
+  const inherits = reachable.some((r) => r.depth > 0);
+
+  const [entryRows, parentRows] = await Promise.all([
+    prisma.rolePermission.findMany({
+      where: { roleId: { in: roleIds }, permissionKey: { in: candidates } },
+      select: { roleId: true, permissionKey: true, value: true },
+    }),
+    inherits
+      ? prisma.roleParent.findMany({
+          where: { roleId: { in: roleIds }, parentRoleId: { in: roleIds } },
+          select: { roleId: true, parentRoleId: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const entries = new Map<string, Map<string, boolean>>();
+  const parents = new Map<string, string[]>();
+  for (const e of entryRows) {
+    let m = entries.get(e.roleId);
+    if (!m) {
+      m = new Map();
+      entries.set(e.roleId, m);
+    }
+    m.set(e.permissionKey, e.value);
+  }
+  for (const p of parentRows) {
+    const list = parents.get(p.roleId);
+    if (list) list.push(p.parentRoleId);
+    else parents.set(p.roleId, [p.parentRoleId]);
+  }
+  const roles = new Map<string, ResolverRole>();
+  for (const row of reachable) {
+    roles.set(row.id, {
+      priority: row.priority,
+      entries: entries.get(row.id) ?? new Map(),
+      parents: parents.get(row.id) ?? [],
+    });
   }
 
-  return { allowed: false, source: "default" };
+  return resolveMemberPermission(
+    {
+      mode,
+      overrides,
+      directRoleIds: reachable.filter((r) => r.depth === 0).map((r) => r.id),
+      roles,
+    },
+    permission,
+  );
 }
 
 // Caller must enforce game scope on `groupId`; this function trusts it.
@@ -120,13 +218,12 @@ export async function resolvePermission(
   groupId: string,
   externalUserId: string,
   permission: string,
-  identity?: IdentityMemo,
+  context?: CheckContext,
 ): Promise<PermissionCheckResult> {
-  const junjoUserId = identity
-    ? await identity.resolve(externalUserId)
-    : await findJunjoUserId(prisma, gameId, externalUserId);
+  const ctx = context ?? new CheckContext(prisma, gameId);
+  const junjoUserId = await ctx.resolve(externalUserId);
   if (!junjoUserId) return { allowed: false, source: "none" };
-  return resolveForJunjoUser(prisma, groupId, junjoUserId, permission);
+  return resolveForJunjoUser(prisma, await ctx.mode(), groupId, junjoUserId, permission);
 }
 
 interface ChainRow {
@@ -183,12 +280,12 @@ export interface InheritedResolution {
 }
 
 // Walks the queried group and then its ancestors, nearest first, and
-// stops at the first group that decides: an override in either
-// direction, or a role that grants the key. Nearest therefore wins, so
-// a child's explicit deny is not undone by a grant further up.
+// stops at the first group that decides: an override or a role entry,
+// in either direction. Nearest therefore wins, so a child's explicit
+// deny is not undone by a grant further up.
 //
-// Levels where the user is not an active member (`none`) or holds no
-// grant (`default`) are inconclusive and the walk continues past them.
+// Levels where the user is not an active member (`none`) or nothing
+// matches (`default`) are inconclusive and the walk continues past them.
 // If nothing on the chain decides, the queried group's own result is
 // returned unchanged, which preserves the `none` / `default` distinction
 // callers use to tell "not a member" from "member without the grant".
@@ -198,10 +295,10 @@ export async function resolvePermissionInherited(
   groupId: string,
   externalUserId: string,
   permission: string,
-  identity?: IdentityMemo,
+  context?: CheckContext,
   levels?: LevelMemo,
 ): Promise<InheritedResolution> {
-  const memo = identity ?? new IdentityMemo(prisma, gameId);
+  const memo = context ?? new CheckContext(prisma, gameId);
   const levelMemo = levels ?? new LevelMemo();
   const chain = await loadAncestorChain(prisma, gameId, groupId);
   const consulted: string[] = [];
@@ -318,7 +415,7 @@ export function checkPermissionBatchHandler(
     const missingIndex = checks.findIndex((check) => !known.has(check.groupId));
     if (missingIndex !== -1) throw Errors.notFound(`group for checks[${missingIndex}]`);
 
-    const identity = new IdentityMemo(prisma, gameId);
+    const context = new CheckContext(prisma, gameId);
     const levels = new LevelMemo();
     const results: PermissionCheckResult[] = [];
     for (const check of checks) {
@@ -334,7 +431,7 @@ export function checkPermissionBatchHandler(
           check.groupId,
           check.userId,
           check.permission,
-          identity,
+          context,
         );
         cache.set(gameId, check.groupId, check.userId, check.permission, result);
         results.push(result);
@@ -346,7 +443,7 @@ export function checkPermissionBatchHandler(
         check.groupId,
         check.userId,
         check.permission,
-        identity,
+        context,
         levels,
       );
       cache.set(gameId, check.groupId, check.userId, check.permission, result, {

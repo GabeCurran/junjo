@@ -224,6 +224,12 @@ export interface CreateAdminGroupInvitationInput {
   expiresIn?: string;
 }
 
+export interface AdminPermissionEntry {
+  permission: string;
+  // true grants the key, false denies it.
+  value: boolean;
+}
+
 export interface AdminRole {
   id: string;
   groupId: string;
@@ -231,8 +237,27 @@ export interface AdminRole {
   priority: number;
   color: string | null;
   isDefault: boolean;
+  // Granted keys only. Denies are listed in `entries`.
   permissions: string[];
+  // Every entry stored on the role, grants and denies. Older servers
+  // omit it; readers fall back to `permissions` as all-grant entries.
+  entries?: AdminPermissionEntry[];
+  // Ids of roles this role inherits from, in the same group.
+  parents?: string[];
+  metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export type RoleEntryState = "grant" | "deny" | "none";
+
+export function roleEntries(role: AdminRole): AdminPermissionEntry[] {
+  return role.entries ?? role.permissions.map((permission) => ({ permission, value: true }));
+}
+
+export function roleEntryState(role: AdminRole, permission: string): RoleEntryState {
+  const entry = roleEntries(role).find((e) => e.permission === permission);
+  if (!entry) return "none";
+  return entry.value ? "grant" : "deny";
 }
 
 export interface AdminPermissionDef {

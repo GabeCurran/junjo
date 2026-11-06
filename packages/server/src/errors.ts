@@ -36,6 +36,9 @@ export const Errors = {
     new JunjoError("role_group_mismatch", 400, msg),
   parentCycle: (msg = "setting this parent would create a cycle") =>
     new JunjoError("parent_cycle", 400, msg),
+  permissionModeConflict: (
+    msg = "stored permission keys would change meaning under the new mode",
+  ) => new JunjoError("permission_mode_conflict", 409, msg),
   rateLimitExceeded: (msg = "rate limit exceeded") =>
     new JunjoError("rate_limit_exceeded", 429, msg),
   banned: (msg = "user is banned") => new JunjoError("banned", 403, msg),

@@ -21,6 +21,7 @@ import {
   getAdminGameHandler,
   getAdminGroupHandler,
   getAdminGroupRelationshipHandler,
+  getAdminGroupRoleGraphHandler,
   getAdminStatsHandler,
   getGroupChurnHandler,
   getGroupGrowthHandler,
@@ -42,11 +43,13 @@ import {
   listAdminMemberPermissionOverridesHandler,
   listRecentAuditHandler,
   listUserGamesHandler,
+  replaceAdminRoleEntriesHandler,
   revokeAdminApiKeyHandler,
   revokeAdminRolePermissionHandler,
   setAdminGroupParentHandler,
   setAdminGroupRelationshipHandler,
   setAdminMemberPermissionOverrideHandler,
+  setAdminRoleParentsHandler,
   updateAdminGroupHandler,
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
@@ -87,7 +90,9 @@ import {
   deleteRoleByIdHandler,
   getRoleByIdHandler,
   grantPermissionHandler,
+  replaceRoleEntriesHandler,
   revokePermissionHandler,
+  setRoleParentsHandler,
   updateRoleByIdHandler,
 } from "./routes/roles.js";
 import { listFriendSuggestionsHandler } from "./routes/suggestions.js";
@@ -280,7 +285,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.patch(
     "/admin/games/:gameId/roles/:roleId",
     adminAuthMiddleware(opts.adminToken),
-    updateAdminRoleHandler(prisma),
+    updateAdminRoleHandler(prisma, hub),
   );
   v1.delete(
     "/admin/games/:gameId/roles/:roleId",
@@ -296,6 +301,21 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/roles/:roleId/permissions/:permission",
     adminAuthMiddleware(opts.adminToken),
     revokeAdminRolePermissionHandler(prisma, hub),
+  );
+  v1.put(
+    "/admin/games/:gameId/roles/:roleId/entries",
+    adminAuthMiddleware(opts.adminToken),
+    replaceAdminRoleEntriesHandler(prisma, hub),
+  );
+  v1.put(
+    "/admin/games/:gameId/roles/:roleId/parents",
+    adminAuthMiddleware(opts.adminToken),
+    setAdminRoleParentsHandler(prisma, hub),
+  );
+  v1.get(
+    "/admin/games/:gameId/groups/:groupId/role-graph",
+    adminAuthMiddleware(opts.adminToken),
+    getAdminGroupRoleGraphHandler(prisma),
   );
   v1.get(
     "/admin/games/:gameId/permissions",
@@ -382,10 +402,12 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.get("/members/:id", getMemberByIdHandler(prisma));
   v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
   v1.get("/roles/:id", getRoleByIdHandler(prisma));
-  v1.patch("/roles/:id", updateRoleByIdHandler(prisma));
+  v1.patch("/roles/:id", updateRoleByIdHandler(prisma, hub));
   v1.delete("/roles/:id", deleteRoleByIdHandler(prisma, hub));
   v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
   v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
+  v1.put("/roles/:id/entries", replaceRoleEntriesHandler(prisma, hub));
+  v1.put("/roles/:id/parents", setRoleParentsHandler(prisma, hub));
   v1.get("/permissions/check", checkPermissionHandler(prisma));
   v1.post("/permissions/check-batch", checkPermissionBatchHandler(prisma));
   v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));

@@ -459,3 +459,206 @@ describe("roles.list result shape", () => {
     expect(fromPaged.nextCursor).toBeNull();
   });
 });
+
+describe("role wire fields", () => {
+  it("parses entries, parents, and metadata when the server sends them", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        ...roleFixture,
+        permissions: ["invite_member"],
+        entries: [
+          { permission: "invite_member", value: true },
+          { permission: "kick_member", value: false },
+        ],
+        parents: ["role_base"],
+        metadata: { prefix: "[O]" },
+      }),
+    );
+    const role = await newClient(fetchMock).roles.get("role_1" as RoleId);
+    if (!role) throw new Error("expected role");
+    expect(role.entries).toEqual([
+      { permission: "invite_member", value: true },
+      { permission: "kick_member", value: false },
+    ]);
+    expect(role.parents).toEqual(["role_base"]);
+    expect(role.metadata).toEqual({ prefix: "[O]" });
+  });
+
+  it("defaults entries, parents, and metadata when an older server omits them", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse(roleFixture));
+    const role = await newClient(fetchMock).roles.get("role_1" as RoleId);
+    if (!role) throw new Error("expected role");
+    expect(role.entries).toEqual([]);
+    expect(role.parents).toEqual([]);
+    expect(role.metadata).toEqual({});
+  });
+});
+
+describe("role metadata on create / update", () => {
+  it("forwards metadata on create", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ name: "Officer", priority: 80, metadata: { tier: 2 } });
+      return jsonResponse({ ...roleFixture, metadata: { tier: 2 } }, 201);
+    });
+    const role = await newClient(fetchMock).roles.create("grp_1" as GroupId, {
+      name: "Officer",
+      priority: 80,
+      metadata: { tier: 2 },
+    });
+    expect(role.metadata).toEqual({ tier: 2 });
+  });
+
+  it("forwards metadata on update", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PATCH");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ metadata: { tier: 3 } });
+      return jsonResponse({ ...roleFixture, metadata: { tier: 3 } });
+    });
+    const role = await newClient(fetchMock).roles.update("role_1" as RoleId, {
+      metadata: { tier: 3 },
+    });
+    expect(role.metadata).toEqual({ tier: 3 });
+  });
+});
+
+describe("roles.grantPermission value", () => {
+  it("sends value false to store a deny entry", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/roles/role_1/permissions");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ permission: "kick_member", value: false });
+      return jsonResponse({
+        ...roleFixture,
+        entries: [{ permission: "kick_member", value: false }],
+      });
+    });
+    const role = await newClient(fetchMock).roles.grantPermission(
+      "role_1" as RoleId,
+      "kick_member",
+      { value: false },
+    );
+    expect(role.permissions).toEqual([]);
+    expect(role.entries).toEqual([{ permission: "kick_member", value: false }]);
+  });
+
+  it("sends value true when given explicitly", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ permission: "kick_member", value: true });
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.grantPermission("role_1" as RoleId, "kick_member", {
+      value: true,
+    });
+  });
+});
+
+describe("roles.setEntries", () => {
+  it("PUTs /v1/roles/:id/entries with the full entry list", async () => {
+    const entries = [
+      { permission: "invite_member", value: true },
+      { permission: "kick_member", value: false },
+    ];
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PUT");
+      expect(new URL(req.url).pathname).toBe("/v1/roles/role_1/entries");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ entries });
+      return jsonResponse({ ...roleFixture, permissions: ["invite_member"], entries });
+    });
+    const role = await newClient(fetchMock).roles.setEntries("role_1" as RoleId, entries);
+    expect(role.permissions).toEqual(["invite_member"]);
+    expect(role.entries).toEqual(entries);
+  });
+
+  it("sends an empty list to clear every entry", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ entries: [] });
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.setEntries("role_1" as RoleId, []);
+  });
+
+  it("URL-encodes the role id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/roles/has%2Fslash/entries");
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.setEntries("has/slash" as RoleId, []);
+  });
+});
+
+describe("roles.setParents", () => {
+  it("PUTs /v1/roles/:id/parents with the parent list", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PUT");
+      expect(new URL(req.url).pathname).toBe("/v1/roles/role_1/parents");
+      const payload = (await req.json()) as Record<string, unknown>;
+      expect(payload).toEqual({ parents: ["role_a", "role_b"] });
+      return jsonResponse({ ...roleFixture, parents: ["role_a", "role_b"] });
+    });
+    const role = await newClient(fetchMock).roles.setParents("role_1" as RoleId, [
+      "role_a" as RoleId,
+      "role_b" as RoleId,
+    ]);
+    expect(role.parents).toEqual(["role_a", "role_b"]);
+  });
+
+  it("throws JunjoError with code parent_cycle on a cycle", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "parent_cycle", status: 400, message: "cycle" }, 400),
+    );
+    await expect(
+      newClient(fetchMock).roles.setParents("role_1" as RoleId, ["role_1" as RoleId]),
+    ).rejects.toMatchObject({ code: "parent_cycle", status: 400 });
+  });
+});
+
+describe("roles.getGraph", () => {
+  it("GETs /v1/groups/:id/role-graph and deserializes every role", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/role-graph");
+      return jsonResponse({
+        groupId: "grp_1",
+        mode: "nodes",
+        defaultRoleId: "role_1",
+        roles: [
+          { ...roleFixture, entries: [], parents: [], metadata: {} },
+          { ...roleFixture, id: "role_2", parents: ["role_1"] },
+        ],
+      });
+    });
+    const graph = await newClient(fetchMock).roles.getGraph("grp_1" as GroupId);
+    expect(graph.groupId).toBe("grp_1");
+    expect(graph.mode).toBe("nodes");
+    expect(graph.defaultRoleId).toBe("role_1");
+    expect(graph.roles).toHaveLength(2);
+    expect(graph.roles[0]?.createdAt).toBeInstanceOf(Date);
+    expect(graph.roles[1]?.parents).toEqual(["role_1"]);
+    expect(graph.roles[1]?.entries).toEqual([]);
+    expect(graph.roles[1]?.metadata).toEqual({});
+  });
+
+  it("preserves a null defaultRoleId", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ groupId: "grp_1", mode: "exact", defaultRoleId: null, roles: [] }),
+    );
+    const graph = await newClient(fetchMock).roles.getGraph("grp_1" as GroupId);
+    expect(graph.defaultRoleId).toBeNull();
+    expect(graph.roles).toEqual([]);
+  });
+
+  it("URL-encodes the group id", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/role-graph");
+      return jsonResponse({ groupId: "has/slash", mode: "exact", defaultRoleId: null, roles: [] });
+    });
+    await newClient(fetchMock).roles.getGraph("has/slash" as GroupId);
+  });
+});

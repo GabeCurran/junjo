@@ -1,13 +1,14 @@
 # Permissions
 
-The permissions surface answers a single question: "is this user allowed to do this thing in this group?" Junjo has no opinion about what the permission keys mean: the dev defines them per game (`guild.kick`, `claim_territory`, `edit_treasury`) and Junjo stores them verbatim.
+The permissions surface answers a single question: "is this user allowed to do this thing in this group?" Junjo has no opinion about what the permission keys mean: the dev defines them per game (`guild.kick`, `claim_territory`, `edit_treasury`). How keys are matched depends on the game's [permission mode](#permission-modes).
 
-A permission outcome is a function of:
+A permission outcome is a function of the member's overrides and the entries on the roles they hold, resolved in layers:
 
-1. The member's `MemberPermissionOverride` rows. A member-level override (in either direction) wins over any role-derived grant.
-2. The member's roles via `MemberRole`. If any role has a `RolePermission` for the key, the permission is granted.
+1. **Layer.** The member's own `MemberPermissionOverride` rows first, then the roles the member holds directly, then those roles' parents, then grandparents. A role reachable through several parent paths sits at its shortest distance. The first layer with any matching entry decides.
+2. **Specificity.** Within the deciding layer, the most specific matching key wins: the exact key, then the longest matching `a.b.*`, down to `*` (wildcards exist only in `"nodes"` mode).
+3. **Deny wins** between entries of equal layer and specificity.
 
-The route exposes this resolution via `GET /v1/permissions/check`. The result is cached in-process for 60 seconds; mutations that can change a permission outcome (role assignments, role permission grants/revokes, member-level overrides, role deletes) invalidate the cache for the affected group on commit.
+A role entry carries `value: true` (grant) or `value: false` (deny); see [roles](/api-reference/roles). The route exposes this resolution via `GET /v1/permissions/check`. The result is cached in-process for 60 seconds; mutations that can change a permission outcome invalidate the cache for the affected group on commit (see [Caching](#caching)).
 
 ## Resolution flow
 
@@ -51,18 +52,21 @@ sequenceDiagram
         Route->>Cache: set { source: "none" }
         Route-->>Client: 200 { source: "none" }
       else active member
-        Route->>DB: MemberPermissionOverride (memberId, key)
-        DB-->>Route: { grant } or null
-        alt override present
+        Route->>DB: Game config (permissions.mode), once per request
+        Route->>DB: MemberPermissionOverride (memberId, key IN candidate keys)
+        DB-->>Route: matching overrides
+        alt an override matches
           Route->>Cache: set { source: "override" }
-          Route-->>Client: 200 { source: "override", allowed: grant }
-        else no override
-          Route->>DB: MemberRole JOIN RolePermission<br/>ORDER BY priority DESC, roleId DESC
-          DB-->>Route: { roleId } or null
-          alt role grants the key
+          Route-->>Client: 200 { source: "override", allowed }
+        else no override matches
+          Route->>DB: roles reachable from MemberRole via RoleParent (recursive CTE)
+          Route->>DB: RolePermission (reachable roles, key IN candidate keys)
+          DB-->>Route: matching entries
+          Route->>Route: nearest layer, then most specific key, then deny wins
+          alt an entry decides
             Route->>Cache: set { source: "role", viaRoleId }
-            Route-->>Client: 200 { source: "role", allowed: true }
-          else no role grants
+            Route-->>Client: 200 { source: "role", allowed }
+          else nothing matches
             Route->>Cache: set { source: "default" }
             Route-->>Client: 200 { source: "default", allowed: false }
           end
@@ -71,7 +75,7 @@ sequenceDiagram
     end
   end
 
-  Note over Client,DB: Mutations (role assign/remove, role permission grant/revoke,<br/>member override set/clear, role delete) call cache.invalidateGroup(groupId)<br/>after commit, so a stale "false" can flip to "true" within one round-trip.
+  Note over Client,DB: Mutations (role assign/remove, role entry and parent writes, role delete,<br/>member override set/clear) call cache.invalidateGroup(groupId) after commit,<br/>and a permission mode switch clears the cache, so a stale answer flips within one round-trip.
 ```
 
 The diagram above is committed at `tools/diagrams/source/permission-resolution.mmd`. The committed `.mmd` source and the Mermaid fence above must stay byte-identical.
@@ -84,7 +88,7 @@ The diagram above is committed at `tools/diagrams/source/permission-resolution.m
 |-------|------|-------|
 | `allowed` | boolean | True if the user has the permission, false otherwise. |
 | `source` | `"role" \| "override" \| "default" \| "none"` | See [Source taxonomy](#source-taxonomy) below. |
-| `viaRoleId` | string | Present only when `source === "role"`; the highest-priority role that granted it. |
+| `viaRoleId` | string | Present only when `source === "role"`; the role whose entry decided. When several roles in the deciding layer hold the deciding entry, a denying role is reported over a granting one, then the highest priority, then the highest id. |
 | `viaGroupId` | string | Present only on an [inherited check](#inheritance) that reached a decision. It names the group the decision was read from, and equals the queried group when the decision was direct. Absent entirely when `inherit` was not requested, so the non-inherited wire shape is unchanged. |
 
 ### Source taxonomy
@@ -92,11 +96,39 @@ The diagram above is committed at `tools/diagrams/source/permission-resolution.m
 | Source | When | Allowed |
 |--------|------|---------|
 | `none` | The user has no `ExternalIdentity` for this game, has no `GroupMember` row in this group, or is a non-active member (`left`, `kicked`, `invited`). | `false` |
-| `default` | The user is an active member with no override and no role granting this permission. | `false` |
-| `role` | At least one of the member's roles has the permission via `RolePermission`. The route returns the highest-priority granting role in `viaRoleId` (priority desc, then id desc as a tiebreaker). | `true` |
-| `override` | A `MemberPermissionOverride` exists for this member and key. `allowed` mirrors `override.grant`. | `override.grant` |
+| `default` | The user is an active member and no override or role entry matches this permission. | `false` |
+| `role` | An entry on one of the member's roles (held directly or inherited) decided. `viaRoleId` names that role. | the entry's `value` |
+| `override` | A `MemberPermissionOverride` for this member matches the key. `allowed` mirrors the deciding override's `grant`. | `override.grant` |
 
-Resolution order is: override (if present) → role (any matching) → default. A non-active member short-circuits the resolver to `none` regardless of stored roles or overrides; the lifecycle gate is enforced here, not by mutating role / override rows on transition.
+A non-active member short-circuits the resolver to `none` regardless of stored roles or overrides; the lifecycle gate is enforced here, not by mutating role / override rows on transition.
+
+Existing data keeps its old answers: a role with only grant entries and no parents resolves exactly as roles did before denies and inheritance existed.
+
+## Permission modes
+
+Each game sets `permissions.mode` in its game config (`PATCH /v1/admin/games/:gameId/config`, admin token). The mode changes only how keys match; the layering above is the same in both.
+
+| | `"exact"` (default) | `"nodes"` |
+|---|---|---|
+| Key comparison | Verbatim, case-sensitive | Case-insensitive; keys are stored lowercase and checks are lowercased |
+| Wildcards | None; `*` is an ordinary character | A trailing `.*` matches one or more further segments; a bare `*` matches every key |
+| Key rules on write | 1-128 characters | Also: printable ASCII, no whitespace, no leading `-`, `*` only as the whole last segment or the whole key |
+| Role names | Unique per group | Unique per group ignoring case |
+
+Lowercasing covers ASCII letters only, so every implementation folds keys identically. In `"nodes"` mode, `shop.*` matches `shop.buy` and `shop.buy.bulk` but not `shop` itself.
+
+```json
+{ "config": { "permissions": { "mode": "nodes" } } }
+```
+
+Switching modes never changes what a stored key means:
+
+- **`exact` to `nodes`** lowercases every stored entry and override key in the same transaction (merging catalog keys that collide). It is refused with `409 permission_mode_conflict` when any stored key contains `*`, breaks the key rules above, or collides with another key on the same role or member once lowercased, or when two role names in one group differ only by case. The message names the first few offending keys or roles.
+- **`nodes` to `exact`** is refused with `409 permission_mode_conflict` while any stored entry or override key contains `*`, since it would stop matching as a wildcard.
+
+A successful switch writes a `game.permissions.mode.set` audit entry (`{ before, after, rewrittenKeys }`) and drops every cached answer.
+
+Checks accept any key in either mode; the rules above apply to writes. Shared test vectors for the resolver live in `packages/shared/conformance/permission-vectors.json`, and every implementation that resolves locally must pass them.
 
 ## `GET /v1/permissions/check`
 
@@ -140,19 +172,23 @@ Returns the canonical `PermissionCheckResult`. Read-through cache.
 
 ### Inheritance
 
+This section is about **group** inheritance (parent groups). Role inheritance (parent roles inside one group) always applies and is part of resolving each group; see [roles](/api-reference/roles#role-parents).
+
 Groups form a parent/child hierarchy (`setParent` / `listChildren`). By default a check ignores it entirely: resolution runs against direct membership in the queried group and nothing else. Pass `inherit=true` to opt into a server-side walk.
 
 The walk visits the queried group first, then its ancestors, nearest first, and **stops at the first group that decides**:
 
 - an `override` at that level, in either direction, decides;
-- a `role` granting the key at that level decides;
-- `none` (not an active member there) and `default` (member, no grant) are inconclusive, and the walk continues to the parent.
+- a `role` entry at that level, grant or deny, decides;
+- `none` (not an active member there) and `default` (member, nothing matches) are inconclusive, and the walk continues to the parent.
+
+Each level is resolved with the full layered rules, including role parents and, in `"nodes"` mode, wildcards.
 
 Nearest wins, so a child's explicit deny is **not** undone by a grant further up. If nothing on the chain decides, the queried group's own result is returned unchanged, which preserves the `none` versus `default` distinction that tells "not a member" apart from "member without the grant".
 
 Two boundaries the walk will not cross: a **soft-deleted** ancestor terminates the chain, and an ancestor belonging to a **different game** terminates it too. Depth is bounded by `MAX_PARENT_DEPTH` (100); writes are cycle-checked, so that bound only matters against corrupted state.
 
-The whole chain resolves in one recursive CTE plus one resolution per level, server-side. That replaces the two HTTP round-trips per level (a `check` and a `groups.get`) that a client-side walker costs.
+The whole chain resolves in one recursive CTE plus one resolution per level, server-side. Each level reads only the overrides and role entries whose keys could match the queried permission, and only the roles reachable from the member's direct roles. That replaces the two HTTP round-trips per level (a `check` and a `groups.get`) that a client-side walker costs.
 
 ```json
 {
@@ -222,9 +258,14 @@ The following mutations invalidate the cache for the affected group on commit:
 - `DELETE /v1/groups/:id/members/:userId/roles/:roleId` - role removal
 - `POST /v1/groups/:id/members/:userId/permissions/:permission` - override set/update
 - `DELETE /v1/groups/:id/members/:userId/permissions/:permission` - override clear
-- `POST /v1/roles/:id/permissions` - role permission grant
-- `DELETE /v1/roles/:id/permissions/:permission` - role permission revoke
-- `DELETE /v1/roles/:id` - role delete (cascades to MemberRole / RolePermission rows)
+- `POST /v1/roles/:id/permissions` - role entry add or change
+- `DELETE /v1/roles/:id/permissions/:permission` - role entry removal
+- `PUT /v1/roles/:id/entries` - role entry list replace
+- `PUT /v1/roles/:id/parents` - role parents set
+- `PATCH /v1/roles/:id` - role update (priority decides which role a result reports)
+- `DELETE /v1/roles/:id` - role delete (cascades to MemberRole / RolePermission / RoleParent rows)
+
+The admin equivalents invalidate the same way, and a permission mode switch clears the whole cache.
 
 A stale cached answer can persist for up to the TTL window if a row is mutated outside the API (e.g. directly via SQL), so prefer the API for any change you need to surface immediately.
 

@@ -4,6 +4,7 @@ import type {
   JunjoEvent,
   MemberLeftEvent,
   PermissionKey,
+  RoleChangeField,
   RoleId,
   UserId,
 } from "@junjo.io/shared";
@@ -77,6 +78,12 @@ interface WireRoleChangedEvent extends WireGroupEventBase {
   // when supplied on the request body. Null for legacy callers and
   // server-side admin paths that don't attribute an actor.
   actorUserId: string | null;
+}
+
+interface WireRoleUpdatedEvent extends WireGroupEventBase {
+  type: "role.updated";
+  roleId: string;
+  changed: string[];
 }
 
 interface WireRoleDeletedEvent extends WireGroupEventBase {
@@ -178,6 +185,7 @@ export type WireJunjoEvent =
   | WireMemberUnbannedEvent
   | WireRoleCreatedEvent
   | WireRoleChangedEvent
+  | WireRoleUpdatedEvent
   | WireRoleDeletedEvent
   | WirePermissionGrantedEvent
   | WirePermissionRevokedEvent
@@ -268,6 +276,14 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         added: w.added.map((r) => r as RoleId),
         removed: w.removed.map((r) => r as RoleId),
         actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
+      };
+    case "role.updated":
+      return {
+        ...base,
+        groupId: w.groupId as GroupId,
+        type: "role.updated",
+        roleId: w.roleId as RoleId,
+        changed: w.changed.map((f) => f as RoleChangeField),
       };
     case "role.deleted":
       return {

@@ -121,6 +121,12 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     removed: [],
     actorUserId: "user_admin",
   } as WireJunjoEvent,
+  "role.updated": {
+    ...groupBase,
+    type: "role.updated",
+    roleId: "role_a",
+    changed: ["entries", "parents"],
+  } as WireJunjoEvent,
   "role.deleted": {
     ...groupBase,
     type: "role.deleted",
@@ -230,7 +236,7 @@ describe("deserializeEvent completeness", () => {
     for (const type of allTypes) {
       expect(deserializeEvent(WIRE_FIXTURES[type])).toBeDefined();
     }
-    expect(allTypes).toHaveLength(22);
+    expect(allTypes).toHaveLength(23);
   });
 
   it("throws JunjoError(unknown_event_type) on a type this SDK predates", () => {
@@ -251,6 +257,22 @@ describe("deserializeEvent completeness", () => {
     expect(event.bannedUntil).toBeInstanceOf(Date);
     expect(event.reason).toBe("spamming");
     expect(event.groupId).toBe("grp_1");
+  });
+
+  it("carries roleId and the changed fields on role.updated", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["role.updated"]);
+    if (event.type !== "role.updated") throw new Error("wrong type");
+    expect(event.groupId).toBe("grp_1");
+    expect(event.roleId).toBe("role_a");
+    expect(event.changed).toEqual(["entries", "parents"]);
+  });
+
+  it("defaults entries, parents, and metadata on a role.created role from an older server", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["role.created"]);
+    if (event.type !== "role.created") throw new Error("wrong type");
+    expect(event.role.entries).toEqual([]);
+    expect(event.role.parents).toEqual([]);
+    expect(event.role.metadata).toEqual({});
   });
 
   it("preserves null bannedUntil (permanent ban)", () => {

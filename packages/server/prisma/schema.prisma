@@ -192,15 +192,32 @@ model Role {
   priority  Int
   color     String?
   isDefault Boolean @default(false)
+  metadata  Json    @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   rolePermissions RolePermission[]
   memberRoles     MemberRole[]
+  parentLinks     RoleParent[]     @relation("RoleChild")
+  childLinks      RoleParent[]     @relation("RoleParentOf")
 
   @@unique([groupId, name])
   @@index([groupId, priority(sort: Desc)])
+}
+
+// A role inherits every entry of its parents, at one layer further from
+// the member. Parent and child are always in the same group; writes are
+// cycle-checked and depth-bounded at the application layer.
+model RoleParent {
+  roleId       String
+  role         Role     @relation("RoleChild", fields: [roleId], references: [id], onDelete: Cascade)
+  parentRoleId String
+  parentRole   Role     @relation("RoleParentOf", fields: [parentRoleId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@id([roleId, parentRoleId])
+  @@index([parentRoleId])
 }
 
 // Multi-role per member is V1 scope. A separate join table lets us
@@ -231,10 +248,12 @@ model PermissionDef {
   @@unique([gameId, key])
 }
 
+// One entry on a role: `value` true grants the key, false denies it.
 model RolePermission {
   roleId        String
   role          Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permissionKey String
+  value         Boolean  @default(true)
   grantedAt     DateTime @default(now())
 
   @@id([roleId, permissionKey])

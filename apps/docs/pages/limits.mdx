@@ -38,7 +38,8 @@ Validation is zod on every write route; violations are `400 bad_request` with a 
 | Member `notesPublic` / `notesPrivate` | 5000 chars each | no |
 | Role `name` | 64 chars | no |
 | Role / friend-tag `color` | exactly `#rrggbb` | no |
-| Permission key | 128 chars | no |
+| Permission key | 128 chars; in `"nodes"` mode also printable ASCII, no whitespace, no leading `-`, `*` only as the whole last segment or the whole key | no |
+| Role `metadata` | 16 KB serialized (`JSON.stringify` length) | no |
 | Group relationship `type` | 64 chars | no |
 | Friend tag `name` | 1 to 64 chars | no |
 | Invitation `expiresIn` | `^\d+[smhd]$`, must be positive; no upper bound | no |
@@ -115,6 +116,9 @@ These are per-game config values, changeable at runtime via `PATCH /v1/admin/gam
 | Invitation default expiry | none; invitations live until used or revoked unless `expiresIn` is set | per invitation |
 | Invitation code entropy | 16 hex chars (64 bits) | no |
 | Parent-chain depth (sub-groups) | 100 (`MAX_PARENT_DEPTH`, cycle-detection walk and the `inherit=true` permission walk) | no |
+| Entries per role | 5,000 (`MAX_ROLE_ENTRIES`); applies to `PUT /v1/roles/:id/entries` and to adding a new key with `POST /v1/roles/:id/permissions` | no |
+| Parents per role | 32 (`MAX_ROLE_PARENTS`) | no |
+| Role inheritance depth | 100 levels (`MAX_ROLE_DEPTH`); enforced on parent writes, and bounds the resolver's walk | no |
 | Roles per group, groups per game, members per group | unbounded | - |
 | Client-side permission cache (TypeScript SDK) | 5 s TTL, 5000 entries, stale-on-429 for 60 s | yes: `permissionCache` on the client config; `enabled: false` turns it off |
 | Request timeout (TypeScript, C++, and Unreal SDKs) | 30 s default | yes: `timeoutMs` (TypeScript, per client or per call) or `timeout` (C++ config, Unreal project settings); `0` (TypeScript) or zero-or-less (C++ / Unreal) disables. Roblox is the exception: `RequestAsync` has a fixed ~30 s platform timeout |

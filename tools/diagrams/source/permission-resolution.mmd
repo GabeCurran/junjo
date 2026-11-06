@@ -37,18 +37,21 @@ sequenceDiagram
         Route->>Cache: set { source: "none" }
         Route-->>Client: 200 { source: "none" }
       else active member
-        Route->>DB: MemberPermissionOverride (memberId, key)
-        DB-->>Route: { grant } or null
-        alt override present
+        Route->>DB: Game config (permissions.mode), once per request
+        Route->>DB: MemberPermissionOverride (memberId, key IN candidate keys)
+        DB-->>Route: matching overrides
+        alt an override matches
           Route->>Cache: set { source: "override" }
-          Route-->>Client: 200 { source: "override", allowed: grant }
-        else no override
-          Route->>DB: MemberRole JOIN RolePermission<br/>ORDER BY priority DESC, roleId DESC
-          DB-->>Route: { roleId } or null
-          alt role grants the key
+          Route-->>Client: 200 { source: "override", allowed }
+        else no override matches
+          Route->>DB: roles reachable from MemberRole via RoleParent (recursive CTE)
+          Route->>DB: RolePermission (reachable roles, key IN candidate keys)
+          DB-->>Route: matching entries
+          Route->>Route: nearest layer, then most specific key, then deny wins
+          alt an entry decides
             Route->>Cache: set { source: "role", viaRoleId }
-            Route-->>Client: 200 { source: "role", allowed: true }
-          else no role grants
+            Route-->>Client: 200 { source: "role", allowed }
+          else nothing matches
             Route->>Cache: set { source: "default" }
             Route-->>Client: 200 { source: "default", allowed: false }
           end
@@ -57,4 +60,4 @@ sequenceDiagram
     end
   end
 
-  Note over Client,DB: Mutations (role assign/remove, role permission grant/revoke,<br/>member override set/clear, role delete) call cache.invalidateGroup(groupId)<br/>after commit, so a stale "false" can flip to "true" within one round-trip.
+  Note over Client,DB: Mutations (role assign/remove, role entry and parent writes, role delete,<br/>member override set/clear) call cache.invalidateGroup(groupId) after commit,<br/>and a permission mode switch clears the cache, so a stale answer flips within one round-trip.

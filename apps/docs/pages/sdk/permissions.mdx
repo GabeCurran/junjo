@@ -53,7 +53,7 @@ if (!result.allowed) {
 |-------|------|-------|
 | `allowed` | boolean | True if the user has the permission. |
 | `source` | `"role" \| "override" \| "default" \| "none"` | See the source taxonomy below. |
-| `viaRoleId` | `RoleId` (optional) | Present only when `source === "role"`; the highest-priority role that granted the permission. |
+| `viaRoleId` | `RoleId` (optional) | Present only when `source === "role"`; the role whose entry decided. When a deny decides it is the highest-priority denying role, otherwise the highest-priority granting role. |
 | `viaGroupId` | `GroupId` (optional) | Present only on an [inherited check](#inherited-checks) that reached a decision; names the group the decision came from. |
 
 ### Source taxonomy
@@ -61,9 +61,30 @@ if (!result.allowed) {
 | Source | When |
 |--------|------|
 | `none` | The user is not a member of the group, has no `ExternalIdentity` for this game, or is a non-active member (`left`, `kicked`, `invited`). `allowed = false`. |
-| `default` | The user is an active member with no override and no role granting this permission. `allowed = false`. |
-| `role` | At least one role grants the permission. `allowed = true`; `viaRoleId` is set to the highest-priority granting role. |
-| `override` | A `MemberPermissionOverride` row exists. `allowed` mirrors the override's `grant` value. Override beats role. |
+| `default` | The user is an active member with no matching override and no matching entry on any role they hold or inherit. `allowed = false`. |
+| `role` | A role entry decided. `allowed = true` for a grant, `false` for a deny; `viaRoleId` names the deciding role. |
+| `override` | A matching `MemberPermissionOverride` row exists. `allowed` mirrors the override's `grant` value. Override beats role. |
+
+### How a check is resolved
+
+Resolution walks the member's access in layers and stops at the first layer that has any matching entry:
+
+1. The member's own [permission overrides](/sdk/members#overridepermissiongroupid-userid-permission-grant).
+2. The roles the member holds directly.
+3. Those roles' [parents](/sdk/roles#setparentsroleid-parents), then grandparents, and so on. A role reachable by several paths sits at its shortest distance.
+
+Within the deciding layer the most specific key wins: the exact key, then the longest matching `a.b.*` wildcard, down to the bare `*`. Between entries of equal specificity, a deny beats a grant.
+
+```ts
+// Parent role "Member":    shop.*  = grant
+// Direct role "Trial":     shop.refund = deny
+await junjo.can(userId, groupId, "shop.buy");    // true: only the parent layer matches
+await junjo.can(userId, groupId, "shop.refund"); // false: the direct layer matches first
+```
+
+Wildcards apply only in `"nodes"` mode, set by the game config's `permissions.mode` (the default is `"exact"`). In `"nodes"` mode keys are also case-insensitive, a trailing `.*` matches one or more further segments, and a bare `*` matches every key. In `"exact"` mode every key is an opaque, case-sensitive string and only the exact key matches. See [Core concepts](/core-concepts#how-a-check-is-resolved) for the full rules.
+
+To resolve checks in your own process instead of per request, load [`roles.getGraph`](/sdk/roles#getgraphgroupid) and [`members.getAccess`](/sdk/members#getaccessgroupid-userid) and apply the same rules.
 
 ### Errors
 
@@ -83,7 +104,7 @@ const result = await junjo.check(alice, campaignId, "campaign.edit", { inherit: 
 // { allowed: true, source: "role", viaRoleId: "role_admin", viaGroupId: "grp_instance" }
 ```
 
-The walk starts at the group you asked about and climbs, nearest first, stopping at the first group that decides. An override or a role grant decides; being a non-member (`none`) or a member without the grant (`default`) is inconclusive and the walk continues. Nearest wins, so a deny on the child is not undone by a grant on the parent, and `viaGroupId` tells you which level answered.
+The walk starts at the group you asked about and climbs, nearest first, stopping at the first group that decides. An override or a matching role entry (grant or deny) decides; being a non-member (`none`) or a member without the grant (`default`) is inconclusive and the walk continues. Nearest wins, so a deny on the child is not undone by a grant on the parent, and `viaGroupId` tells you which level answered.
 
 This replaces the client-side walker the hierarchy otherwise forces, which costs two round-trips per level (a `check` plus a `groups.get` to find the parent) and pays that cost in full on every denial, since a deny walks to the root. The server does the whole chain in one query plus one resolution per level.
 
@@ -118,7 +139,7 @@ The SDK caches permission answers in the client for 5 seconds by default, and th
 Each unique `(userId, groupId, permission)` answer is cached server-side for 60 seconds. The following mutations invalidate the cache for the affected group:
 
 - `members.assignRole`, `members.removeRole`
-- `roles.grantPermission`, `roles.revokePermission`
+- `roles.grantPermission`, `roles.revokePermission`, `roles.setEntries`, `roles.setParents`, `roles.update`
 - `members.overridePermission`, `members.clearPermissionOverride`
 - `roles.delete`
 

@@ -72,11 +72,14 @@ The server emits an event after every mutation that changes a group's externally
 | `POST /v1/groups/:id/members/:userId/ban` | `member.banned` | Carries `userId`, `reason`, `bannedUntil` (null = permanent). Idempotent re-ban with identical expiry emits nothing; changing the expiry re-emits. |
 | `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event; read paths just stop treating the row as banned. Calls on non-banned members 404. |
 | `POST /v1/groups/:id/roles` | `role.created` | Carries the post-state role. |
-| `DELETE /v1/roles/:id` | `role.deleted` | |
+| `DELETE /v1/roles/:id` | `role.deleted`, plus `role.updated` (`changed: ["parents"]`) for each role that inherited from it | |
+| `PATCH /v1/roles/:id` | `role.updated` | `changed` names the fields that changed. A no-op PATCH emits nothing. |
+| `PUT /v1/roles/:id/entries` | `role.updated` | `changed: ["entries"]`. One event per replace, never per-key events. A replace that changes nothing emits nothing. |
+| `PUT /v1/roles/:id/parents` | `role.updated` | `changed: ["parents"]`. Unchanged parents emit nothing. |
 | `POST /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: [roleId]`, `removed: []`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls (already assigned) emit nothing. |
 | `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls emit nothing. |
-| `POST /v1/roles/:id/permissions` | `permission.granted` | Idempotent calls (already granted) emit nothing. |
-| `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` | Idempotent calls emit nothing. |
+| `POST /v1/roles/:id/permissions` | `permission.granted` when the key becomes granted; `permission.revoked` then `role.updated` when a grant becomes a deny; `role.updated` alone for a new deny entry | Idempotent calls (entry already holds that value) emit nothing. |
+| `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` when a grant is removed; `role.updated` when a deny is removed | Idempotent calls emit nothing. |
 | `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
 | `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. |
 
@@ -84,7 +87,6 @@ The following mutations do **not** publish events:
 
 - `POST /v1/groups` (group creation) - no `group.created` event in the V1 union.
 - `PATCH /v1/groups/:id/members/:userId` (`setMetadata` / `setNotes`) - no `member.metadata.updated` / `member.notes.updated` events in the V1 union.
-- `PATCH /v1/roles/:id` (role property edits) - no `role.updated` event in the V1 union (`role.changed` is per-member assignment, not role-property edits).
 - `POST /v1/groups/:id/members/:userId/permissions/:permission` and the matching `DELETE` (member-level overrides) - no override event in the V1 union.
 - `POST /v1/invitations/:code/decline`, `DELETE /v1/invitations/:code` - no event for invitation decline / revoke.
 

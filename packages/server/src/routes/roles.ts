@@ -1,75 +1,20 @@
-import type {
-  GameId,
-  GroupId,
-  PermissionGrantedEvent,
-  PermissionKey,
-  PermissionRevokedEvent,
-  RoleDeletedEvent,
-  RoleId,
-} from "@junjo.io/shared";
-import type { Prisma, PrismaClient, Role } from "@prisma/client";
+import type { PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { publishStagedEvents, stageEvent } from "../events.js";
-import { permissionCache } from "../permissionCache.js";
-import { isUniqueViolation } from "../prismaErrors.js";
+import { loadRoleDetail, serializeRole } from "../roleDetails.js";
+import {
+  deleteRole,
+  parseBody,
+  removeRoleEntry,
+  replaceRoleEntries,
+  setRoleParents,
+  updateRole,
+  upsertRoleEntry,
+} from "../roleWrites.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
-export interface WireRole {
-  id: string;
-  groupId: string;
-  name: string;
-  priority: number;
-  color: string | null;
-  isDefault: boolean;
-  permissions: string[];
-  createdAt: string;
-}
-
-export function serializeRole(role: Role, permissions: string[] = []): WireRole {
-  return {
-    id: role.id,
-    groupId: role.groupId,
-    name: role.name,
-    priority: role.priority,
-    color: role.color,
-    isDefault: role.isDefault,
-    permissions,
-    createdAt: role.createdAt.toISOString(),
-  };
-}
-
-export async function loadRolePermissionKeys(
-  client: PrismaClient | Prisma.TransactionClient,
-  roleId: string,
-): Promise<string[]> {
-  const rows = await client.rolePermission.findMany({
-    where: { roleId },
-    select: { permissionKey: true },
-    orderBy: { permissionKey: "asc" },
-  });
-  return rows.map((r) => r.permissionKey);
-}
-
-export async function batchLoadRolePermissionKeys(
-  client: PrismaClient | Prisma.TransactionClient,
-  roleIds: string[],
-): Promise<Map<string, string[]>> {
-  if (roleIds.length === 0) return new Map();
-  const rows = await client.rolePermission.findMany({
-    where: { roleId: { in: roleIds } },
-    select: { roleId: true, permissionKey: true },
-    orderBy: { permissionKey: "asc" },
-  });
-  const map = new Map<string, string[]>();
-  for (const row of rows) {
-    const list = map.get(row.roleId);
-    if (list) list.push(row.permissionKey);
-    else map.set(row.roleId, [row.permissionKey]);
-  }
-  return map;
-}
+export { type WireRole, serializeRole } from "../roleDetails.js";
 
 // Cross-game and soft-deleted-group both collapse to 404 so existence
 // is not leaked across the gameId scope.
@@ -95,256 +40,80 @@ export function getRoleByIdHandler(prisma: PrismaClient): Handler {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
     const role = await loadScopedRole(prisma, id, gameId);
-    const permissions = await loadRolePermissionKeys(prisma, role.id);
-    return c.json(serializeRole(role, permissions));
+    return c.json(serializeRole(role, await loadRoleDetail(prisma, role.id)));
   };
 }
 
-export function updateRoleByIdHandler(prisma: PrismaClient): Handler {
+export function updateRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
-    const id = c.req.param("id");
-    const gameId = c.var.gameId;
-    const json = await c.req.json().catch(() => null);
-    const parsed = updateRoleBody.safeParse(json);
-    if (!parsed.success) {
-      const issues = parsed.error.issues
-        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-        .join("; ");
-      throw Errors.badRequest(issues || "invalid request body");
-    }
-    const body = parsed.data;
-
-    const existing = await loadScopedRole(prisma, id, gameId);
-
-    const before: Record<string, unknown> = {};
-    const after: Record<string, unknown> = {};
-    const data: Prisma.RoleUpdateInput = {};
-
-    if (body.name !== undefined && body.name !== existing.name) {
-      const duplicate = await prisma.role.findUnique({
-        where: { groupId_name: { groupId: existing.groupId, name: body.name } },
-        select: { id: true },
-      });
-      if (duplicate) throw Errors.roleNameTaken();
-      before.name = existing.name;
-      after.name = body.name;
-      data.name = body.name;
-    }
-    if (body.priority !== undefined && body.priority !== existing.priority) {
-      before.priority = existing.priority;
-      after.priority = body.priority;
-      data.priority = body.priority;
-    }
-    if (body.color !== undefined && body.color !== existing.color) {
-      before.color = existing.color;
-      after.color = body.color;
-      data.color = body.color;
-    }
-    if (body.isDefault !== undefined && body.isDefault !== existing.isDefault) {
-      before.isDefault = existing.isDefault;
-      after.isDefault = body.isDefault;
-      data.isDefault = body.isDefault;
-    }
-
-    if (Object.keys(data).length === 0) {
-      const permissions = await loadRolePermissionKeys(prisma, existing.id);
-      return c.json(serializeRole(existing, permissions));
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.role.update({
-        where: { id: existing.id },
-        data,
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: existing.groupId,
-          actorUserId: null,
-          action: "role.updated",
-          targetId: result.id,
-          payload: { before, after } as Prisma.InputJsonValue,
-        },
-      });
-      return result;
+    const body = parseBody(updateRoleBody, await c.req.json().catch(() => null));
+    const role = await updateRole(prisma, hub, {
+      gameId: c.var.gameId,
+      roleId: c.req.param("id") ?? "",
+      body,
     });
-
-    const permissions = await loadRolePermissionKeys(prisma, updated.id);
-    return c.json(serializeRole(updated, permissions));
+    return c.json(role);
   };
 }
 
-// Idempotent on already-granted. The first grant of a key auto-registers
-// `PermissionDef`; revoke does NOT unregister the def, since the registry
-// is a monotonic "known keys" catalog for the dashboard / SDK validators.
+// Adds or updates one entry; `value` defaults to true (grant).
+// Idempotent when the entry already holds that value. The first write
+// of a key auto-registers `PermissionDef`; removing an entry does NOT
+// unregister it, since the registry is a monotonic "known keys" catalog
+// for the dashboard / SDK validators.
 export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
-    const id = c.req.param("id");
-    const gameId = c.var.gameId;
-
-    const json = await c.req.json().catch(() => null);
-    const parsed = grantPermissionBody.safeParse(json);
-    if (!parsed.success) {
-      const issues = parsed.error.issues
-        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-        .join("; ");
-      throw Errors.badRequest(issues || "invalid request body");
-    }
-    const { permission } = parsed.data;
-
-    const role = await loadScopedRole(prisma, id, gameId);
-
-    const existing = await prisma.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    const body = parseBody(grantPermissionBody, await c.req.json().catch(() => null));
+    const role = await upsertRoleEntry(prisma, hub, {
+      gameId: c.var.gameId,
+      roleId: c.req.param("id") ?? "",
+      permission: body.permission,
+      value: body.value ?? true,
     });
-    if (existing) {
-      const permissions = await loadRolePermissionKeys(prisma, role.id);
-      return c.json(serializeRole(role, permissions));
-    }
-
-    const event = await prisma
-      .$transaction(async (tx) => {
-        await tx.permissionDef.upsert({
-          where: { gameId_key: { gameId, key: permission } },
-          create: { gameId, key: permission },
-          update: {},
-        });
-        await tx.rolePermission.create({
-          data: { roleId: role.id, permissionKey: permission },
-        });
-        await tx.auditEntry.create({
-          data: {
-            gameId,
-            groupId: role.groupId,
-            actorUserId: null,
-            action: "permission.granted",
-            targetId: role.id,
-            payload: {
-              roleId: role.id,
-              permission,
-            } as Prisma.InputJsonValue,
-          },
-        });
-        return stageEvent<PermissionGrantedEvent>(tx, {
-          type: "permission.granted",
-          gameId: gameId as GameId,
-          groupId: role.groupId as GroupId,
-          roleId: role.id as RoleId,
-          permission: permission as PermissionKey,
-        });
-      })
-      .catch((err) => {
-        // Loser of a concurrent duplicate grant: the winner's row
-        // landed after the idempotency check above. Same answer the
-        // sequential second caller gets (current role snapshot, no
-        // event); the rollback drops the staged delivery and audit row.
-        if (isUniqueViolation(err)) return null;
-        throw err;
-      });
-    if (event) {
-      permissionCache.invalidateGroup(role.groupId);
-      publishStagedEvents(hub, event);
-    }
-
-    const permissions = await loadRolePermissionKeys(prisma, role.id);
-    return c.json(serializeRole(role, permissions));
+    return c.json(role);
   };
 }
 
-// Idempotent on already-revoked. PermissionDef registry is preserved.
+// Removes one entry, grant or deny. Idempotent on a missing entry.
+// PermissionDef registry is preserved.
 export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
-    const id = c.req.param("id");
-    const permission = c.req.param("permission");
-    const gameId = c.var.gameId;
-
-    if (!permission) throw Errors.badRequest("permission must not be empty");
-
-    const role = await loadScopedRole(prisma, id, gameId);
-
-    const existing = await prisma.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    const role = await removeRoleEntry(prisma, hub, {
+      gameId: c.var.gameId,
+      roleId: c.req.param("id") ?? "",
+      permission: c.req.param("permission") ?? "",
     });
-    if (!existing) {
-      const permissions = await loadRolePermissionKeys(prisma, role.id);
-      return c.json(serializeRole(role, permissions));
-    }
+    return c.json(role);
+  };
+}
 
-    const event = await prisma.$transaction(async (tx) => {
-      await tx.rolePermission.delete({
-        where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.revoked",
-          targetId: role.id,
-          payload: {
-            roleId: role.id,
-            permission,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return stageEvent<PermissionRevokedEvent>(tx, {
-        type: "permission.revoked",
-        gameId: gameId as GameId,
-        groupId: role.groupId as GroupId,
-        roleId: role.id as RoleId,
-        permission: permission as PermissionKey,
-      });
+// Replaces the role's full entry list atomically.
+export function replaceRoleEntriesHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const role = await replaceRoleEntries(prisma, hub, {
+      gameId: c.var.gameId,
+      roleId: c.req.param("id") ?? "",
+      body: await c.req.json().catch(() => null),
     });
-    permissionCache.invalidateGroup(role.groupId);
+    return c.json(role);
+  };
+}
 
-    publishStagedEvents(hub, event);
-
-    const permissions = await loadRolePermissionKeys(prisma, role.id);
-    return c.json(serializeRole(role, permissions));
+// Replaces the role's full parent list.
+export function setRoleParentsHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const role = await setRoleParents(prisma, hub, {
+      gameId: c.var.gameId,
+      roleId: c.req.param("id") ?? "",
+      body: await c.req.json().catch(() => null),
+    });
+    return c.json(role);
   };
 }
 
 export function deleteRoleByIdHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
-    const id = c.req.param("id");
-    const gameId = c.var.gameId;
-    const existing = await loadScopedRole(prisma, id, gameId);
-
-    const memberCount = await prisma.memberRole.count({
-      where: { roleId: existing.id },
-    });
-    if (memberCount > 0) {
-      throw Errors.roleHasMembers();
-    }
-
-    const event = await prisma.$transaction(async (tx) => {
-      await tx.role.delete({ where: { id: existing.id } });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: existing.groupId,
-          actorUserId: null,
-          action: "role.deleted",
-          targetId: existing.id,
-          payload: {
-            name: existing.name,
-            priority: existing.priority,
-            color: existing.color,
-            isDefault: existing.isDefault,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return stageEvent<RoleDeletedEvent>(tx, {
-        type: "role.deleted",
-        gameId: gameId as GameId,
-        groupId: existing.groupId as GroupId,
-        roleId: existing.id as RoleId,
-      });
-    });
-    permissionCache.invalidateGroup(existing.groupId);
-
-    publishStagedEvents(hub, event);
-
+    await deleteRole(prisma, hub, { gameId: c.var.gameId, roleId: c.req.param("id") ?? "" });
     return c.body(null, 204);
   };
 }

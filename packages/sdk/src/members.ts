@@ -2,6 +2,7 @@ import type {
   GameId,
   GroupId,
   Member,
+  MemberAccess,
   MemberId,
   MemberPermissionOverride,
   MemberStatus,
@@ -64,6 +65,24 @@ export function deserializeMemberPermissionOverride(
     grant: w.grant,
     setAt: parseWireDate(w.setAt, "setAt"),
     setBy: w.setBy === null ? null : (w.setBy as UserId),
+  };
+}
+
+export interface WireMemberAccess {
+  groupId: string;
+  userId: string;
+  status: string;
+  roleIds: string[];
+  overrides: WireMemberPermissionOverride[];
+}
+
+export function deserializeMemberAccess(w: WireMemberAccess): MemberAccess {
+  return {
+    groupId: w.groupId as GroupId,
+    userId: w.userId as UserId,
+    status: w.status as MemberStatus,
+    roleIds: w.roleIds.map((r) => r as RoleId),
+    overrides: w.overrides.map(deserializeMemberPermissionOverride),
   };
 }
 
@@ -295,5 +314,27 @@ export class MembersApi {
       { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return wire.map(deserializeMemberPermissionOverride);
+  }
+
+  /**
+   * Reads one member's direct role ids and permission overrides in a
+   * group, in one call. Resolves to null when the user is not a member
+   * of the group (or the group does not exist), like `get`.
+   */
+  async getAccess(
+    groupId: GroupId,
+    userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<MemberAccess | null> {
+    try {
+      const wire = await this.http.get<WireMemberAccess>(
+        `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/access`,
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      );
+      return deserializeMemberAccess(wire);
+    } catch (err) {
+      if (err instanceof JunjoError && err.code === "not_found") return null;
+      throw err;
+    }
   }
 }

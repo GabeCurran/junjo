@@ -584,6 +584,24 @@ export async function grantRolePermissionAction(
   }
 }
 
+// Stores a deny entry for the key on the role.
+export async function denyRolePermissionAction(
+  gameId: string,
+  groupId: string,
+  roleId: string,
+  permission: string,
+): Promise<ToggleRolePermissionResult> {
+  const v = validateRolePermissionArgs(gameId, groupId, roleId, permission);
+  if (!v.ok) return v;
+  try {
+    const role = await grantAdminRolePermission(gameId, roleId, v.permission, { value: false });
+    refreshGroup(gameId, groupId);
+    return { ok: true, role };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
+}
+
 export async function revokeRolePermissionAction(
   gameId: string,
   groupId: string,

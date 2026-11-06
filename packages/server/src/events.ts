@@ -26,6 +26,7 @@ import type {
   Role as PrismaRole,
 } from "@prisma/client";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
+import { EMPTY_ROLE_DETAIL, type RoleDetail, grantedKeys } from "./roleDetails.js";
 import {
   type WebhookDb,
   enqueueWebhookDeliveries,
@@ -78,7 +79,7 @@ export function toPublicMember(
   };
 }
 
-export function toPublicRole(role: PrismaRole, permissions: string[] = []): PublicRole {
+export function toPublicRole(role: PrismaRole, detail: RoleDetail = EMPTY_ROLE_DETAIL): PublicRole {
   return {
     id: role.id as RoleId,
     groupId: role.groupId as GroupId,
@@ -86,7 +87,10 @@ export function toPublicRole(role: PrismaRole, permissions: string[] = []): Publ
     priority: role.priority,
     color: role.color,
     isDefault: role.isDefault,
-    permissions: permissions as PermissionKey[],
+    permissions: grantedKeys(detail) as PermissionKey[],
+    entries: detail.entries,
+    parents: detail.parents as RoleId[],
+    metadata: (role.metadata ?? {}) as Record<string, unknown>,
     createdAt: role.createdAt,
   };
 }

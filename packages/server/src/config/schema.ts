@@ -1,4 +1,4 @@
-import { FRIENDS_LIST_VISIBILITY_VALUES } from "@junjo.io/shared";
+import { FRIENDS_LIST_VISIBILITY_VALUES, PERMISSION_MODES } from "@junjo.io/shared";
 import { z } from "zod";
 
 // Validates a PATCH /v1/admin/games/:gameId/config payload. Every leaf
@@ -54,10 +54,20 @@ const blocksPatchSchema = z
   })
   .strict();
 
+// Changing `mode` is refused while stored keys would change meaning
+// under the new mode; that check needs the database, so the route runs
+// it rather than this schema.
+const permissionsPatchSchema = z
+  .object({
+    mode: z.enum(PERMISSION_MODES).optional(),
+  })
+  .strict();
+
 export const gameConfigPatchSchema = z
   .object({
     friends: friendsPatchSchema.optional(),
     blocks: blocksPatchSchema.optional(),
+    permissions: permissionsPatchSchema.optional(),
   })
   .strict();
 

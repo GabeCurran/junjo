@@ -164,6 +164,16 @@ export function formatJunjoEventForDiscord(
       embed.fields = fields;
       return { embeds: [embed] };
     }
+    case "role.updated": {
+      const roleId = readString(payload, "roleId");
+      const changed = Array.isArray(payload.changed) ? payload.changed.map(String).join(", ") : "";
+      embed.description = truncate(
+        `Role ${roleId ?? "(unknown)"} updated in ${groupId}: ${changed || "(unknown)"}`,
+        DESCRIPTION_MAX_LENGTH,
+      );
+      embed.fields = [field("Group", groupId || "(unknown)"), field("Role", roleId ?? "(unknown)")];
+      return { embeds: [embed] };
+    }
     case "role.deleted": {
       const roleId = readString(payload, "roleId");
       embed.description = truncate(
@@ -256,6 +266,8 @@ function titleFor(type: string): string {
       return "Role created";
     case "role.changed":
       return "Role membership changed";
+    case "role.updated":
+      return "Role updated";
     case "role.deleted":
       return "Role deleted";
     case "permission.granted":

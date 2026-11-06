@@ -11,7 +11,6 @@ import type {
   MemberLeftEvent,
   MemberUnbannedEvent,
   RoleChangedEvent,
-  RoleCreatedEvent,
   RoleId,
   UserId,
 } from "@junjo.io/shared";
@@ -29,12 +28,13 @@ import {
   toPublicGroupRelationship,
   toPublicInvitation,
   toPublicMember,
-  toPublicRole,
 } from "../events.js";
 import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 import { RateLimiter } from "../middleware/rateLimit.js";
 import { permissionCache } from "../permissionCache.js";
 import { isUniqueViolation, retryOnUniqueViolation } from "../prismaErrors.js";
+import { loadRoleDetails, loadRoleGraph } from "../roleDetails.js";
+import { clearMemberOverride, createRole, setMemberOverride } from "../roleWrites.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { listAuditForGroup } from "./audit.js";
 import { serializeBanHistoryEntry } from "./bans.js";
@@ -69,7 +69,7 @@ import {
 import { listMembersQuery, overridePermissionBody, updateMemberBody } from "./members.schema.js";
 import { setGroupParentSafely } from "./parentCycle.js";
 import { serializeGroupRelationship } from "./relationships.js";
-import { batchLoadRolePermissionKeys, serializeRole } from "./roles.js";
+import { serializeRole } from "./roles.js";
 import { PERMISSION_KEY_MAX_LENGTH, createRoleBody } from "./roles.schema.js";
 
 // `BULK_INVITE_USERID_MAX_LENGTH` is sized to fit the external user id
@@ -2083,58 +2083,14 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member) throw Errors.notFound("member");
 
-    const existing = await prisma.memberPermissionOverride.findUnique({
-      where: {
-        groupMemberId_permissionKey: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-        },
-      },
+    const result = await setMemberOverride(prisma, {
+      gameId,
+      groupId: group.id,
+      groupMemberId: member.id,
+      externalUserId: userId,
+      permission,
+      grant,
     });
-    if (existing && existing.grant === grant) {
-      return c.json(serializeMemberPermissionOverride(existing, group.id, userId));
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      await tx.permissionDef.upsert({
-        where: { gameId_key: { gameId, key: permission } },
-        create: { gameId, key: permission },
-        update: {},
-      });
-      const upserted = await tx.memberPermissionOverride.upsert({
-        where: {
-          groupMemberId_permissionKey: {
-            groupMemberId: member.id,
-            permissionKey: permission,
-          },
-        },
-        create: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-          grant,
-          setByUserId: null,
-        },
-        update: { grant, setAt: new Date() },
-      });
-      const auditPayload: Record<string, unknown> = {
-        memberId: member.id,
-        permission,
-        grant,
-      };
-      if (existing) auditPayload.before = { grant: existing.grant };
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "permission.override.set",
-          targetId: userId,
-          payload: auditPayload as Prisma.InputJsonValue,
-        },
-      });
-      return upserted;
-    });
-    permissionCache.invalidateGroup(group.id);
 
     return c.json(serializeMemberPermissionOverride(result, group.id, userId));
   });
@@ -2161,43 +2117,51 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member) throw Errors.notFound("member");
 
-    const existing = await prisma.memberPermissionOverride.findUnique({
-      where: {
-        groupMemberId_permissionKey: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-        },
-      },
+    await clearMemberOverride(prisma, {
+      gameId,
+      groupId: group.id,
+      groupMemberId: member.id,
+      externalUserId: userId,
+      permission,
     });
-    if (!existing) return c.body(null, 204);
-
-    await prisma.$transaction(async (tx) => {
-      await tx.memberPermissionOverride.delete({
-        where: {
-          groupMemberId_permissionKey: {
-            groupMemberId: member.id,
-            permissionKey: permission,
-          },
-        },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "permission.override.cleared",
-          targetId: userId,
-          payload: {
-            memberId: member.id,
-            permission,
-            grant: existing.grant,
-          } as Prisma.InputJsonValue,
-        },
-      });
-    });
-    permissionCache.invalidateGroup(group.id);
 
     return c.body(null, 204);
+  });
+
+  // One member's status, direct roles and overrides in one read. Roles
+  // reached through inheritance are read from the role graph.
+  r.get("/:id/members/:userId/access", async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const gameId = c.var.gameId;
+
+    const group = await prisma.group.findFirst({
+      where: { id, gameId, softDeletedAt: null },
+      select: { id: true },
+    });
+    if (!group) throw Errors.notFound("member");
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) throw Errors.notFound("member");
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
+      select: { id: true, status: true },
+    });
+    if (!member) throw Errors.notFound("member");
+
+    const [roleIds, overrides] = await Promise.all([
+      loadMemberRoleIds(prisma, member.id),
+      prisma.memberPermissionOverride.findMany({
+        where: { groupMemberId: member.id },
+        orderBy: { permissionKey: "asc" },
+      }),
+    ]);
+    return c.json({
+      groupId: group.id,
+      userId,
+      status: member.status,
+      roleIds,
+      overrides: overrides.map((o) => serializeMemberPermissionOverride(o, group.id, userId)),
+    });
   });
 
   r.get("/:id/members/:userId/permissions", async (c) => {
@@ -2246,57 +2210,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!group) throw Errors.notFound("group");
 
-    const duplicate = await prisma.role.findUnique({
-      where: { groupId_name: { groupId: group.id, name: body.name } },
-      select: { id: true },
-    });
-    if (duplicate) throw Errors.roleNameTaken();
-
-    const { role, event } = await prisma
-      .$transaction(async (tx) => {
-        const created = await tx.role.create({
-          data: {
-            groupId: group.id,
-            name: body.name,
-            priority: body.priority,
-            color: body.color ?? null,
-            isDefault: body.isDefault ?? false,
-          },
-        });
-        await tx.auditEntry.create({
-          data: {
-            gameId,
-            groupId: group.id,
-            actorUserId: null,
-            action: "role.created",
-            targetId: created.id,
-            payload: {
-              name: created.name,
-              priority: created.priority,
-              color: created.color,
-              isDefault: created.isDefault,
-            } as Prisma.InputJsonValue,
-          },
-        });
-        const staged = await stageEvent<RoleCreatedEvent>(tx, {
-          type: "role.created",
-          gameId: gameId as GameId,
-          groupId: group.id as GroupId,
-          role: toPublicRole(created, []),
-        });
-        return { role: created, event: staged };
-      })
-      .catch((err) => {
-        // Loser of a concurrent same-name create: the winner's row
-        // landed after the duplicate check above. Same answer the
-        // sequential second caller gets. The rollback also drops the
-        // staged webhook deliveries.
-        if (isUniqueViolation(err)) throw Errors.roleNameTaken();
-        throw err;
-      });
-
-    publishStagedEvents(hub, event);
-    return c.json(serializeRole(role, []), 201);
+    const role = await createRole(prisma, hub, { gameId, groupId: group.id, body });
+    return c.json(role, 201);
   });
 
   r.get("/:id/roles", async (c) => {
@@ -2319,12 +2234,23 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       return c.json(paged ? { items: [], nextCursor: null } : []);
     }
 
-    const permissionMap = await batchLoadRolePermissionKeys(
+    const details = await loadRoleDetails(
       prisma,
       roles.map((r2) => r2.id),
     );
-    const items = roles.map((role) => serializeRole(role, permissionMap.get(role.id) ?? []));
+    const items = roles.map((role) => serializeRole(role, details.get(role.id)));
     return c.json(paged ? { items, nextCursor: null } : items);
+  });
+
+  // The group's full role graph in one read.
+  r.get("/:id/role-graph", async (c) => {
+    const gameId = c.var.gameId;
+    const group = await prisma.group.findFirst({
+      where: { id: c.req.param("id"), gameId, softDeletedAt: null },
+      select: { id: true, defaultRoleId: true },
+    });
+    if (!group) throw Errors.notFound("group");
+    return c.json(await loadRoleGraph(prisma, gameId, group));
   });
 
   // `mutual: true` writes both directions in one transaction; the

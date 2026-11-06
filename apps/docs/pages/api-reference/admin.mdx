@@ -317,7 +317,8 @@ settings page.
   "gameId": "game_clxxx...",
   "config": {
     "friends": { "enabled": true, "scope": "per-game", "requestsRequired": true, "maxFriends": 1000, "...": "..." },
-    "blocks": { "enabled": true }
+    "blocks": { "enabled": true },
+    "permissions": { "mode": "exact" }
   },
   "networkId": null
 }
@@ -326,7 +327,7 @@ settings page.
 | Field | Type | Notes |
 |-------|------|-------|
 | `gameId` | string | Echoed from the path. |
-| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the schema. |
+| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the friends and blocks schema, and [Permission modes](/api-reference/permissions#permission-modes) for `permissions.mode` (`"exact"` or `"nodes"`). A `PATCH` that changes `permissions.mode` runs the mode-switch checks and returns `409 permission_mode_conflict` when they fail. |
 | `networkId` | string \| null | The network the game belongs to, when `friends.scope = "network"`. Null for standalone games. |
 
 ### Errors
@@ -894,14 +895,19 @@ interface WireAdminRole {
   priority: number;
   color: string | null;        // 7-character hex (e.g. "#ff5050") or null
   isDefault: boolean;
-  permissions: string[];       // sorted ascending; empty until grant calls land
+  permissions: string[];       // granted keys, sorted ascending
+  entries: { permission: string; value: boolean }[]; // grants and denies, sorted by key
+  parents: string[];           // inherited role ids, same group
+  metadata: Record<string, unknown>;
   createdAt: string;           // ISO 8601
 }
 ```
 
+Same shape as the per-game [`Role`](/api-reference/roles#wire-format).
+
 Behavior:
 
-- Permissions are batch-loaded via a single `RolePermission.findMany` so list rendering stays at two queries regardless of page size.
+- Entries and parents are batch-loaded (one query each) so list rendering stays at a fixed number of queries regardless of page size.
 - 404 collapses missing / cross-game / soft-deleted group into one envelope (existence not leaked through the path scope).
 
 Errors:
@@ -950,7 +956,7 @@ Errors:
 
 ## PATCH /v1/admin/games/:gameId/roles/:roleId
 
-Updates a role on the cross-game admin surface. Mirrors the per-game `PATCH /v1/roles/:id` semantics exactly: partial body, per-field diff, no-op short-circuit, 409 on rename collision.
+Updates a role on the cross-game admin surface. Mirrors the per-game `PATCH /v1/roles/:id` semantics exactly: partial body (including `metadata`), per-field diff, no-op short-circuit, 409 on rename collision, and a `role.updated` event naming the changed fields.
 
 Path parameters:
 
@@ -1074,6 +1080,18 @@ Errors:
 |------|--------|------|
 | `not_found` | 404 | Role missing, role's group soft-deleted, or role's group belongs to a different game. The `RolePermission` row (if any) is preserved. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## PUT /v1/admin/games/:gameId/roles/:roleId/entries
+
+Replaces a role's full entry list on the cross-game admin surface. Mirrors the per-game [`PUT /v1/roles/:id/entries`](/api-reference/roles#put-v1rolesidentries) exactly: same body, caps, audit entry and `role.updated` event. Response: `200 OK` with the post-state `WireAdminRole`.
+
+## PUT /v1/admin/games/:gameId/roles/:roleId/parents
+
+Replaces a role's parent list on the cross-game admin surface. Mirrors the per-game [`PUT /v1/roles/:id/parents`](/api-reference/roles#put-v1rolesidparents) exactly, including the cycle, group and depth checks. Response: `200 OK` with the post-state `WireAdminRole`.
+
+## GET /v1/admin/games/:gameId/groups/:groupId/role-graph
+
+Reads a group's full role graph on the cross-game admin surface. Same response as the per-game [`GET /v1/groups/:id/role-graph`](/api-reference/roles#get-v1groupsidrole-graph). `404 not_found` for a missing, cross-game or soft-deleted group.
 
 ## GET /v1/admin/games/:gameId/permissions
 

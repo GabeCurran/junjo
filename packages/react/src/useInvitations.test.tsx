@@ -598,6 +598,9 @@ describe("useInvitations", () => {
           color: null,
           isDefault: false,
           permissions: [],
+          entries: [],
+          parents: [],
+          metadata: {},
           createdAt: new Date(),
         },
       });

@@ -173,9 +173,18 @@ export interface Role {
   priority: number;
   color: string | null;
   isDefault: boolean;
+  // The keys this role grants: every entry whose value is true. Deny
+  // entries are listed only in `entries`.
   permissions: PermissionKey[];
+  // Every entry on the role, grants and denies, sorted by key.
+  entries: PermissionEntry[];
+  // Roles this role inherits from, all in the same group.
+  parents: RoleId[];
+  metadata: RoleMetadata;
   createdAt: Date;
 }
+
+export type RoleMetadata = Record<string, unknown>;
 
 export interface CreateRoleInput {
   name: string;
@@ -183,6 +192,7 @@ export interface CreateRoleInput {
   color?: string;
   isDefault?: boolean;
   permissions?: PermissionKey[];
+  metadata?: RoleMetadata;
 }
 
 export interface UpdateRoleInput {
@@ -190,16 +200,50 @@ export interface UpdateRoleInput {
   priority?: number;
   color?: string | null;
   isDefault?: boolean;
+  // Replaces the whole object.
+  metadata?: RoleMetadata;
+}
+
+// A group's roles with everything a local resolver needs, read in one
+// call.
+export interface RoleGraph {
+  groupId: GroupId;
+  mode: PermissionMode;
+  defaultRoleId: RoleId | null;
+  roles: Role[];
+}
+
+// One member's direct roles and overrides in a group, read in one call.
+export interface MemberAccess {
+  groupId: GroupId;
+  userId: UserId;
+  status: MemberStatus;
+  roleIds: RoleId[];
+  overrides: MemberPermissionOverride[];
 }
 
 // =====================================================================
 // Permission
 // =====================================================================
 
-// An open string the game defines. Junjo stores each key verbatim and
-// answers can(user, group, key) without ever interpreting the key
-// itself.
+// An open string the game defines. In "exact" mode Junjo stores and
+// matches each key verbatim; in "nodes" mode keys are normalized and
+// matched as described on `PermissionMode`.
 export type PermissionKey = string;
+
+// How a game's permission keys are matched. "exact": keys are opaque
+// and case-sensitive. "nodes": keys are dot-separated and folded to
+// lowercase, a trailing `.*` matches one or more further segments, and
+// a bare `*` matches every key.
+export type PermissionMode = "exact" | "nodes";
+
+export const PERMISSION_MODES = ["exact", "nodes"] as const satisfies readonly PermissionMode[];
+
+// One entry on a role. `value` true grants the key, false denies it.
+export interface PermissionEntry {
+  permission: PermissionKey;
+  value: boolean;
+}
 
 export type PermissionSource = "role" | "override" | "default" | "none";
 
@@ -318,11 +362,14 @@ export type AuditAction =
   | "member.notes.updated"
   | "game.user.banned"
   | "game.user.unbanned"
+  | "game.permissions.mode.set"
   | "role.created"
   | "role.updated"
   | "role.deleted"
   | "role.assigned"
   | "role.unassigned"
+  | "role.entries.changed"
+  | "role.parents.set"
   | "permission.granted"
   | "permission.revoked"
   | "permission.override.set"
@@ -409,6 +456,25 @@ export interface RoleChangedEvent extends GroupEventBase {
   // Populated when the caller supplies `actorUserId` on the role
   // assign / unassign request.
   actorUserId: UserId | null;
+}
+
+// Which parts of a role a `role.updated` event changed.
+export type RoleChangeField =
+  | "name"
+  | "priority"
+  | "color"
+  | "isDefault"
+  | "metadata"
+  | "entries"
+  | "parents";
+
+// A change signal: carries what changed, not the new values. Read the
+// role or the group's role graph for the current state; the audit entry
+// for the change carries the diff.
+export interface RoleUpdatedEvent extends GroupEventBase {
+  type: "role.updated";
+  roleId: RoleId;
+  changed: RoleChangeField[];
 }
 
 export interface RoleDeletedEvent extends GroupEventBase {
@@ -574,6 +640,7 @@ export type JunjoEvent =
   | MemberUnbannedEvent
   | RoleCreatedEvent
   | RoleChangedEvent
+  | RoleUpdatedEvent
   | RoleDeletedEvent
   | PermissionGrantedEvent
   | PermissionRevokedEvent
@@ -816,9 +883,14 @@ export interface GameConfigBlocks {
   enabled: boolean;
 }
 
+export interface GameConfigPermissions {
+  mode: PermissionMode;
+}
+
 export interface GameConfig {
   friends: GameConfigFriends;
   blocks: GameConfigBlocks;
+  permissions: GameConfigPermissions;
 }
 
 // Deeply-partial shape for PATCH payloads. Every nested branch is
@@ -831,6 +903,7 @@ export type PartialGameConfig = {
     visibility?: Partial<GameConfigFriendsVisibility>;
   };
   blocks?: Partial<GameConfigBlocks>;
+  permissions?: Partial<GameConfigPermissions>;
 };
 
 // =====================================================================
@@ -867,6 +940,7 @@ export const JUNJO_ERROR_CODES = [
   "role_name_taken",
   "role_group_mismatch",
   "parent_cycle",
+  "permission_mode_conflict",
   "banned",
   "passcode_required",
   "passcode_invalid",

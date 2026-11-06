@@ -2,6 +2,33 @@
 
 The roles namespace operates on `Role` rows: a role is one named bundle of authority within a single group. The same role name (e.g. "Officer") is unique within a group, but the same name can exist across different groups.
 
+## The `Role` shape
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id`, `groupId` | `RoleId`, `GroupId` | |
+| `name` | string | Unique within the group. |
+| `priority` | number | Higher = more authority. Also breaks ties between roles in the same resolution layer. |
+| `color` | string \| null | 7-char hex. |
+| `isDefault` | boolean | |
+| `permissions` | string[] | The keys this role **grants**: every entry whose `value` is `true`. Deny entries are not listed here. |
+| `entries` | `{ permission, value }[]` | Every entry on the role, grants (`value: true`) and denies (`value: false`), sorted by key. |
+| `parents` | `RoleId[]` | Roles this role inherits from, all in the same group. See [`setParents`](#setparentsroleid-parents). |
+| `metadata` | `Record<string, unknown>` | Free-form JSON for your own use (a chat prefix, a display badge). Junjo stores it and never reads it. |
+| `createdAt` | Date | |
+
+`permissions` keeps its original meaning, so code written before deny entries existed still reads the granted set correctly. Read `entries` when you need the denies too.
+
+Older servers do not send `entries`, `parents`, or `metadata`; the SDK fills in `[]`, `[]`, and `{}` so the shape is always complete.
+
+### How entries resolve
+
+A check walks the member's access in layers: their own [permission overrides](/sdk/members#overridepermissiongroupid-userid-permission-grant) first, then the roles they hold directly, then those roles' parents, then grandparents, and so on. A role reachable by several paths sits at its shortest distance. The first layer with any matching entry decides; deeper layers are not consulted.
+
+Within the deciding layer, the most specific key wins (the exact key, then the longest matching `a.b.*` wildcard, down to the bare `*`), and between entries of equal specificity a deny beats a grant. So a parent role can grant `shop.*` while a directly held role denies `shop.refund`, and the deny wins because it is in a nearer layer.
+
+Wildcards and case-insensitive keys apply only in `"nodes"` mode (the game config's `permissions.mode`; the default is `"exact"`, where every key is an opaque, case-sensitive string). See [Core concepts](/core-concepts#how-a-check-is-resolved) for the full rules and [permission modes](/core-concepts#permission-modes).
+
 ## `create(groupId, input)`
 
 Creates a new role inside a group. Returns the created `Role`.
@@ -23,17 +50,18 @@ const officer = await junjo.roles.create("grp_xyz" as GroupId, {
 | `priority` | number | yes | Integer; higher = more authority. |
 | `color` | string | no | 7-char hex (`#rrggbb`). |
 | `isDefault` | boolean | no | Per-role tag; defaults to `false`. |
-| `permissions` | string[] | no | **Silently dropped on create**: use [`grantPermission`](#grantpermissionroleid-permission) to add permission keys after the role exists. The field stays on `CreateRoleInput` so a typed object literal compiles either way; the SDK strips it before sending. |
+| `permissions` | string[] | no | **Silently dropped on create**: use [`grantPermission`](#grantpermissionroleid-permission-opts) or [`setEntries`](#setentriesroleid-entries) to add permission keys after the role exists. The field stays on `CreateRoleInput` so a typed object literal compiles either way; the SDK strips it before sending. |
+| `metadata` | object | no | Free-form JSON object. At most 16 KB serialized. Defaults to `{}`. |
 
 ### Returns
 
-`Role`. `permissions` is always `[]` on a fresh role.
+`Role`. `permissions`, `entries`, and `parents` are always `[]` on a fresh role.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing required fields, name out of range, priority not an integer, or color not a 7-char hex. |
+| `bad_request` | 400 | Missing required fields, name out of range, priority not an integer, color not a 7-char hex, or metadata not an object or over 16 KB serialized. |
 | `not_found` | 404 | No group with that id in the calling game. |
 | `role_name_taken` | 409 | Another role in the same group already has that name. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -76,7 +104,7 @@ for (const role of roles) {
 }
 ```
 
-Roles are a small list per group (10s, not 1000s); pagination is not provided.
+Roles are a small list per group (10s, not 1000s); pagination is not provided. To read the roles together with the group's permission mode and default role, use [`getGraph`](#getgraphgroupid).
 
 ### The result is both an array and a page
 
@@ -128,12 +156,22 @@ Each field is diffed per-field against the stored row; supplying the same value 
 | `priority` | number | Integer. |
 | `color` | string \| null | 7-char hex; pass `null` to clear. |
 | `isDefault` | boolean | |
+| `metadata` | object | **Replaces the whole object**; it is not merged. To edit one key, read the role, change a copy, and send it back. At most 16 KB serialized. |
+
+```ts
+const role = await junjo.roles.get(roleId);
+if (role) {
+  await junjo.roles.update(roleId, { metadata: { ...role.metadata, prefix: "[Mod]" } });
+}
+```
+
+A change emits one `role.updated` event naming the fields that changed (`name`, `priority`, `color`, `isDefault`, `metadata`).
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Empty body, invalid color, or other validation failure. |
+| `bad_request` | 400 | Empty body, invalid color, metadata over 16 KB, or other validation failure. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `role_name_taken` | 409 | Renaming to a name already used by another role in the same group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -152,6 +190,8 @@ await junjo.roles.delete("role_xyz" as RoleId);
 
 If the role has any member assignments, the call throws `JunjoError` with `code: "role_has_members"`. Reassign affected members (or remove the assignment) before deleting.
 
+Roles that listed the deleted role as a parent lose it from their `parents`, and each of them gets a `role.updated` event.
+
 ### Errors
 
 | Code | Status | When |
@@ -164,22 +204,35 @@ If the role has any member assignments, the call throws `JunjoError` with `code:
 
 - [`DELETE /v1/roles/:id`](/api-reference/roles) - the underlying HTTP route.
 
-## `grantPermission(roleId, permission)`
+## `grantPermission(roleId, permission, opts?)`
 
-Grants a permission key to a role. Returns the updated `Role` (with the new key in `permissions`). The first time a permission key appears on a given game, it is auto-registered into the `PermissionDef` catalog so the dashboard and SDK validators can list it; subsequent grants of the same key reuse the existing registry row.
+Adds or updates one entry on a role. Returns the updated `Role`. By default the entry is a grant; pass `{ value: false }` to store a deny instead. The first time a permission key appears on a given game, it is auto-registered into the `PermissionDef` catalog so the dashboard and SDK validators can list it; subsequent writes of the same key reuse the existing registry row.
 
 ```ts
 const role = await junjo.roles.grantPermission("role_xyz" as RoleId, "invite_member");
 role.permissions; // includes "invite_member"
+
+// Deny a key, for example to carve one action out of a wildcard grant.
+await junjo.roles.grantPermission(roleId, "shop.refund", { value: false });
 ```
 
-The call is idempotent: granting a permission the role already has returns the unchanged role with no audit entry and no DB write.
+The call is idempotent: writing an entry the role already holds with the same value returns the unchanged role with no audit entry and no DB write. Writing the opposite value flips the existing entry.
+
+### Options
+
+| Option | Type | Notes |
+|--------|------|-------|
+| `value` | boolean | `true` (the default) grants the key; `false` denies it. Omitted from the request when not given, so the server applies its default. |
+
+### Events
+
+A key entering the granted set emits `permission.granted`, as before. Any write that involves a deny emits `role.updated` with `changed: ["entries"]`; flipping a grant to a deny also emits `permission.revoked`.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing or empty `permission`, or key over 128 characters. |
+| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, a key that is invalid in `"nodes"` mode, or the role already holds 5,000 entries. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -187,9 +240,104 @@ The call is idempotent: granting a permission the role already has returns the u
 
 - [`POST /v1/roles/:id/permissions`](/api-reference/roles) - the underlying HTTP route.
 
+## `setEntries(roleId, entries)`
+
+Replaces the role's whole entry list, grants and denies, in one atomic write. Returns the updated `Role`. Keys absent from `entries` are removed from the role; pass `[]` to clear it.
+
+```ts
+await junjo.roles.setEntries(roleId, [
+  { permission: "shop.*", value: true },
+  { permission: "shop.refund", value: false },
+  { permission: "chat.color", value: true },
+]);
+```
+
+Use it to sync a role from a config file or an editor in one request instead of diffing and issuing grant and revoke calls one at a time. Other writers never observe a half-applied list.
+
+Rules:
+
+- At most 5,000 entries per role.
+- Each key may appear once; a duplicate key rejects the whole call.
+- In `"nodes"` mode keys are lowercased before storage and validated (printable ASCII, `*` only as the whole final segment or as the whole key), so two keys that differ only by case count as duplicates.
+
+A call that changes anything emits one `role.updated` event with `changed: ["entries"]`, not one event per key. A call that matches the stored list exactly is a no-op.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | More than 5,000 entries, a duplicate key, an empty or over-long key, or a key that is invalid in `"nodes"` mode. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PUT /v1/roles/:id/entries`](/api-reference/roles) - the underlying HTTP route.
+
+## `setParents(roleId, parents)`
+
+Replaces the role's parent list. Returns the updated `Role`. A role inherits every entry of its parents, one [resolution layer](#how-entries-resolve) further away than its own entries, so for a member holding the role, its own entries take precedence over anything it inherits.
+
+```ts
+// Moderator inherits everything Member has, then adds its own entries.
+await junjo.roles.setParents(moderatorId, [memberId]);
+
+// Remove all parents.
+await junjo.roles.setParents(moderatorId, []);
+```
+
+Rules:
+
+- Parents must be roles in the same group.
+- At most 32 parents per role.
+- A list that would form a cycle (including a role naming itself) is rejected with `parent_cycle`.
+- Inheritance chains may be at most 100 roles deep.
+
+A change emits `role.updated` with `changed: ["parents"]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | More than 32 parents, or the change would make an inheritance chain deeper than 100. |
+| `parent_cycle` | 400 | The new parents would create a cycle. |
+| `role_group_mismatch` | 400 | A parent belongs to a different group. |
+| `not_found` | 404 | The role, or one of the parents, is missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`PUT /v1/roles/:id/parents`](/api-reference/roles) - the underlying HTTP route.
+
+## `getGraph(groupId)`
+
+Reads every role in a group together with the group's permission mode and default role, in one call. Returns a `RoleGraph`: `{ groupId, mode, defaultRoleId, roles }`.
+
+```ts
+const graph = await junjo.roles.getGraph(groupId);
+graph.mode;          // "exact" or "nodes"
+graph.defaultRoleId; // RoleId | null
+graph.roles;         // Role[], each with entries and parents
+```
+
+The graph holds everything a local resolver needs. Pair it with [`members.getAccess`](/sdk/members#getaccessgroupid-userid) for one member's roles and overrides, and you can answer checks in-process without a round-trip per check. Refresh it when a `role.created`, `role.updated`, `role.deleted`, `permission.granted`, or `permission.revoked` event arrives for the group.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | Group missing, soft-deleted, or owned by a different game. Thrown, not converted to `null`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+### See also
+
+- [`GET /v1/groups/:id/role-graph`](/api-reference/roles) - the underlying HTTP route.
+
 ## `revokePermission(roleId, permission)`
 
-Revokes a permission key from a role. Returns the updated `Role`. The call is idempotent: revoking a permission the role does not have returns the unchanged role with no audit entry. Revoking a key does not remove its `PermissionDef` registry entry.
+Removes the entry for a permission key from a role, whether it is a grant or a deny. Returns the updated `Role`. The call is idempotent: revoking a key the role has no entry for returns the unchanged role with no audit entry. Revoking a key does not remove its `PermissionDef` registry entry.
+
+Removing a grant emits `permission.revoked`; removing a deny emits `role.updated` with `changed: ["entries"]`.
 
 ```ts
 const role = await junjo.roles.revokePermission("role_xyz" as RoleId, "invite_member");
@@ -206,3 +354,18 @@ role.permissions; // no longer includes "invite_member"
 ### See also
 
 - [`DELETE /v1/roles/:id/permissions/:permission`](/api-reference/roles) - the underlying HTTP route.
+
+## The `role.updated` event
+
+`role.updated` is a change signal, not a snapshot: it carries the `roleId` and a `changed` list (`name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`) but none of the new values. On receipt, re-read the role with [`get`](#getid) or the whole group with [`getGraph`](#getgraphgroupid).
+
+```ts
+await junjo.groups.subscribe(groupId, async (event) => {
+  if (event.type === "role.updated") {
+    const role = await junjo.roles.get(event.roleId);
+    // ...
+  }
+});
+```
+
+A plain grant or revoke through `grantPermission` / `revokePermission` still emits only `permission.granted` / `permission.revoked`, so existing listeners keep working. Everything else (deny entries, `setEntries`, `setParents`, metadata, and name / priority / color / isDefault changes through `update`) emits `role.updated`. [`useRoles`](/react/use-roles) reloads its list on it automatically.
