@@ -218,6 +218,20 @@ export function formatJunjoEventForSlack(payload: Record<string, unknown>): Slac
         ],
       };
     }
+    case "role.updated": {
+      const roleId = readString(payload, "roleId") ?? "(unknown)";
+      const changed = Array.isArray(payload.changed) ? payload.changed.map(String).join(", ") : "";
+      const summary = `Role \`${roleId}\` updated in \`${groupId || "(unknown)"}\`: ${changed || "(unknown)"}`;
+      return {
+        text: `${title}: ${summary}`,
+        blocks: [
+          header(title),
+          { type: "section", text: mrkdwn(summary) },
+          fieldsSection([fieldPair("Group", groupId || "(unknown)"), fieldPair("Role", roleId)]),
+          contextLine(eventId, occurredAt),
+        ],
+      };
+    }
     case "role.deleted": {
       const roleId = readString(payload, "roleId") ?? "(unknown)";
       const summary = `Role \`${roleId}\` deleted from \`${groupId || "(unknown)"}\``;
@@ -341,6 +355,8 @@ function titleFor(type: string): string {
       return "Role created";
     case "role.changed":
       return "Role membership changed";
+    case "role.updated":
+      return "Role updated";
     case "role.deleted":
       return "Role deleted";
     case "permission.granted":

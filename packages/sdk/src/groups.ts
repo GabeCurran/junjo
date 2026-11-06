@@ -21,24 +21,15 @@ import type {
 import { type WireBanHistoryEntry, deserializeBanHistoryEntry } from "./bans.js";
 import { JunjoError } from "./errors.js";
 import {
-  UNKNOWN_EVENT_TYPE,
-  type WireJunjoEvent,
-  deserializeEvent,
-  parseSSEFrame,
-} from "./events.js";
-import type { HttpClient } from "./http.js";
+  type ConditionalWriteOptions,
+  type HttpClient,
+  type WriteOptions,
+  writeOptions,
+} from "./http.js";
 import { type WireMember, deserializeMember } from "./members.js";
 import { paginate } from "./pagination.js";
+import { decodeEventData, readSSEFrames, toError } from "./sse.js";
 import { parseWireDate } from "./wire.js";
-
-// Cap on an unterminated SSE frame (in UTF-16 code units, roughly 1 MiB
-// of ASCII). Real Junjo events are a few KB; anything near this is a
-// broken or hostile stream.
-const MAX_SSE_BUFFER_CHARS = 1024 * 1024;
-
-// Blank line ending a frame: \n\n from the server, or \r\n\r\n (and
-// mixes) after a proxy normalizes line endings.
-const SSE_FRAME_DELIMITER = /\r?\n\r?\n/;
 
 /** Options for {@link GroupsApi.subscribe}. */
 export interface SubscribeOptions {
@@ -184,14 +175,8 @@ export class GroupsApi {
    * a matching Role already exists in the new group, the role is
    * assigned to the creator in the same transaction.
    */
-  async create(
-    input: CreateGroupInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Group> {
-    const wire = await this.http.post<WireGroup>("/v1/groups", input, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async create(input: CreateGroupInput, opts?: WriteOptions): Promise<Group> {
+    const wire = await this.http.post<WireGroup>("/v1/groups", input, writeOptions(opts));
     return deserializeGroup(wire);
   }
 
@@ -274,37 +259,28 @@ export class GroupsApi {
     return paginate((cursor) => this.list({ ...opts, cursor }));
   }
 
-  async update(
-    id: GroupId,
-    input: UpdateGroupInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Group> {
-    const wire = await this.http.patch<WireGroup>(`/v1/groups/${encodeURIComponent(id)}`, input, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async update(id: GroupId, input: UpdateGroupInput, opts?: WriteOptions): Promise<Group> {
+    const wire = await this.http.patch<WireGroup>(
+      `/v1/groups/${encodeURIComponent(id)}`,
+      input,
+      writeOptions(opts),
+    );
     return deserializeGroup(wire);
   }
 
   /** Soft delete with a 7-day undo window; `hard: true` bypasses it. */
-  async delete(
-    id: GroupId,
-    opts?: { hard?: boolean; signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async delete(id: GroupId, opts?: WriteOptions & { hard?: boolean }): Promise<void> {
     const path = opts?.hard
       ? `/v1/groups/${encodeURIComponent(id)}?hard=true`
       : `/v1/groups/${encodeURIComponent(id)}`;
-    await this.http.delete<unknown>(path, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    await this.http.delete<unknown>(path, undefined, writeOptions(opts));
   }
 
-  async restore(id: GroupId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<Group> {
+  async restore(id: GroupId, opts?: WriteOptions): Promise<Group> {
     const wire = await this.http.post<WireGroup>(
       `/v1/groups/${encodeURIComponent(id)}/restore`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeGroup(wire);
   }
@@ -314,14 +290,14 @@ export class GroupsApi {
   async inviteByUserId(
     groupId: GroupId,
     userId: UserId,
-    opts?: { roleId?: RoleId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { roleId?: RoleId },
   ): Promise<Invitation> {
     const body: { targetUserId: string; roleId?: string } = { targetUserId: userId };
     if (opts?.roleId !== undefined) body.roleId = opts.roleId;
     const wire = await this.http.post<WireInvitation>(
       `/v1/groups/${encodeURIComponent(groupId)}/invitations`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeInvitation(wire);
   }
@@ -329,12 +305,12 @@ export class GroupsApi {
   async inviteByCode(
     groupId: GroupId,
     input?: CreateInvitationInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<Invitation> {
     const wire = await this.http.post<WireInvitation>(
       `/v1/groups/${encodeURIComponent(groupId)}/invitations`,
       buildOpenInviteBody(input),
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeInvitation(wire);
   }
@@ -342,7 +318,7 @@ export class GroupsApi {
   async inviteByLink(
     groupId: GroupId,
     input?: CreateInvitationInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<{ invitation: Invitation; url: string }> {
     // Refuse to mint a link nobody can open: without a configured
     // inviteBaseUrl the only candidate would be the API origin, where
@@ -368,7 +344,7 @@ export class GroupsApi {
   async bulkInvite(
     groupId: GroupId,
     csv: string | ReadableStream<Uint8Array>,
-    opts?: { roleId?: RoleId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { roleId?: RoleId },
   ): Promise<{ invited: number; skipped: number; errors: Array<{ row: number; reason: string }> }> {
     const params = new URLSearchParams();
     if (opts?.roleId !== undefined) params.set("roleId", opts.roleId);
@@ -378,43 +354,33 @@ export class GroupsApi {
       invited: number;
       skipped: number;
       errors: Array<{ row: number; reason: string }>;
-    }>(path, csv, "text/csv", { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+    }>(path, csv, "text/csv", writeOptions(opts));
   }
 
-  async acceptInvitation(
-    code: string,
-    userId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Member> {
+  async acceptInvitation(code: string, userId: UserId, opts?: WriteOptions): Promise<Member> {
     const wire = await this.http.post<WireMember>(
       `/v1/invitations/${encodeURIComponent(code)}/accept`,
       { userId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
 
-  async declineInvitation(
-    code: string,
-    opts?: { userId?: UserId; signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async declineInvitation(code: string, opts?: WriteOptions & { userId?: UserId }): Promise<void> {
     const body: Record<string, string> = {};
     if (opts?.userId !== undefined) body.userId = opts.userId;
-    await this.http.post<unknown>(`/v1/invitations/${encodeURIComponent(code)}/decline`, body, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    await this.http.post<unknown>(
+      `/v1/invitations/${encodeURIComponent(code)}/decline`,
+      body,
+      writeOptions(opts),
+    );
   }
 
-  async leave(
-    groupId: GroupId,
-    userId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Member> {
+  async leave(groupId: GroupId, userId: UserId, opts?: WriteOptions): Promise<Member> {
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/leave`,
       { userId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -428,14 +394,14 @@ export class GroupsApi {
   async join(
     groupId: GroupId,
     userId: UserId,
-    opts?: { passcode?: string; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { passcode?: string },
   ): Promise<Member> {
     const body: Record<string, string> = { userId };
     if (opts?.passcode !== undefined) body.passcode = opts.passcode;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/join`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -443,14 +409,14 @@ export class GroupsApi {
   async kick(
     groupId: GroupId,
     userId: UserId,
-    opts?: { reason?: string; signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions & { reason?: string },
   ): Promise<Member> {
     const body: Record<string, string> = {};
     if (opts?.reason !== undefined) body.reason = opts.reason;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/kick`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -464,13 +430,11 @@ export class GroupsApi {
   async ban(
     groupId: GroupId,
     userId: UserId,
-    opts?: {
+    opts?: ConditionalWriteOptions & {
       reason?: string | null;
       expiresAt?: Date | string | null;
       // Optional moderator attribution (mirrors `bans.add`).
       actorUserId?: UserId;
-      signal?: AbortSignal;
-      timeoutMs?: number;
     },
   ): Promise<Member> {
     const body: Record<string, unknown> = {};
@@ -487,20 +451,26 @@ export class GroupsApi {
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
 
+  /**
+   * Lifts a per-group ban. With no active ban to lift it throws
+   * `not_found` with `details.reason === "not_active"`, which
+   * `isNotActive(err)` recognises; an unknown group throws a plain
+   * `not_found`.
+   */
   async unban(
     groupId: GroupId,
     userId: UserId,
-    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions & { actorUserId?: UserId },
   ): Promise<Member> {
     const wire = await this.http.delete<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/ban`,
       opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -599,77 +569,40 @@ export class GroupsApi {
       opts?.onError?.(err);
     };
 
-    void (async () => {
-      const decoder = new TextDecoder();
-      let buffer = "";
-      try {
-        while (!closed) {
-          const { done, value } = await reader.read();
-          if (done) {
-            // The SERVER ended the stream cleanly. Run the same cleanup
-            // close() performs (listener removal, closed state) and tell
-            // the consumer via onClose so the subscription doesn't die
-            // silently. A close()/abort that raced this read has already
-            // set `closed`; the consumer initiated that one, so no
-            // notification.
-            const serverInitiated = !closed;
-            close();
-            if (serverInitiated) opts?.onClose?.();
-            break;
-          }
-          if (value) buffer += decoder.decode(value, { stream: true });
-          // A server (or middlebox) that never sends the frame delimiter
-          // would otherwise grow the buffer without bound; treat an
-          // over-long unterminated frame as a stream error.
-          if (buffer.length > MAX_SSE_BUFFER_CHARS) {
-            reportError(
-              new JunjoError(
-                `SSE frame exceeded ${MAX_SSE_BUFFER_CHARS} characters without a delimiter`,
-                "stream_overflow",
-              ),
-            );
-            return;
-          }
-          // Frames end at a blank line; tolerate CRLF-normalized
-          // streams by accepting \r\n\r\n (and mixes) as the delimiter.
-          let match = buffer.match(SSE_FRAME_DELIMITER);
-          while (match?.index !== undefined) {
-            const block = buffer.slice(0, match.index);
-            buffer = buffer.slice(match.index + match[0].length);
-            const frame = parseSSEFrame(block);
-            if (frame?.data !== undefined) {
-              let event: JunjoEvent | null = null;
-              try {
-                const wire = JSON.parse(frame.data) as WireJunjoEvent;
-                event = deserializeEvent(wire);
-              } catch (err) {
-                if (err instanceof JunjoError && err.code === UNKNOWN_EVENT_TYPE) {
-                  // A newer server sent an event type this SDK predates;
-                  // skip the frame rather than killing the stream.
-                  event = null;
-                } else {
-                  reportError(err instanceof Error ? err : new Error(String(err)));
-                  return;
-                }
-              }
-              if (event !== null) {
-                try {
-                  handler(event);
-                } catch (err) {
-                  reportError(err instanceof Error ? err : new Error(String(err)));
-                  return;
-                }
-              }
-            }
-            match = buffer.match(SSE_FRAME_DELIMITER);
-          }
+    // Frame errors (malformed JSON, a throwing handler) are trapped here
+    // and end the stream through reportError, which flips `closed` and
+    // stops the reader; only transport failures and the buffer cap
+    // reach the rejection branch below.
+    readSSEFrames(
+      reader,
+      () => closed,
+      (frame) => {
+        if (frame.data === undefined) return;
+        try {
+          const event = decodeEventData(frame.data);
+          if (event !== null) handler(event);
+        } catch (err) {
+          reportError(toError(err));
         }
-      } catch (err) {
+      },
+    ).then(
+      () => {
+        // The SERVER ended the stream cleanly. Run the same cleanup
+        // close() performs (listener removal, closed state) and tell
+        // the consumer via onClose so the subscription doesn't die
+        // silently. A close()/abort that raced this read has already
+        // set `closed`; the consumer initiated that one, so no
+        // notification.
+        const serverInitiated = !closed;
+        close();
+        if (serverInitiated) opts?.onClose?.();
+      },
+      (err) => {
         const name = (err as { name?: string } | null)?.name;
         if (closed || name === "AbortError") return;
-        reportError(err instanceof Error ? err : new Error(String(err)));
-      }
-    })();
+        reportError(toError(err));
+      },
+    );
 
     return { close };
   }
@@ -680,14 +613,14 @@ export class GroupsApi {
     groupAId: GroupId,
     groupBId: GroupId,
     type: GroupRelationshipType,
-    opts?: { mutual?: boolean; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { mutual?: boolean },
   ): Promise<GroupRelationship> {
     const body: { type: string; mutual?: boolean } = { type };
     if (opts?.mutual !== undefined) body.mutual = opts.mutual;
     const wire = await this.http.put<WireGroupRelationship>(
       `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeGroupRelationship(wire);
   }
@@ -695,15 +628,12 @@ export class GroupsApi {
   async clearRelationship(
     groupAId: GroupId,
     groupBId: GroupId,
-    opts?: { mutual?: boolean; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { mutual?: boolean },
   ): Promise<void> {
     const path = opts?.mutual
       ? `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}?mutual=true`
       : `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`;
-    await this.http.delete<unknown>(path, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    await this.http.delete<unknown>(path, undefined, writeOptions(opts));
   }
 
   async getRelationship(
@@ -739,12 +669,12 @@ export class GroupsApi {
   async setParent(
     groupId: GroupId,
     parentGroupId: GroupId | null,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<Group> {
     const wire = await this.http.put<WireGroup>(
       `/v1/groups/${encodeURIComponent(groupId)}/parent`,
       { parentGroupId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeGroup(wire);
   }

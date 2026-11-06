@@ -1,0 +1,189 @@
+# `junjo.events`
+
+The game stream. One connection delivers every event in the game (group events, game bans and sanctions, friends, identity links and display names) in commit order. Each event carries a **stream position**: a per-game counter with no gaps. When the connection drops, the SDK reconnects and resumes after the last position it saw, so a short outage does not lose events.
+
+Use it for server-side work that must see every change: syncing permissions into a game server, a moderation bot, a cache. For one group in a UI, [`groups.subscribe`](/sdk/groups#subscribegroupid-handler-opts) is lighter.
+
+```ts
+import { Junjo } from "@junjo.io/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+
+const sub = await junjo.events.subscribe(
+  (event, { position }) => {
+    if (event.type === "game.user.banned") kickFromServer(event.userId);
+    if (event.type === "member.updated") refreshMember(event.groupId, event.userId);
+  },
+  {
+    types: ["game.user.banned", "member.updated"],
+    onResync: () => reloadEverything(),
+    onError: (err) => console.error("game stream stopped", err),
+  },
+);
+
+// later
+sub.close();
+```
+
+## Load state without missing events
+
+A stream only tells you what changed. To build state from it, combine it with a snapshot read, in either order below. Both guarantee that every change after the snapshot reaches your handler. Events from just before the snapshot can arrive too; see [Snapshots and the stream](/api-reference/events#snapshots-and-the-stream).
+
+### Subscribe first, then load
+
+The stream starts at the game's current position, then you read the snapshot. Anything committed while the snapshot loads arrives on the stream.
+
+```ts
+const sub = await junjo.events.subscribe(applyEvent, {
+  onResync: () => void loadSnapshot(),
+});
+await loadSnapshot();
+```
+
+### Load first, then subscribe from a position
+
+Read the position, load the snapshot, then subscribe from that position. This suits a process that persists its state and position, and resumes after a restart.
+
+```ts
+const position = await junjo.events.position();
+await loadSnapshot();
+const sub = await junjo.events.subscribe(applyEvent, {
+  from: position,
+  onResync: () => void loadSnapshot(),
+});
+```
+
+Either way, handle `onResync` by reloading. It fires when the SDK could not resume (the saved position fell out of the server's retention window, 24 hours by default). By the time it fires a new live stream is already open, so every change committed during your reload reaches the handler.
+
+## `position(opts?)`
+
+The game's current stream position (`GET /v1/events/position`). A snapshot read after this call reflects every event up to the position.
+
+```ts
+position(opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string>;
+```
+
+Positions are decimal strings that can exceed the range JavaScript numbers hold exactly. Store and compare them as strings, or with `BigInt`; never convert them with `Number`.
+
+```ts
+BigInt(a) > BigInt(b); // correct
+Number(a) > Number(b); // wrong for large positions
+```
+
+## `subscribe(handler, opts?)`
+
+Opens the game stream (`GET /v1/events`) and calls `handler` once per event, with `Date` fields rehydrated. The promise resolves once the server accepts the first connection.
+
+```ts
+subscribe(
+  handler: (event: JunjoEvent, meta: { position: string }) => void,
+  opts?: GameSubscribeOptions,
+): Promise<GameSubscription>;
+
+interface GameSubscription {
+  close(): void;
+  readonly position: string; // the last position seen
+}
+```
+
+### Options
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `types` | `JunjoEventType[]` | Deliver only these types. Omitted or empty: every type. An unknown type rejects with `400 bad_request`. |
+| `from` | `string` | Resume after this position (sent as `Last-Event-ID`). Omitted: live from the moment the server accepts the stream. |
+| `signal` | `AbortSignal` | Aborting is the same as `close()`, including a pending reconnect. Aborting before the first connection is up rejects with `cancelled`. |
+| `reconnect` | `boolean \| { initialDelayMs?: number; maxDelayMs?: number }` | Default `true`, with a 1000 ms initial and 30000 ms maximum delay. |
+| `onResync` | `({ position }) => void` | The resume position expired and a new live stream from `position` replaced it. Reload your state. Without this callback an expired position is fatal. |
+| `onReconnecting` | `({ attempt, delayMs, error? }) => void` | Called before each reconnect wait. `attempt` is 1 for the first retry after a drop. `error` is absent when the server closed the stream cleanly. |
+| `onReconnected` | `({ position }) => void` | A reconnect succeeded and resumed after `position`. |
+| `onError` | `(err: Error) => void` | Called once when the subscription stops on its own. Never called after `close()` or an abort. |
+
+### Positions
+
+`meta.position` is the position of the event's frame. `sub.position` is the last position seen, which also advances on heartbeats (every 30 seconds) and on events the SDK skipped, so it can move past events your `types` filter left out. To resume in a later process, save `sub.position` (or the last `meta.position` you finished applying) and pass it as `from`.
+
+### Reconnecting
+
+After the first connection is up, any end the server causes (a deploy, a network drop, a stalled connection) triggers a reconnect with `Last-Event-ID` set to the last position and the same `types`. Delays use full jitter: a random wait between 0 and `min(maxDelayMs, initialDelayMs * 2^n)`, where `n` counts failed attempts since the last success. A successful reconnect resets the count.
+
+| Reconnect answer | Result |
+|------------------|--------|
+| Network error, `5xx`, `408` | Retry, without limit. |
+| `410 stream_position_expired` | With `onResync`: open a live stream, then call `onResync`. Without: stop with `onError`. |
+| Any other `4xx` (`400`, `401`, `403`, `404`, `429 too_many_streams`) | Stop with `onError`. |
+
+With `reconnect: false`, an end the server causes stops the subscription and calls `onError` with a `JunjoError` of code `network_error`. Its `cause` is the transport error, when there was one.
+
+### Other ways the subscription stops
+
+These mirror [`groups.subscribe`](/sdk/groups#subscribegroupid-handler-opts) and call `onError`:
+
+- A frame whose JSON does not parse. The position does not advance past it.
+- A frame larger than about 1 MiB without a terminator (`stream_overflow`).
+- A `handler` that throws. The thrown error is passed to `onError`.
+
+An event type newer than your SDK version is skipped without calling `handler`, and its position still counts.
+
+### Errors from the first connection
+
+The first connection is not retried: every failure rejects the `subscribe` promise with a `JunjoError`.
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Unknown name in `types`, or a malformed `from`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+| `stream_position_expired` | 410 | `from` is older than the retention window or ahead of the game. Load a fresh snapshot and subscribe without `from`. |
+| `too_many_streams` | 429 | The key already holds 10 open game streams (or the game holds 200) on that server. Share one subscription across your code instead of opening one per consumer. |
+| `network_error` | | The request never got a response. |
+| `cancelled` | | `signal` aborted before the connection was up. |
+
+### Proxy mode
+
+In [proxy mode](/react/provider#browser-apps-proxy-mode) your proxy must forward the `Last-Event-ID` request header and the `Junjo-Stream-Position` response header, and must not buffer the response. Without the response header, `subscribe` rejects with `invalid_wire_data`.
+
+## `member.updated`
+
+`member.updated` reports that a member's metadata, notes, or overrides changed. Like `role.updated`, it is a change signal: `changed` names what changed (`"metadata"`, `"notes"`, `"overrides"`), not the new values. Read the member, or the member's access, for the current state.
+
+```ts
+interface MemberUpdatedEvent {
+  type: "member.updated";
+  id: string;
+  gameId: GameId;
+  groupId: GroupId;
+  occurredAt: Date;
+  userId: UserId;
+  changed: ("metadata" | "notes" | "overrides")[];
+  memberVersion: number;
+}
+```
+
+It arrives on the game stream and on [`groups.subscribe`](/sdk/groups#subscribegroupid-handler-opts) streams, so a group handler that switches over every event type needs a case for it.
+
+## Versions on events
+
+Member, game ban and sanction events carry the version their write produced:
+
+| Events | Field | Compare with |
+|--------|-------|--------------|
+| `member.joined`, `member.left`, `member.updated`, `member.banned`, `member.unbanned`, `role.changed` | `memberVersion` | `Member.version` |
+| `game.user.banned`, `game.user.unbanned`, `game.user.sanctioned`, `game.user.unsanctioned` | `moderationVersion` | `Ban.version`, `Sanction.version`, or `version` from [`bans.moderation`](/sdk/bans#moderationuserid) |
+
+A snapshot whose version is greater than or equal to the event's already reflects it, so the event can be skipped. That makes the overlap described in [Load state without missing events](#load-state-without-missing-events) harmless for members and bans:
+
+```ts
+function applyMemberEvent(cache: Map<UserId, Member>, event: JunjoEvent) {
+  if (!("memberVersion" in event) || !("userId" in event)) return;
+  const known = cache.get(event.userId);
+  if (known && known.version >= event.memberVersion) return; // already applied
+  // ...apply the event, then record event.memberVersion as the member's version
+}
+```
+
+The events of one write share a version; see [Versions on events](/api-reference/events#versions-on-events).
+
+## See also
+
+- [`GET /v1/events`](/api-reference/events#get-v1events) - the underlying HTTP route.
+- [`useGameEvents`](/react/use-game-events) - the React hook over this stream.

@@ -5,6 +5,7 @@ import { type AdminApiKey, AdminDisabledError, fetchAdminApiKeys } from "../../l
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { CreateApiKeyDialog } from "./create-api-key-dialog";
+import { EditApiKeyDialog } from "./edit-api-key-dialog";
 import { RevokeApiKeyDialog } from "./revoke-api-key-dialog";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -65,7 +66,16 @@ function ApiKeyRow({ gameId, apiKey }: ApiKeyRowProps) {
   return (
     <tr className="border-b border-border last:border-0">
       <td className="py-3 pr-3 sm:pr-4">
+        {apiKey.name ? <div className="text-sm font-medium">{apiKey.name}</div> : null}
         <span className="font-mono text-xs sm:text-sm">{apiKey.prefix}</span>
+        {apiKey.preferredNamespaces.length > 0 ? (
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            Prefers {apiKey.preferredNamespaces.join(", ")}
+          </div>
+        ) : null}
+        {apiKey.canExport ? (
+          <div className="mt-0.5 text-xs text-muted-foreground">Can export</div>
+        ) : null}
       </td>
       <td className="hidden py-3 pr-4 text-xs text-muted-foreground sm:table-cell">
         {dateFormatter.format(new Date(apiKey.createdAt))}
@@ -81,9 +91,12 @@ function ApiKeyRow({ gameId, apiKey }: ApiKeyRowProps) {
         )}
       </td>
       <td className="py-3 text-right">
-        {revoked ? null : (
-          <RevokeApiKeyDialog gameId={gameId} keyId={apiKey.id} prefix={apiKey.prefix} />
-        )}
+        <div className="flex justify-end gap-1">
+          <EditApiKeyDialog gameId={gameId} apiKey={apiKey} />
+          {revoked ? null : (
+            <RevokeApiKeyDialog gameId={gameId} keyId={apiKey.id} prefix={apiKey.prefix} />
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -133,11 +146,11 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
         <table className="w-full">
           <thead>
             <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="py-2 pr-3 text-left font-medium sm:pr-4">Prefix</th>
+              <th className="py-2 pr-3 text-left font-medium sm:pr-4">Key</th>
               <th className="hidden py-2 pr-4 text-left font-medium sm:table-cell">Created</th>
               <th className="hidden py-2 pr-4 text-left font-medium md:table-cell">Revoked</th>
               <th className="py-2 pr-2 text-left font-medium sm:pr-4">Status</th>
-              <th className="py-2 font-medium" aria-label="Revoke" />
+              <th className="py-2 font-medium" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>

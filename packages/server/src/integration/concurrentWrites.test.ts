@@ -14,7 +14,9 @@ const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 // interleaving: the loser may hit the friendly sequential check or the
 // constraint-violation path, but the status codes and final row counts
 // must come out the same either way.
-describe.skipIf(!TEST_DATABASE_URL)("concurrent write races", () => {
+//
+// Wide budget: the assertions are about answers, not speed.
+describe.skipIf(!TEST_DATABASE_URL)("concurrent write races", { timeout: 30_000 }, () => {
   let prisma: PrismaClient;
   let app: Hono;
   let authHeader: string;

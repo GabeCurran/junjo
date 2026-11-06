@@ -144,6 +144,21 @@ describe("RateLimiter", () => {
       expect(limiter.consume("hot").allowed).toBe(false);
     });
   });
+
+  describe("wouldAllow", () => {
+    it("reports the bucket state without spending a token", () => {
+      let now = 0;
+      const limiter = new RateLimiter({ perMinute: 60, burst: 2 }, () => now);
+      expect(limiter.wouldAllow("k")).toBe(true);
+      limiter.consume("k");
+      limiter.consume("k");
+      expect(limiter.wouldAllow("k")).toBe(false);
+      expect(limiter.wouldAllow("k")).toBe(false);
+      now += 1000;
+      expect(limiter.wouldAllow("k")).toBe(true);
+      expect(limiter.consume("k").allowed).toBe(true);
+    });
+  });
 });
 
 describe("buildRateLimiter", () => {

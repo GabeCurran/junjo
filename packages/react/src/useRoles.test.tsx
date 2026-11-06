@@ -53,7 +53,10 @@ function makeHarness(): Harness {
   return { client, list, subscribe, captures };
 }
 
+// `entries` defaults to one grant per permission so a fixture matches
+// what the server returns for a role with no deny entries.
 function makeRole(id: string, overrides: Partial<Role> = {}): Role {
+  const permissions = overrides.permissions ?? [];
   return {
     id: id as RoleId,
     groupId: GROUP_ID,
@@ -61,7 +64,10 @@ function makeRole(id: string, overrides: Partial<Role> = {}): Role {
     priority: 50,
     color: null,
     isDefault: false,
-    permissions: [],
+    permissions,
+    entries: permissions.map((permission) => ({ permission, value: true })),
+    parents: [],
+    metadata: {},
     createdAt: new Date("2026-04-28T00:00:00.000Z"),
     ...overrides,
   };
@@ -289,6 +295,39 @@ describe("useRoles", () => {
     });
 
     expect(result.current.roles[0]?.permissions).toEqual(["members.kick", "members.ban"]);
+    expect(result.current.roles[0]?.entries).toEqual([
+      { permission: "members.ban", value: true },
+      { permission: "members.kick", value: true },
+    ]);
+  });
+
+  it("flips a deny entry to a grant on permission.granted", async () => {
+    const h = makeHarness();
+    const role = makeRole("role_a", {
+      permissions: [],
+      entries: [{ permission: "members.ban", value: false }],
+    });
+    h.list.mockResolvedValue([role]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(h.captures).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "permission.granted",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: role.id,
+        permission: "members.ban" as PermissionKey,
+      });
+    });
+
+    expect(result.current.roles[0]?.permissions).toEqual(["members.ban"]);
+    expect(result.current.roles[0]?.entries).toEqual([{ permission: "members.ban", value: true }]);
   });
 
   it("keeps state untouched when permission.granted repeats an existing permission", async () => {
@@ -340,6 +379,114 @@ describe("useRoles", () => {
     });
 
     expect(result.current.roles[0]?.permissions).toEqual(["members.kick"]);
+    expect(result.current.roles[0]?.entries).toEqual([{ permission: "members.kick", value: true }]);
+  });
+
+  it("removes a deny entry on permission.revoked", async () => {
+    const h = makeHarness();
+    const role = makeRole("role_a", {
+      permissions: ["members.kick"],
+      entries: [
+        { permission: "members.ban", value: false },
+        { permission: "members.kick", value: true },
+      ],
+    });
+    h.list.mockResolvedValue([role]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(h.captures).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "permission.revoked",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: role.id,
+        permission: "members.ban" as PermissionKey,
+      });
+    });
+
+    expect(result.current.roles[0]?.permissions).toEqual(["members.kick"]);
+    expect(result.current.roles[0]?.entries).toEqual([{ permission: "members.kick", value: true }]);
+  });
+
+  it("refetches the list on role.updated without flipping loading", async () => {
+    const h = makeHarness();
+    const before = makeRole("role_a");
+    const after = makeRole("role_a", {
+      entries: [{ permission: "members.ban", value: false }],
+      parents: ["role_base" as RoleId],
+    });
+    h.list.mockResolvedValueOnce([before]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(result.current.roles).toEqual([before]));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    let resolveList: (roles: Role[]) => void = () => {};
+    h.list.mockReturnValueOnce(
+      new Promise<Role[]>((resolve) => {
+        resolveList = resolve;
+      }),
+    );
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "role.updated",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: before.id,
+        changed: ["entries", "parents"],
+      });
+    });
+
+    expect(h.list).toHaveBeenCalledTimes(2);
+    expect(h.list).toHaveBeenLastCalledWith(GROUP_ID);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.roles).toEqual([before]);
+
+    await act(async () => {
+      resolveList([after]);
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.roles).toEqual([after]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("surfaces a failed role.updated refetch on error and keeps the snapshot", async () => {
+    const h = makeHarness();
+    const role = makeRole("role_a");
+    h.list.mockResolvedValueOnce([role]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(result.current.roles).toEqual([role]));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    const err = new JunjoError("boom", "internal", 500);
+    h.list.mockRejectedValueOnce(err);
+    await act(async () => {
+      handler({
+        id: "evt_1",
+        type: "role.updated",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: role.id,
+        changed: ["name"],
+      });
+    });
+
+    await waitFor(() => expect(result.current.error).toBe(err));
+    expect(result.current.roles).toEqual([role]);
+    expect(result.current.loading).toBe(false);
   });
 
   it("does not change state for role.changed (member assignment, not a definition change)", async () => {
@@ -357,6 +504,7 @@ describe("useRoles", () => {
       handler({
         id: "evt_1",
         type: "role.changed",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),

@@ -29,6 +29,13 @@ branch on `err.code` and decide yourself:
   rejected; the request may or may not have reached the server),
   `timeout` (the configured or per-request `timeoutMs` elapsed), and
   `cancelled` (your `AbortSignal` aborted the request).
+- To retry a write safely, send `idempotencyKey` (every write) and
+  `ifMatch` (member-scoped writes, game bans and sanctions) in its options. A
+  stale version fails with `precondition_failed`; a reused key with a
+  different request fails with `idempotency_key_reused`; a retry while
+  the first is still running fails with `idempotency_key_in_progress`.
+  `isNotActive(err)` recognises a ban or sanction lift that found
+  nothing to lift.
 
 Keep a default branch when switching on `err.code`: newer servers can
 send codes an older SDK does not know.
@@ -40,7 +47,7 @@ npm run build -w @junjo.io/sdk
 npm run size  -w @junjo.io/sdk
 ```
 
-The limits live in `package.json#size-limit`. They check `dist/index.js` and
-`dist/adapters/index.js` against their current brotli size, so an accidental
+The limits live in `package.json#size-limit`. They check `dist/index.js`,
+`dist/adapters/index.js` and `dist/export/index.js` against their current brotli size, so an accidental
 dependency shows up as a failed build. If you need to raise a limit, say what
 the extra bytes bought in the commit message.

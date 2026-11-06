@@ -1,4 +1,4 @@
-import type { AuditEntry, Prisma, PrismaClient } from "@prisma/client";
+import type { ApiKey, AuditEntry, Prisma, PrismaClient } from "@prisma/client";
 import type { Context } from "hono";
 import { Errors } from "../errors.js";
 import { listAuditQuery } from "./audit.schema.js";
@@ -9,17 +9,42 @@ export interface WireAuditEntry {
   // every per-group action.
   groupId: string | null;
   actorUserId: string | null;
+  // The API key whose request wrote the entry; null for dashboard and
+  // system writes, and after the key row is deleted.
+  apiKey: WireAuditApiKey | null;
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
 }
 
-export function serializeAuditEntry(entry: AuditEntry): WireAuditEntry {
+export interface WireAuditApiKey {
+  id: string;
+  name: string | null;
+  prefix: string;
+}
+
+// Include shape every audit read uses so `apiKey` is always populated.
+export const AUDIT_API_KEY_INCLUDE = {
+  apiKey: { select: { id: true, name: true, prefix: true } },
+} as const;
+
+export type AuditRowWithKey = AuditEntry & {
+  apiKey: Pick<ApiKey, "id" | "name" | "prefix"> | null;
+};
+
+export function serializeAuditApiKey(row: AuditRowWithKey): WireAuditApiKey | null {
+  return row.apiKey
+    ? { id: row.apiKey.id, name: row.apiKey.name, prefix: row.apiKey.prefix }
+    : null;
+}
+
+export function serializeAuditEntry(entry: AuditRowWithKey): WireAuditEntry {
   return {
     id: entry.id,
     groupId: entry.groupId,
     actorUserId: entry.actorUserId,
+    apiKey: serializeAuditApiKey(entry),
     action: entry.action,
     targetId: entry.targetId,
     payload: (entry.payload ?? {}) as Record<string, unknown>,
@@ -94,6 +119,7 @@ export async function listAuditForGroup(c: Context, prisma: PrismaClient, groupI
     where,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
+    include: AUDIT_API_KEY_INCLUDE,
   });
   const hasMore = entries.length > limit;
   const sliced = hasMore ? entries.slice(0, limit) : entries;

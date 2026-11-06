@@ -1,6 +1,6 @@
 # useRoles
 
-Returns the group's role definitions plus a live event subscription that keeps them in sync with `role.created`, `role.deleted`, `permission.granted`, and `permission.revoked` events. The subscription rides the provider's [shared group event stream](/react/provider#shared-group-event-streams), so it adds no connection cost next to the other group hooks.
+Returns the group's role definitions plus a live event subscription that keeps them in sync with `role.created`, `role.updated`, `role.deleted`, `permission.granted`, and `permission.revoked` events. The subscription rides the provider's [shared group event stream](/react/provider#shared-group-event-streams), so it adds no connection cost next to the other group hooks.
 
 ```tsx
 import { useRoles } from "@junjo.io/react";
@@ -39,8 +39,8 @@ interface UseRolesResult {
 
 | Field | Meaning |
 |-------|---------|
-| `roles` | The group's role definitions, in server list order. Not paginated: `junjo.roles.list(groupId)` returns the full `Role[]` in one call, so there is no cursor, `hasMore`, or `fetchMore`. |
-| `loading` | `true` from mount until the first `roles.list` response (success or error). Flips back to `true` on `refetch` while the previous list stays visible. |
+| `roles` | The group's role definitions, in server list order. Each `Role` carries `permissions` (granted keys), `entries` (grants and denies), `parents`, and `metadata`; see [the `Role` shape](/sdk/roles#the-role-shape). Not paginated: `junjo.roles.list(groupId)` returns the full `Role[]` in one call, so there is no cursor, `hasMore`, or `fetchMore`. |
+| `loading` | `true` from mount until the first `roles.list` response (success or error). Flips back to `true` on `refetch` while the previous list stays visible. Stays `false` during the background reload triggered by `role.updated`. |
 | `error` | The most recent fetch error or streaming error (a server-initiated close surfaces as `JunjoStreamClosedError`). Cleared when the next `refetch` starts. |
 | `refetch` | Re-runs `roles.list`. Race-guarded by a generation counter, so a stale response cannot overwrite a newer one. Errors flow into `error`, never thrown. |
 
@@ -48,14 +48,17 @@ The hook takes no options.
 
 ## Live updates
 
-On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Four event types modify state, covering everything that alters role definitions:
+On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Five event types modify state, covering everything that alters role definitions:
 
 | Event | Behavior |
 |-------|----------|
 | `role.created` | Append `event.role` at the end (or replace in place when the same `id` is already present, idempotent on dedupe). |
+| `role.updated` | Reload the whole list with `roles.list` in the background. The event is a [change signal](/sdk/roles#the-roleupdated-event) that carries no new values, and one change can touch other roles (a priority change reorders the list), so the hook re-reads rather than patching. The current list stays visible and `loading` stays `false` until the fresh list lands; a failed reload surfaces on `error` and keeps the current list. |
 | `role.deleted` | Remove the role with `event.roleId`. |
-| `permission.granted` | Patch the affected role in place: append `event.permission` to its `permissions` array if not already present. Roles not in the list are ignored. |
-| `permission.revoked` | Patch the affected role in place: remove `event.permission` from its `permissions` array. |
+| `permission.granted` | Patch the affected role in place: append `event.permission` to its `permissions` array if not already present, and set the matching `entries` item to a grant (inserting it in key order when absent). Roles not in the list are ignored. |
+| `permission.revoked` | Patch the affected role in place: remove `event.permission` from its `permissions` array and remove its `entries` item. |
+
+The background reload shares `refetch`'s generation counter, so a burst of `role.updated` events or an overlapping manual `refetch` still commits only the newest response.
 
 `role.changed` is intentionally a no-op here. Despite its name, it is a member-assignment event (`userId` / `added` / `removed`): it says which roles a member gained or lost and carries no role definition data, so it cannot change this list. The roster hooks ([`useMembers`](/react/use-members), [`useGroup`](/react/use-group)) apply it instead.
 

@@ -33,6 +33,15 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   blocks: {
     enabled: true,
   },
+  permissions: {
+    mode: "exact",
+  },
+  identity: {
+    formats: {},
+  },
+  groups: {
+    kinds: {},
+  },
 };
 
 // Resolves a partial config against `DEFAULT_GAME_CONFIG`. Pure function;
@@ -51,8 +60,12 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
 export function resolveGameConfig(partial: PartialGameConfig | null | undefined): GameConfig {
   const f = partial?.friends;
   const b = partial?.blocks;
+  const p = partial?.permissions;
+  const i = partial?.identity;
+  const g = partial?.groups;
   const dF = DEFAULT_GAME_CONFIG.friends;
   const dB = DEFAULT_GAME_CONFIG.blocks;
+  const dP = DEFAULT_GAME_CONFIG.permissions;
 
   const visibilityAllowed = canonicalVisibility(f?.visibility?.allowed ?? dF.visibility.allowed);
   const visibilityDefault: FriendsListVisibility =
@@ -86,6 +99,17 @@ export function resolveGameConfig(partial: PartialGameConfig | null | undefined)
     },
     blocks: {
       enabled: b?.enabled ?? dB.enabled,
+    },
+    permissions: {
+      mode: p?.mode ?? dP.mode,
+    },
+    identity: {
+      formats: { ...(i?.formats ?? DEFAULT_GAME_CONFIG.identity.formats) },
+    },
+    groups: {
+      kinds: Object.fromEntries(
+        Object.entries(g?.kinds ?? DEFAULT_GAME_CONFIG.groups.kinds).map(([k, v]) => [k, { ...v }]),
+      ),
     },
   };
 }
@@ -126,6 +150,21 @@ export function mergeGameConfig(
 
   if (patch.blocks) {
     merged.blocks = { ...(existing?.blocks ?? {}), ...patch.blocks };
+  }
+
+  if (patch.permissions) {
+    merged.permissions = { ...(existing?.permissions ?? {}), ...patch.permissions };
+  }
+
+  // `formats` is a map the caller states in full, so it replaces rather
+  // than merges; otherwise a namespace could never be undeclared.
+  if (patch.identity) {
+    merged.identity = { ...(existing?.identity ?? {}), ...patch.identity };
+  }
+
+  // `kinds` replaces as a whole for the same reason as `formats`.
+  if (patch.groups) {
+    merged.groups = { ...(existing?.groups ?? {}), ...patch.groups };
   }
 
   return merged;

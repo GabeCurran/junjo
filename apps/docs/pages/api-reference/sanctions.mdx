@@ -1,0 +1,183 @@
+# Sanctions
+
+A **sanction** is a game-wide restriction on a person, with a type your game defines: a chat mute, a trade lock, a voice ban, a build freeze. Junjo stores and reports sanctions; your game decides what each type means and enforces it. Bans keep their own API ([Bans](/api-reference/bans)); the type `ban` is reserved.
+
+- A person has at most one active sanction per type. Several types may be active at once.
+- A sanction is active until it is lifted or until its `expiresAt` passes. Expiry is lazy, as with bans: an expired sanction reads as absent, and no event fires when it lapses.
+- Sanctions share the person's [moderation version](/api-reference/bans#moderation-version) with game bans. Every create, replace and lift raises it by one, and every sanction write accepts `If-Match` against it.
+
+## Types
+
+A type is 1 to 32 characters: a lowercase letter or digit, then lowercase letters, digits, `_`, `.` or `-` (pattern `^[a-z0-9][a-z0-9_.-]{0,31}$`). Examples: `mute`, `trade.lock`, `voice-ban`. `ban` is reserved and answers `400`.
+
+## The sanction object
+
+```json
+{
+  "id": "ckxxx...",
+  "userId": "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5",
+  "type": "mute",
+  "reason": "spam in global chat",
+  "issuer": "Console",
+  "issuedBy": "mc:853c80ef-3c37-49fd-aa49-938b674adae6",
+  "startedAt": "2026-11-09T12:00:00.000Z",
+  "expiresAt": "2026-11-09T13:00:00.000Z",
+  "version": 4
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `userId` | The sanctioned person, named by the [rendering rule](/api-reference/identity#the-rendering-rule). |
+| `reason` | Up to 500 characters, or `null`. |
+| `issuer` | Free text up to 128 characters, stored and returned verbatim (never rendered). Use it when the issuer is not a Junjo user, for example a console or a staff member who has left. |
+| `issuedBy` | The person named by `actorUserId` on the request that set the sanction, rendered; `null` when none was sent. |
+| `startedAt` | When the sanction started. A replacement keeps the original start unless the request states one. |
+| `expiresAt` | `null` for a permanent sanction. |
+| `version` | The person's moderation version. |
+
+## `POST /v1/sanctions`
+
+Create or replace the person's sanction of one type.
+
+**Body** (unknown keys answer `400`)
+
+```json
+{
+  "userId": "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5",
+  "type": "mute",
+  "reason": "spam in global chat",
+  "expiresAt": "2026-11-09T13:00:00.000Z",
+  "actorUserId": "mc:853c80ef-3c37-49fd-aa49-938b674adae6"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `userId` | yes | Unknown ids become a new person, so you can sanction someone who never joined a group. |
+| `type` | yes | See [Types](#types). |
+| `reason` | no | Up to 500 characters, or `null`. |
+| `expiresAt` | no | ISO 8601. Omit or `null` for permanent. A past value creates a sanction that is already expired. |
+| `startedAt` | no | ISO 8601. May be in the past (sanctions carried over from another system); at most 60 seconds in the future, else `400`. |
+| `issuer` | no | Free text, 1 to 128 characters. |
+| `actorUserId` | no | The person who issued it. Unknown ids become a new person. |
+
+**Behaviour**
+
+| Situation | Status | Effect |
+|-----------|--------|--------|
+| No active sanction of this type | `201 Created` | New sanction; `startedAt` is the stated value or now. An expired sanction of the type is replaced. |
+| Active sanction of this type, request changes `reason`, `expiresAt`, `issuer`, the actor or `startedAt` | `200 OK` | Replaced in place; `startedAt` kept unless stated. |
+| Active sanction with the same values | `200 OK` | A no-op: the version stays the same and no event or history row is written. |
+
+Every create and replace writes a `set` row to the [history](#get-v1usersuseridsanctionshistory), a `game.user.sanctioned` audit entry and a `game.user.sanctioned` event. The response carries the new moderation version as `ETag`.
+
+Accepts `If-Match` with the moderation version; a stale value answers `412 precondition_failed` and changes nothing (also for an identical repeat). Send `Idempotency-Key` as well when the write is queued; see [Safe retries for queued writes](/api-reference#safe-retries-for-queued-writes).
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body or type, the reserved type `ban`, `startedAt` more than 60 seconds ahead, or a malformed `If-Match`. |
+| `invalid_user_id` | 400 | An id breaks its namespace's declared format. |
+| `precondition_failed` | 412 | `If-Match` does not match the moderation version. |
+
+## `DELETE /v1/sanctions/:userId/:type`
+
+Lifts the person's active sanction of that type. Optional body `{ "actorUserId": "..." }` records who lifted it. Answers `204 No Content` with the new moderation version as `ETag`, writes a `lifted` history row and a `game.user.unsanctioned` audit entry, and emits `game.user.unsanctioned`.
+
+Accepts `If-Match`, checked only when there is a sanction to lift.
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No active sanction of that type, including for an id the game has never seen and for a sanction that has expired. Carries `details.reason: "not_active"` (see [Safe retries](/api-reference#safe-retries-for-queued-writes)). |
+| `bad_request` | 400 | Malformed type, the reserved type `ban`, or a malformed body. |
+| `precondition_failed` | 412 | A sanction is active but `If-Match` does not match. |
+
+## `GET /v1/sanctions`
+
+Active sanctions in the game, newest `startedAt` first. Sends `Junjo-Stream-Position`, so a client can load this list and then follow the [game stream](/api-reference/events#get-v1events) from that position.
+
+| Query | Default | Notes |
+|-------|---------|-------|
+| `type` | all | Only this type. |
+| `limit` | 50 | Capped by `JUNJO_MAX_PAGE_SIZE`. |
+| `cursor` | none | `nextCursor` from the previous page. |
+
+**Response** `200 OK`: `{ "items": [Sanction, ...], "nextCursor": "..." | null }`.
+
+## `GET /v1/users/:userId/sanctions`
+
+The person's active sanctions, newest first: `{ "items": [Sanction, ...] }`, with the moderation version as `ETag`. An id the game has never seen answers `{ "items": [] }` with `ETag: "0"`.
+
+## `GET /v1/users/:userId/sanctions/history`
+
+Every set and lift for the person, newest first, past and present. Lazy expiry writes no row.
+
+| Query | Default | Notes |
+|-------|---------|-------|
+| `type` | all | Only this type. |
+| `limit` | 50 | Capped by `JUNJO_MAX_PAGE_SIZE`. |
+| `cursor` | none | `nextCursor` from the previous page. |
+
+```json
+{
+  "items": [
+    {
+      "id": "ckaaa...",
+      "gameId": "ckggg...",
+      "userId": "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5",
+      "type": "mute",
+      "kind": "lifted",
+      "reason": null,
+      "expiresAt": null,
+      "eventAt": "2026-11-09T12:30:00.000Z",
+      "actorUserId": "mc:853c80ef-3c37-49fd-aa49-938b674adae6",
+      "issuer": null
+    },
+    {
+      "id": "ckbbb...",
+      "gameId": "ckggg...",
+      "userId": "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5",
+      "type": "mute",
+      "kind": "set",
+      "reason": "spam in global chat",
+      "expiresAt": "2026-11-09T13:00:00.000Z",
+      "eventAt": "2026-11-09T12:00:00.000Z",
+      "actorUserId": null,
+      "issuer": "Console"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+`kind` is `set` for a create or replace and `lifted` for a lift. `eventAt` is when the sanction started (a create, or a stated `startedAt`), when it was replaced, or when it was lifted. `actorUserId` is who set or lifted it, rendered; `issuer` is the free-text issuer on `set` rows. An id the game has never seen answers an empty page.
+
+## Moderation read
+
+[`GET /v1/users/:userId/moderation`](/api-reference/bans#get-v1usersuseridmoderation) returns the active sanctions next to the ban:
+
+```json
+{
+  "userId": "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5",
+  "version": 4,
+  "ban": null,
+  "sanctions": [{ "id": "ckxxx...", "type": "mute", "...": "..." }]
+}
+```
+
+## Events
+
+| Event | Payload | When |
+|-------|---------|------|
+| `game.user.sanctioned` | `{ userId, sanctionType, reason, expiresAt, moderationVersion }` | Create or replace. |
+| `game.user.unsanctioned` | `{ userId, sanctionType, moderationVersion }` | Lift. |
+
+`userId` is rendered per subscriber. The sanction's type travels as `sanctionType`, because `type` is the event's own type. Both events have no group, so webhooks and the [game stream](/api-reference/events#get-v1events) carry them and no group stream does.
+
+## Audit
+
+Actions `game.user.sanctioned` (payload `{ sanctionId, type, reason, expiresAt }`) and `game.user.unsanctioned` (payload `{ sanctionId, type }`), with `groupId: null` and the request's actor, like game bans.

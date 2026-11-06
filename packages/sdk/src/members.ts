@@ -2,7 +2,10 @@ import type {
   GameId,
   GroupId,
   Member,
+  MemberAccess,
   MemberId,
+  MemberImportInput,
+  MemberImportResult,
   MemberPermissionOverride,
   MemberStatus,
   Page,
@@ -13,7 +16,12 @@ import type {
   UserId,
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
-import type { HttpClient } from "./http.js";
+import {
+  type ConditionalWriteOptions,
+  type HttpClient,
+  type WriteOptions,
+  writeOptions,
+} from "./http.js";
 import { paginate } from "./pagination.js";
 import { parseWireDate } from "./wire.js";
 
@@ -28,10 +36,15 @@ export interface WireMember {
   notesPrivate: string | null;
   joinedAt: string;
   bannedUntil: string | null;
+  version: number;
+  displayName?: string | null;
 }
 
+// `displayName` is copied only when sent: the member snapshot inside
+// `member.joined` omits it, and an absent field must stay absent rather
+// than read as "no name".
 export function deserializeMember(w: WireMember): Member {
-  return {
+  const member: Member = {
     id: w.id as MemberId,
     groupId: w.groupId as GroupId,
     userId: w.userId as UserId,
@@ -42,7 +55,10 @@ export function deserializeMember(w: WireMember): Member {
     notesPrivate: w.notesPrivate,
     joinedAt: parseWireDate(w.joinedAt, "joinedAt"),
     bannedUntil: w.bannedUntil === null ? null : parseWireDate(w.bannedUntil, "bannedUntil"),
+    version: w.version,
   };
+  if (w.displayName !== undefined) member.displayName = w.displayName;
+  return member;
 }
 
 export interface WireMemberPermissionOverride {
@@ -67,6 +83,30 @@ export function deserializeMemberPermissionOverride(
   };
 }
 
+export interface WireMemberAccess {
+  groupId: string;
+  userId: string;
+  status: string;
+  roleIds: string[];
+  overrides: WireMemberPermissionOverride[];
+  version: number;
+  displayName: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export function deserializeMemberAccess(w: WireMemberAccess): MemberAccess {
+  return {
+    groupId: w.groupId as GroupId,
+    userId: w.userId as UserId,
+    status: w.status as MemberStatus,
+    roleIds: w.roleIds.map((r) => r as RoleId),
+    overrides: w.overrides.map(deserializeMemberPermissionOverride),
+    version: w.version,
+    displayName: w.displayName ?? null,
+    metadata: w.metadata ?? {},
+  };
+}
+
 /** Options for {@link MembersApi.list}. */
 export interface ListMembersOptions extends PageOptions {
   /**
@@ -82,6 +122,13 @@ export interface ListMembersOptions extends PageOptions {
 /**
  * Group members: lookups, listing, per-member metadata and notes, role
  * assignment, and per-member permission overrides.
+ *
+ * Every write accepts `idempotencyKey`. The member-scoped writes
+ * (`setMetadata`, `setNotes`, `assignRole`, `removeRole`,
+ * `overridePermission`, `clearPermissionOverride`) also accept
+ * `ifMatch`, the member version the write expects (`Member.version`,
+ * `MemberAccess.version`); a missing member still fails `not_found`,
+ * never `precondition_failed`.
  */
 export class MembersApi {
   constructor(private readonly http: HttpClient) {}
@@ -100,11 +147,9 @@ export class MembersApi {
   async add(
     groupId: GroupId,
     userId: UserId,
-    opts?: {
+    opts?: WriteOptions & {
       roleId?: RoleId;
       actorUserId?: UserId;
-      signal?: AbortSignal;
-      timeoutMs?: number;
     },
   ): Promise<Member> {
     const body: { userId: string; roleId?: string; actorUserId?: string } = { userId };
@@ -113,9 +158,35 @@ export class MembersApi {
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
+  }
+
+  /**
+   * Imports up to 500 memberships into one group in a single
+   * transaction (POST /v1/groups/:id/members/import): every row applies
+   * or none does. Each row ensures an active membership; a present
+   * `roleIds`, `overrides` or `metadata` replaces the current value and
+   * an absent one is left as is. Like `add`, it ignores the group's
+   * `visibility`.
+   *
+   * Rows are validated before anything is written. A rejected import
+   * throws `JunjoError` (`bad_request`, or `banned` when every failing
+   * row is a ban) whose failing rows `memberImportErrors(err)` reads.
+   * Re-running an identical import reports every row `unchanged` and
+   * writes nothing.
+   */
+  async import(
+    groupId: GroupId,
+    input: MemberImportInput,
+    opts?: WriteOptions,
+  ): Promise<MemberImportResult> {
+    return this.http.post<MemberImportResult>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/import`,
+      input,
+      writeOptions(opts),
+    );
   }
 
   async get(
@@ -200,12 +271,12 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     metadata: Record<string, unknown>,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions,
   ): Promise<Member> {
     const wire = await this.http.patch<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
       { metadata },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -214,7 +285,7 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     input: SetMemberNotesInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions,
   ): Promise<Member> {
     const body: Record<string, string | null> = {};
     if (input.notesPublic !== undefined) body.notesPublic = input.notesPublic;
@@ -222,7 +293,7 @@ export class MembersApi {
     const wire = await this.http.patch<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -231,13 +302,13 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     roleId: RoleId,
-    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions & { actorUserId?: UserId },
   ): Promise<Member> {
     const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
@@ -246,28 +317,33 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     roleId: RoleId,
-    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions & { actorUserId?: UserId },
   ): Promise<Member> {
     const body = opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined;
     const wire = await this.http.delete<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMember(wire);
   }
 
+  /**
+   * Sets one personal permission entry. The response is the entry, not
+   * the member, so it carries no member version; read `getAccess` for
+   * the version after the write.
+   */
   async overridePermission(
     groupId: GroupId,
     userId: UserId,
     permission: PermissionKey,
     grant: boolean,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions,
   ): Promise<MemberPermissionOverride> {
     const wire = await this.http.post<WireMemberPermissionOverride>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
       { grant },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeMemberPermissionOverride(wire);
   }
@@ -276,12 +352,12 @@ export class MembersApi {
     groupId: GroupId,
     userId: UserId,
     permission: PermissionKey,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions,
   ): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
   }
 
@@ -295,5 +371,47 @@ export class MembersApi {
       { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
     );
     return wire.map(deserializeMemberPermissionOverride);
+  }
+
+  /**
+   * Reads one member's direct role ids and permission overrides in a
+   * group, in one call. Resolves to null when the user is not a member
+   * of the group (or the group does not exist), like `get`.
+   */
+  async getAccess(
+    groupId: GroupId,
+    userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<MemberAccess | null> {
+    try {
+      const wire = await this.http.get<WireMemberAccess>(
+        `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/access`,
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      );
+      return deserializeMemberAccess(wire);
+    } catch (err) {
+      if (err instanceof JunjoError && err.code === "not_found") return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Reads the access of up to 100 users in a group in one request
+   * (POST /v1/groups/:id/members/access). The result lines up with
+   * `userIds`: entry i is null when `userIds[i]` names no member of the
+   * group. Any of a person's linked ids finds them. Rejects with
+   * `not_found` when the group does not exist.
+   */
+  async getAccessMany(
+    groupId: GroupId,
+    userIds: readonly UserId[],
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<(MemberAccess | null)[]> {
+    const wire = await this.http.post<{ items: (WireMemberAccess | null)[] }>(
+      `/v1/groups/${encodeURIComponent(groupId)}/members/access`,
+      { userIds },
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+    );
+    return wire.items.map((item) => (item === null ? null : deserializeMemberAccess(item)));
   }
 }

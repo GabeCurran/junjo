@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "description": "Conformance vectors for Junjo permission resolution. Every implementation (server, SDK local resolvers) must pass all of them. Entry keys and check permissions are given as written by a caller; implementations normalize them exactly as they would on write and on check. 'via' is the role id that decided a role-sourced result. Membership and status gating are out of scope here: every case describes one active member.",
+  "cases": [
+    {
+      "name": "wildcard grant with specific denies in the same role",
+      "note": "MV's Admin role as stored: '*' and four other grants, minus 11 negations. Every negated node is denied and everything else is allowed.",
+      "modes": ["nodes"],
+      "roles": {
+        "admin": {
+          "priority": 100,
+          "entries": {
+            "*": true,
+            "rainbowarmour.world.*": true,
+            "modifyworld.*": true,
+            "lb.typeDefault.silktouch": true,
+            "lb.typeDefault.place": true,
+            "deathmessages.silent.join": false,
+            "deathmessages.silent.quit": false,
+            "essentials.hat.prevent-type.*": false,
+            "essentials.balancetop.exclude": false,
+            "essentials.silentjoin": false,
+            "essentials.msg.multiple": false,
+            "marry.listenchat": false,
+            "essentials.silentquit": false,
+            "rainbowarmour.notify": false,
+            "essentials.vanish.pvp": false,
+            "essentials.kill.exempt": false
+          }
+        }
+      },
+      "member": { "roles": ["admin"] },
+      "checks": [
+        {
+          "permission": "deathmessages.silent.join",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "deathmessages.silent.quit",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.balancetop.exclude",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.silentjoin",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.msg.multiple",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        { "permission": "marry.listenchat", "allowed": false, "source": "role", "via": "admin" },
+        {
+          "permission": "essentials.silentquit",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "rainbowarmour.notify",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.vanish.pvp",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.kill.exempt",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.hat.prevent-type.stone",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "essentials.hat.prevent-type.diamond_block",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        { "permission": "essentials.hat", "allowed": true, "source": "role", "via": "admin" },
+        {
+          "permission": "essentials.hat.prevent-type",
+          "allowed": true,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "ESSENTIALS.SILENTJOIN",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "rainbowarmour.world.nether",
+          "allowed": true,
+          "source": "role",
+          "via": "admin"
+        },
+        {
+          "permission": "lb.typedefault.silktouch",
+          "allowed": true,
+          "source": "role",
+          "via": "admin"
+        },
+        { "permission": "essentials.vanish", "allowed": true, "source": "role", "via": "admin" },
+        { "permission": "worldedit.anything", "allowed": true, "source": "role", "via": "admin" }
+      ]
+    },
+    {
+      "name": "a deny wildcard beats a bare wildcard grant in the same role",
+      "note": "Both entries sit in Admin's own layer, so specificity decides: essentials.hat.prevent-type.* is more specific than '*'.",
+      "modes": ["nodes"],
+      "roles": {
+        "admin": {
+          "priority": 100,
+          "entries": { "*": true, "essentials.hat.prevent-type.*": false }
+        }
+      },
+      "member": { "roles": ["admin"] },
+      "checks": [
+        {
+          "permission": "essentials.hat.prevent-type.stone",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        }
+      ]
+    },
+    {
+      "name": "mixed-case stored keys match a lowercase check in nodes mode",
+      "note": "No '*' in this role, so only case folding can make lb.typedefault.silktouch match the stored lb.typeDefault.silktouch.",
+      "modes": ["nodes"],
+      "roles": {
+        "builder": {
+          "priority": 10,
+          "entries": { "lb.typeDefault.silktouch": true, "lb.typeDefault.place": true }
+        }
+      },
+      "member": { "roles": ["builder"] },
+      "checks": [
+        {
+          "permission": "lb.typedefault.silktouch",
+          "allowed": true,
+          "source": "role",
+          "via": "builder"
+        },
+        {
+          "permission": "LB.TYPEDEFAULT.PLACE",
+          "allowed": true,
+          "source": "role",
+          "via": "builder"
+        },
+        { "permission": "lb.typedefault.break", "allowed": false, "source": "default" }
+      ]
+    },
+    {
+      "name": "mixed-case stored keys match only their exact spelling in exact mode",
+      "modes": ["exact"],
+      "roles": {
+        "builder": { "priority": 10, "entries": { "lb.typeDefault.silktouch": true } }
+      },
+      "member": { "roles": ["builder"] },
+      "checks": [
+        {
+          "permission": "lb.typeDefault.silktouch",
+          "allowed": true,
+          "source": "role",
+          "via": "builder"
+        },
+        { "permission": "lb.typedefault.silktouch", "allowed": false, "source": "default" }
+      ]
+    },
+    {
+      "name": "a closer layer's wildcard beats a farther layer's exact deny",
+      "note": "Counterexample to specificity-first ordering. Admin inherits the whole ladder down to default, which denies bukkit.command.plugins; Admin's own '*' decides first.",
+      "modes": ["nodes"],
+      "roles": {
+        "admin": { "priority": 90, "entries": { "*": true }, "parents": ["helper"] },
+        "helper": { "priority": 80, "entries": {}, "parents": ["jrhelper"] },
+        "jrhelper": { "priority": 70, "entries": {}, "parents": ["assistant"] },
+        "assistant": { "priority": 60, "entries": {}, "parents": ["vipplus"] },
+        "vipplus": { "priority": 50, "entries": {}, "parents": ["vip"] },
+        "vip": { "priority": 40, "entries": {}, "parents": ["member"] },
+        "member": { "priority": 30, "entries": {}, "parents": ["player"] },
+        "player": { "priority": 20, "entries": {}, "parents": ["default"] },
+        "default": { "priority": 0, "entries": { "bukkit.command.plugins": false } }
+      },
+      "member": { "roles": ["admin"] },
+      "checks": [
+        {
+          "permission": "bukkit.command.plugins",
+          "allowed": true,
+          "source": "role",
+          "via": "admin"
+        }
+      ]
+    },
+    {
+      "name": "a deny eight levels up decides when nothing closer matches",
+      "modes": ["nodes"],
+      "roles": {
+        "vip": { "priority": 40, "entries": { "essentials.hat": true }, "parents": ["member"] },
+        "member": { "priority": 30, "entries": {}, "parents": ["player"] },
+        "player": { "priority": 20, "entries": {}, "parents": ["default"] },
+        "default": {
+          "priority": 0,
+          "entries": { "bukkit.command.plugins": false, "essentials.help": true }
+        }
+      },
+      "member": { "roles": ["vip"] },
+      "checks": [
+        {
+          "permission": "bukkit.command.plugins",
+          "allowed": false,
+          "source": "role",
+          "via": "default"
+        },
+        { "permission": "essentials.help", "allowed": true, "source": "role", "via": "default" },
+        { "permission": "essentials.hat", "allowed": true, "source": "role", "via": "vip" }
+      ]
+    },
+    {
+      "name": "guest is denied bukkit.command.plugins",
+      "modes": ["nodes"],
+      "roles": {
+        "default": { "priority": 0, "entries": { "bukkit.command.plugins": false } }
+      },
+      "member": { "roles": ["default"] },
+      "checks": [
+        {
+          "permission": "bukkit.command.plugins",
+          "allowed": false,
+          "source": "role",
+          "via": "default"
+        },
+        { "permission": "essentials.fly", "allowed": false, "source": "default" }
+      ]
+    },
+    {
+      "name": "a member's wildcard deny beats a role's equal wildcard grant",
+      "modes": ["nodes"],
+      "roles": {
+        "player": { "priority": 20, "entries": { "chatfeelings.*": true } }
+      },
+      "member": { "roles": ["player"], "overrides": { "chatfeelings.*": false } },
+      "checks": [
+        { "permission": "chatfeelings.hug", "allowed": false, "source": "override" },
+        { "permission": "chatfeelings.hug.others", "allowed": false, "source": "override" }
+      ]
+    },
+    {
+      "name": "a member's wildcard deny beats a role's exact grant",
+      "note": "Counterexample to specificity-first ordering: the member's own layer decides before any role.",
+      "modes": ["nodes"],
+      "roles": {
+        "player": { "priority": 20, "entries": { "chatfeelings.hug": true } }
+      },
+      "member": { "roles": ["player"], "overrides": { "chatfeelings.*": false } },
+      "checks": [{ "permission": "chatfeelings.hug", "allowed": false, "source": "override" }]
+    },
+    {
+      "name": "the most specific override wins within the member layer",
+      "modes": ["nodes"],
+      "roles": {},
+      "member": {
+        "roles": [],
+        "overrides": { "chatfeelings.*": false, "chatfeelings.wave": true }
+      },
+      "checks": [
+        { "permission": "chatfeelings.wave", "allowed": true, "source": "override" },
+        { "permission": "chatfeelings.hug", "allowed": false, "source": "override" }
+      ]
+    },
+    {
+      "name": "bundle role with six parents",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "bundle": {
+          "priority": 15,
+          "entries": {},
+          "parents": ["p1", "p2", "p3", "p4", "p5", "p6"]
+        },
+        "p1": { "priority": 10, "entries": { "pets.type.one": true } },
+        "p2": { "priority": 10, "entries": { "pets.type.two": true } },
+        "p3": { "priority": 10, "entries": { "pets.type.three": true } },
+        "p4": { "priority": 10, "entries": { "pets.type.four": true } },
+        "p5": { "priority": 10, "entries": { "pets.type.five": true } },
+        "p6": { "priority": 10, "entries": { "pets.type.six": true } }
+      },
+      "member": { "roles": ["bundle"] },
+      "checks": [
+        { "permission": "pets.type.one", "allowed": true, "source": "role", "via": "p1" },
+        { "permission": "pets.type.four", "allowed": true, "source": "role", "via": "p4" },
+        { "permission": "pets.type.six", "allowed": true, "source": "role", "via": "p6" },
+        { "permission": "pets.type.seven", "allowed": false, "source": "default" }
+      ]
+    },
+    {
+      "name": "a role reachable through two paths sits at its shortest distance",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "top": { "priority": 30, "entries": {}, "parents": ["left", "right"] },
+        "left": { "priority": 20, "entries": { "shared.deny": false }, "parents": ["base"] },
+        "right": { "priority": 20, "entries": {}, "parents": ["mid"] },
+        "mid": { "priority": 15, "entries": { "shared.mid": true }, "parents": ["base"] },
+        "base": {
+          "priority": 10,
+          "entries": { "shared.base": true, "shared.deny": true, "shared.mid": false }
+        }
+      },
+      "member": { "roles": ["top"] },
+      "checks": [
+        { "permission": "shared.base", "allowed": true, "source": "role", "via": "base" },
+        { "permission": "shared.deny", "allowed": false, "source": "role", "via": "left" },
+        { "permission": "shared.mid", "allowed": false, "source": "role", "via": "base" }
+      ]
+    },
+    {
+      "name": "directly held roles that disagree at equal specificity: deny wins",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "donor": { "priority": 50, "entries": { "feature.x": true } },
+        "restricted": { "priority": 5, "entries": { "feature.x": false } }
+      },
+      "member": { "roles": ["donor", "restricted"] },
+      "checks": [
+        { "permission": "feature.x", "allowed": false, "source": "role", "via": "restricted" }
+      ]
+    },
+    {
+      "name": "a more specific deny beats a broader grant across roles in the same layer",
+      "modes": ["nodes"],
+      "roles": {
+        "a": { "priority": 50, "entries": { "area.*": true } },
+        "b": { "priority": 5, "entries": { "area.inner.*": false } }
+      },
+      "member": { "roles": ["a", "b"] },
+      "checks": [
+        { "permission": "area.inner.door", "allowed": false, "source": "role", "via": "b" },
+        { "permission": "area.outer.door", "allowed": true, "source": "role", "via": "a" }
+      ]
+    },
+    {
+      "name": "default role held alongside a higher rank sits in the same layer",
+      "note": "Documents why a promotion should replace the default role rather than add to it: the default role's exact deny beats the rank's wildcard in the shared layer.",
+      "modes": ["nodes"],
+      "roles": {
+        "admin": { "priority": 90, "entries": { "*": true } },
+        "default": { "priority": 0, "entries": { "bukkit.command.plugins": false } }
+      },
+      "member": { "roles": ["admin", "default"] },
+      "checks": [
+        {
+          "permission": "bukkit.command.plugins",
+          "allowed": false,
+          "source": "role",
+          "via": "default"
+        },
+        { "permission": "essentials.fly", "allowed": true, "source": "role", "via": "admin" }
+      ]
+    },
+    {
+      "name": "a trailing wildcard does not match its own prefix",
+      "modes": ["nodes"],
+      "roles": {
+        "r": { "priority": 1, "entries": { "area.*": true } }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        { "permission": "area", "allowed": false, "source": "default" },
+        { "permission": "area.x", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "area.x.y.z", "allowed": true, "source": "role", "via": "r" }
+      ]
+    },
+    {
+      "name": "nodes mode folds case on entries and checks",
+      "modes": ["nodes"],
+      "roles": {
+        "r": { "priority": 1, "entries": { "ChestShop.shop.*": true, "Essentials.Fly": true } }
+      },
+      "member": { "roles": ["r"], "overrides": { "ESSENTIALS.HAT": false } },
+      "checks": [
+        { "permission": "chestshop.shop.create", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "CHESTSHOP.SHOP.CREATE", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "essentials.fly", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "essentials.hat", "allowed": false, "source": "override" }
+      ]
+    },
+    {
+      "name": "exact mode treats wildcards and case literally",
+      "modes": ["exact"],
+      "roles": {
+        "r": { "priority": 1, "entries": { "ChestShop.shop.*": true, "*": true } }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        { "permission": "chestshop.shop.create", "allowed": false, "source": "default" },
+        { "permission": "ChestShop.shop.create", "allowed": false, "source": "default" },
+        { "permission": "ChestShop.shop.*", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "*", "allowed": true, "source": "role", "via": "r" }
+      ]
+    },
+    {
+      "name": "exact mode keeps the existing role tie-break: highest priority grant reports",
+      "modes": ["exact", "nodes"],
+      "roles": {
+        "officer": { "priority": 10, "entries": { "kick": true } },
+        "member": { "priority": 5, "entries": { "kick": true } }
+      },
+      "member": { "roles": ["member", "officer"] },
+      "checks": [{ "permission": "kick", "allowed": true, "source": "role", "via": "officer" }]
+    },
+    {
+      "name": "equal priority ties break on role id, descending",
+      "modes": ["exact", "nodes"],
+      "roles": {
+        "role_a": { "priority": 5, "entries": { "kick": true } },
+        "role_b": { "priority": 5, "entries": { "kick": true } }
+      },
+      "member": { "roles": ["role_a", "role_b"] },
+      "checks": [{ "permission": "kick", "allowed": true, "source": "role", "via": "role_b" }]
+    },
+    {
+      "name": "an override in exact mode wins in both directions",
+      "modes": ["exact"],
+      "roles": {
+        "officer": { "priority": 10, "entries": { "kick": true } }
+      },
+      "member": { "roles": ["officer"], "overrides": { "kick": false, "ban": true } },
+      "checks": [
+        { "permission": "kick", "allowed": false, "source": "override" },
+        { "permission": "ban", "allowed": true, "source": "override" },
+        { "permission": "mute", "allowed": false, "source": "default" }
+      ]
+    }
+  ],
+  "keys": [
+    { "mode": "nodes", "key": "kappable.vote.admin", "valid": true },
+    { "mode": "nodes", "key": "*", "valid": true },
+    { "mode": "nodes", "key": "chestshop.shop.*", "valid": true },
+    { "mode": "nodes", "key": "MyPet.petstorage.limit.5", "valid": true },
+    { "mode": "nodes", "key": "area.*.door", "valid": false },
+    { "mode": "nodes", "key": "*.door", "valid": false },
+    { "mode": "nodes", "key": "area*", "valid": false },
+    { "mode": "nodes", "key": "area.door*", "valid": false },
+    { "mode": "nodes", "key": "has space", "valid": false },
+    { "mode": "nodes", "key": "-essentials.silentjoin", "valid": false },
+    { "mode": "nodes", "key": "café.menu", "valid": false },
+    { "mode": "exact", "key": "area.*.door", "valid": true },
+    { "mode": "exact", "key": "-literal", "valid": true },
+    { "mode": "exact", "key": "has space", "valid": true }
+  ],
+  "graphs": [
+    { "name": "two-role cycle", "parents": { "a": ["b"], "b": ["a"] }, "valid": false },
+    { "name": "self parent", "parents": { "a": ["a"] }, "valid": false },
+    {
+      "name": "three-role cycle",
+      "parents": { "a": ["b"], "b": ["c"], "c": ["a"] },
+      "valid": false
+    },
+    {
+      "name": "diamond",
+      "parents": { "a": ["b", "c"], "b": ["d"], "c": ["d"], "d": [] },
+      "valid": true
+    },
+    {
+      "name": "nine-level chain",
+      "parents": {
+        "l1": ["l2"],
+        "l2": ["l3"],
+        "l3": ["l4"],
+        "l4": ["l5"],
+        "l5": ["l6"],
+        "l6": ["l7"],
+        "l7": ["l8"],
+        "l8": ["l9"],
+        "l9": []
+      },
+      "valid": true
+    }
+  ]
+}

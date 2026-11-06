@@ -111,7 +111,7 @@ The diagram above is committed at `tools/diagrams/source/auth-flow.mmd`. The com
 
 Whatever string your adapter returns becomes the dev-facing user id everywhere in the Junjo API. Once the user joins their first group on a game, Junjo records the mapping in `ExternalIdentity (gameId, externalUserId) -> junjoUserId` and reuses it for every subsequent appearance. Two consequences:
 
-1. **Pick a stable id and never change it.** A user whose external id rotates (e.g. you switch from Clerk's `user_xyz` to your internal numeric id) will appear as a new user to Junjo, with no membership history. Migrate at the database level if you need to swap.
+1. **Pick a stable id and never change it.** A user whose external id rotates (e.g. you switch from Clerk's `user_xyz` to your internal numeric id) will appear as a new user to Junjo, with no membership history. Migrate at the database level if you need to swap. To give one person a second id (a website login beside a game account), [link the ids](/api-reference/identity) instead.
 2. **Render numeric ids as strings.** Junjo treats user ids as opaque strings. Roblox's numeric `Players.LocalPlayer.UserId` should be passed as `String(userId)`; do not let JavaScript number coercion strip leading zeros or overflow at 2^53.
 
 ## Failure-mode parity

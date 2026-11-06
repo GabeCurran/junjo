@@ -33,6 +33,7 @@ const wireMember = {
   notesPrivate: null,
   joinedAt: "2026-04-28T12:00:00.000Z",
   bannedUntil: null,
+  version: 3,
 };
 
 const wireInvitation = {
@@ -83,6 +84,7 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     type: "member.joined",
     userId: "user_alice",
     member: wireMember,
+    memberVersion: 3,
   } as WireJunjoEvent,
   "member.left": {
     ...groupBase,
@@ -90,11 +92,19 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     userId: "user_alice",
     reason: "kicked",
     kickedBy: "user_admin",
+    memberVersion: 4,
   } as WireJunjoEvent,
   "member.invited": {
     ...groupBase,
     type: "member.invited",
     invitation: wireInvitation,
+  } as WireJunjoEvent,
+  "member.updated": {
+    ...groupBase,
+    type: "member.updated",
+    userId: "user_alice",
+    changed: ["metadata", "overrides"],
+    memberVersion: 5,
   } as WireJunjoEvent,
   "member.banned": {
     ...groupBase,
@@ -102,11 +112,13 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     userId: "user_alice",
     reason: "spamming",
     bannedUntil: "2026-05-01T00:00:00.000Z",
+    memberVersion: 6,
   } as WireJunjoEvent,
   "member.unbanned": {
     ...groupBase,
     type: "member.unbanned",
     userId: "user_alice",
+    memberVersion: 7,
   } as WireJunjoEvent,
   "role.created": {
     ...groupBase,
@@ -120,6 +132,13 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     added: ["role_a"],
     removed: [],
     actorUserId: "user_admin",
+    memberVersion: 8,
+  } as WireJunjoEvent,
+  "role.updated": {
+    ...groupBase,
+    type: "role.updated",
+    roleId: "role_a",
+    changed: ["entries", "parents"],
   } as WireJunjoEvent,
   "role.deleted": {
     ...groupBase,
@@ -203,14 +222,56 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
   "game.user.banned": {
     ...userBase,
     type: "game.user.banned",
-    junjoUserId: "user_alice",
+    junjoUserId: "jusr_alice",
+    userId: "game:alice",
     reason: "cheating",
     expiresAt: null,
+    moderationVersion: 2,
   } as WireJunjoEvent,
   "game.user.unbanned": {
     ...userBase,
     type: "game.user.unbanned",
-    junjoUserId: "user_alice",
+    junjoUserId: "jusr_alice",
+    userId: "game:alice",
+    moderationVersion: 3,
+  } as WireJunjoEvent,
+  "identity.linked": {
+    ...userBase,
+    type: "identity.linked",
+    userId: "game:alice",
+    linkedUserId: "web:alice",
+    identities: ["game:alice", "web:alice"],
+  } as WireJunjoEvent,
+  "identity.unlinked": {
+    ...userBase,
+    type: "identity.unlinked",
+    userId: "game:alice",
+    unlinkedUserId: "web:alice",
+    identities: ["game:alice"],
+  } as WireJunjoEvent,
+  "game.user.sanctioned": {
+    ...userBase,
+    type: "game.user.sanctioned",
+    userId: "game:alice",
+    sanctionType: "mute",
+    reason: "spam",
+    expiresAt: "2026-04-28T13:00:00.000Z",
+    moderationVersion: 4,
+  } as WireJunjoEvent,
+  "game.user.unsanctioned": {
+    ...userBase,
+    type: "game.user.unsanctioned",
+    userId: "game:alice",
+    sanctionType: "mute",
+    moderationVersion: 5,
+  } as WireJunjoEvent,
+  "identity.updated": {
+    ...userBase,
+    type: "identity.updated",
+    userId: "game:alice",
+    changedUserId: "web:alice",
+    displayName: "Alice",
+    changed: ["displayName"],
   } as WireJunjoEvent,
 };
 
@@ -230,7 +291,15 @@ describe("deserializeEvent completeness", () => {
     for (const type of allTypes) {
       expect(deserializeEvent(WIRE_FIXTURES[type])).toBeDefined();
     }
-    expect(allTypes).toHaveLength(22);
+    expect(allTypes).toHaveLength(29);
+  });
+
+  it("carries userId and the changed fields on member.updated", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["member.updated"]);
+    if (event.type !== "member.updated") throw new Error("wrong type");
+    expect(event.groupId).toBe("grp_1");
+    expect(event.userId).toBe("user_alice");
+    expect(event.changed).toEqual(["metadata", "overrides"]);
   });
 
   it("throws JunjoError(unknown_event_type) on a type this SDK predates", () => {
@@ -253,6 +322,22 @@ describe("deserializeEvent completeness", () => {
     expect(event.groupId).toBe("grp_1");
   });
 
+  it("carries roleId and the changed fields on role.updated", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["role.updated"]);
+    if (event.type !== "role.updated") throw new Error("wrong type");
+    expect(event.groupId).toBe("grp_1");
+    expect(event.roleId).toBe("role_a");
+    expect(event.changed).toEqual(["entries", "parents"]);
+  });
+
+  it("defaults entries, parents, and metadata on a role.created role from an older server", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["role.created"]);
+    if (event.type !== "role.created") throw new Error("wrong type");
+    expect(event.role.entries).toEqual([]);
+    expect(event.role.parents).toEqual([]);
+    expect(event.role.metadata).toEqual({});
+  });
+
   it("preserves null bannedUntil (permanent ban)", () => {
     const wire = {
       ...WIRE_FIXTURES["member.banned"],
@@ -269,6 +354,100 @@ describe("deserializeEvent completeness", () => {
     expect(event.respondedAt).toBeInstanceOf(Date);
     expect(event.actorJunjoUserId).toBe("user_alice");
     expect(event.targetJunjoUserId).toBe("user_bob");
+  });
+
+  it("carries the external userId alongside junjoUserId on game.user.banned and unbanned", () => {
+    const banned = deserializeEvent(WIRE_FIXTURES["game.user.banned"]);
+    if (banned.type !== "game.user.banned") throw new Error("wrong type");
+    expect(banned.userId).toBe("game:alice");
+    expect(banned.junjoUserId).toBe("jusr_alice");
+    expect(banned.expiresAt).toBeNull();
+    const unbanned = deserializeEvent(WIRE_FIXTURES["game.user.unbanned"]);
+    if (unbanned.type !== "game.user.unbanned") throw new Error("wrong type");
+    expect(unbanned.userId).toBe("game:alice");
+    expect(unbanned.junjoUserId).toBe("jusr_alice");
+  });
+
+  it("carries memberVersion on every member event and the member's version on member.joined", () => {
+    const expected: Partial<Record<JunjoEventType, number>> = {
+      "member.joined": 3,
+      "member.left": 4,
+      "member.updated": 5,
+      "member.banned": 6,
+      "member.unbanned": 7,
+      "role.changed": 8,
+    };
+    for (const [type, version] of Object.entries(expected)) {
+      const event = deserializeEvent(WIRE_FIXTURES[type as JunjoEventType]);
+      expect((event as { memberVersion?: number }).memberVersion).toBe(version);
+    }
+    const joined = deserializeEvent(WIRE_FIXTURES["member.joined"]);
+    if (joined.type !== "member.joined") throw new Error("wrong type");
+    expect(joined.member.version).toBe(3);
+  });
+
+  it("carries moderationVersion on game.user.banned and unbanned", () => {
+    const banned = deserializeEvent(WIRE_FIXTURES["game.user.banned"]);
+    if (banned.type !== "game.user.banned") throw new Error("wrong type");
+    expect(banned.moderationVersion).toBe(2);
+    const unbanned = deserializeEvent(WIRE_FIXTURES["game.user.unbanned"]);
+    if (unbanned.type !== "game.user.unbanned") throw new Error("wrong type");
+    expect(unbanned.moderationVersion).toBe(3);
+  });
+
+  it("deserializes identity.linked with the person, the joining id, and every id", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["identity.linked"]);
+    if (event.type !== "identity.linked") throw new Error("wrong type");
+    expect(event.userId).toBe("game:alice");
+    expect(event.linkedUserId).toBe("web:alice");
+    expect(event.identities).toEqual(["game:alice", "web:alice"]);
+    expect("groupId" in event).toBe(false);
+  });
+
+  it("deserializes identity.unlinked with the remaining person and the leaving id", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["identity.unlinked"]);
+    if (event.type !== "identity.unlinked") throw new Error("wrong type");
+    expect(event.userId).toBe("game:alice");
+    expect(event.unlinkedUserId).toBe("web:alice");
+    expect(event.identities).toEqual(["game:alice"]);
+    expect("groupId" in event).toBe(false);
+  });
+
+  it("deserializes game.user.sanctioned and unsanctioned with sanctionType and moderationVersion", () => {
+    const set = deserializeEvent(WIRE_FIXTURES["game.user.sanctioned"]);
+    if (set.type !== "game.user.sanctioned") throw new Error("wrong type");
+    expect(set.userId).toBe("game:alice");
+    expect(set.sanctionType).toBe("mute");
+    expect(set.reason).toBe("spam");
+    expect(set.expiresAt).toEqual(new Date("2026-04-28T13:00:00.000Z"));
+    expect(set.moderationVersion).toBe(4);
+    expect("groupId" in set).toBe(false);
+    const lifted = deserializeEvent(WIRE_FIXTURES["game.user.unsanctioned"]);
+    if (lifted.type !== "game.user.unsanctioned") throw new Error("wrong type");
+    expect(lifted.sanctionType).toBe("mute");
+    expect(lifted.moderationVersion).toBe(5);
+  });
+
+  it("preserves a null expiresAt on game.user.sanctioned (permanent)", () => {
+    const wire = { ...WIRE_FIXTURES["game.user.sanctioned"], expiresAt: null } as WireJunjoEvent;
+    const event = deserializeEvent(wire);
+    if (event.type !== "game.user.sanctioned") throw new Error("wrong type");
+    expect(event.expiresAt).toBeNull();
+  });
+
+  it("deserializes identity.updated with the person, the changed id, and the new name", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["identity.updated"]);
+    if (event.type !== "identity.updated") throw new Error("wrong type");
+    expect(event.userId).toBe("game:alice");
+    expect(event.changedUserId).toBe("web:alice");
+    expect(event.displayName).toBe("Alice");
+    expect(event.changed).toEqual(["displayName"]);
+    const cleared = deserializeEvent({
+      ...WIRE_FIXTURES["identity.updated"],
+      displayName: null,
+    } as WireJunjoEvent);
+    if (cleared.type !== "identity.updated") throw new Error("wrong type");
+    expect(cleared.displayName).toBeNull();
   });
 
   it("user-scoped events carry no groupId", () => {

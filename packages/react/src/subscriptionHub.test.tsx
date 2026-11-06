@@ -98,6 +98,7 @@ function makeMember(userId: string, overrides: Partial<Member> = {}): Member {
     notesPrivate: null,
     joinedAt: new Date("2026-04-28T00:00:00.000Z"),
     bannedUntil: null,
+    version: 1,
     ...overrides,
   };
 }
@@ -122,6 +123,7 @@ function memberJoined(member: Member): JunjoEvent {
   return {
     id: "evt_joined",
     type: "member.joined",
+    memberVersion: 1,
     gameId: GAME_ID,
     groupId: GROUP_ID,
     occurredAt: new Date(),

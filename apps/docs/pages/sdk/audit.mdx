@@ -76,14 +76,30 @@ interface AuditEntry {
   id: AuditEntryId;
   groupId: GroupId;
   actorUserId: UserId | null;
+  apiKey: AuditApiKey | null;
   action: AuditAction;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: Date;
 }
+
+interface AuditApiKey {
+  id: string;
+  name: string | null;
+  prefix: string;
+}
 ```
 
-`actorUserId` is `null` for system-driven actions and for the V1 mutations that have no auth-adapter actor wired (most of them). `targetId` is a free-form pointer to whatever the action targeted: a user id, role id, permission key, or group id; type depends on action.
+`apiKey` names the API key whose request wrote the entry, so a game with several backends can tell them apart. It is `null` for dashboard and system writes, and the SDK maps it to `null` when an older server omits the field.
+
+```ts
+for await (const entry of junjo.audit.listAll(groupId)) {
+  const source = entry.apiKey ? (entry.apiKey.name ?? entry.apiKey.prefix) : "dashboard or system";
+  console.log(entry.action, source);
+}
+```
+
+`actorUserId` is the internal Junjo user id (a `JunjoUser` id, not one of your external ids). It is `null` for system-driven actions and for the V1 mutations that have no auth-adapter actor wired (most of them). `targetId` is a free-form pointer to whatever the action targeted: a user id, role id, permission key, or group id; type depends on action. User ids in `targetId` and `payload` are recorded as written and are not rewritten when ids are later [linked](/sdk/identities).
 
 ### Errors
 

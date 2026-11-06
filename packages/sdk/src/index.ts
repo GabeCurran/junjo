@@ -12,13 +12,17 @@ import type {
 import { AuditApi } from "./audit.js";
 import { BansApi } from "./bans.js";
 import { JunjoError } from "./errors.js";
+import { type ExportOptions, type ExportRecord, exportGame } from "./export.js";
 import { FriendsApi } from "./friends.js";
+import { GameEventsApi } from "./gameEvents.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
+import { IdentitiesApi } from "./identities.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
 import { PermissionCache, type PermissionCacheOptions } from "./permissionCache.js";
 import { RolesApi } from "./roles.js";
+import { SanctionsApi } from "./sanctions.js";
 import { WebhooksApi } from "./webhooks.js";
 
 // =====================================================================
@@ -173,7 +177,8 @@ export const CHECK_BATCH_MAX_ENTRIES = 100;
  * Top-level Junjo API client. Construct one per game with a per-game
  * API key (or `proxy: true` in browser apps) and reach every surface
  * through its namespaces: `groups`, `roles`, `members`, `invitations`,
- * `audit`, `webhooks`, `friends`, and `bans`.
+ * `audit`, `webhooks`, `friends`, `bans`, `sanctions`, `identities`, and
+ * `events`.
  */
 export class Junjo {
   readonly groups: GroupsApi;
@@ -184,6 +189,9 @@ export class Junjo {
   readonly webhooks: WebhooksApi;
   readonly friends: FriendsApi;
   readonly bans: BansApi;
+  readonly sanctions: SanctionsApi;
+  readonly identities: IdentitiesApi;
+  readonly events: GameEventsApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
   private readonly permissionCache: PermissionCache;
@@ -233,6 +241,9 @@ export class Junjo {
     this.webhooks = new WebhooksApi(this.http);
     this.friends = new FriendsApi(this.http);
     this.bans = new BansApi(this.http);
+    this.sanctions = new SanctionsApi(this.http);
+    this.identities = new IdentitiesApi(this.http);
+    this.events = new GameEventsApi(this.http);
     this.authAdapter = config.authAdapter;
     this.permissionCache = new PermissionCache(config.permissionCache);
   }
@@ -249,6 +260,15 @@ export class Junjo {
   ): Promise<boolean> {
     const result = await this.check(userId, groupId, permission, opts);
     return result.allowed;
+  }
+
+  /**
+   * Streams the whole game (GET /v1/export) as parsed records, header
+   * first and the end record last; see {@link exportGame} for the
+   * failure contract. The API key must have `canExport`.
+   */
+  export(opts?: ExportOptions): AsyncGenerator<ExportRecord, void, undefined> {
+    return exportGame(this.http, opts);
   }
 
   /**
@@ -442,8 +462,14 @@ export class Junjo {
 export { AuditApi } from "./audit.js";
 export { BansApi } from "./bans.js";
 export type { CreateBanInput, ListBansOptions, ListBanHistoryOptions } from "./bans.js";
-export { JunjoError, JUNJO_SDK_ERROR_CODES } from "./errors.js";
+export {
+  JunjoError,
+  JUNJO_SDK_ERROR_CODES,
+  isNotActive,
+  memberImportErrors,
+} from "./errors.js";
 export type { JunjoErrorCode, JunjoSdkErrorCode } from "./errors.js";
+export type { ConditionalWriteOptions, WriteOptions } from "./http.js";
 export { FriendsApi } from "./friends.js";
 export type {
   Block,
@@ -457,8 +483,35 @@ export type {
   FriendTagAssignment,
   UserVisibilitySettings,
 } from "./friends.js";
+export { EXPORT_MAX_LINE_CHARS } from "./export.js";
+export type {
+  ExportAuditRecord,
+  ExportBanHistoryRecord,
+  ExportBanRecord,
+  ExportEnd,
+  ExportFriendTagRecord,
+  ExportGameRecord,
+  ExportGroupRecord,
+  ExportHeader,
+  ExportInvitationRecord,
+  ExportMemberRecord,
+  ExportOptions,
+  ExportPersonRecord,
+  ExportRecord,
+  ExportRecordKind,
+  ExportRelationshipRecord,
+  ExportRoleRecord,
+  ExportSanctionHistoryRecord,
+  ExportSanctionRecord,
+  ExportUnknownRecord,
+  ExportUserRelationshipRecord,
+} from "./export.js";
+export { GameEventsApi } from "./gameEvents.js";
+export type { GameEventMeta, GameSubscribeOptions, GameSubscription } from "./gameEvents.js";
 export { GroupsApi } from "./groups.js";
 export type { SubscribeOptions, Subscription } from "./groups.js";
+export { IdentitiesApi } from "./identities.js";
+export type { RedeemLinkCodeInput } from "./identities.js";
 export { InvitationsApi } from "./invitations.js";
 export type { ListInvitationsOptions } from "./invitations.js";
 export { MembersApi } from "./members.js";
@@ -474,6 +527,8 @@ export {
 export type { PermissionCacheOptions } from "./permissionCache.js";
 export { RolesApi } from "./roles.js";
 export type { RoleList } from "./roles.js";
+export { SanctionsApi } from "./sanctions.js";
+export type { AddSanctionInput, ListSanctionsOptions } from "./sanctions.js";
 export {
   WebhookEndpointsApi,
   WebhooksApi,
@@ -484,40 +539,63 @@ export {
   verifyWebhookWithMeta,
 } from "./webhooks.js";
 export type {
+  CreateWebhookEndpointInput,
   ExpressLikeMiddleware,
   ExpressLikeRequest,
   ExpressLikeResponse,
   UnknownVerifiedWebhook,
+  UpdateWebhookEndpointInput,
   VerifiedWebhook,
   VerifyOptions,
   VerifyWithMetaOptions,
+  WebhookEndpoint,
+  WebhookEndpointWithSecret,
   WebhookHeaders,
 } from "./webhooks.js";
 
 export type {
   AuditAction,
+  AuditApiKey,
   AuditEntry,
   AuthAdapter,
   Ban,
-  CreateWebhookEndpointInput,
+  DisplayNameMatch,
+  GameUserSanctionedEvent,
+  GameUserUnsanctionedEvent,
   Group,
   GroupId,
+  IdentityChangeField,
+  IdentityLinkResult,
+  IdentityLinkedEvent,
+  IdentityUnlinkResult,
+  IdentityUnlinkedEvent,
+  IdentityUpdatedEvent,
   Invitation,
   JunjoEvent,
   JunjoEventType,
+  LinkCode,
+  LinkedIdentity,
   ListAuditOptions,
   Member,
+  MemberAccess,
+  MemberChangeField,
+  MemberImportInput,
+  MemberImportResult,
+  MemberImportRow,
+  MemberImportRowError,
+  MemberImportStatus,
+  MemberUpdatedEvent,
   PermissionCheckBatchResult,
   PermissionCheckRequest,
   PermissionCheckResult,
   PermissionKey,
   PermissionSource,
   Role,
-  UpdateWebhookEndpointInput,
+  Sanction,
+  SanctionHistoryEntry,
   UserId,
-  WebhookEndpoint,
+  UserModeration,
   WebhookEndpointFormat,
   WebhookEndpointId,
-  WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
 } from "@junjo.io/shared";

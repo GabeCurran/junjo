@@ -42,6 +42,8 @@ Every error response uses the same JSON shape:
 }
 ```
 
+Some errors add a `details` object with structured information: the [member import](/api-reference/groups#post-v1groupsidmembersimport) lists every failing row under `details.rows`, and a lift with nothing to lift sets `details.reason` (see [Safe retries for queued writes](#safe-retries-for-queued-writes)). Errors without details omit the field.
+
 The SDK preserves this shape on the `JunjoError` it throws, so callers can branch on `error.code` rather than parsing messages.
 
 Reserved codes the server returns today:
@@ -53,6 +55,11 @@ Reserved codes the server returns today:
 | `bad_request` | 400 | Body or query failed Zod validation. |
 | `permission_denied` | 403 | Caller lacks permission to perform the action. |
 | `not_found` | 404 | Resource does not exist (or is soft-deleted). |
+| `group_full` | 409 | The group is at its kind's member limit. See [Kind limits](/api-reference/groups#kind-limits). |
+| `group_limit_reached` | 409 | The user already holds the most memberships allowed in groups of that kind. |
+| `idempotency_key_in_progress` | 409 | A request with the same `Idempotency-Key` is still running. Carries `Retry-After: 1`. See [Idempotency keys](#idempotency-keys). |
+| `precondition_failed` | 412 | `If-Match` names a version other than the current one; nothing was written. See [Conditional writes](#conditional-writes). |
+| `idempotency_key_reused` | 422 | The `Idempotency-Key` was already used by this API key for a different request. |
 | `rate_limit_exceeded` | 429 | A token bucket is exhausted: the per-API-key bucket or the shared per-source bucket, whichever denies first (see [Rate limiting](#rate-limiting)). Response carries a `Retry-After` header (seconds, integer >= 1) indicating the minimum wait before the next request will be admitted. Tunable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars (defaults: 600 sustained, 100 burst per key; the source bucket is sized at 20x). |
 | `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
 
@@ -63,6 +70,59 @@ Per-resource pages may introduce additional codes; those are listed alongside th
 Every `/v1/*` route is rate limited via in-memory token buckets, including the unauthenticated invitation preview and the admin endpoints. Each request drains a shared per-source bucket sized at 20x the per-key budget (the source is the socket address, or the rightmost `x-forwarded-for` hop when `TRUST_PROXY` is set); requests carrying a parseable API key also drain that key prefix's bucket. Defaults: 600 requests per minute sustained refill, 100 requests burst per key. Set `RATE_LIMIT_PER_MINUTE` or `RATE_LIMIT_BURST` to `0` to disable rate limiting (useful when the server runs behind a gateway that handles it externally). Per-key limiting runs in front of the API-key crypto verify, so a flood of requests with the same key is rejected before the scrypt cost is paid.
 
 The bucket map is per-process with amortized eviction of refilled buckets; multi-instance deployments need an external store (Redis, etc.) for cross-process coordination, deferred for now. The 429 response carries a `Retry-After` header in seconds.
+
+## Idempotency keys
+
+Every `POST`, `PUT`, `PATCH` and `DELETE` made with a per-game API key accepts an `Idempotency-Key` header: 1 to 255 printable ASCII characters (`0x21` to `0x7E`, so no spaces). Any other value answers `400 bad_request`. Admin-token routes ignore the header.
+
+Keys are scoped to the API key that sends them: two keys may use the same string without interfering. The server fingerprints each request with SHA-256 over the method, the path including its query string, and the raw body bytes.
+
+| Situation | Answer |
+|-----------|--------|
+| First request with the key | Runs normally. A final status below 500 is stored with its body. |
+| Same key, same fingerprint, first request finished | The stored status and body, with `Idempotent-Replayed: true`. The write does not run again. |
+| Same key, different fingerprint | `422 idempotency_key_reused`. |
+| Same key while the first request is still running | `409 idempotency_key_in_progress` with `Retry-After: 1`. |
+| The first request answered 5xx or failed | Nothing is stored, so a retry runs the request again. |
+| The path matched no route (404 from the router) | Nothing is stored; the key stays usable once the path is fixed. |
+
+A replay repeats the stored `Content-Type` and `ETag` headers. Records are kept for 24 hours, then removed; a key older than that is treated as new. A request still marked as running after 5 minutes is treated as abandoned (its process died), and the next request with that key runs.
+
+The record is saved right after the write commits. If the server crashes in between, a retry runs the write again. Use the pairing in [Safe retries for queued writes](#safe-retries-for-queued-writes) when that matters.
+
+## Conditional writes
+
+Members and per-person moderation state carry a **version**: an integer that rises by one with every write that changes them, and never on a no-op. The current version is returned as a strong entity tag, `ETag: "7"`, and as a `version` field in the body:
+
+- **Member version.** `Member.version` (starts at 1), on member reads, lists, member access and member-scoped write responses. See [Groups](/api-reference/groups#member-versions).
+- **Moderation version.** Per person and game, 0 for someone never moderated. Rises with every game ban or [sanction](/api-reference/sanctions) create, change or lift. Returned by [`GET /v1/users/:userId/moderation`](/api-reference/bans#get-v1usersuseridmoderation) and on game ban and sanction objects.
+
+A write that accepts `If-Match` compares it with the current version inside its transaction:
+
+- `If-Match: "7"` or `If-Match: 7` (a bare integer is accepted too). Any other value, including lists, weak tags and `*`, answers `400 bad_request`.
+- A mismatch answers `412 precondition_failed` and writes nothing.
+- Without `If-Match` the write is unconditional.
+- A missing member answers `404`, not `412`.
+
+Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
+
+## Safe retries for queued writes
+
+A client that queues writes while offline, or replays them after a failure, should send both headers on every queued write:
+
+1. **`Idempotency-Key`**, unique per queued write and stored with it. A retry of a request the server already applied returns the original answer instead of applying it again.
+2. **`If-Match`** with the version the client last saw for the member or person. If someone else changed them in the meantime (or the write already applied and the idempotency record has expired or was lost in a crash), the server answers `412` instead of overwriting newer state.
+
+On `412`, read the current state (`GET /v1/groups/:id/members/:userId` or `GET /v1/users/:userId/moderation`), decide whether the queued write still makes sense, and send it again with the new version and a new idempotency key.
+
+Ban and sanction lifts need one more rule. `DELETE /v1/bans/:userId`, `DELETE /v1/groups/:id/members/:userId/ban` and `DELETE /v1/sanctions/:userId/:type` answer `404 not_found` with `details.reason: "not_active"` when there is nothing active to lift, including for an id the game has never seen. This answer takes precedence over a stale `If-Match`. A replayed lift should treat it as success. Any other `404` on those routes (an unknown group, for example) has no `reason` and is a real failure.
+
+```
+DELETE /v1/bans/mc:1f0c... HTTP/1.1
+Authorization: Bearer <key>
+Idempotency-Key: 7c9e6679-unban-queue-42
+If-Match: "3"
+```
 
 ## Server bootstrap
 

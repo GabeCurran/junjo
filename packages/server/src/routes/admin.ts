@@ -10,20 +10,15 @@ import type {
   GroupId,
   GroupRelationshipChangedEvent,
   GroupUpdatedEvent,
+  MemberChangeField,
   MemberInvitedEvent,
   MemberLeftEvent,
-  PermissionGrantedEvent,
-  PermissionKey,
-  PermissionRevokedEvent,
-  RoleCreatedEvent,
-  RoleDeletedEvent,
-  RoleId,
+  MemberUpdatedEvent,
   UserId,
 } from "@junjo.io/shared";
 import { Prisma } from "@prisma/client";
 import type {
   ApiKey,
-  AuditEntry,
   Game,
   Group,
   GroupMember,
@@ -43,11 +38,37 @@ import {
   toPublicGroup,
   toPublicGroupRelationship,
   toPublicInvitation,
-  toPublicRole,
 } from "../events.js";
-import { findJunjoUserId } from "../identity.js";
+import { afterMembershipChange, loadKindLimits, lockGroupMembership } from "../groupKinds.js";
+import {
+  IDENTITY_ORDER,
+  findJunjoUserId,
+  pickRenderedId,
+  renderResolved,
+  renderUserIds,
+} from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
-import { isUniqueViolation } from "../prismaErrors.js";
+import {
+  EMPTY_ROLE_DETAIL,
+  type RoleDetail,
+  type WireRole,
+  loadRoleDetails,
+  loadRoleGraph,
+  serializeRole,
+} from "../roleDetails.js";
+import {
+  clearMemberOverride,
+  createRole,
+  deleteRole,
+  removeRoleEntry,
+  replaceRoleEntries,
+  setMemberOverride,
+  setRoleParents,
+  updateRole,
+  upsertRoleEntry,
+} from "../roleWrites.js";
+import { assertUserIdsWellFormed } from "../userIdFormat.js";
+import { parseBody } from "../validation.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS,
@@ -60,6 +81,7 @@ import {
   ANALYTICS_MEMBER_ACTIVITY_HOURS,
   adminCheckPermissionQuery,
   adminClearRelationshipQuery,
+  adminCreateApiKeyBody,
   adminCreateInvitationBody,
   adminCreateRoleBody,
   adminGrantPermissionBody,
@@ -67,6 +89,7 @@ import {
   adminOverridePermissionBody,
   adminSetParentBody,
   adminSetRelationshipBody,
+  adminUpdateApiKeyBody,
   adminUpdateMemberBody,
   adminUpdateRoleBody,
   createGameBody,
@@ -80,7 +103,14 @@ import {
   memberActivityQuery,
   updateAdminGroupBody,
 } from "./admin.schema.js";
-import { auditBeforeFilter, serializeAuditEntry } from "./audit.js";
+import {
+  AUDIT_API_KEY_INCLUDE,
+  type AuditRowWithKey,
+  type WireAuditApiKey,
+  auditBeforeFilter,
+  serializeAuditApiKey,
+  serializeAuditEntry,
+} from "./audit.js";
 import type { WireAuditEntry } from "./audit.js";
 import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
@@ -116,7 +146,7 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
     const identities = await prisma.externalIdentity.findMany({
       where: { junjoUserId },
       select: { gameId: true, externalUserId: true },
-      orderBy: { gameId: "asc" },
+      orderBy: [{ gameId: "asc" }, ...IDENTITY_ORDER],
     });
 
     if (identities.length === 0) {
@@ -139,10 +169,18 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
 
-    const games: WireUserGameRow[] = identities.map((identity) => ({
-      gameId: identity.gameId,
-      externalUserId: identity.externalUserId,
-      joinedGroupCount: counts.get(identity.gameId) ?? 0,
+    // One row per game. A person with several ids in a game is named by
+    // the rendering rule with no namespace preference.
+    const idsByGame = new Map<string, string[]>();
+    for (const identity of identities) {
+      const list = idsByGame.get(identity.gameId);
+      if (list) list.push(identity.externalUserId);
+      else idsByGame.set(identity.gameId, [identity.externalUserId]);
+    }
+    const games: WireUserGameRow[] = [...idsByGame].map(([gameId, ordered]) => ({
+      gameId,
+      externalUserId: pickRenderedId(ordered, []),
+      joinedGroupCount: counts.get(gameId) ?? 0,
     }));
 
     return c.json<WireUserGames>({ junjoUserId, games });
@@ -196,6 +234,7 @@ export interface WireAdminAuditEntry {
   groupName: string | null;
   groupSoftDeleted: boolean;
   actorUserId: string | null;
+  apiKey: WireAuditApiKey | null;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -209,7 +248,7 @@ export interface WireAdminAuditPage {
 // parameter and the call site stays honest about requested fields.
 // `group` is optional because game-scoped events have a null groupId
 // and the relation walk returns null in that case.
-type AdminAuditRow = AuditEntry & {
+type AdminAuditRow = AuditRowWithKey & {
   game: Pick<Game, "name">;
   group: Pick<Group, "name" | "softDeletedAt"> | null;
 };
@@ -224,6 +263,7 @@ export function serializeAdminAuditEntry(row: AdminAuditRow): WireAdminAuditEntr
     groupName: row.group?.name ?? null,
     groupSoftDeleted: row.group?.softDeletedAt != null,
     actorUserId: row.actorUserId,
+    apiKey: serializeAuditApiKey(row),
     targetId: row.targetId,
     payload: (row.payload ?? {}) as Record<string, unknown>,
     createdAt: row.createdAt.toISOString(),
@@ -252,6 +292,7 @@ export function listRecentAuditHandler(prisma: PrismaClient): Handler {
       include: {
         game: { select: { name: true } },
         group: { select: { name: true, softDeletedAt: true } },
+        ...AUDIT_API_KEY_INCLUDE,
       },
     });
 
@@ -279,6 +320,10 @@ export interface WireAdminApiKey {
   id: string;
   gameId: string;
   prefix: string;
+  name: string | null;
+  preferredNamespaces: string[];
+  // Whether the key may read `GET /v1/export`.
+  canExport: boolean;
   createdAt: string;
   revokedAt: string | null;
 }
@@ -315,6 +360,9 @@ function toWireApiKey(row: ApiKey): WireAdminApiKey {
     id: row.id,
     gameId: row.gameId,
     prefix: row.prefix,
+    name: row.name,
+    preferredNamespaces: row.preferredNamespaces,
+    canExport: row.canExport,
     createdAt: row.createdAt.toISOString(),
     revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
   };
@@ -469,9 +517,29 @@ export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
     });
     if (!game) throw Errors.notFound("game");
 
+    // The body is optional; an empty or absent body mints an unnamed key
+    // with no namespace preference.
+    const text = await c.req.text().catch(() => "");
+    let json: unknown = {};
+    if (text.trim().length > 0) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw Errors.badRequest("malformed JSON");
+      }
+    }
+    const body = parseBody(adminCreateApiKeyBody, json);
+
     const raw = await generateApiKey();
     const apiKey = await prisma.apiKey.create({
-      data: { gameId, prefix: raw.prefix, hashedSecret: raw.hashedSecret },
+      data: {
+        gameId,
+        prefix: raw.prefix,
+        hashedSecret: raw.hashedSecret,
+        name: body.name ?? null,
+        preferredNamespaces: body.preferredNamespaces ?? [],
+        canExport: body.canExport ?? false,
+      },
     });
 
     return c.json<WireAdminApiKeyCreated>({ ...toWireApiKey(apiKey), key: raw.full }, 201);
@@ -621,8 +689,38 @@ export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Idempotent on already-revoked: keeps the original `revokedAt`
-// (operators care about when the revoke happened, not when they retried).
+// Renames a key, changes its namespace preference or its export
+// permission without rotating its secret. Allowed on revoked keys so
+// their audit label can still be corrected.
+export function updateAdminApiKeyHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const keyId = c.req.param("keyId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!keyId) throw Errors.badRequest("keyId is required");
+
+    const json = await c.req.json().catch(() => null);
+    if (json === null) throw Errors.badRequest("malformed JSON");
+    const body = parseBody(adminUpdateApiKeyBody, json);
+
+    const existing = await prisma.apiKey.findUnique({ where: { id: keyId } });
+    if (!existing || existing.gameId !== gameId) throw Errors.notFound("api key");
+    const updated = await prisma.apiKey.update({
+      where: { id: keyId },
+      data: {
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.preferredNamespaces !== undefined
+          ? { preferredNamespaces: body.preferredNamespaces }
+          : {}),
+        ...(body.canExport !== undefined ? { canExport: body.canExport } : {}),
+      },
+    });
+    return c.json<WireAdminApiKey>(toWireApiKey(updated));
+  };
+}
+
+// Idempotent on already-revoked: keeps the first `revokedAt`, since
+// operators care about when the revoke happened, not when they retried.
 // Rows are never hard-deleted so the historic prefix resolves in audit
 // lookups.
 export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
@@ -806,10 +904,7 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
         where: { groupMemberId: { in: memberIds } },
         select: { groupMemberId: true, roleId: true },
       }),
-      prisma.externalIdentity.findMany({
-        where: { gameId, junjoUserId: { in: junjoUserIds } },
-        select: { junjoUserId: true, externalUserId: true },
-      }),
+      renderUserIds(prisma, gameId, junjoUserIds),
     ]);
 
     const roleIdsByMember = new Map<string, string[]>();
@@ -829,7 +924,7 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
           });
     const rolesById = new Map(roles.map((r) => [r.id, r]));
 
-    const identityById = new Map(identities.map((i) => [i.junjoUserId, i.externalUserId]));
+    const identityById = identities;
 
     const items = members.map((m) => {
       const externalUserId = identityById.get(m.junjoUserId) ?? "";
@@ -883,6 +978,8 @@ interface AdminMemberContext {
   member: GroupMember;
   junjoUserId: string;
   externalUserId: string;
+  // The id responses name the member by (see `renderUserIds`).
+  shownId: string;
 }
 
 // Collapses every "doesn't exist" cause (cross-game group, soft-delete,
@@ -907,7 +1004,8 @@ async function loadAdminMemberContext(
   });
   if (!member) throw Errors.notFound("member");
 
-  return { group, member, junjoUserId, externalUserId };
+  const shownId = await renderResolved(prisma, gameId, junjoUserId, externalUserId);
+  return { group, member, junjoUserId, externalUserId, shownId };
 }
 
 // Same role-sort as the list endpoint (priority desc, name asc).
@@ -935,10 +1033,8 @@ async function loadAdminGroupMemberAfterMutation(
     if (a.priority !== b.priority) return b.priority - a.priority;
     return a.name.localeCompare(b.name);
   });
-  // Marks the identity lookup as scoped; the externalUserId is round-
-  // tripped from the path so we skip re-querying.
-  void gameId;
-  return toWireAdminGroupMember(member, externalUserId, roles);
+  const shownId = await renderResolved(prisma, gameId, member.junjoUserId, externalUserId);
+  return toWireAdminGroupMember(member, shownId, roles);
 }
 
 // Only transitions an active member to "kicked"; non-active rows return
@@ -971,10 +1067,16 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
       return c.json<WireAdminGroupMember>(wire);
     }
 
-    const { row: updated, event } = await prisma.$transaction(async (tx) => {
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
+    const {
+      row: updated,
+      event,
+      groupDeleted,
+    } = await prisma.$transaction(async (tx) => {
+      const locked = await lockGroupMembership(tx, group.id);
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data: { status: "kicked", leftAt: new Date() },
+        data: { status: "kicked", leftAt: new Date(), version: { increment: 1 } },
       });
       await tx.auditEntry.create({
         data: {
@@ -995,11 +1097,13 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
         groupId: group.id as GroupId,
         userId: userId as UserId,
         reason: "kicked",
+        memberVersion: result.version,
       });
-      return { row: result, event: staged };
+      const deleted = await afterMembershipChange(tx, locked, limits, true);
+      return { row: result, event: staged, groupDeleted: deleted };
     });
 
-    publishStagedEvents(hub, event);
+    publishStagedEvents(hub, event, ...(groupDeleted ? [groupDeleted] : []));
 
     const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
     return c.json<WireAdminGroupMember>(wire);
@@ -1009,9 +1113,9 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
 // Metadata replaces wholesale and is treated as a change whenever
 // supplied (jsonb may not preserve key order; matches `groups.update`).
 // Notes are diffed per-field; a notes-only PATCH that matches stored
-// values is a true no-op. No JunjoEvent fires (no metadata/notes event
-// in the union). Up to two audit entries per call.
-export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
+// values is a true no-op. Up to two audit entries and one
+// `member.updated` event per call.
+export function updateAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1060,7 +1164,7 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data,
+        data: { ...data, version: { increment: 1 } },
       });
       if (metadataChanged) {
         await tx.auditEntry.create({
@@ -1092,10 +1196,22 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
           },
         });
       }
-      return result;
+      const changed: MemberChangeField[] = [];
+      if (metadataChanged) changed.push("metadata");
+      if (notesChanged) changed.push("notes");
+      const event = await stageEvent<MemberUpdatedEvent>(tx, {
+        type: "member.updated",
+        gameId: gameId as GameId,
+        groupId: group.id as GroupId,
+        userId: userId as UserId,
+        changed,
+        memberVersion: result.version,
+      });
+      return { result, event };
     });
+    publishStagedEvents(hub, updated.event);
 
-    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
+    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.result.id, userId);
     return c.json<WireAdminGroupMember>(wire);
   };
 }
@@ -1103,7 +1219,10 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
 // Idempotent on matching `grant`. First sight of a permission key
 // auto-registers `PermissionDef`. Cache is invalidated after commit so
 // the next `permissions.check` reflects the new value.
-export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+export function setAdminMemberPermissionOverrideHandler(
+  prisma: PrismaClient,
+  hub: EventHub,
+): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1129,72 +1248,34 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
     }
     const { grant } = parsed.data;
 
-    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+    const { group, member, shownId } = await loadAdminMemberContext(
+      prisma,
+      gameId,
+      groupId,
+      userId,
+    );
 
-    const existing = await prisma.memberPermissionOverride.findUnique({
-      where: {
-        groupMemberId_permissionKey: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-        },
-      },
+    const result = await setMemberOverride(prisma, hub, {
+      gameId,
+      groupId: group.id,
+      groupMemberId: member.id,
+      externalUserId: userId,
+      permission,
+      grant,
     });
-    if (existing && existing.grant === grant) {
-      return c.json<WireAdminMemberPermissionOverride>(
-        toWireAdminMemberPermissionOverride(existing, group.id, userId),
-      );
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      await tx.permissionDef.upsert({
-        where: { gameId_key: { gameId, key: permission } },
-        create: { gameId, key: permission },
-        update: {},
-      });
-      const upserted = await tx.memberPermissionOverride.upsert({
-        where: {
-          groupMemberId_permissionKey: {
-            groupMemberId: member.id,
-            permissionKey: permission,
-          },
-        },
-        create: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-          grant,
-          setByUserId: null,
-        },
-        update: { grant, setAt: new Date() },
-      });
-      const auditPayload: Record<string, unknown> = {
-        memberId: member.id,
-        permission,
-        grant,
-      };
-      if (existing) auditPayload.before = { grant: existing.grant };
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "permission.override.set",
-          targetId: userId,
-          payload: auditPayload as Prisma.InputJsonValue,
-        },
-      });
-      return upserted;
-    });
-    permissionCache.invalidateGroup(group.id);
 
     return c.json<WireAdminMemberPermissionOverride>(
-      toWireAdminMemberPermissionOverride(result, group.id, userId),
+      toWireAdminMemberPermissionOverride(result.row, group.id, shownId),
     );
   };
 }
 
 // Idempotent on missing row. The `PermissionDef` registry row is
 // preserved across clears (catalog is monotonic per game).
-export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+export function clearAdminMemberPermissionOverrideHandler(
+  prisma: PrismaClient,
+  hub: EventHub,
+): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1207,41 +1288,13 @@ export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient):
 
     const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
 
-    const existing = await prisma.memberPermissionOverride.findUnique({
-      where: {
-        groupMemberId_permissionKey: {
-          groupMemberId: member.id,
-          permissionKey: permission,
-        },
-      },
+    await clearMemberOverride(prisma, hub, {
+      gameId,
+      groupId: group.id,
+      groupMemberId: member.id,
+      externalUserId: userId,
+      permission,
     });
-    if (!existing) return c.body(null, 204);
-
-    await prisma.$transaction(async (tx) => {
-      await tx.memberPermissionOverride.delete({
-        where: {
-          groupMemberId_permissionKey: {
-            groupMemberId: member.id,
-            permissionKey: permission,
-          },
-        },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: group.id,
-          actorUserId: null,
-          action: "permission.override.cleared",
-          targetId: userId,
-          payload: {
-            memberId: member.id,
-            permission,
-            grant: existing.grant,
-          } as Prisma.InputJsonValue,
-        },
-      });
-    });
-    permissionCache.invalidateGroup(group.id);
 
     return c.body(null, 204);
   };
@@ -1256,7 +1309,12 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
     if (!groupId) throw Errors.badRequest("groupId is required");
     if (!userId) throw Errors.badRequest("userId is required");
 
-    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+    const { group, member, shownId } = await loadAdminMemberContext(
+      prisma,
+      gameId,
+      groupId,
+      userId,
+    );
 
     const overrides = await prisma.memberPermissionOverride.findMany({
       where: { groupMemberId: member.id },
@@ -1264,7 +1322,7 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
     });
 
     return c.json<WireAdminMemberPermissionOverride[]>(
-      overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, userId)),
+      overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, shownId)),
     );
   };
 }
@@ -1306,6 +1364,7 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
     if (group.softDeletedAt !== null) throw Errors.notFound("group");
 
     const targetUserId = body.targetUserId ?? null;
+    if (targetUserId !== null) await assertUserIdsWellFormed(prisma, gameId, [targetUserId]);
     const roleId = body.roleId ?? null;
 
     const { invitation, event } = await prisma.$transaction(
@@ -1353,79 +1412,11 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
   };
 }
 
-// Structural duplicate of `WireRole` from `routes/roles.ts`; admin
-// handlers do not import across the cloud-only boundary.
-export interface WireAdminRole {
-  id: string;
-  groupId: string;
-  name: string;
-  priority: number;
-  color: string | null;
-  isDefault: boolean;
-  permissions: string[];
-  createdAt: string;
-}
+// Same shape as the per-game role wire.
+export type WireAdminRole = WireRole;
 
-export function toWireAdminRole(role: Role, permissions: string[]): WireAdminRole {
-  return {
-    id: role.id,
-    groupId: role.groupId,
-    name: role.name,
-    priority: role.priority,
-    color: role.color,
-    isDefault: role.isDefault,
-    permissions,
-    createdAt: role.createdAt.toISOString(),
-  };
-}
-
-// Cross-game / soft-deleted-group / missing all collapse to 404 to
-// avoid existence enumeration through the path scope.
-async function loadAdminScopedRole(
-  prisma: PrismaClient,
-  gameId: string,
-  roleId: string,
-): Promise<Role> {
-  const role = await prisma.role.findUnique({
-    where: { id: roleId },
-    include: { group: { select: { gameId: true, softDeletedAt: true } } },
-  });
-  if (!role) throw Errors.notFound("role");
-  if (role.group.gameId !== gameId) throw Errors.notFound("role");
-  if (role.group.softDeletedAt !== null) throw Errors.notFound("role");
-  const { group: _group, ...rest } = role;
-  return rest as Role;
-}
-
-async function loadAdminRolePermissionKeys(
-  prisma: PrismaClient,
-  roleId: string,
-): Promise<string[]> {
-  const rows = await prisma.rolePermission.findMany({
-    where: { roleId },
-    select: { permissionKey: true },
-    orderBy: { permissionKey: "asc" },
-  });
-  return rows.map((r) => r.permissionKey);
-}
-
-async function batchLoadAdminRolePermissionKeys(
-  prisma: PrismaClient,
-  roleIds: string[],
-): Promise<Map<string, string[]>> {
-  if (roleIds.length === 0) return new Map();
-  const rows = await prisma.rolePermission.findMany({
-    where: { roleId: { in: roleIds } },
-    select: { roleId: true, permissionKey: true },
-    orderBy: { permissionKey: "asc" },
-  });
-  const map = new Map<string, string[]>();
-  for (const row of rows) {
-    const list = map.get(row.roleId);
-    if (list) list.push(row.permissionKey);
-    else map.set(row.roleId, [row.permissionKey]);
-  }
-  return map;
+export function toWireAdminRole(role: Role, detail: RoleDetail = EMPTY_ROLE_DETAIL): WireAdminRole {
+  return serializeRole(role, detail);
 }
 
 export function listAdminGroupRolesHandler(prisma: PrismaClient): Handler {
@@ -1446,12 +1437,12 @@ export function listAdminGroupRolesHandler(prisma: PrismaClient): Handler {
     });
     if (roles.length === 0) return c.json<WireAdminRole[]>([]);
 
-    const permissionMap = await batchLoadAdminRolePermissionKeys(
+    const details = await loadRoleDetails(
       prisma,
       roles.map((r) => r.id),
     );
     return c.json<WireAdminRole[]>(
-      roles.map((role) => toWireAdminRole(role, permissionMap.get(role.id) ?? [])),
+      roles.map((role) => toWireAdminRole(role, details.get(role.id))),
     );
   };
 }
@@ -1481,137 +1472,20 @@ export function createAdminGroupRoleHandler(prisma: PrismaClient, hub: EventHub)
     if (group.gameId !== gameId) throw Errors.notFound("group");
     if (group.softDeletedAt !== null) throw Errors.notFound("group");
 
-    const duplicate = await prisma.role.findUnique({
-      where: { groupId_name: { groupId: group.id, name: body.name } },
-      select: { id: true },
-    });
-    if (duplicate) throw Errors.roleNameTaken();
-
-    const { role, event } = await prisma
-      .$transaction(async (tx) => {
-        const created = await tx.role.create({
-          data: {
-            groupId: group.id,
-            name: body.name,
-            priority: body.priority,
-            color: body.color ?? null,
-            isDefault: body.isDefault ?? false,
-          },
-        });
-        await tx.auditEntry.create({
-          data: {
-            gameId,
-            groupId: group.id,
-            actorUserId: null,
-            action: "role.created",
-            targetId: created.id,
-            payload: {
-              name: created.name,
-              priority: created.priority,
-              color: created.color,
-              isDefault: created.isDefault,
-            } as Prisma.InputJsonValue,
-          },
-        });
-        const staged = await stageEvent<RoleCreatedEvent>(tx, {
-          type: "role.created",
-          gameId: gameId as GameId,
-          groupId: group.id as GroupId,
-          role: toPublicRole(created, []),
-        });
-        return { role: created, event: staged };
-      })
-      .catch((err) => {
-        // Loser of a concurrent same-name create: the winner's row
-        // landed after the duplicate check above. Same answer the
-        // sequential second caller gets. The rollback also drops the
-        // staged webhook deliveries.
-        if (isUniqueViolation(err)) throw Errors.roleNameTaken();
-        throw err;
-      });
-
-    publishStagedEvents(hub, event);
-
-    return c.json<WireAdminRole>(toWireAdminRole(role, []), 201);
+    const role = await createRole(prisma, hub, { gameId, groupId: group.id, body });
+    return c.json<WireAdminRole>(role, 201);
   };
 }
 
-// Does NOT dispatch a JunjoEvent: there is no `RoleUpdatedEvent` in the
-// union; only role assignment changes fire `role.changed`.
-export function updateAdminRoleHandler(prisma: PrismaClient): Handler {
+// Emits `role.updated` naming the changed fields.
+export function updateAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const roleId = c.req.param("roleId");
     if (!gameId) throw Errors.badRequest("gameId is required");
     if (!roleId) throw Errors.badRequest("roleId is required");
-
-    const json = await c.req.json().catch(() => null);
-    const parsed = adminUpdateRoleBody.safeParse(json);
-    if (!parsed.success) {
-      const issues = parsed.error.issues
-        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-        .join("; ");
-      throw Errors.badRequest(issues || "invalid request body");
-    }
-    const body = parsed.data;
-
-    const existing = await loadAdminScopedRole(prisma, gameId, roleId);
-
-    const before: Record<string, unknown> = {};
-    const after: Record<string, unknown> = {};
-    const data: Prisma.RoleUpdateInput = {};
-
-    if (body.name !== undefined && body.name !== existing.name) {
-      const duplicate = await prisma.role.findUnique({
-        where: { groupId_name: { groupId: existing.groupId, name: body.name } },
-        select: { id: true },
-      });
-      if (duplicate) throw Errors.roleNameTaken();
-      before.name = existing.name;
-      after.name = body.name;
-      data.name = body.name;
-    }
-    if (body.priority !== undefined && body.priority !== existing.priority) {
-      before.priority = existing.priority;
-      after.priority = body.priority;
-      data.priority = body.priority;
-    }
-    if (body.color !== undefined && body.color !== existing.color) {
-      before.color = existing.color;
-      after.color = body.color;
-      data.color = body.color;
-    }
-    if (body.isDefault !== undefined && body.isDefault !== existing.isDefault) {
-      before.isDefault = existing.isDefault;
-      after.isDefault = body.isDefault;
-      data.isDefault = body.isDefault;
-    }
-
-    if (Object.keys(data).length === 0) {
-      const permissions = await loadAdminRolePermissionKeys(prisma, existing.id);
-      return c.json<WireAdminRole>(toWireAdminRole(existing, permissions));
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.role.update({
-        where: { id: existing.id },
-        data,
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: existing.groupId,
-          actorUserId: null,
-          action: "role.updated",
-          targetId: result.id,
-          payload: { before, after } as Prisma.InputJsonValue,
-        },
-      });
-      return result;
-    });
-
-    const permissions = await loadAdminRolePermissionKeys(prisma, updated.id);
-    return c.json<WireAdminRole>(toWireAdminRole(updated, permissions));
+    const body = parseBody(adminUpdateRoleBody, await c.req.json().catch(() => null));
+    return c.json<WireAdminRole>(await updateRole(prisma, hub, { gameId, roleId, body }));
   };
 }
 
@@ -1623,44 +1497,7 @@ export function deleteAdminRoleHandler(prisma: PrismaClient, hub: EventHub): Han
     const roleId = c.req.param("roleId");
     if (!gameId) throw Errors.badRequest("gameId is required");
     if (!roleId) throw Errors.badRequest("roleId is required");
-
-    const existing = await loadAdminScopedRole(prisma, gameId, roleId);
-
-    const memberCount = await prisma.memberRole.count({
-      where: { roleId: existing.id },
-    });
-    if (memberCount > 0) {
-      throw Errors.roleHasMembers();
-    }
-
-    const event = await prisma.$transaction(async (tx) => {
-      await tx.role.delete({ where: { id: existing.id } });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: existing.groupId,
-          actorUserId: null,
-          action: "role.deleted",
-          targetId: existing.id,
-          payload: {
-            name: existing.name,
-            priority: existing.priority,
-            color: existing.color,
-            isDefault: existing.isDefault,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return stageEvent<RoleDeletedEvent>(tx, {
-        type: "role.deleted",
-        gameId: gameId as GameId,
-        groupId: existing.groupId as GroupId,
-        roleId: existing.id as RoleId,
-      });
-    });
-    permissionCache.invalidateGroup(existing.groupId);
-
-    publishStagedEvents(hub, event);
-
+    await deleteRole(prisma, hub, { gameId, roleId });
     return c.body(null, 204);
   };
 }
@@ -1682,73 +1519,14 @@ export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: Event
     const roleId = c.req.param("roleId");
     if (!gameId) throw Errors.badRequest("gameId is required");
     if (!roleId) throw Errors.badRequest("roleId is required");
-
-    const json = await c.req.json().catch(() => null);
-    const parsed = adminGrantPermissionBody.safeParse(json);
-    if (!parsed.success) {
-      const issues = parsed.error.issues
-        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-        .join("; ");
-      throw Errors.badRequest(issues || "invalid request body");
-    }
-    const { permission } = parsed.data;
-
-    const role = await loadAdminScopedRole(prisma, gameId, roleId);
-
-    const existing = await prisma.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+    const body = parseBody(adminGrantPermissionBody, await c.req.json().catch(() => null));
+    const role = await upsertRoleEntry(prisma, hub, {
+      gameId,
+      roleId,
+      permission: body.permission,
+      value: body.value ?? true,
     });
-    if (existing) {
-      const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
-      return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
-    }
-
-    const event = await prisma
-      .$transaction(async (tx) => {
-        await tx.permissionDef.upsert({
-          where: { gameId_key: { gameId, key: permission } },
-          create: { gameId, key: permission },
-          update: {},
-        });
-        await tx.rolePermission.create({
-          data: { roleId: role.id, permissionKey: permission },
-        });
-        await tx.auditEntry.create({
-          data: {
-            gameId,
-            groupId: role.groupId,
-            actorUserId: null,
-            action: "permission.granted",
-            targetId: role.id,
-            payload: {
-              roleId: role.id,
-              permission,
-            } as Prisma.InputJsonValue,
-          },
-        });
-        return stageEvent<PermissionGrantedEvent>(tx, {
-          type: "permission.granted",
-          gameId: gameId as GameId,
-          groupId: role.groupId as GroupId,
-          roleId: role.id as RoleId,
-          permission: permission as PermissionKey,
-        });
-      })
-      .catch((err) => {
-        // Loser of a concurrent duplicate grant: the winner's row
-        // landed after the idempotency check above. Same answer the
-        // sequential second caller gets (current role snapshot, no
-        // event); the rollback drops the staged delivery and audit row.
-        if (isUniqueViolation(err)) return null;
-        throw err;
-      });
-    if (event) {
-      permissionCache.invalidateGroup(role.groupId);
-      publishStagedEvents(hub, event);
-    }
-
-    const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
-    return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+    return c.json<WireAdminRole>(role);
   };
 }
 
@@ -1762,48 +1540,48 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
     if (!gameId) throw Errors.badRequest("gameId is required");
     if (!roleId) throw Errors.badRequest("roleId is required");
     if (!permission) throw Errors.badRequest("permission must not be empty");
+    return c.json<WireAdminRole>(
+      await removeRoleEntry(prisma, hub, { gameId, roleId, permission }),
+    );
+  };
+}
 
-    const role = await loadAdminScopedRole(prisma, gameId, roleId);
+// Replaces a role's full entry list atomically.
+export function replaceAdminRoleEntriesHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const roleId = c.req.param("roleId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!roleId) throw Errors.badRequest("roleId is required");
+    const body = await c.req.json().catch(() => null);
+    return c.json<WireAdminRole>(await replaceRoleEntries(prisma, hub, { gameId, roleId, body }));
+  };
+}
 
-    const existing = await prisma.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
+// Replaces a role's full parent list.
+export function setAdminRoleParentsHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const roleId = c.req.param("roleId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!roleId) throw Errors.badRequest("roleId is required");
+    const body = await c.req.json().catch(() => null);
+    return c.json<WireAdminRole>(await setRoleParents(prisma, hub, { gameId, roleId, body }));
+  };
+}
+
+export function getAdminGroupRoleGraphHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const groupId = c.req.param("groupId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!groupId) throw Errors.badRequest("groupId is required");
+    const group = await prisma.group.findFirst({
+      where: { id: groupId, gameId, softDeletedAt: null },
+      select: { id: true, defaultRoleId: true },
     });
-    if (!existing) {
-      const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
-      return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
-    }
-
-    const event = await prisma.$transaction(async (tx) => {
-      await tx.rolePermission.delete({
-        where: { roleId_permissionKey: { roleId: role.id, permissionKey: permission } },
-      });
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.revoked",
-          targetId: role.id,
-          payload: {
-            roleId: role.id,
-            permission,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return stageEvent<PermissionRevokedEvent>(tx, {
-        type: "permission.revoked",
-        gameId: gameId as GameId,
-        groupId: role.groupId as GroupId,
-        roleId: role.id as RoleId,
-        permission: permission as PermissionKey,
-      });
-    });
-    permissionCache.invalidateGroup(role.groupId);
-
-    publishStagedEvents(hub, event);
-
-    const permissions = await loadAdminRolePermissionKeys(prisma, role.id);
-    return c.json<WireAdminRole>(toWireAdminRole(role, permissions));
+    if (!group) throw Errors.notFound("group");
+    return c.json(await loadRoleGraph(prisma, gameId, group));
   };
 }
 
@@ -1877,6 +1655,7 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
+      include: AUDIT_API_KEY_INCLUDE,
     });
     const hasMore = entries.length > limit;
     const sliced = hasMore ? entries.slice(0, limit) : entries;
@@ -1953,6 +1732,7 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
       include: {
         game: { select: { name: true } },
         group: { select: { name: true, softDeletedAt: true } },
+        ...AUDIT_API_KEY_INCLUDE,
       },
     });
     const hasMore = rows.length > limit;
@@ -2204,8 +1984,8 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
 }
 
 // Cycle detection walks the candidate parent's ancestor chain bounded
-// at `MAX_PARENT_DEPTH = 100` (see parentCycle.ts); self-parent and any cycle 400
-// `parent_cycle`. Dispatches `group.updated` (there is no dedicated
+// at `MAX_PARENT_DEPTH = 100` (see parentCycle.ts); self-parent and any
+// cycle 400 `parent_cycle`. Dispatches `group.updated` (there is no dedicated
 // `GroupParentChangedEvent` in the union).
 export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
@@ -2444,6 +2224,7 @@ export function checkAdminPermissionHandler(
     });
     if (!group) throw Errors.notFound("group");
 
+    await assertUserIdsWellFormed(prisma, gameId, [userId]);
     const cached = cache.get(gameId, group.id, userId, permission);
     if (cached) return c.json(cached);
 

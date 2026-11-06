@@ -52,7 +52,7 @@ For shareable codes (anyone with the code can redeem) use [`inviteByCode`](/sdk/
 
 ## 3. Accept the invitation
 
-This is the same call your end users hit through your invite-acceptance UI. The `userId` here is the user redeeming the invitation; on a direct invite (like the one above) it must match `targetUserId`.
+This is the same call your end users hit through your invite-acceptance UI. The `userId` here is the user redeeming the invitation; on a direct invite (like the one above) it must match `targetUserId` (or be an id [linked](/api-reference/identity) to it).
 
 ```ts
 const member = await junjo.groups.acceptInvitation(invitation.code, "user_alice");

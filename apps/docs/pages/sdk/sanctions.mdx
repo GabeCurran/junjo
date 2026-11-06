@@ -1,0 +1,246 @@
+# sanctions
+
+Methods on `junjo.sanctions`. A [sanction](/api-reference/sanctions) is
+a game-wide restriction on a person, with a type your game defines: a
+chat mute, a trade lock, a voice ban. Junjo stores and reports sanctions; your game decides what each
+type means and enforces it. Bans keep their own API
+([`junjo.bans`](/sdk/bans)), and the type `ban` is reserved.
+
+- A person has at most one active sanction per type. Several types
+  can be active at once.
+- A sanction is active until it is lifted or until its `expiresAt`
+  passes. Expiry is lazy, as with bans: an expired sanction reads as
+  absent and no event fires when it lapses.
+- Sanctions share the person's
+  [moderation version](/sdk/bans#moderation-version) with game bans.
+  Every create, replace and lift raises it by one.
+
+```ts
+import { Junjo, isNotActive } from "@junjo.io/sdk";
+import type { UserId } from "@junjo.io/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+const player = "mc:069a79f4-44e9-4726-a5be-fca90e38aaf5" as UserId;
+
+// Mute for an hour.
+const mute = await junjo.sanctions.add(player, {
+  type: "mute",
+  reason: "spam in global chat",
+  expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+});
+
+// On chat: is this player muted?
+const active = await junjo.sanctions.forUser(player);
+const muted = active.some((s) => s.type === "mute");
+
+// Lift it early.
+await junjo.sanctions.remove(player, "mute", { ifMatch: mute.version });
+```
+
+## Types
+
+A type is 1 to 32 characters: a lowercase letter or digit, then
+lowercase letters, digits, `_`, `.` or `-` (pattern
+`^[a-z0-9][a-z0-9_.-]{0,31}$`). For example `mute`, `trade.lock`,
+`voice-ban`. `ban` is reserved and rejects with `bad_request`.
+
+## The `Sanction` object
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Sanction id. |
+| `userId` | `UserId` | The sanctioned person, named by the [rendering rule](/sdk/identities). |
+| `type` | string | The game-defined type. |
+| `reason` | string \| null | Up to 500 characters. |
+| `issuer` | string \| null | Free text up to 128 characters, returned verbatim and never resolved to a user. Use it when the issuer is not a Junjo user, such as a console. |
+| `issuedBy` | `UserId \| null` | The person named by `actorUserId` when the sanction was set. |
+| `startedAt` | `Date` | When the sanction started. A replacement keeps the original start unless one is sent. |
+| `expiresAt` | `Date \| null` | `null` for a permanent sanction. |
+| `version` | number | The person's moderation version after the write that produced this read. |
+
+## `add(userId, input, opts?)`
+
+Creates the person's sanction of `input.type`, or replaces the active
+one (new reason, expiry, issuer, actor or start). Sending the values
+already active is a no-op: the version stays the same and no event or
+history row is written.
+
+```ts
+add(
+  userId: UserId,
+  input: {
+    type: string;
+    reason?: string | null;
+    expiresAt?: Date | string | null;
+    startedAt?: Date | string;
+    issuer?: string;
+    actorUserId?: UserId;
+  },
+  opts?: { ifMatch?: number | string; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number },
+): Promise<Sanction>;
+```
+
+| Field | Notes |
+|-------|-------|
+| `type` | Required. See [Types](#types). |
+| `reason` | Optional, up to 500 characters, or `null`. |
+| `expiresAt` | Optional. Omit or `null` for permanent. A past value creates a sanction that is already expired. |
+| `startedAt` | Optional. May lie in the past, for sanctions carried over from another system; at most 60 seconds in the future. |
+| `issuer` | Optional free text, 1 to 128 characters. |
+| `actorUserId` | Optional. The person who issued it; returned as `issuedBy`. An unknown id becomes a new person. |
+
+An unknown `userId` becomes a new person, so you can sanction someone
+who never joined a group. Carrying a sanction over from another system:
+
+```ts
+await junjo.sanctions.add(
+  player,
+  { type: "mute", reason: "imported", startedAt: "2026-10-01T12:00:00Z", issuer: "Console" },
+  { idempotencyKey: `mute-import-${player}`, ifMatch: 0 },
+);
+```
+
+`ifMatch: 0` applies the write only if the person was never moderated in
+this game. Fires `game.user.sanctioned` on webhooks and the
+[game stream](/sdk/events), with the type as `sanctionType`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed or reserved type, `startedAt` more than 60 seconds ahead, or a malformed `ifMatch`. |
+| `invalid_user_id` | 400 | An id breaks its namespace's declared format. |
+| `precondition_failed` | 412 | `ifMatch` does not match the moderation version. Nothing changes, also for an identical repeat. |
+
+## `remove(userId, type, opts?)`
+
+Lifts the person's active sanction of `type`.
+
+```ts
+remove(
+  userId: UserId,
+  type: string,
+  opts?: {
+    actorUserId?: UserId;
+    ifMatch?: number | string;
+    idempotencyKey?: string;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<void>;
+```
+
+`actorUserId` records who lifted it. With nothing to lift (no active
+sanction of that type, an expired one, or an id the game has never
+seen) it rejects with `not_found`, which `isNotActive` recognises. A
+replayed lift can treat it as done
+([safe retries](/api-reference#safe-retries-for-queued-writes)):
+
+```ts
+try {
+  await junjo.sanctions.remove(player, "mute", { ifMatch: job.version, idempotencyKey: job.key });
+} catch (e) {
+  if (!isNotActive(e)) throw e;
+}
+```
+
+`ifMatch` is checked only when there is a sanction to lift; a stale value
+then rejects with `precondition_failed`. Fires `game.user.unsanctioned`.
+
+## `list(opts?)`
+
+Active sanctions in the game, newest `startedAt` first, one page at a
+time.
+
+```ts
+const page = await junjo.sanctions.list({ type: "mute", limit: 50 });
+for (const s of page.items) console.log(s.userId, s.expiresAt);
+```
+
+| Option | Type | Notes |
+|--------|------|-------|
+| `type` | string | Only this type. |
+| `limit` | number | Defaults to 50, capped by the server. |
+| `cursor` | string | The `nextCursor` from a previous page. |
+
+Returns `Page<Sanction>`. To load the list and then follow live changes
+without a gap, see [Load state without missing events](/sdk/events#load-state-without-missing-events).
+
+## `listAll(opts?)`
+
+Async iterator over every page of `list`. Takes the same options minus
+`cursor`.
+
+```ts
+for await (const s of junjo.sanctions.listAll({ type: "trade.lock" })) {
+  // ...
+}
+```
+
+## `forUser(userId, opts?)`
+
+The person's active sanctions, newest first, in one call. An id the
+game has never seen returns `[]`.
+
+```ts
+const sanctions = await junjo.sanctions.forUser(player);
+```
+
+[`bans.moderation(userId)`](/sdk/bans#moderationuserid) returns the same
+list next to the active ban and the moderation version.
+
+## `history(userId, opts?)`
+
+Every set and lift for the person, newest first, past and present. Lazy
+expiry writes no entry.
+
+```ts
+const page = await junjo.sanctions.history(player, { type: "mute" });
+for (const entry of page.items) console.log(entry.kind, entry.eventAt, entry.actorUserId);
+```
+
+Takes the same options as `list`. Returns `Page<SanctionHistoryEntry>`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id`, `gameId`, `userId`, `type` | | The entry, the game, the person and the sanction type. |
+| `kind` | `"set" \| "lifted"` | `set` for a create or replace, `lifted` for a lift. |
+| `reason`, `expiresAt` | string \| null, `Date \| null` | Snapshots at the time; `null` on lifts. |
+| `eventAt` | `Date` | When the sanction started, was replaced, or was lifted. |
+| `actorUserId` | `UserId \| null` | Who set or lifted it, when the request named someone. |
+| `issuer` | string \| null | The free-text issuer on `set` entries. |
+
+## `historyAll(userId, opts?)`
+
+Async iterator over every page of `history`. Takes the same options
+minus `cursor`.
+
+## Events
+
+| Event | Fields | When |
+|-------|--------|------|
+| `game.user.sanctioned` | `userId`, `sanctionType`, `reason`, `expiresAt`, `moderationVersion` | Create or replace. |
+| `game.user.unsanctioned` | `userId`, `sanctionType`, `moderationVersion` | Lift. |
+
+The sanction's type travels as `sanctionType` because `type` is the
+event's own type. Both events have no group, so webhooks and the
+[game stream](/sdk/events) carry them and no group stream does.
+
+```ts
+const sub = await junjo.events.subscribe(
+  (event) => {
+    if (event.type === "game.user.sanctioned" && event.sanctionType === "mute") {
+      muteInChat(event.userId, event.expiresAt);
+    }
+  },
+  { types: ["game.user.sanctioned", "game.user.unsanctioned"] },
+);
+```
+
+---
+
+## See also
+
+- [Sanctions API reference](/api-reference/sanctions): HTTP routes, status codes and audit actions.
+- [`junjo.bans`](/sdk/bans): game bans and the shared moderation version.
+- [`useSanctions`](/react/use-sanctions): the React hook over `forUser`.

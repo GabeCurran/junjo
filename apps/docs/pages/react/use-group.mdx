@@ -73,13 +73,15 @@ interface UseGroupResult {
 
 | Event | Effect on state |
 |-------|-----------------|
-| `member.joined` | Appends `event.member` to `members`. If a member with the same `userId` already exists, replaces that entry in place. |
+| `member.joined` | Appends `event.member` to `members`. If a member with the same `userId` already exists, replaces that entry in place, keeping the `displayName` already loaded (the event's member snapshot has none). |
 | `member.left` | Removes any member with the matching `userId`. |
-| `role.changed` | Finds the member with `event.userId`; replaces their `roles` with `(roles - removed) + added`. Members not currently in the roster are ignored. |
+| `role.changed` | Finds the member with `event.userId`; replaces their `roles` with `(roles - removed) + added` and their `version` with `event.memberVersion`. Members not currently in the roster are ignored. |
 | `member.banned` / `member.unbanned` | Removes any member with the matching `userId` from the roster, live. The roster is active-only; a ban flips the row to `"banned"` and an unban to `"left"` (the server's unban handler sets `"left"`, not `"active"`: the member has to rejoin), and neither is active. The events carry no member snapshot, so rows not present cannot be inserted. |
 | `group.updated` | Replaces `group` with `event.group`. |
 | `group.deleted` | Sets `group` to `null`, clears `members`, and resets member pagination: `membersHasMore` flips to `false` and the stored cursor is discarded, so a later `fetchMoreMembers` cannot fire with a dead cursor. The subscription stays open for any subsequent `group.updated` (e.g., after a restore). |
 | Other event types | Ignored. Role / permission CRUD events that do not affect group identity or member roster have no effect on this hook's state. |
+
+Each member carries the person's `displayName` (`string | null`), picked by the [display name rule](/sdk/identities#display-names). A member appended by `member.joined` has `displayName` `undefined` until the next `refetch`. Name changes (`identity.updated`) arrive on the game stream rather than the group stream, so refetch from a [`useGameEvents`](/react/use-game-events) handler if names must stay current.
 
 ## Errors
 

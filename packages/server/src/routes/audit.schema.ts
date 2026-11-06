@@ -28,15 +28,22 @@ export const AUDIT_ACTIONS = [
   "member.notes.updated",
   "game.user.banned",
   "game.user.unbanned",
+  "game.user.sanctioned",
+  "game.user.unsanctioned",
+  "game.permissions.mode.set",
   "role.created",
   "role.updated",
   "role.deleted",
   "role.assigned",
   "role.unassigned",
+  "role.entries.changed",
+  "role.parents.set",
   "permission.granted",
   "permission.revoked",
   "permission.override.set",
   "permission.override.cleared",
+  "identity.linked",
+  "identity.unlinked",
 ] as const;
 
 export type AuditActionString = (typeof AUDIT_ACTIONS)[number];

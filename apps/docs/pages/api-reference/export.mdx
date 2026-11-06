@@ -1,0 +1,66 @@
+# Export
+
+`GET /v1/export` streams a whole game as one file: every person, group, role, membership, invitation, ban, sanction, friendship and audit entry. Use it for backups you control, for moving a game between deployments, or for analysis outside Junjo.
+
+The export contains member notes, ban reasons and the audit log, so only keys you mark with **`canExport`** may read it. Set it when minting the key or later with [`PATCH /v1/admin/games/:gameId/api-keys/:keyId`](/api-reference/admin#patch-v1admingamesgameidapi-keyskeyid) (`{ "canExport": true }`), or with the "Can export" toggle on the key in the dashboard. Every key starts without it.
+
+## `GET /v1/export`
+
+Authenticated with a per-game key that has `canExport`. No query parameters.
+
+**Response** `200 OK`, `content-type: application/x-ndjson`: one JSON object per line, each with a `kind`.
+
+```
+{"kind":"header","format":"junjo-export","version":1,"gameId":"ckggg...","exportedAt":"2026-11-09T12:00:00.000Z","position":"4211"}
+{"kind":"game","id":"ckggg...","name":"Survival","config":{...},"networkId":null,"createdAt":"...","updatedAt":"..."}
+{"kind":"person","id":"ckppp...","identities":[{"userId":"mc:069a79f4-44e9-4726-a5be-fca90e38aaf5","namespace":"mc","linkedAt":"...","displayName":"Steve","displayNameUpdatedAt":"..."}]}
+{"kind":"group","id":"ckgrp...","groupKind":"party","name":"Steve's party",...}
+...
+{"kind":"end","counts":{"game":1,"person":1520,"group":88,...}}
+```
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `permission_denied` | 403 | The key does not have `canExport`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## Layout
+
+1. **Header** (first line): `format` is always `"junjo-export"`, `version` is `1`. `position` is the game's [stream position](/api-reference/events#positions), read before any record.
+2. **Records**, grouped by kind, in this order: `game`, `person`, `group`, `role`, `member`, `invitation`, `relationship`, `ban`, `banHistory`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, `audit`. A kind with no rows has no lines.
+3. **End** (last line): `counts` holds the number of records written per kind, every kind listed. A file without the end line was cut short; discard it and export again.
+
+Records are read in batches of about 1000 rows, so the server never holds a whole table in memory. Read the response as a stream and process it line by line rather than buffering it.
+
+The export is not one database snapshot: a write made while it runs may or may not be in it. To stay exact, replay the [game stream](/api-reference/events#get-v1events) from the header's `position` after the import; every change made during the export is in that range.
+
+## References and ids
+
+Records refer to each other by **internal ids**: groups, roles, members and records reference group ids, role ids and **person ids** (the `id` of a `person` record), so the file can be restored with its relationships intact. Wherever a record names a person, the person's external id is included too, rendered with the reading key's [namespace preference](/api-reference/identity#preferred-namespaces). `personId` and fields ending in `PersonId` hold person ids; `userId`, `actorUserId` and `targetUserId` hold external ids.
+
+## Record kinds
+
+| `kind` | Fields |
+|--------|--------|
+| `game` | `id`, `name`, `config` (as stored, unresolved), `networkId`, `createdAt`, `updatedAt` |
+| `person` | `id`, `identities: [{ userId, namespace, linkedAt, displayName, displayNameUpdatedAt }]` (earliest-linked first) |
+| `group` | `id`, `groupKind`, `name`, `visibility`, `metadata`, `defaultRoleId`, `parentGroupId`, `hasPasscode`, `createdAt`, `updatedAt`, `softDeletedAt`, `memberActivityAt`. Soft-deleted groups are included. |
+| `role` | `id`, `groupId`, `name`, `priority`, `color`, `isDefault`, `metadata`, `entries: [{ permission, value }]`, `parents` (role ids), `createdAt`, `updatedAt` |
+| `member` | `id`, `groupId`, `personId`, `userId`, `status`, `roles` (role ids), `overrides: [{ permission, value, setAt, setByPersonId }]`, `metadata`, `notesPublic`, `notesPrivate`, `version`, `joinedAt`, `leftAt`, `bannedUntil` |
+| `invitation` | `id`, `groupId`, `code`, `roleId`, `targetUserId`, `createdByPersonId`, `createdAt`, `expiresAt`, `usedAt`, `usedByPersonId` |
+| `relationship` | `groupAId`, `groupBId`, `type`, `since`, `setByPersonId` (directed, as stored) |
+| `ban` | `id`, `personId`, `userId`, `bannedAt`, `expiresAt`, `reason`, `bannedByPersonId`, `issuer` (game bans; group bans are members with status `banned`) |
+| `banHistory` | `id`, `personId`, `userId`, `scope`, `groupId`, `historyKind` (`set` / `lifted`), `reason`, `expiresAt`, `eventAt`, `actorPersonId`, `issuer` |
+| `sanction` | `id`, `personId`, `userId`, `type`, `reason`, `issuer`, `issuedByPersonId`, `startedAt`, `expiresAt` (the current or last sanction of each type, expired ones included) |
+| `sanctionHistory` | `id`, `personId`, `userId`, `type`, `historyKind`, `reason`, `expiresAt`, `eventAt`, `actorPersonId`, `issuer` |
+| `friendship`, `friendRequest`, `block` | `id`, `actorPersonId`, `actorUserId`, `targetPersonId`, `targetUserId`, `createdAt`, `respondedAt`, `metadata`. Directed rows as stored, so a friendship is two `friendship` records. Only rows that originated in this game. |
+| `friendTag` | `id`, `personId`, `name`, `color`, `createdAt`, `relationshipIds` (the `friendship` records it is applied to) |
+| `audit` | `id`, `groupId`, `actorPersonId`, `action`, `targetId`, `payload`, `apiKeyId`, `createdAt` |
+
+A group's kind is `groupKind` and a history row's kind is `historyKind`, because `kind` names the record. Within a kind, records are ordered by id, which is not time order; use the timestamps.
+
+## Never exported
+
+API keys (rows and hashes), group passcode hashes (only `hasPasscode`), webhook endpoints and deliveries (and their secrets), link codes, idempotency records and the event log. Audit entries keep the `apiKeyId` that wrote them, which names a key without revealing it.

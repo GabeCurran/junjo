@@ -29,8 +29,10 @@ interface PermissionCheck {
   viaRoleId?: string;
 }
 
+// Wide budget: the assertions are about answers, not speed.
 describe.skipIf(!TEST_DATABASE_URL)(
   "integration: member-level override beats role grant; clearing the override restores role-derived behavior",
+  { timeout: 30_000 },
   () => {
     let app: Hono;
     let authHeader: string;

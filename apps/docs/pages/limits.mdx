@@ -13,6 +13,8 @@ The server paginates with a per-route default `limit` and a global cap. The cap 
 | `GET /v1/groups/:id/invitations` | 50 | `JUNJO_MAX_PAGE_SIZE` |
 | `GET /v1/groups/:id/audit` | 50 | `JUNJO_MAX_PAGE_SIZE` |
 | `GET /v1/bans`, ban history routes | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/sanctions`, sanction history | 50 | `JUNJO_MAX_PAGE_SIZE` |
+| `GET /v1/identities/by-name` | 20 (fixed) | 20 (`DISPLAY_NAME_LOOKUP_LIMIT`) |
 | `GET /v1/users/:id/friends` | 50 | `JUNJO_MAX_PAGE_SIZE` |
 | `GET /v1/users/:id/friend-requests` | none: returns the complete inbound/outbound set | none (`limit` and `cursor` pass validation but the handler ignores them; see [Pagination](/pagination#non-paginated-endpoints)) |
 | `GET /v1/users/:id/blocks` | 100 | `JUNJO_MAX_PAGE_SIZE` |
@@ -35,24 +37,82 @@ Validation is zod on every write route; violations are `400 bad_request` with a 
 | Group `name` | 1 to 120 chars | no |
 | Group passcode | 4 to 128 chars | no |
 | Kick / ban `reason` (group and game-wide) | 500 chars, nullable | no |
+| Sanction `type` | `^[a-z0-9][a-z0-9_.-]{0,31}$`; `ban` reserved | no (`SANCTION_TYPE_PATTERN`) |
+| Sanction `reason` | 500 chars, nullable | no |
+| Ban / sanction `issuer` | 1 to 128 chars | no |
+| Display name | 1 to 64 chars, nullable | no (`DISPLAY_NAME_MAX_LENGTH`) |
 | Member `notesPublic` / `notesPrivate` | 5000 chars each | no |
 | Role `name` | 64 chars | no |
 | Role / friend-tag `color` | exactly `#rrggbb` | no |
-| Permission key | 128 chars | no |
+| Permission key | 128 chars; in `"nodes"` mode also printable ASCII, no whitespace, no leading `-`, no empty segment, `*` only as the whole last segment or the whole key | no |
+| Role `metadata` | 16 KB serialized (`JSON.stringify` length) | no |
 | Group relationship `type` | 64 chars | no |
 | Friend tag `name` | 1 to 64 chars | no |
 | Invitation `expiresIn` | `^\d+[smhd]$`, must be positive; no upper bound | no |
 | Bulk-invite `userId` (per CSV row) | 255 chars | no |
+| Link-code redeem `userId` | 1 to 255 chars | no |
+| API key `name` | 1 to 64 chars after trimming, nullable | no (`API_KEY_NAME_MAX_LENGTH`) |
 
 Two deliberate non-limits worth knowing about:
 
-- `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows and admin invitation bodies. External ids are opaque to Junjo; keep them sane on your side.
+- `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows, admin invitation bodies and the link-code redeem body. A game can still constrain ids in a namespace by declaring a [canonical format](/api-reference/identity#canonical-formats). External ids are opaque to Junjo; keep them sane on your side.
 - Member `metadata` has no size cap of its own (group `metadata` is capped above). The server applies a global 1 MB request-body limit across `/v1`, and a body over it is rejected with `413`. If you self-host behind a reverse proxy, whichever limit is lower is the effective one; keep metadata small regardless, it is returned inline on every read.
 
 ## Bulk invite
 
 - 1000 rows per request (`BULK_INVITE_MAX_ROWS`, hardcoded). The count includes malformed rows: a CSV with 990 valid and 20 broken rows is rejected outright.
 - Individual over-long or malformed rows inside an accepted request do not fail the request; they come back as per-row errors in the response.
+
+## Member import
+
+- 1 to 500 rows per request (`MEMBER_IMPORT_MAX_ROWS`, hardcoded). A longer list is refused with `400` before any row is looked at.
+- Unlike bulk invite, one failing row fails the whole request: every failing row is listed in `details.rows` and nothing is written.
+- `userId` up to 255 characters, up to 100 `roleIds` and 500 `overrides` per row.
+
+## Batch access read
+
+- 1 to 100 `userIds` per request to `POST /v1/groups/:id/members/access` (`MEMBER_ACCESS_BATCH_MAX`, hardcoded). It counts as one request against the rate limit.
+
+## Group kind limits
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Kinds with limits per game (`groups.kinds`) | 32 (`MAX_GROUP_KINDS`) | no |
+| `maxMembers` | 1 to 100000 | per kind |
+| `maxPerUser` | 1 to 1000 | per kind |
+| `idleDeleteHours` | 1 to 8760 | per kind |
+| Idle-group sweep interval | 10 minutes | no |
+
+A kind that is not listed has none of these limits. See [Kind limits](/api-reference/groups#kind-limits).
+
+## Game export
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Rows read per query | 1000 (`EXPORT_BATCH_SIZE`); the export never holds a whole table in memory | no |
+| Keys allowed to export | only keys with `canExport` | per key |
+
+## Idempotency keys
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| `Idempotency-Key` value | 1 to 255 printable ASCII characters (`0x21`-`0x7E`) | no |
+| Record retention | 24 hours (`IDEMPOTENCY_RETENTION_HOURS`); a key older than that is treated as new. Expired records are swept every 10 minutes | no |
+| In-progress record treated as abandoned | after 5 minutes (`IDEMPOTENCY_ABANDON_MS`) | no |
+
+## Identity
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Namespace pattern (declared formats and preferences) | `^[a-z0-9_-]{1,32}$` (`USER_ID_NAMESPACE_PATTERN`) | no |
+| Declared formats per game (`identity.formats`) | 16 namespaces (`MAX_DECLARED_ID_FORMATS`) | no |
+| Supported formats | `uuid` (lowercase, hyphenated 8-4-4-4-12 hex) | no |
+| Preferred namespaces per API key or webhook endpoint | 8, ordered, no repeats (`MAX_PREFERRED_NAMESPACES`) | per key / per endpoint, within the cap |
+| Link code | 8 Crockford base32 characters (40 bits), shown as `XXXX-XXXX` | no |
+| Link code lifetime | 5 minutes, single use; a new code for the same id cancels the previous one | no |
+| `identity_format_conflict` message | lists at most 5 offending ids | no |
+
+See [Identity](/api-reference/identity) for the rules behind these numbers.
 
 ## Webhooks
 
@@ -78,6 +138,9 @@ The server runs an in-memory token-bucket limiter per process, applied to the wh
 | Per source IP | 20x the key bucket: 12,000/min, burst 2,000 at defaults | | same env vars; the 20x scale (`SOURCE_BUCKET_SCALE`) is hardcoded |
 | Passcode join, per `(groupId, userId)` | 5/min | 5 | no |
 | Passcode join, per group | 30/min | 30 | no |
+| Link-code requests, per requesting id | 1/min | 5 | no |
+| Link-code redeems, per redeeming id | 1/min | 5 | no |
+| Failed link-code redeems, per API key | 30/min | 60 | no; charged only by `link_code_invalid` answers |
 
 Every request drains the source-IP bucket; requests with a parseable API key also drain the key bucket. Whichever denies first returns `429` with a `Retry-After` header (floored at 1 s). Behind a reverse proxy, set `TRUST_PROXY=true` so the source bucket keys on the rightmost `x-forwarded-for` hop instead of the proxy's own address.
 
@@ -101,6 +164,11 @@ These are per-game config values, changeable at runtime via `PATCH /v1/admin/gam
 - Server heartbeat: a comment frame every 30 s (`SSE_HEARTBEAT_INTERVAL_MS`, hardcoded; overridable only programmatically via `createApp` for embedders).
 - The TypeScript and C++ SDKs abort a subscription whose buffered, unterminated frame exceeds 1 MiB (TypeScript: `MAX_SSE_BUFFER_CHARS`, measured in UTF-16 code units; C++: the `StreamOverflow` error code; the Unreal plugin inherits the same cap through its vendored core). The server imposes no frame-size limit of its own.
 - There is no server-side idle timeout: a stream stays open until one side closes it. If your streams die on a schedule, the timeout belongs to an intermediary proxy; see [Troubleshooting](/troubleshooting#sse-streams).
+- [Game streams](/api-reference/events#get-v1events): at most 10 open per API key and 200 per game, counted per server instance; beyond that, `429 too_many_streams`. Group streams have no such cap.
+- A game stream whose client stops reading is closed once a frame has waited 30 s to be sent; the client resumes from its position.
+- The event log keeps events for `EVENT_LOG_RETENTION_HOURS` (default 24). Resuming a game stream from an older position answers `410 stream_position_expired`.
+- Other server instances' events reach a game stream within `EVENT_STREAM_POLL_MS` (default 1 s).
+- Events have no size limit of their own; the metadata caps (16 KB per group, member or role) bound them.
 
 ## Roblox
 
@@ -115,6 +183,9 @@ These are per-game config values, changeable at runtime via `PATCH /v1/admin/gam
 | Invitation default expiry | none; invitations live until used or revoked unless `expiresIn` is set | per invitation |
 | Invitation code entropy | 16 hex chars (64 bits) | no |
 | Parent-chain depth (sub-groups) | 100 (`MAX_PARENT_DEPTH`, cycle-detection walk and the `inherit=true` permission walk) | no |
+| Entries per role | 5,000 (`MAX_ROLE_ENTRIES`); applies to `PUT /v1/roles/:id/entries` and to adding a new key with `POST /v1/roles/:id/permissions` | no |
+| Parents per role | 32 (`MAX_ROLE_PARENTS`) | no |
+| Role inheritance depth | 100 levels (`MAX_ROLE_DEPTH`); enforced on parent writes, and bounds the resolver's walk | no |
 | Roles per group, groups per game, members per group | unbounded | - |
 | Client-side permission cache (TypeScript SDK) | 5 s TTL, 5000 entries, stale-on-429 for 60 s | yes: `permissionCache` on the client config; `enabled: false` turns it off |
 | Request timeout (TypeScript, C++, and Unreal SDKs) | 30 s default | yes: `timeoutMs` (TypeScript, per client or per call) or `timeout` (C++ config, Unreal project settings); `0` (TypeScript) or zero-or-less (C++ / Unreal) disables. Roblox is the exception: `RequestAsync` has a fixed ~30 s platform timeout |

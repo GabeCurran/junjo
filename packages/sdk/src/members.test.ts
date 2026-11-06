@@ -66,6 +66,25 @@ describe("members.get", () => {
     expect(member.status).toBe("active");
     expect(member.joinedAt).toBeInstanceOf(Date);
     expect(member.joinedAt.toISOString()).toBe(memberFixture.joinedAt);
+    // No displayName on the wire: the field stays absent.
+    expect("displayName" in member).toBe(false);
+  });
+
+  it("carries the person's displayName, including an explicit null", async () => {
+    const respond = (displayName: string | null) =>
+      makeFetch(async () => jsonResponse({ ...memberFixture, displayName }));
+    const named = await new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: respond("Alice") as unknown as typeof fetch,
+    }).members.get("grp_1" as GroupId, "user_alice" as UserId);
+    expect(named?.displayName).toBe("Alice");
+    const unnamed = await new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: respond(null) as unknown as typeof fetch,
+    }).members.get("grp_1" as GroupId, "user_alice" as UserId);
+    expect(unnamed?.displayName).toBeNull();
   });
 
   it("returns null when the server responds with 404 not_found", async () => {
@@ -985,5 +1004,141 @@ describe("members.add", () => {
     await expect(
       newClient(fetchMock).members.add("grp_1" as GroupId, "user_alice" as UserId),
     ).rejects.toMatchObject({ code: "banned" });
+  });
+});
+
+describe("members.getAccess", () => {
+  function newClient(fetchMock: unknown) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+    });
+  }
+
+  it("GETs /v1/groups/:groupId/members/:userId/access and deserializes it", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members/user_alice/access");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({
+        groupId: "grp_1",
+        userId: "user_alice",
+        status: "active",
+        roleIds: ["role_a", "role_b"],
+        overrides: [overrideFixture, { ...overrideFixture, permission: "guild.ban", grant: false }],
+        displayName: "Alice",
+      });
+    });
+
+    const access = await newClient(fetchMock).members.getAccess(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    if (!access) throw new Error("expected access");
+    expect(access.displayName).toBe("Alice");
+    expect(access.groupId).toBe("grp_1");
+    expect(access.userId).toBe("user_alice");
+    expect(access.status).toBe("active");
+    expect(access.roleIds).toEqual(["role_a", "role_b"]);
+    expect(access.overrides).toHaveLength(2);
+    expect(access.overrides[0]?.setAt).toBeInstanceOf(Date);
+    expect(access.overrides[1]?.grant).toBe(false);
+  });
+
+  it("reads a missing displayName as null", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        groupId: "grp_1",
+        userId: "user_alice",
+        status: "active",
+        roleIds: [],
+        overrides: [],
+      }),
+    );
+    const access = await newClient(fetchMock).members.getAccess(
+      "grp_1" as GroupId,
+      "user_alice" as UserId,
+    );
+    expect(access?.displayName).toBeNull();
+  });
+
+  it("returns null on 404", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "not_found", status: 404, message: "member not found" }, 404),
+    );
+    expect(
+      await newClient(fetchMock).members.getAccess("grp_1" as GroupId, "user_nobody" as UserId),
+    ).toBeNull();
+  });
+
+  it("decodes metadata, defaulting to an empty object", async () => {
+    const withMeta = makeFetch(async () =>
+      jsonResponse({
+        groupId: "grp_1",
+        userId: "mc:a",
+        status: "active",
+        roleIds: [],
+        overrides: [],
+        metadata: { prefix: "[VIP]" },
+      }),
+    );
+    const access = await newClient(withMeta).members.getAccess(
+      "grp_1" as GroupId,
+      "mc:a" as UserId,
+    );
+    expect(access?.metadata).toEqual({ prefix: "[VIP]" });
+  });
+
+  it("getAccessMany POSTs the ids and keeps the request order with nulls", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("POST");
+      expect(new URL(req.url).pathname).toBe("/v1/groups/grp_1/members/access");
+      expect(await req.json()).toEqual({ userIds: ["mc:b", "mc:none"] });
+      return jsonResponse({
+        items: [
+          {
+            groupId: "grp_1",
+            userId: "mc:b",
+            status: "active",
+            roleIds: ["role_a"],
+            overrides: [],
+            version: 2,
+            displayName: null,
+            metadata: {},
+          },
+          null,
+        ],
+      });
+    });
+    const items = await newClient(fetchMock).members.getAccessMany("grp_1" as GroupId, [
+      "mc:b" as UserId,
+      "mc:none" as UserId,
+    ]);
+    expect(items.map((i) => i?.userId ?? null)).toEqual(["mc:b", null]);
+    expect(items[0]?.version).toBe(2);
+  });
+
+  it("rethrows non-404 errors", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "internal", status: 500, message: "" }, 500),
+    );
+    await expect(
+      newClient(fetchMock).members.getAccess("grp_1" as GroupId, "user_alice" as UserId),
+    ).rejects.toBeInstanceOf(JunjoError);
+  });
+
+  it("percent-encodes the group and user ids", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).pathname).toBe("/v1/groups/has%2Fslash/members/weird%2Fuser/access");
+      return jsonResponse({
+        groupId: "has/slash",
+        userId: "weird/user",
+        status: "active",
+        roleIds: [],
+        overrides: [],
+      });
+    });
+    await newClient(fetchMock).members.getAccess("has/slash" as GroupId, "weird/user" as UserId);
   });
 });

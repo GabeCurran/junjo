@@ -1,7 +1,6 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import { Suspense } from "react";
 
-import { CreateGameDialog } from "../../../components/dashboard/create-game-dialog";
 import { GamesList } from "../../../components/dashboard/games-list";
 import { Topbar } from "../../../components/dashboard/topbar";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
@@ -41,11 +40,7 @@ function GamesListSkeleton() {
 export default function GamesPage() {
   return (
     <>
-      <Topbar
-        title="Games"
-        description="Every game registered on this Junjo deployment."
-        actions={<CreateGameDialog />}
-      />
+      <Topbar title="Games" description="Every game registered on this Junjo deployment." />
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-screen-2xl">
           <Suspense fallback={<GamesListSkeleton />}>

@@ -25,7 +25,7 @@ import { z } from "zod";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { friendsListVisibilitySchema } from "../config/schema.js";
 import { Errors } from "../errors.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { findJunjoUserId, findOrCreateJunjoUser, renderResolved } from "../identity.js";
 
 // =====================================================================
 // Wire shapes
@@ -85,7 +85,8 @@ export function getUserVisibilityHandler(prisma: PrismaClient): Handler {
     const row = await prisma.userVisibility.findUnique({
       where: { gameId_junjoUserId: { gameId, junjoUserId: actorJid } },
     });
-    return c.json<WireUserVisibility>(toWire(gameId, userId, row, config));
+    const shownId = await renderResolved(prisma, gameId, actorJid, userId);
+    return c.json<WireUserVisibility>(toWire(gameId, shownId, row, config));
   };
 }
 
@@ -126,7 +127,8 @@ export function setUserVisibilityHandler(prisma: PrismaClient): Handler {
       create: { gameId, junjoUserId: actorJid, friendsListVisibility: requested },
       update: { friendsListVisibility: requested },
     });
-    return c.json<WireUserVisibility>(toWire(gameId, userId, row, config));
+    const shownId = await renderResolved(prisma, gameId, actorJid, userId);
+    return c.json<WireUserVisibility>(toWire(gameId, shownId, row, config));
   };
 }
 

@@ -20,8 +20,8 @@ The Roblox SDK applies the same constructor checks (`init.lua` raises `invalid_c
 
 | Code | Meaning | Fix |
 |------|---------|-----|
-| `permission_denied` | The acting user lacks the permission, the group requires an invitation to join, or a direct invitation was redeemed with the wrong `userId` | Check with `junjo.check(userId, groupId, permission)` for the full resolution trace; for direct invitations, the accepting `userId` must equal the invitation's `targetUserId` |
-| `banned` | The user has an active per-group or game-wide ban; checked on join and on invitation accept, before any state changes | `junjo.bans.get` / ban history shows scope and expiry. Bans expire lazily: an expired ban stops blocking on the next check without a background job |
+| `permission_denied` | The acting user lacks the permission, the group requires an invitation to join, or a direct invitation was redeemed with the wrong `userId` | Check with `junjo.check(userId, groupId, permission)` for the full resolution trace; for direct invitations, the accepting `userId` must be the invitation's `targetUserId` or an id linked to it |
+| `banned` | The user has an active per-group or game ban; checked on join and on invitation accept, before any state changes | `junjo.bans.get` / ban history shows scope and expiry. Bans expire lazily: an expired ban stops blocking on the next check without a background job |
 | `passcode_required` / `passcode_invalid` | The group has a join passcode and the join body omitted it or got it wrong. Applies to `join` only; invitation accept never asks for a passcode (the invitation is the credential) | Send `passcode` in the join body. Note that repeated wrong passcodes hit a dedicated limiter (5/min per user per group, 30/min per group) which returns 429, not 403 |
 
 Secret groups return `404 not_found` to non-members instead of a 403, deliberately: a 403 would confirm the group exists.
@@ -30,6 +30,16 @@ Secret groups return `404 not_found` to non-members instead of a 403, deliberate
 
 Races, mostly. `already_member` fires when a join or invitation-accept lands on a user who already has an `active` membership row, including the concurrent case where two joins (or a join racing an accept) hit at once: the loser gets the 409 and the transaction rolls back cleanly (an invitation involved in the losing accept is un-consumed). Treat it as success-shaped in join flows: the user is in the group. Users with a `left` or `kicked` row are reactivated, not 409'd.
 
+## Identity linking
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `400 invalid_user_id` on a call that used to work | The game declared a [canonical format](/api-reference/identity#canonical-formats) for the id's namespace, and the id is spelled differently (uppercase, unhyphenated) | Normalize ids before sending them. The check runs on reads too |
+| A response names a user by a different id than the request used | The person has linked ids; responses follow the [rendering rule](/api-reference/identity#the-rendering-rule), not the request | Set `preferredNamespaces` on the API key (or webhook endpoint) to the namespaces you want to see, and handle ids outside them |
+| `400 link_code_invalid` for a code the person just read | Expired (5 minutes), already used, replaced by a newer code for the same id, or mistyped | Request a new code. `O`, `I` and `L` are read as `0`, `1`, `1`; `U` never appears in a code |
+| `409 link_refused` | Both ids belong to people with roles, relationships, history or other ids | Not retryable. Decide which side to keep and clear the other first |
+| `429` on redeem with a valid code | The calling key's failed-redeem budget (60 burst, 30/min) is spent, or the redeeming id's budget (5 burst, 1/min) | Wait for `Retry-After`; look for a client retrying bad codes in a loop |
+
 ## 410: gone
 
 | Code | Cause | Notes |
@@ -37,6 +47,7 @@ Races, mostly. `already_member` fires when a join or invitation-accept lands on 
 | `invitation_used` | Single-use code already redeemed, including losing a concurrent double-accept | Checked before expiry, so a used and expired code reports `invitation_used` |
 | `invitation_expired` | `expiresAt` passed | Preview (`GET /v1/invitations/:code`) still worked? Preview does not consume or gate on expiry the same way; re-check at accept time |
 | `restore_window_expired` | Group restore attempted more than 7 days after soft delete | The hourly sweeper has hard-deleted it; there is no recovery |
+| `stream_position_expired` | A game stream was opened with a `Last-Event-ID` older than the event log's retention (24 h by default) or ahead of the game, for example after a long outage or against a different deployment | Load a fresh snapshot and subscribe from its position. The TypeScript SDK does this for you when you pass `onResync` |
 
 ## 429 rate_limit_exceeded
 
@@ -48,6 +59,7 @@ Things to check when 429s surprise you:
 - Self-host behind a proxy: without `TRUST_PROXY=true` every request appears to come from the proxy's IP and shares one source bucket.
 - `err.retryAfterSeconds === undefined` while `status` is 429 usually means an intermediary rewrote `Retry-After` into HTTP-date form; both the TypeScript and Roblox parsers accept only integer seconds.
 - Passcode joins have their own stricter limiter (see the 403 section); it also answers 429.
+- `429 too_many_streams` is not a rate limit: the key already holds 10 open game streams (or the game 200) on that instance. Look for streams that are opened per request or never closed; one game stream per process is usually enough.
 
 ## network_error, timeout, cancelled
 
@@ -67,8 +79,9 @@ A non-2xx response whose body is not the Junjo envelope (an HTML 502 page from a
 |---------|-------|-----|
 | `subscribe` connects but no events arrive for minutes | A buffering proxy is holding the response. The server writes a `:heartbeat` comment every 30 s, which never reaches your handler but keeps intermediaries honest | Nginx: `proxy_buffering off` on `/v1/events/`; Caddy handles `text/event-stream` automatically. See [self-hosting](/self-host) |
 | Stream dies on a fixed schedule | Proxy read timeout below the 30 s heartbeat interval, or an idle-timeout on an LB. Junjo itself has no idle timeout | Set the proxy read timeout to 35 s or more (ideally minutes) for the events path |
-| React hooks report `JunjoStreamClosedError` | The server (or an intermediary) closed the stream cleanly: a deploy, a proxy recycle | Deliberate: there is no silent auto-reconnect because missed events cannot be replayed. Resubscribe (remount or change `groupId`) and refetch state |
-| Plain SDK: stream ends quietly | Same clean close; the SDK fires `onClose` (not `onError`) | Pass `onClose` to `groups.subscribe` and resubscribe there; refetch to cover the gap, since there is no event replay or `lastEventId` support |
+| React hooks report `JunjoStreamClosedError` | The server (or an intermediary) closed a group stream cleanly: a deploy, a proxy recycle | Deliberate: group streams cannot replay missed events, so there is no silent auto-reconnect. Resubscribe (remount or change `groupId`) and refetch state, or use the game stream, which resumes |
+| Plain SDK: group stream ends quietly | Same clean close; the SDK fires `onClose` (not `onError`) | Pass `onClose` to `groups.subscribe` and resubscribe there; refetch to cover the gap, since group streams do not replay. `junjo.events.subscribe` (the game stream) reconnects and resumes on its own |
+| Game stream misses another server's writes for about a second | Events written through another instance arrive on the next event log poll | Expected; lower `EVENT_STREAM_POLL_MS` if a second is too long |
 | `stream_overflow` error | A single unterminated frame exceeded the SDK's 1 MiB buffer, typically a middlebox mangling the stream | Inspect what sits between you and the server; the API never emits frames near that size |
 | 401/404 instead of a stream | Handshake failures reject the `subscribe()` promise with a normal `JunjoError` before any stream exists | Same debugging as any request; note secret groups 404 |
 

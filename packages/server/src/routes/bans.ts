@@ -1,18 +1,30 @@
-import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent } from "@junjo.io/shared";
+import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent, UserId } from "@junjo.io/shared";
 import type { BanHistory, GameBan, Prisma, PrismaClient } from "@prisma/client";
-import { Hono } from "hono";
+import { type Handler, Hono } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { isActiveUntil } from "../expiry.js";
+import { findJunjoUserId, findOrCreateJunjoUser, renderUserIds } from "../identity.js";
 import { retryOnUniqueViolation } from "../prismaErrors.js";
 import {
+  assertVersion,
+  bumpModerationVersion,
+  lockModerationVersion,
+  readIfMatch,
+  readModerationVersion,
+  readModerationVersions,
+  setEtag,
+} from "../versions.js";
+import {
+  BANNED_AT_MAX_SKEW_MS,
   createGameBanBody,
   deleteGameBanBody,
   listBanHistoryQuery,
   listGameBansQuery,
 } from "./bans.schema.js";
-import { batchLoadExternalUserIds } from "./members.js";
+import { stampStreamPosition } from "./gameEvents.js";
+import { loadActiveSanctions } from "./sanctions.js";
 
 export interface WireGameBan {
   id: string;
@@ -23,12 +35,16 @@ export interface WireGameBan {
   expiresAt: string | null;
   reason: string | null;
   bannedBy: string | null;
+  issuer: string | null;
+  // The person's moderation version.
+  version: number;
 }
 
 export function serializeGameBan(
   ban: GameBan,
   externalUserId: string,
-  externalActorUserId: string | null = null,
+  externalActorUserId: string | null,
+  version: number,
 ): WireGameBan {
   return {
     id: ban.id,
@@ -38,6 +54,8 @@ export function serializeGameBan(
     expiresAt: ban.expiresAt ? ban.expiresAt.toISOString() : null,
     reason: ban.reason,
     bannedBy: externalActorUserId,
+    issuer: ban.issuer,
+    version,
   };
 }
 
@@ -52,6 +70,7 @@ export interface WireBanHistoryEntry {
   expiresAt: string | null;
   eventAt: string;
   actorUserId: string | null;
+  issuer: string | null;
 }
 
 export function serializeBanHistoryEntry(
@@ -70,6 +89,7 @@ export function serializeBanHistoryEntry(
     expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
     eventAt: row.eventAt.toISOString(),
     actorUserId: externalActorUserId,
+    issuer: row.issuer,
   };
 }
 
@@ -95,6 +115,12 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const reasonValue = parsed.data.reason ?? null;
     const expiresAtValue = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const issuerValue = parsed.data.issuer ?? null;
+    const bannedAtInput = parsed.data.bannedAt ? new Date(parsed.data.bannedAt) : null;
+    if (bannedAtInput && bannedAtInput.getTime() > Date.now() + BANNED_AT_MAX_SKEW_MS) {
+      throw Errors.badRequest("bannedAt must not be in the future");
+    }
+    const ifMatch = readIfMatch(c);
 
     // Auto-create the JunjoUser + ExternalIdentity if the dev hasn't
     // seen this user before. Lets a moderator preemptively ban a user
@@ -111,12 +137,13 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     // user both miss the findUnique; the rerun takes the update branch.
     const ban = await retryOnUniqueViolation(() =>
       prisma.$transaction(async (tx) => {
+        // Taken first so concurrent moderation writes for this person
+        // serialize and the precondition sees the version it replaces.
+        await lockModerationVersion(tx, gameId, junjoUserId, ifMatch);
         const existing = await tx.gameBan.findUnique({
           where: { gameId_junjoUserId: { gameId, junjoUserId } },
         });
-        const isExistingActive = existing
-          ? existing.expiresAt === null || existing.expiresAt > now
-          : false;
+        const isExistingActive = existing !== null && isActiveUntil(existing.expiresAt, now);
         // GameBan row carries bannedAt + reason + bannedByUserId by
         // design; the audit row below is the same event in the generic
         // /admin/audit feed (filterable by `actions=game.user.banned`).
@@ -127,10 +154,16 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
                 expiresAt: expiresAtValue,
                 reason: reasonValue,
                 bannedByUserId: actorJunjoUserId,
-                // Refresh `bannedAt` only when re-banning after expiry;
-                // an in-place edit of an active ban keeps the original
-                // timestamp so the timeline reads cleanly.
-                ...(isExistingActive ? {} : { bannedAt: now }),
+                issuer: issuerValue,
+                // An explicit `bannedAt` always wins. Otherwise refresh
+                // it only when re-banning after expiry; an in-place edit
+                // of an active ban keeps the original timestamp so the
+                // timeline reads cleanly.
+                ...(bannedAtInput
+                  ? { bannedAt: bannedAtInput }
+                  : isExistingActive
+                    ? {}
+                    : { bannedAt: now }),
               },
             })
           : await tx.gameBan.create({
@@ -139,10 +172,12 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
                 junjoUserId,
                 expiresAt: expiresAtValue,
                 reason: reasonValue,
-                bannedAt: now,
+                bannedAt: bannedAtInput ?? now,
                 bannedByUserId: actorJunjoUserId,
+                issuer: issuerValue,
               },
             });
+        const moderationVersion = await bumpModerationVersion(tx, gameId, junjoUserId);
         await tx.auditEntry.create({
           data: {
             gameId,
@@ -173,27 +208,47 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
             reason: reasonValue,
             expiresAt: expiresAtValue,
             actorJunjoUserId,
+            issuer: issuerValue,
+            ...(bannedAtInput ? { eventAt: bannedAtInput } : {}),
           },
         });
         const event = await stageEvent<GameUserBannedEvent>(tx, {
           type: "game.user.banned",
           gameId: gameId as GameId,
           junjoUserId,
+          userId: userId as UserId,
           reason: reasonValue,
           expiresAt: expiresAtValue,
+          moderationVersion,
         });
-        return { ban: result, event };
+        return { ban: result, event, moderationVersion };
       }),
     );
 
     publishStagedEvents(hub, ban.event);
-    return c.json(serializeGameBan(ban.ban, userId, actorExternalId), 201);
+    setEtag(c, ban.moderationVersion);
+    const shown = await renderUserIds(
+      prisma,
+      gameId,
+      actorJunjoUserId ? [junjoUserId, actorJunjoUserId] : [junjoUserId],
+    );
+    return c.json(
+      serializeGameBan(
+        ban.ban,
+        shown.get(junjoUserId) ?? userId,
+        actorJunjoUserId ? (shown.get(actorJunjoUserId) ?? actorExternalId) : null,
+        ban.moderationVersion,
+      ),
+      201,
+    );
   });
 
   // DELETE /v1/bans/:userId
-  // 404 when no ban row exists or when the user has never been seen
-  // in this game (no ExternalIdentity). Accepts an optional body
-  // `{ actorUserId }` to attribute the unban (mirrors POST).
+  // 404 (with `details.reason: "not_active"`) when no ban row exists or
+  // when the user has never been seen in this game (no
+  // ExternalIdentity). Accepts an optional body `{ actorUserId }` to
+  // attribute the unban (mirrors POST). `If-Match` is compared with the
+  // person's moderation version, and only when there is a ban to lift.
   r.delete("/:userId", async (c) => {
     const userId = c.req.param("userId");
     const gameId = c.var.gameId;
@@ -209,25 +264,30 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const ifMatch = readIfMatch(c);
 
     const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
-    if (!junjoUserId) throw Errors.notFound("ban");
+    if (!junjoUserId) throw Errors.banNotActive();
     const existing = await prisma.gameBan.findUnique({
       where: { gameId_junjoUserId: { gameId, junjoUserId } },
     });
-    if (!existing) throw Errors.notFound("ban");
+    if (!existing) throw Errors.banNotActive();
 
     const actorJunjoUserId = actorExternalId
       ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
       : null;
 
-    const event = await prisma.$transaction(async (tx) => {
+    const { event, moderationVersion } = await prisma.$transaction(async (tx) => {
+      const current = await lockModerationVersion(tx, gameId, junjoUserId, null);
       // Guarded delete: a racing unban removes the row first; the loser
       // matches zero rows and 404s like a sequential second caller
       // (rolling back its audit/history/event staging) instead of
-      // crashing on a missing record.
+      // crashing on a missing record. A lifted ban answers 404 before
+      // the precondition so a replayed lift reads as already done.
       const deleted = await tx.gameBan.deleteMany({ where: { id: existing.id } });
-      if (deleted.count === 0) throw Errors.notFound("ban");
+      if (deleted.count === 0) throw Errors.banNotActive();
+      assertVersion(ifMatch, current);
+      const moderationVersion = await bumpModerationVersion(tx, gameId, junjoUserId);
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -250,14 +310,18 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
           actorJunjoUserId,
         },
       });
-      return stageEvent<GameUserUnbannedEvent>(tx, {
+      const staged = await stageEvent<GameUserUnbannedEvent>(tx, {
         type: "game.user.unbanned",
         gameId: gameId as GameId,
         junjoUserId,
+        userId: userId as UserId,
+        moderationVersion,
       });
+      return { event: staged, moderationVersion };
     });
 
     publishStagedEvents(hub, event);
+    setEtag(c, moderationVersion);
     return c.body(null, 204);
   });
 
@@ -266,6 +330,7 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
   // keys off `(bannedAt, id)` like other list routes.
   r.get("/", async (c) => {
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
     const parsed = listGameBansQuery.safeParse({
       limit: c.req.query("limit"),
       cursor: c.req.query("cursor"),
@@ -327,20 +392,23 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       junjoUserIds.add(row.junjoUserId);
       if (row.bannedByUserId) junjoUserIds.add(row.bannedByUserId);
     }
-    const externalMap = await batchLoadExternalUserIds(prisma, gameId, [...junjoUserIds]);
+    const externalMap = await renderUserIds(prisma, gameId, [...junjoUserIds]);
+    const versions = await readModerationVersions(
+      prisma,
+      gameId,
+      sliced.map((row) => row.junjoUserId),
+    );
 
     return c.json({
       items: sliced.map((row) => {
         const ext = externalMap.get(row.junjoUserId);
         const actorExt = row.bannedByUserId ? (externalMap.get(row.bannedByUserId) ?? null) : null;
-        if (!ext) {
-          // Defensive: a GameBan should always have a matching
-          // ExternalIdentity (we enforce both via findOrCreateJunjoUser
-          // at write time). If a deletion races us, fall back to the
-          // internal id rather than 500.
-          return serializeGameBan(row, row.junjoUserId, actorExt);
-        }
-        return serializeGameBan(row, ext, actorExt);
+        const version = versions.get(row.junjoUserId) ?? 0;
+        // Defensive: a GameBan should always have a matching
+        // ExternalIdentity (we enforce both via findOrCreateJunjoUser at
+        // write time). If a deletion races us, fall back to the internal
+        // id rather than 500.
+        return serializeGameBan(row, ext ?? row.junjoUserId, actorExt, version);
       }),
       nextCursor,
     });
@@ -362,14 +430,16 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { gameId_junjoUserId: { gameId, junjoUserId } },
     });
     if (!ban) throw Errors.notFound("ban");
-    const isActive = ban.expiresAt === null || ban.expiresAt > new Date();
-    if (!isActive) throw Errors.notFound("ban");
-    let actorExt: string | null = null;
-    if (ban.bannedByUserId) {
-      const map = await batchLoadExternalUserIds(prisma, gameId, [ban.bannedByUserId]);
-      actorExt = map.get(ban.bannedByUserId) ?? null;
-    }
-    return c.json(serializeGameBan(ban, userId, actorExt));
+    if (!isActiveUntil(ban.expiresAt, new Date())) throw Errors.notFound("ban");
+    const shown = await renderUserIds(
+      prisma,
+      gameId,
+      ban.bannedByUserId ? [junjoUserId, ban.bannedByUserId] : [junjoUserId],
+    );
+    const actorExt = ban.bannedByUserId ? (shown.get(ban.bannedByUserId) ?? null) : null;
+    const version = await readModerationVersion(prisma, gameId, junjoUserId);
+    setEtag(c, version);
+    return c.json(serializeGameBan(ban, shown.get(junjoUserId) ?? userId, actorExt, version));
   });
 
   // GET /v1/bans/:userId/history
@@ -445,19 +515,64 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     // Resolve actor junjoUserIds to external ids (only when populated).
     const actorIds = sliced.map((r) => r.actorJunjoUserId).filter((v): v is string => v !== null);
-    const actorMap =
-      actorIds.length > 0
-        ? await batchLoadExternalUserIds(prisma, gameId, actorIds)
-        : new Map<string, string>();
+    const shown = await renderUserIds(prisma, gameId, [junjoUserId, ...actorIds]);
+    const targetExt = shown.get(junjoUserId) ?? userId;
 
     return c.json({
       items: sliced.map((row) => {
-        const actorExt = row.actorJunjoUserId ? (actorMap.get(row.actorJunjoUserId) ?? null) : null;
-        return serializeBanHistoryEntry(row, userId, actorExt);
+        const actorExt = row.actorJunjoUserId ? (shown.get(row.actorJunjoUserId) ?? null) : null;
+        return serializeBanHistoryEntry(row, targetExt, actorExt);
       }),
       nextCursor,
     });
   });
 
   return r;
+}
+
+// GET /v1/users/:userId/moderation
+// One read of a person's moderation state: the version conditional
+// moderation writes compare against, the active game ban (lazy expiry,
+// as `GET /v1/bans/:userId`) and the active sanctions. A person never
+// seen in this game answers version 0 with no ban rather than 404, so a
+// client can take a precondition for a first-ever moderation write from
+// it.
+export function getUserModerationHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const userId = c.req.param("userId") ?? "";
+    const gameId = c.var.gameId;
+
+    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
+    if (!junjoUserId) {
+      setEtag(c, 0);
+      return c.json({ userId, version: 0, ban: null, sanctions: [] });
+    }
+
+    const [version, ban, sanctions] = await Promise.all([
+      readModerationVersion(prisma, gameId, junjoUserId),
+      prisma.gameBan.findUnique({ where: { gameId_junjoUserId: { gameId, junjoUserId } } }),
+      loadActiveSanctions(prisma, gameId, junjoUserId),
+    ]);
+    const active = ban !== null && isActiveUntil(ban.expiresAt, new Date());
+    const shown = await renderUserIds(
+      prisma,
+      gameId,
+      active && ban.bannedByUserId ? [junjoUserId, ban.bannedByUserId] : [junjoUserId],
+    );
+    const shownId = shown.get(junjoUserId) ?? userId;
+    setEtag(c, version);
+    return c.json({
+      userId: shownId,
+      version,
+      ban: active
+        ? serializeGameBan(
+            ban,
+            shownId,
+            ban.bannedByUserId ? (shown.get(ban.bannedByUserId) ?? null) : null,
+            version,
+          )
+        : null,
+      sanctions,
+    });
+  };
 }

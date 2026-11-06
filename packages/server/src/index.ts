@@ -3,6 +3,10 @@ import { createApp } from "./app.js";
 import { setMaxPageSize } from "./config/runtime.js";
 import { disconnectPrisma, prisma } from "./db.js";
 import { loadEnv } from "./env.js";
+import { eventHub } from "./eventHub.js";
+import { startEventLogSweeper } from "./eventLog.js";
+import { startIdleGroupSweeper } from "./groupKinds.js";
+import { startIdempotencySweeper } from "./idempotency.js";
 import { createLogger, logger, setLogger } from "./logger.js";
 import { startHardDeleteSweeper } from "./softDelete.js";
 import { startWebhookWorker } from "./webhookWorker.js";
@@ -14,6 +18,11 @@ setMaxPageSize(env.JUNJO_MAX_PAGE_SIZE);
 // Workers must boot before `createApp` so the webhook worker's heartbeat
 // handle can be threaded into `/healthz`.
 const sweeper = startHardDeleteSweeper(prisma);
+const eventLogSweeper = startEventLogSweeper(prisma, {
+  retentionHours: env.EVENT_LOG_RETENTION_HOURS,
+});
+const idempotencySweeper = startIdempotencySweeper(prisma);
+const idleGroupSweeper = startIdleGroupSweeper(prisma, eventHub);
 const webhookWorker = startWebhookWorker(prisma);
 
 const app = createApp({
@@ -22,6 +31,7 @@ const app = createApp({
   trustProxy: env.TRUST_PROXY,
   healthz: { worker: webhookWorker },
   webhooks: { allowPrivateHosts: env.WEBHOOK_ALLOW_PRIVATE_HOSTS },
+  events: { pollIntervalMs: env.EVENT_STREAM_POLL_MS },
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
@@ -31,6 +41,9 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 const shutdown = async (signal: string) => {
   logger.info({ signal }, "junjo-server shutting down");
   sweeper.stop();
+  eventLogSweeper.stop();
+  idempotencySweeper.stop();
+  idleGroupSweeper.stop();
   // Drains the in-flight webhook delivery (if any). Capped at
   // WEBHOOK_WORKER_DRAIN_MS (30s) to stay inside a typical orchestrator's
   // terminationGracePeriod.

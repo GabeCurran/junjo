@@ -1,4 +1,4 @@
-import type { GroupId, JunjoEvent, Role } from "@junjo.io/shared";
+import type { GroupId, JunjoEvent, PermissionEntry, PermissionKey, Role } from "@junjo.io/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
@@ -45,10 +45,28 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// Live application covers the events that alter role DEFINITIONS:
-// role.created (upsert), role.deleted (remove), and permission.granted /
-// permission.revoked (patch the role's permissions array, which is how
-// roles gain and lose permissions, never at creation time).
+// Sets the entry for `permission` to a grant, inserting it in key order
+// when absent, so `entries` stays sorted the way the server returns it.
+function withGrantEntry(entries: PermissionEntry[], permission: PermissionKey): PermissionEntry[] {
+  const idx = entries.findIndex((e) => e.permission === permission);
+  if (idx >= 0) {
+    if (entries[idx]?.value === true) return entries;
+    const next = entries.slice();
+    next[idx] = { permission, value: true };
+    return next;
+  }
+  const at = entries.findIndex((e) => e.permission > permission);
+  const next = entries.slice();
+  next.splice(at < 0 ? next.length : at, 0, { permission, value: true });
+  return next;
+}
+
+// Live application covers the events that alter role DEFINITIONS and
+// carry the new state: role.created (upsert), role.deleted (remove),
+// and permission.granted / permission.revoked (patch the role's
+// `permissions` and the matching `entries` item together so the two
+// stay consistent). role.updated carries only the changed field names,
+// so the hook refetches the list for it instead of patching here.
 // role.changed is deliberately NOT applied: it describes a role
 // ASSIGNMENT to a member (userId/added/removed) and carries no role
 // definition data, so it cannot change this list.
@@ -72,20 +90,29 @@ function applyEvent(state: State, event: JunjoEvent): State {
       const idx = state.roles.findIndex((r) => r.id === event.roleId);
       const role = state.roles[idx];
       if (role === undefined) return state;
-      if (role.permissions.includes(event.permission)) return state;
+      const entries = withGrantEntry(role.entries, event.permission);
+      const hasPermission = role.permissions.includes(event.permission);
+      if (hasPermission && entries === role.entries) return state;
       const next = state.roles.slice();
-      next[idx] = { ...role, permissions: [...role.permissions, event.permission] };
+      next[idx] = {
+        ...role,
+        permissions: hasPermission ? role.permissions : [...role.permissions, event.permission],
+        entries,
+      };
       return { ...state, roles: next };
     }
     case "permission.revoked": {
       const idx = state.roles.findIndex((r) => r.id === event.roleId);
       const role = state.roles[idx];
       if (role === undefined) return state;
-      if (!role.permissions.includes(event.permission)) return state;
+      const hasPermission = role.permissions.includes(event.permission);
+      const hasEntry = role.entries.some((e) => e.permission === event.permission);
+      if (!hasPermission && !hasEntry) return state;
       const next = state.roles.slice();
       next[idx] = {
         ...role,
         permissions: role.permissions.filter((p) => p !== event.permission),
+        entries: role.entries.filter((e) => e.permission !== event.permission),
       };
       return { ...state, roles: next };
     }
@@ -96,9 +123,11 @@ function applyEvent(state: State, event: JunjoEvent): State {
 
 /**
  * The group's role definitions, kept live from the group's shared SSE
- * stream: role.created / role.deleted update the list and
+ * stream: role.created / role.deleted update the list,
  * permission.granted / permission.revoked patch the affected role's
- * permissions in place. Streaming failures surface on `error` without
+ * permissions and entries in place, and role.updated triggers a
+ * background refetch that keeps the current list visible (`loading`
+ * stays false) until the fresh one lands. Streaming failures surface on `error` without
  * clearing the loaded snapshot; recover by remounting or changing
  * `groupId`, or call `refetch` for a fresh fetch over the same stream.
  */
@@ -108,21 +137,34 @@ export function useRoles(groupId: GroupId): UseRolesResult {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const generationRef = useRef(0);
 
-  const refetch = useCallback(async (): Promise<void> => {
-    const generation = ++generationRef.current;
-    dispatch({ type: "fetch_start" });
-    try {
-      const roles = await junjo.roles.list(groupId);
-      if (generation !== generationRef.current) return;
-      dispatch({ type: "fetch_success", roles });
-    } catch (err) {
-      if (generation !== generationRef.current) return;
-      dispatch({
-        type: "fetch_error",
-        error: err instanceof Error ? err : new Error(String(err)),
-      });
-    }
-  }, [junjo, groupId]);
+  // `background` skips fetch_start so an event-driven reload does not
+  // flip `loading` or clear `error`. The generation counter is shared
+  // between both kinds, so only the newest load commits.
+  const load = useCallback(
+    async (background: boolean): Promise<void> => {
+      const generation = ++generationRef.current;
+      if (!background) dispatch({ type: "fetch_start" });
+      try {
+        const roles = await junjo.roles.list(groupId);
+        if (generation !== generationRef.current) return;
+        dispatch({ type: "fetch_success", roles });
+      } catch (err) {
+        if (generation !== generationRef.current) return;
+        dispatch({
+          type: "fetch_error",
+          error: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+    },
+    [junjo, groupId],
+  );
+
+  const refetch = useCallback((): Promise<void> => load(false), [load]);
+
+  // Read through a ref by the stream listener so a client swap does not
+  // resubscribe the stream just to pick up the new loader.
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   useEffect(() => {
     void refetch();
@@ -135,6 +177,10 @@ export function useRoles(groupId: GroupId): UseRolesResult {
   useEffect(() => {
     return hub.subscribe(groupId, {
       onEvent: (event) => {
+        if (event.type === "role.updated") {
+          void loadRef.current(true);
+          return;
+        }
         dispatch({ type: "event", event });
       },
       onError: (err) => {

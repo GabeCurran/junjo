@@ -94,7 +94,7 @@ function AuditRow({ entry }: AuditRowProps) {
                 entry.groupSoftDeleted ? "line-through text-muted-foreground" : undefined,
               )}
             >
-              {entry.groupName}
+              {entry.groupName ?? "the game"}
             </span>
           </span>
           {entry.groupSoftDeleted ? (
@@ -118,13 +118,24 @@ function AuditRow({ entry }: AuditRowProps) {
           ) : (
             <span>actor: system</span>
           )}
+          {entry.apiKey ? (
+            <>
+              {" "}
+              via key <span className="font-mono">{entry.apiKey.name ?? entry.apiKey.prefix}</span>
+            </>
+          ) : null}
           {entry.targetId ? (
             <>
               {" "}
               - target <span className="font-mono">{entry.targetId}</span>
             </>
-          ) : null}{" "}
-          - group <span className="font-mono">{entry.groupId}</span>
+          ) : null}
+          {entry.groupId ? (
+            <>
+              {" "}
+              - group <span className="font-mono">{entry.groupId}</span>
+            </>
+          ) : null}
         </p>
         {hasPayload ? (
           <details className="mt-1.5">
@@ -179,6 +190,8 @@ const CSV_HEADERS = [
   "groupName",
   "groupSoftDeleted",
   "actorUserId",
+  "apiKeyPrefix",
+  "apiKeyName",
   "targetId",
   "payload",
 ];
@@ -192,10 +205,12 @@ function buildCsv(entries: readonly AdminAuditEntry[]): string {
         entry.action,
         entry.gameId,
         entry.gameName,
-        entry.groupId,
-        entry.groupName,
+        entry.groupId ?? "",
+        entry.groupName ?? "",
         String(entry.groupSoftDeleted),
         entry.actorUserId ?? "",
+        entry.apiKey?.prefix ?? "",
+        entry.apiKey?.name ?? "",
         entry.targetId ?? "",
         JSON.stringify(entry.payload),
       ]

@@ -1,6 +1,7 @@
 import type { ListMembersOptions } from "@junjo.io/sdk";
 import type { GroupId, JunjoEvent, Member, MemberStatus } from "@junjo.io/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { upsertJoined, withRoleChange } from "./memberRows.js";
 import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -100,16 +101,9 @@ function reducer(state: State, action: Action): State {
 
 function applyEvent(state: State, event: JunjoEvent, matches: MemberMatcher): State {
   switch (event.type) {
-    case "member.joined": {
+    case "member.joined":
       if (!matches(event.member)) return state;
-      const idx = state.members.findIndex((m) => m.userId === event.userId);
-      if (idx >= 0) {
-        const next = state.members.slice();
-        next[idx] = event.member;
-        return { ...state, members: next };
-      }
-      return { ...state, members: [...state.members, event.member] };
-    }
+      return { ...state, members: upsertJoined(state.members, event.member) };
     case "member.left": {
       const idx = state.members.findIndex((m) => m.userId === event.userId);
       if (idx < 0) return state;
@@ -117,14 +111,10 @@ function applyEvent(state: State, event: JunjoEvent, matches: MemberMatcher): St
     }
     case "role.changed": {
       const idx = state.members.findIndex((m) => m.userId === event.userId);
-      if (idx < 0) return state;
       const member = state.members[idx];
       if (member === undefined) return state;
-      const removedSet = new Set<string>(event.removed);
-      const remaining = member.roles.filter((r) => !removedSet.has(r));
-      const additions = event.added.filter((r) => !remaining.includes(r));
       const next = state.members.slice();
-      next[idx] = { ...member, roles: [...remaining, ...additions] };
+      next[idx] = withRoleChange(member, event);
       return { ...state, members: next };
     }
     // Ban events update rows already present, then the status filter
@@ -137,7 +127,12 @@ function applyEvent(state: State, event: JunjoEvent, matches: MemberMatcher): St
       if (idx < 0) return state;
       const member = state.members[idx];
       if (member === undefined) return state;
-      const updated: Member = { ...member, status: "banned", bannedUntil: event.bannedUntil };
+      const updated: Member = {
+        ...member,
+        status: "banned",
+        bannedUntil: event.bannedUntil,
+        version: event.memberVersion,
+      };
       if (!matches(updated)) {
         return { ...state, members: state.members.filter((m) => m.userId !== event.userId) };
       }
@@ -152,7 +147,12 @@ function applyEvent(state: State, event: JunjoEvent, matches: MemberMatcher): St
       if (member === undefined) return state;
       // The server's unban handler sets status "left" (not "active"):
       // an unbanned member has to rejoin. Mirror that here.
-      const updated: Member = { ...member, status: "left", bannedUntil: null };
+      const updated: Member = {
+        ...member,
+        status: "left",
+        bannedUntil: null,
+        version: event.memberVersion,
+      };
       if (!matches(updated)) {
         return { ...state, members: state.members.filter((m) => m.userId !== event.userId) };
       }

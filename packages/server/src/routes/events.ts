@@ -4,11 +4,64 @@ import type { Handler } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Errors } from "../errors.js";
 import { type EventHub, eventHub as defaultHub } from "../eventHub.js";
+import { type RenderTable, loadRenderTable, renderEvent } from "../eventRender.js";
+import { currentPreferredNamespaces } from "../requestContext.js";
 
 // Browsers and intermediaries idle-time-out SSE after a couple of
 // minutes; the heartbeat comment keeps the connection alive without
 // showing up as a real event to the consumer.
 export const SSE_HEARTBEAT_INTERVAL_MS = 30_000;
+
+// The API key is validated once at connect, so every stream re-reads it
+// on each heartbeat: one indexed lookup by the unique prefix bounds the
+// window in which a revoked or deleted key keeps a stream open to one
+// interval, and carries a changed namespace preference to the stream.
+// "unknown" is a failed lookup; the stream stays up and checks again on
+// the next tick rather than dropping a healthy connection.
+export type StreamKeyCheck =
+  | { status: "live"; preferredNamespaces: string[] }
+  | { status: "revoked" }
+  | { status: "unknown" };
+
+export async function recheckStreamKey(
+  prisma: PrismaClient,
+  prefix: string,
+): Promise<StreamKeyCheck> {
+  let key: { revokedAt: Date | null; preferredNamespaces: string[] } | null;
+  try {
+    key = await prisma.apiKey.findUnique({
+      where: { prefix },
+      select: { revokedAt: true, preferredNamespaces: true },
+    });
+  } catch {
+    return { status: "unknown" };
+  }
+  if (key === null || key.revokedAt !== null) return { status: "revoked" };
+  return { status: "live", preferredNamespaces: key.preferredNamespaces };
+}
+
+// Every subscriber of a group (and every game stream) receives the same
+// event, so the identity lookup behind rendering runs once per event
+// rather than once per stream. Holds raw id lists, not rendered ids, so
+// it is valid for every namespace preference. Bounded; the oldest
+// entries go first.
+const RENDER_TABLE_MEMO_MAX = 512;
+const renderTables = new Map<string, Promise<RenderTable>>();
+
+export function renderTableFor(prisma: PrismaClient, event: JunjoEvent): Promise<RenderTable> {
+  const hit = renderTables.get(event.id);
+  if (hit) return hit;
+  const pending = loadRenderTable(prisma, event.gameId, [event]).catch(
+    // A failed lookup delivers the event as emitted rather than dropping it.
+    () => new Map() as RenderTable,
+  );
+  renderTables.set(event.id, pending);
+  if (renderTables.size > RENDER_TABLE_MEMO_MAX) {
+    const oldest = renderTables.keys().next().value;
+    if (oldest !== undefined) renderTables.delete(oldest);
+  }
+  return pending;
+}
 
 interface SubscribeEventsOptions {
   hub?: EventHub;
@@ -35,6 +88,9 @@ export function subscribeEventsHandler(
     });
     if (!group) throw Errors.notFound("group");
     const subscribedGroupId = group.id as GroupId;
+    // Refreshed from the key row on every heartbeat, so a changed
+    // preference reaches an open stream within one interval.
+    let preferred: readonly string[] = currentPreferredNamespaces();
 
     return streamSSE(c, async (stream) => {
       const queue: JunjoEvent[] = [];
@@ -68,30 +124,15 @@ export function subscribeEventsHandler(
 
       const heartbeat = setInterval(() => {
         if (closed) return;
-        // The API key is validated once at connect; without this re-check
-        // a revoked (or deleted) key would keep its group-scoped stream
-        // alive until the TCP connection happens to drop. One indexed
-        // lookup by the unique prefix per heartbeat tick bounds the
-        // post-revocation window to at most one heartbeat interval.
         void (async () => {
           if (closed) return;
-          let key: { revokedAt: Date | null } | null | undefined;
-          try {
-            key = await prisma.apiKey.findUnique({
-              where: { prefix: apiKeyPrefix },
-              select: { revokedAt: true },
-            });
-          } catch {
-            // Transient lookup failure: leave the stream up and re-check
-            // on the next tick rather than dropping a healthy connection.
-            key = undefined;
-          }
+          const key = await recheckStreamKey(prisma, apiKeyPrefix);
           if (closed) return;
-          // null = key row gone; revokedAt set = revoked. Either closes.
-          if (key === null || (key && key.revokedAt !== null)) {
+          if (key.status === "revoked") {
             closeStream();
             return;
           }
+          if (key.status === "live") preferred = key.preferredNamespaces;
           stream.write(":heartbeat\n\n").catch(closeStream);
         })();
       }, heartbeatMs);
@@ -103,10 +144,12 @@ export function subscribeEventsHandler(
           while (queue.length > 0 && !closed) {
             const event = queue.shift();
             if (!event) break;
+            const table = await renderTableFor(prisma, event);
+            if (closed) break;
             await stream.writeSSE({
               id: event.id,
               event: event.type,
-              data: JSON.stringify(event),
+              data: JSON.stringify(renderEvent(event, table, preferred)),
             });
           }
           if (closed) break;

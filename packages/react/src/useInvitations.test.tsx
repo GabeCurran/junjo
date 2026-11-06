@@ -428,6 +428,7 @@ describe("useInvitations", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date("2026-04-29T00:00:00.000Z"),
@@ -443,6 +444,7 @@ describe("useInvitations", () => {
           notesPrivate: null,
           joinedAt: new Date("2026-04-29T00:00:00.000Z"),
           bannedUntil: null,
+          version: 1,
         },
       });
     });
@@ -470,6 +472,7 @@ describe("useInvitations", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt,
@@ -485,6 +488,7 @@ describe("useInvitations", () => {
           notesPrivate: null,
           joinedAt: occurredAt,
           bannedUntil: null,
+          version: 1,
         },
       });
     });
@@ -512,6 +516,7 @@ describe("useInvitations", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -527,6 +532,7 @@ describe("useInvitations", () => {
           notesPrivate: null,
           joinedAt: new Date(),
           bannedUntil: null,
+          version: 1,
         },
       });
     });
@@ -550,6 +556,7 @@ describe("useInvitations", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -565,6 +572,7 @@ describe("useInvitations", () => {
           notesPrivate: null,
           joinedAt: new Date(),
           bannedUntil: null,
+          version: 1,
         },
       });
     });
@@ -598,6 +606,9 @@ describe("useInvitations", () => {
           color: null,
           isDefault: false,
           permissions: [],
+          entries: [],
+          parents: [],
+          metadata: {},
           createdAt: new Date(),
         },
       });

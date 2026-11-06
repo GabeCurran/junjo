@@ -24,7 +24,7 @@ import type {
   UserRelationshipId,
   UserVisibilitySettings,
 } from "@junjo.io/shared";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { paginate } from "./pagination.js";
 import { parseWireDate } from "./wire.js";
 
@@ -67,6 +67,7 @@ interface WireFriendship {
   gameId: string;
   junjoUserId: string;
   since: string;
+  displayName?: string | null;
 }
 interface WireFriendRequestSendResult {
   status: "pending" | "auto-accepted";
@@ -115,12 +116,18 @@ const toFriendRequest = (w: WireFriendRequest): FriendRequest => ({
   createdAt: parseWireDate(w.createdAt, "createdAt"),
 });
 
-const toFriendship = (w: WireFriendship): Friendship => ({
-  id: w.id as UserRelationshipId,
-  gameId: w.gameId as GameId,
-  junjoUserId: w.junjoUserId as UserId,
-  since: parseWireDate(w.since, "since"),
-});
+// `displayName` is copied only when sent: list entries carry it, the
+// accept and auto-accept responses do not.
+const toFriendship = (w: WireFriendship): Friendship => {
+  const f: Friendship = {
+    id: w.id as UserRelationshipId,
+    gameId: w.gameId as GameId,
+    junjoUserId: w.junjoUserId as UserId,
+    since: parseWireDate(w.since, "since"),
+  };
+  if (w.displayName !== undefined) f.displayName = w.displayName;
+  return f;
+};
 
 const toBlock = (w: WireBlock): Block => ({
   id: w.id as UserRelationshipId,
@@ -186,12 +193,12 @@ class FriendRequestsApi {
   async send(
     userId: UserId,
     targetJunjoUserId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<FriendRequestSendResult> {
     const wire = await this.http.post<WireFriendRequestSendResult>(
       `/v1/users/${encodeURIComponent(userId)}/friend-requests`,
       { targetJunjoUserId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return {
       status: wire.status,
@@ -201,39 +208,30 @@ class FriendRequestsApi {
   }
 
   /** Accepts an inbound request and returns the resulting friendship. */
-  async accept(
-    requestId: string,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Friendship> {
+  async accept(requestId: string, opts?: WriteOptions): Promise<Friendship> {
     const wire = await this.http.post<WireFriendship>(
       `/v1/friend-requests/${encodeURIComponent(requestId)}/accept`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return toFriendship(wire);
   }
 
   /** Declines an inbound request. */
-  async decline(
-    requestId: string,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async decline(requestId: string, opts?: WriteOptions): Promise<void> {
     await this.http.post<unknown>(
       `/v1/friend-requests/${encodeURIComponent(requestId)}/decline`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
   }
 
   /** Cancels an outbound request the actor sent. */
-  async cancel(
-    requestId: string,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async cancel(requestId: string, opts?: WriteOptions): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/friend-requests/${encodeURIComponent(requestId)}`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
   }
 }
@@ -255,29 +253,21 @@ class BlocksApi {
   }
 
   /** Blocks another user. */
-  async add(
-    userId: UserId,
-    targetJunjoUserId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Block> {
+  async add(userId: UserId, targetJunjoUserId: UserId, opts?: WriteOptions): Promise<Block> {
     const wire = await this.http.post<WireBlock>(
       `/v1/users/${encodeURIComponent(userId)}/blocks`,
       { targetJunjoUserId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return toBlock(wire);
   }
 
   /** Unblocks a previously blocked user. */
-  async remove(
-    userId: UserId,
-    otherUserId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async remove(userId: UserId, otherUserId: UserId, opts?: WriteOptions): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/users/${encodeURIComponent(userId)}/blocks/${encodeURIComponent(otherUserId)}`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
   }
 }
@@ -302,12 +292,12 @@ class FriendTagsApi {
   async create(
     userId: UserId,
     input: { name: string; color?: string },
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<FriendTag> {
     const wire = await this.http.post<WireFriendTag>(
       `/v1/users/${encodeURIComponent(userId)}/friend-tags`,
       input,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return toFriendTag(wire);
   }
@@ -316,22 +306,23 @@ class FriendTagsApi {
   async update(
     tagId: string,
     patch: { name?: string; color?: string | null },
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<FriendTag> {
     const wire = await this.http.patch<WireFriendTag>(
       `/v1/friend-tags/${encodeURIComponent(tagId)}`,
       patch,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return toFriendTag(wire);
   }
 
   /** Deletes a tag. */
-  async delete(tagId: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
-    await this.http.delete<unknown>(`/v1/friend-tags/${encodeURIComponent(tagId)}`, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async delete(tagId: string, opts?: WriteOptions): Promise<void> {
+    await this.http.delete<unknown>(
+      `/v1/friend-tags/${encodeURIComponent(tagId)}`,
+      undefined,
+      writeOptions(opts),
+    );
   }
 
   /** Replaces the full set of tags on one friend (PUT semantics). */
@@ -339,12 +330,12 @@ class FriendTagsApi {
     userId: UserId,
     otherUserId: UserId,
     tagIds: string[],
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<FriendTagAssignment> {
     const wire = await this.http.put<FriendTagAssignment>(
       `/v1/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(otherUserId)}/tags`,
       { tagIds },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return wire;
   }
@@ -373,12 +364,12 @@ class FriendVisibilityApi {
   async set(
     userId: UserId,
     value: FriendsListVisibility,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<UserVisibilitySettings> {
     const wire = await this.http.patch<WireUserVisibility>(
       `/v1/users/${encodeURIComponent(userId)}/visibility`,
       { friendsListVisibility: value },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return toVisibility(wire);
   }
@@ -460,15 +451,11 @@ export class FriendsApi {
   }
 
   /** Ends a friendship (both sides; unfriending is symmetric). */
-  async remove(
-    userId: UserId,
-    otherUserId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
+  async remove(userId: UserId, otherUserId: UserId, opts?: WriteOptions): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(otherUserId)}`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
   }
 

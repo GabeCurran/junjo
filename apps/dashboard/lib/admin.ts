@@ -4,6 +4,7 @@ import "server-only";
 import type {
   AdminApiKey,
   AdminApiKeyCreated,
+  AdminApiKeyInput,
   AdminApiKeyList,
   AdminAuditPage,
   AdminGame,
@@ -246,12 +247,27 @@ export function createAdminGame(name: string, opts?: MutationOptions): Promise<A
 
 export function createAdminApiKey(
   gameId: string,
+  input: AdminApiKeyInput = {},
   opts?: MutationOptions,
 ): Promise<AdminApiKeyCreated> {
-  return adminMutate<null, AdminApiKeyCreated>(
+  return adminMutate<AdminApiKeyInput, AdminApiKeyCreated>(
     "POST",
     `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys`,
-    null,
+    input,
+    opts,
+  );
+}
+
+export function updateAdminApiKey(
+  gameId: string,
+  keyId: string,
+  input: AdminApiKeyInput,
+  opts?: MutationOptions,
+): Promise<AdminApiKey> {
+  return adminMutate<AdminApiKeyInput, AdminApiKey>(
+    "PATCH",
+    `/v1/admin/games/${encodeURIComponent(gameId)}/api-keys/${encodeURIComponent(keyId)}`,
+    input,
     opts,
   );
 }
@@ -487,16 +503,19 @@ export function fetchAdminGamePermissions(
   );
 }
 
+// `value` false stores a deny entry; omitted, the server stores a grant.
 export function grantAdminRolePermission(
   gameId: string,
   roleId: string,
   permission: string,
-  opts?: MutationOptions,
+  opts?: MutationOptions & { value?: boolean },
 ): Promise<AdminRole> {
-  return adminMutate<{ permission: string }, AdminRole>(
+  const body: { permission: string; value?: boolean } = { permission };
+  if (opts?.value !== undefined) body.value = opts.value;
+  return adminMutate<{ permission: string; value?: boolean }, AdminRole>(
     "POST",
     `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}/permissions`,
-    { permission },
+    body,
     opts,
   );
 }

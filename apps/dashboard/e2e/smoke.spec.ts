@@ -20,10 +20,13 @@ test.describe("dashboard smoke", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("Basic Auth gate denies missing credentials on admin paths", async ({ request }) => {
-    const res = await request.get("/overview", { headers: { authorization: "" } });
-    expect(res.status()).toBe(401);
-    expect(res.headers()["www-authenticate"]).toContain("Basic");
+  // Plain fetch: every Playwright request context in the runner inherits
+  // the project's httpCredentials, which answer the 401 challenge and
+  // retry, hiding the challenge this test is about.
+  test("Basic Auth gate denies missing credentials on admin paths", async ({ baseURL }) => {
+    const res = await fetch(new URL("/overview", baseURL), { redirect: "manual" });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toContain("Basic");
   });
 
   test("sidebar brand renders on the dashboard home page", async ({ page }) => {
@@ -44,10 +47,25 @@ test.describe("dashboard smoke", () => {
     });
   }
 
-  test("nav exposes the five top-level destinations", async ({ page }) => {
+  test("nav exposes the top-level destinations and a game's own menu", async ({ page }) => {
     await page.goto("/overview");
-    for (const label of ["Dashboard", "Games", "Audit", "Permissions", "Analytics"]) {
-      await expect(page.getByRole("link", { name: label }).first()).toBeVisible();
+    const nav = page.getByRole("navigation");
+    for (const label of ["Dashboard", "Games"]) {
+      await expect(nav.getByRole("link", { name: label }).first()).toBeVisible();
+    }
+    await page.goto("/games");
+    const firstGame = page.getByRole("row").nth(1).getByRole("link").first();
+    test.skip((await firstGame.count()) === 0, "no game on this deployment to open");
+    await firstGame.click();
+    for (const label of [
+      "Game overview",
+      "Groups",
+      "Audit log",
+      "Analytics",
+      "Permission check",
+      "Settings",
+    ]) {
+      await expect(nav.getByRole("link", { name: label }).first()).toBeVisible();
     }
   });
 });

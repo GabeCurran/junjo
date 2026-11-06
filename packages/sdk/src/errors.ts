@@ -1,4 +1,4 @@
-import type { JunjoErrorCode as ServerErrorCode } from "@junjo.io/shared";
+import type { MemberImportRowError, JunjoErrorCode as ServerErrorCode } from "@junjo.io/shared";
 
 /**
  * Codes the SDK itself can produce, on top of the server's canonical
@@ -61,22 +61,55 @@ export type JunjoErrorCode = ServerErrorCode | JunjoSdkErrorCode;
  * this SDK version does not know). `status` is set only when an HTTP
  * response was actually received. `requestId` (when present) matches
  * the server's x-request-id and is worth quoting in bug reports.
- * `retryAfterSeconds` is set on rate-limited responses; the SDK never
- * retries automatically, so honor it in your own backoff.
+ * `retryAfterSeconds` is set on rate-limited responses and on
+ * `idempotency_key_in_progress`; the SDK never retries automatically,
+ * so honor it in your own backoff. `details` carries the envelope's
+ * structured detail when the server sent one (see
+ * {@link memberImportErrors} and {@link isNotActive}).
  */
 export class JunjoError extends Error {
   readonly requestId?: string;
   readonly retryAfterSeconds?: number;
+  readonly details?: Record<string, unknown>;
 
   constructor(
     message: string,
     readonly code: JunjoErrorCode,
     readonly status?: number,
-    opts?: { requestId?: string; retryAfterSeconds?: number; cause?: unknown },
+    opts?: {
+      requestId?: string;
+      retryAfterSeconds?: number;
+      details?: Record<string, unknown>;
+      cause?: unknown;
+    },
   ) {
     super(message, opts?.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = "JunjoError";
     if (opts?.requestId !== undefined) this.requestId = opts.requestId;
     if (opts?.retryAfterSeconds !== undefined) this.retryAfterSeconds = opts.retryAfterSeconds;
+    if (opts?.details !== undefined) this.details = opts.details;
   }
+}
+
+/**
+ * True when `err` is a ban lift's "no active ban" answer: `not_found`
+ * with `details.reason === "not_active"`. Any other `not_found` (an
+ * unknown group, for one) is false. A replayed lift has nothing left
+ * to do in that case, so the outcome is the one the lift wanted.
+ */
+export function isNotActive(err: unknown): boolean {
+  return (
+    err instanceof JunjoError && err.code === "not_found" && err.details?.reason === "not_active"
+  );
+}
+
+/**
+ * The failing rows of a rejected member import, read from
+ * `details.rows`. Empty for any other error, including an import that
+ * failed for a reason not tied to rows. Entries are passed through as
+ * the server sent them; `code` may hold a value newer than this SDK.
+ */
+export function memberImportErrors(err: unknown): MemberImportRowError[] {
+  const rows = err instanceof JunjoError ? err.details?.rows : undefined;
+  return Array.isArray(rows) ? (rows as MemberImportRowError[]) : [];
 }

@@ -3,7 +3,7 @@
 
 import { ShieldCheck } from "lucide-react";
 
-import type { AdminRole } from "../../lib/admin-shared";
+import { type AdminRole, roleEntries } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { CreateRoleDialog } from "./create-role-dialog";
@@ -25,6 +25,7 @@ const numberFormatter = new Intl.NumberFormat("en-US");
 // has neither, so the simpler primitive wins.
 
 export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
+  const names = new Map(roles.map((r) => [r.id, r.name]));
   return (
     <Card>
       <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
@@ -32,8 +33,9 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
           <CardTitle className="text-base">Roles</CardTitle>
           <CardDescription>
             Roles defined for this group, ordered by priority (highest first). Higher priority wins
-            tiebreaks when a member has multiple roles. {numberFormatter.format(roles.length)}{" "}
-            {roles.length === 1 ? "role" : "roles"} total.
+            tiebreaks when a member has multiple roles. Entries are the role's own grants and
+            denies; a role also inherits its parents' entries.{" "}
+            {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"} total.
           </CardDescription>
         </div>
         <CreateRoleDialog gameId={gameId} groupId={groupId} />
@@ -57,7 +59,8 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
                   <th className="py-2 pr-4 text-left font-medium">Priority</th>
                   <th className="py-2 pr-4 text-left font-medium">Color</th>
                   <th className="py-2 pr-4 text-left font-medium">Default</th>
-                  <th className="py-2 pr-4 text-left font-medium">Permissions</th>
+                  <th className="py-2 pr-4 text-left font-medium">Entries</th>
+                  <th className="py-2 pr-4 text-left font-medium">Inherits from</th>
                   <th className="py-2 pr-4 text-right font-medium">
                     <span className="sr-only">Actions</span>
                   </th>
@@ -97,16 +100,44 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
                       )}
                     </td>
                     <td className="py-3 pr-4">
-                      {role.permissions.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">no permissions</span>
+                      {roleEntries(role).length === 0 ? (
+                        <span className="text-xs text-muted-foreground">no entries</span>
                       ) : (
                         <div className="flex max-w-md flex-wrap gap-1">
-                          {role.permissions.map((p) => (
-                            <Badge key={p} variant="muted" className="font-mono text-xs">
-                              {p}
+                          {roleEntries(role).map((e) =>
+                            e.value ? (
+                              <Badge
+                                key={e.permission}
+                                variant="muted"
+                                className="font-mono text-xs"
+                              >
+                                {e.permission}
+                              </Badge>
+                            ) : (
+                              <Badge
+                                key={e.permission}
+                                variant="destructive"
+                                className="font-mono text-xs"
+                                title="denied"
+                              >
+                                deny {e.permission}
+                              </Badge>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3 pr-4">
+                      {role.parents && role.parents.length > 0 ? (
+                        <div className="flex max-w-xs flex-wrap gap-1">
+                          {role.parents.map((p) => (
+                            <Badge key={p} variant="outline" className="text-xs">
+                              {names.get(p) ?? p}
                             </Badge>
                           ))}
                         </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="py-3 pr-4">

@@ -1,11 +1,11 @@
 # Bans
 
-Two distinct ban surfaces: **game-level** (covered here, applies across
-every group in the game) and **per-group** (covered in
-[Groups](/api-reference/groups#per-group-bans), applies to one group).
+Two distinct ban surfaces: **game bans** (covered here, which apply
+across every group in the game) and **group bans** (covered in
+[Groups](/api-reference/groups#per-group-bans), which apply to one group).
 Both surfaces enforce at the same join-and-accept paths
 (`POST /v1/groups/:id/join`, `POST /v1/invitations/:code/accept`,
-`POST /v1/groups/:id/bulk-invite`); the game-level check fires first,
+`POST /v1/groups/:id/bulk-invite`); the game ban check fires first,
 then the per-group check.
 
 Both support optional `expiresAt` for time-bounded bans. Expiry is
@@ -22,11 +22,45 @@ When an enforcement site rejects a banned user it returns:
 
 The message reflects the broader scope (game wins on tie).
 
+## Moderation version
+
+Each person has a **moderation version** per game: 0 until they are first moderated, then one higher after every game ban or [sanction](/api-reference/sanctions) create, change or lift. Per-group bans do not change it (they change the [member version](/api-reference/groups#member-versions) instead).
+
+It is returned by [`GET /v1/users/:userId/moderation`](#get-v1usersuseridmoderation), as `version` on every game ban object, as the `ETag` header of ban reads and writes, and as `moderationVersion` on `game.user.banned` and `game.user.unbanned` events.
+
+`POST /v1/bans` and `DELETE /v1/bans/:userId` accept `If-Match` with that version (`"3"` or `3`). A mismatch answers `412 precondition_failed` and changes nothing. That is what keeps a queued unban, replayed after staff banned the player again, from lifting the new ban. See [Safe retries for queued writes](/api-reference#safe-retries-for-queued-writes).
+
+## `GET /v1/users/:userId/moderation`
+
+A person's moderation state in one read:
+
+```json
+{
+  "userId": "user_alice",
+  "version": 3,
+  "ban": {
+    "id": "ckxxx...",
+    "gameId": "ckyyy...",
+    "userId": "user_alice",
+    "bannedAt": "2026-05-09T17:00:00.000Z",
+    "expiresAt": null,
+    "reason": "cheating",
+    "bannedBy": null,
+    "issuer": null,
+    "version": 3
+  },
+  "sanctions": []
+}
+```
+
+`sanctions` lists the person's active [sanctions](/api-reference/sanctions), newest first. `ban` is the active game ban, or `null` (an expired ban counts as none, as with `GET /v1/bans/:userId`). The response carries `ETag: "<version>"`. An id the game has never seen answers `200` with `{ "userId": "...", "version": 0, "ban": null, "sanctions": [] }`, so a client can take the precondition for a first ban from this read.
+
 ## `POST /v1/bans`
 
-Create or replace a game-level ban for an external user id. Idempotent
-on a still-active ban (returns the existing row); replaces an expired
-ban with a fresh one.
+Create or replace a game ban for an external user id. On a
+still-active ban the row is updated in place; an expired ban is
+replaced with a fresh one. Every call raises the person's moderation
+version by one.
 
 **Body** (`.strict`, unknown keys 400)
 
@@ -43,20 +77,25 @@ ban with a fresh one.
 | `userId` | yes | The dev's external user id (Clerk sub, Supabase uuid, Roblox UserId-as-string). Auto-creates the JunjoUser + ExternalIdentity if the user has never been seen in this game (preemptive ban is fine). |
 | `reason` | no | Free-form text up to 500 chars, or `null`. Surfaces in the dashboard. |
 | `expiresAt` | no | ISO 8601 timestamp. Omit / `null` for a permanent ban. Past timestamps are accepted but treated as expired (lazy expiry). |
-| `actorUserId` | no | External user id of the moderator pressing the ban button. When supplied, populates `GameBan.bannedByUserId`, the `game.user.banned` audit row's `actorUserId`, and the BanHistory row's actor. Auto-creates a JunjoUser for the actor if unknown. The response's `bannedBy` field returns this same external id. |
+| `bannedAt` | no | ISO 8601 timestamp of when the ban started, for bans carried over from another system. Stored on the ban and as its history row's `eventAt`. May not be more than 60 seconds in the future (`400`). When sent it always wins, also over an active ban's original start. |
+| `issuer` | no | Free text, 1 to 128 characters: who issued the ban when that is not a Junjo user (for example a staff member who has left, or a console). Stored and returned verbatim as `issuer` on the ban and its history row, never resolved or rendered. Independent of `actorUserId`; both may be sent. |
+| `actorUserId` | no | External user id of the moderator pressing the ban button. When supplied, populates `GameBan.bannedByUserId`, the `game.user.banned` audit row's `actorUserId`, and the BanHistory row's actor. Auto-creates a JunjoUser for the actor if unknown. The response's `bannedBy` field names the actor by the [identity rendering rule](/api-reference/identity#the-rendering-rule): this same id unless the actor has linked ids. |
 
 **Behavior**
 
-- New ban: creates a `GameBan` row with `bannedAt = now()`.
+- New ban: creates a `GameBan` row with `bannedAt` set to the supplied
+  value, or now.
 - Re-banning a user with an already-active ban: keeps the original
   `bannedAt` (timeline reads cleanly), updates `reason` / `expiresAt`.
 - Re-banning a user whose previous ban expired: refreshes `bannedAt`
   to now (counts as a fresh ban event).
 
-Fires the `game.user.banned` webhook event with `{ junjoUserId, reason, expiresAt }`.
-Game-level events do **not** route through SSE (SSE is per-group).
+Accepts `If-Match` with the person's [moderation version](#moderation-version); a stale version answers `412 precondition_failed`. A person never moderated has version 0, so `If-Match: "0"` means "only if this is the first moderation action".
 
-**Response** `201 Created`
+Fires the `game.user.banned` webhook event with `{ userId, junjoUserId, reason, expiresAt, moderationVersion }`. `userId` is the banned person's external id, rendered per webhook endpoint; `junjoUserId` is the internal `JunjoUser` id.
+Game ban events have no group, so no group stream carries them; the [game stream](/api-reference/events#get-v1events) and webhooks do.
+
+**Response** `201 Created`, with the new moderation version as `ETag`
 
 ```json
 {
@@ -66,24 +105,36 @@ Game-level events do **not** route through SSE (SSE is per-group).
   "bannedAt": "2026-05-09T17:00:00.000Z",
   "expiresAt": "2026-06-01T00:00:00.000Z",
   "reason": "cheating",
-  "bannedBy": null
+  "bannedBy": null,
+  "issuer": null,
+  "version": 1
 }
 ```
-
-## `DELETE /v1/bans/:userId`
-
-Remove a game-level ban. `204 No Content` on success. Fires the
-`game.user.unbanned` webhook event.
 
 **Errors**
 
 | Code | Status | When |
 |------|--------|------|
-| `not_found` | 404 | No active ban for that user in the calling game (also when the user has never been seen). |
+| `bad_request` | 400 | Malformed body, `bannedAt` more than 60 seconds ahead, `issuer` empty or over 128 characters, or a malformed `If-Match`. |
+| `precondition_failed` | 412 | `If-Match` does not match the person's moderation version. |
+
+## `DELETE /v1/bans/:userId`
+
+Remove a game ban. `204 No Content` on success, with the new
+moderation version as `ETag`. Fires the `game.user.unbanned` webhook
+event (with `moderationVersion`). Accepts `If-Match` with the person's
+moderation version; it is checked only when there is a ban to lift.
+
+**Errors**
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | No ban row for that user in the calling game, including an id the game has never seen. Carries `details.reason: "not_active"` (see [Safe retries](/api-reference#safe-retries-for-queued-writes)). |
+| `precondition_failed` | 412 | A ban exists but `If-Match` does not match the person's moderation version (typically: the player was banned again after the unban was queued). |
 
 ## `GET /v1/bans`
 
-List active game-level bans for the calling game, newest-first
+List active game bans for the calling game, newest-first
 (`bannedAt DESC, id DESC`). Cursor pagination.
 
 **Query parameters**
@@ -106,23 +157,28 @@ List active game-level bans for the calling game, newest-first
       "bannedAt": "2026-05-09T17:00:00.000Z",
       "expiresAt": null,
       "reason": "cheating",
-      "bannedBy": null
+      "bannedBy": null,
+      "issuer": null,
+      "version": 1
     }
   ],
   "nextCursor": null
 }
 ```
 
+Each item's `version` is that person's current moderation version.
+
 ## `GET /v1/bans/:userId`
 
-Fetch the current active game-level ban for a user. Returns `404
+Fetch the current active game ban for a user. Returns `404
 not_found` when no row exists, when the user has never been seen in
 this game, OR when the row exists but its `expiresAt` is in the past
 (lazy expiry; same semantics as the runtime ban check). Use `GET
 /v1/bans?includeExpired=true` to surface the underlying row in that
 last case.
 
-**Response** `200 OK` with the same `Ban` shape as the create response.
+**Response** `200 OK` with the same `Ban` shape as the create response,
+and the person's moderation version as `ETag`.
 
 **SDK**
 
@@ -133,7 +189,7 @@ const ban = await junjo.bans.get(userId); // Ban | null
 ## `GET /v1/bans/:userId/history`
 
 Append-only ban-event timeline for a user in this game. Returns rows
-from both surfaces (game-wide and per-group) by default. Newest-first,
+from both surfaces (game and group bans) by default. Newest-first,
 cursor-paginated. Each row is a structured snapshot of one set/lift
 event; predecessors are not overwritten by re-bans, so the timeline
 reads cleanly across multiple bans.
@@ -162,7 +218,8 @@ reads cleanly across multiple bans.
       "reason": "trolling",
       "expiresAt": null,
       "eventAt": "2026-05-09T18:00:00.000Z",
-      "actorUserId": null
+      "actorUserId": null,
+      "issuer": null
     },
     {
       "id": "ckyyy...",
@@ -174,15 +231,20 @@ reads cleanly across multiple bans.
       "reason": null,
       "expiresAt": null,
       "eventAt": "2026-05-08T12:00:00.000Z",
-      "actorUserId": null
+      "actorUserId": null,
+      "issuer": null
     }
   ],
   "nextCursor": null
 }
 ```
 
+`issuer` is the free-text issuer of a game ban (`null` on lifts, on
+group rows, and on bans issued without one). A game ban imported with
+`bannedAt` records that time as its `eventAt`.
+
 The server writes one BanHistory row per explicit operator action;
-**lazy-expired bans do not generate a "lifted" row** (no actor took
+lazy-expired bans do not generate a "lifted" row (no actor took
 the action). Use `GET /v1/bans?includeExpired=true` for the
 "currently-stored ban that has elapsed" view.
 
@@ -201,7 +263,7 @@ for await (const event of junjo.bans.historyAll(userId)) {
 ## SDK
 
 ```ts
-// Game-level
+// Game bans
 await junjo.bans.add({ userId, reason: "cheating", expiresAt: new Date("...") });
 await junjo.bans.remove(userId);
 const page = await junjo.bans.list({ limit: 50, includeExpired: false });

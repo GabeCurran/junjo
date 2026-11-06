@@ -83,7 +83,7 @@ Notes:
 - Passing the status and body through untouched means the browser SDK sees real `JunjoError`s: `already_member` stays `already_member`, and a 429's `Retry-After` header becomes `err.retryAfterSeconds` (mirror that header, as above).
 - For routes with user ids in the **path** (friends, visibility), match the segment against the session user instead of pinning a body field, or rewrite the segment.
 - `DELETE` requests can carry a body (`bans.remove` attribution); some proxies strip it, which degrades to lost attribution, not failure.
-- SSE (`/v1/events/:groupId`): stream the upstream body without buffering and preserve the `accept` header. See the [provider page notes](/react/provider#browser-apps-proxy-mode); the [self-hosting page](/self-host) covers reverse-proxy buffering.
+- SSE (`/v1/events/:groupId`, and `/v1/events` for the game stream): stream the upstream body without buffering and preserve the `accept` header. For the game stream also forward the `Last-Event-ID` request header and the `Junjo-Stream-Position` response header. See the [provider page notes](/react/provider#browser-apps-proxy-mode); the [self-hosting page](/self-host) covers reverse-proxy buffering.
 
 ## Error handling in the browser
 

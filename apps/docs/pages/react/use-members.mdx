@@ -83,13 +83,19 @@ On mount, the hook attaches to the group's [shared event stream](/react/provider
 |-------|----------|
 | `member.joined` | If the member matches the current filter, append at the end (or replace in-place when the same `userId` is already present, idempotent on dedupe). If the filter excludes them, ignore. |
 | `member.left` | Remove the member from the visible roster regardless of filter. For non-active filters, call `refetch` if you need to track lifecycle status precisely; V1 does not synthesize the post-left member shape from event data. |
-| `role.changed` | Update the member's `roles` in place: remove anything in `event.removed`, then append anything in `event.added` that is not already present. |
-| `member.banned` | If the user is in the visible roster, flip the row to `status: "banned"` with `bannedUntil: event.bannedUntil`, then apply the filter: on an `"active"` (or other non-matching) list the row drops out live; on a `"banned"` or `"all"` list it stays, updated in place. |
-| `member.unbanned` | If the user is in the visible roster, flip the row to `status: "left"` (the server's unban handler sets `"left"`, not `"active"`: an unbanned member has to rejoin) with `bannedUntil: null`, then apply the filter the same way. |
+| `role.changed` | Update the member's `roles` in place: remove anything in `event.removed`, then append anything in `event.added` that is not already present. `version` becomes `event.memberVersion`. |
+| `member.banned` | If the user is in the visible roster, flip the row to `status: "banned"` with `bannedUntil: event.bannedUntil`, then apply the filter: on an `"active"` (or other non-matching) list the row drops out live; on a `"banned"` or `"all"` list it stays, updated in place with `version: event.memberVersion`. |
+| `member.unbanned` | If the user is in the visible roster, flip the row to `status: "left"` (the server's unban handler sets `"left"`, not `"active"`: an unbanned member has to rejoin) with `bannedUntil: null` and `version: event.memberVersion`, then apply the filter the same way. |
 
 Ban events update rows already present; they carry no member snapshot, so they cannot insert rows. A `"banned"`-filtered list learns about newly banned members it never loaded only on the next `refetch`.
 
+Each member's `version` stays current with these events, so it can be passed as `ifMatch` to a member-scoped write such as `junjo.members.assignRole(groupId, member.userId, roleId, { ifMatch: member.version })`. A `precondition_failed` rejection means someone else changed the member first; see [Safe writes](/sdk#safe-writes). Events that change a member without patching this roster (`member.updated`) leave `version` behind until the next `refetch`.
+
 Other events (`role.created`, `role.deleted`, `permission.granted`, `permission.revoked`, `member.invited`, `group.updated`, `group.deleted`, `group.relationship.changed`) are ignored and do not cause re-renders.
+
+### Display names
+
+Each member carries the person's `displayName` (`string | null`), picked by the [display name rule](/sdk/identities#display-names). The `member` inside a `member.joined` event has no `displayName`, so a row that event replaces keeps the name already loaded, and a row it appends has `displayName` `undefined` until the next `refetch`. Name changes fire `identity.updated` on the [game stream](/react/use-game-events), not on a group stream, so the roster does not pick them up live; call `refetch` from a `useGameEvents` handler if names must stay current.
 
 The subscription is tied to `(client, groupId)`. Changing `status` does not re-open it. Changing `groupId` detaches from the old group's shared stream and attaches to the new one.
 

@@ -56,8 +56,54 @@ export const updateMemberBody = z
 
 export type UpdateMemberBody = z.infer<typeof updateMemberBody>;
 
-export const overridePermissionBody = z.object({
-  grant: z.boolean(),
-});
+// `value` is accepted as an alias of `grant`, matching the role-entry
+// shape. Sending both is allowed only when they agree.
+export const overridePermissionBody = z
+  .object({
+    grant: z.boolean().optional(),
+    value: z.boolean().optional(),
+  })
+  .refine((d) => d.grant !== undefined || d.value !== undefined, {
+    message: "grant (or value) is required",
+    path: ["grant"],
+  })
+  .refine((d) => d.grant === undefined || d.value === undefined || d.grant === d.value, {
+    message: "grant and value must agree when both are sent",
+    path: ["value"],
+  })
+  .transform((d) => ({ grant: (d.grant ?? d.value) as boolean }));
 
 export type OverridePermissionBody = z.infer<typeof overridePermissionBody>;
+
+export const MEMBER_IMPORT_MAX_ROWS = 500;
+
+// POST /v1/groups/:id/members/import. The body schema checks only the
+// envelope; each row is parsed with `memberImportRow` by the handler so
+// a malformed row is reported with its index alongside every other
+// failing row instead of failing the call with one message.
+export const memberImportBody = z
+  .object({
+    members: z
+      .array(z.unknown())
+      .min(1, "members must contain at least one row")
+      .max(MEMBER_IMPORT_MAX_ROWS, `members is limited to ${MEMBER_IMPORT_MAX_ROWS} rows`),
+    allowBanned: z.boolean().optional(),
+    actorUserId: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type MemberImportBody = z.infer<typeof memberImportBody>;
+
+export const memberImportRow = z
+  .object({
+    userId: z.string().min(1).max(255),
+    roleIds: z.array(z.string().min(1)).max(100).optional(),
+    overrides: z
+      .array(z.object({ permission: z.string().min(1), value: z.boolean() }).strict())
+      .max(500)
+      .optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+export type MemberImportRow = z.infer<typeof memberImportRow>;

@@ -1,5 +1,6 @@
-import type { GameConfig, PartialGameConfig } from "@junjo.io/shared";
+import type { GameConfig, PartialGameConfig, PermissionMode } from "@junjo.io/shared";
 import type { PrismaClient } from "@prisma/client";
+import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
 import { resolveGameConfig } from "./defaults.js";
 
@@ -72,4 +73,11 @@ export async function gameIdsInScope(
   // include the caller). Add it if absent.
   if (!ids.includes(current.gameId)) ids.push(current.gameId);
   return ids;
+}
+
+// The game's permission mode. A missing game resolves to the default
+// mode; callers have already scoped the request to an existing game.
+export async function loadPermissionMode(prisma: Db, gameId: string): Promise<PermissionMode> {
+  const game = await prisma.game.findUnique({ where: { id: gameId }, select: { config: true } });
+  return resolveGameConfig(game?.config as PartialGameConfig | null).permissions.mode;
 }

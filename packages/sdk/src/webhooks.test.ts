@@ -682,6 +682,39 @@ const wireEndpoint = {
 const wireEndpointWithSecret = { ...wireEndpoint, secret: "generated-secret" };
 
 describe("WebhookEndpointsApi.create", () => {
+  it("forwards preferredNamespaces in the body and returns them on the endpoint", async () => {
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        url: "https://dev.example.com/hook",
+        preferredNamespaces: ["web", "game"],
+      });
+      return jsonResponse({ ...wireEndpointWithSecret, preferredNamespaces: ["web", "game"] });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({
+      url: "https://dev.example.com/hook",
+      preferredNamespaces: ["web", "game"],
+    });
+    expect(created.preferredNamespaces).toEqual(["web", "game"]);
+    expect(created.secret).toBe("generated-secret");
+  });
+
+  it("defaults preferredNamespaces to [] when the server omits the field", async () => {
+    const fetchMock = endpointFetch(async () => jsonResponse(wireEndpointWithSecret));
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const created = await junjo.webhooks.endpoints.create({ url: "https://dev.example.com/hook" });
+    expect(created.preferredNamespaces).toEqual([]);
+  });
+
   it("POSTs /v1/webhooks with the auth header, body, and returns the deserialized endpoint with secret", async () => {
     const fetchMock = endpointFetch(async (req) => {
       expect(req.method).toBe("POST");
@@ -847,6 +880,23 @@ describe("WebhookEndpointsApi.list", () => {
     expect(page.nextCursor).toBeNull();
   });
 
+  it("surfaces each endpoint's preferredNamespaces in order", async () => {
+    const fetchMock = endpointFetch(async () =>
+      jsonResponse({
+        items: [{ ...wireEndpoint, preferredNamespaces: ["game", "web"] }, wireEndpoint],
+        nextCursor: null,
+      }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const page = await junjo.webhooks.endpoints.list();
+    expect(page.items[0]?.preferredNamespaces).toEqual(["game", "web"]);
+    expect(page.items[1]?.preferredNamespaces).toEqual([]);
+  });
+
   it("forwards limit and cursor as query parameters and passes nextCursor through", async () => {
     const fetchMock = endpointFetch(async (req) => {
       const url = new URL(req.url);
@@ -893,6 +943,29 @@ describe("WebhookEndpointsApi.list", () => {
 });
 
 describe("WebhookEndpointsApi.update", () => {
+  it("forwards a sole preferredNamespaces change, including [] to clear it", async () => {
+    const bodies: unknown[] = [];
+    const fetchMock = endpointFetch(async (req) => {
+      const body = (await req.json()) as { preferredNamespaces?: string[] };
+      bodies.push(body);
+      return jsonResponse({ ...wireEndpoint, preferredNamespaces: body.preferredNamespaces });
+    });
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const set = await junjo.webhooks.endpoints.update("whe_1" as never, {
+      preferredNamespaces: ["discord"],
+    });
+    expect(set.preferredNamespaces).toEqual(["discord"]);
+    const cleared = await junjo.webhooks.endpoints.update("whe_1" as never, {
+      preferredNamespaces: [],
+    });
+    expect(cleared.preferredNamespaces).toEqual([]);
+    expect(bodies).toEqual([{ preferredNamespaces: ["discord"] }, { preferredNamespaces: [] }]);
+  });
+
   it("PATCHes /v1/webhooks/:id with the supplied fields and returns the post-state", async () => {
     const fetchMock = endpointFetch(async (req) => {
       expect(req.method).toBe("PATCH");

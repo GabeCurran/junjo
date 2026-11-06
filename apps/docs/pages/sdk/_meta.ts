@@ -7,6 +7,10 @@ export default {
   permissions: "permissions",
   friends: "friends",
   bans: "bans",
+  sanctions: "sanctions",
+  identities: "identities",
+  events: "events",
   audit: "audit",
+  export: "export",
   webhooks: "webhooks",
 };

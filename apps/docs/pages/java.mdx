@@ -1,0 +1,424 @@
+# Java SDK
+
+The Junjo.io SDK for Java (`io.junjo:junjo-sdk`) is a Java 21 client library for game servers and backends on the JVM. It covers groups, members, roles, permission checks, game bans, sanctions, linked identities and the [game stream](/api-reference/events#get-v1events) behind a `JunjoClient` whose every call returns a `CompletableFuture`. On top of the HTTP surface it ships three pieces built for servers that must keep running when the backend is slow or away:
+
+- **`PermissionResolver`**: the server's resolution algorithm in Java, held to the same conformance vectors, for local checks with no network call.
+- **`GameMirror`**: an in-memory copy of role graphs, the game ban list, sanctions and tracked members, kept current from the game stream and readable from any thread without locks or I/O. It can persist itself to a file and answer from it at startup.
+- **`WriteQueue`**: a durable, ordered queue of writes on disk that survives a crash and replays safely with idempotency keys and version checks.
+
+This is a server-side SDK. The per-game API key (`jk_<prefix>.<secret>`) is a full-control credential; keep it inside your game server or backend, never in a client binary players can read.
+
+## Requirements
+
+| Requirement | Notes |
+|-------------|-------|
+| Java 21+ | The library is compiled with `--release 21` and ships a `module-info` (module `io.junjo.sdk`). |
+| Gson 2.11.0 | The only runtime dependency besides the JDK. HTTP is the JDK's `java.net.http`. |
+
+## Install
+
+The SDK lives at `packages/sdk-java` in the monorepo. The coordinates are prepared for Maven Central but the artifact is not published yet; until it is, install it to your local Maven repository:
+
+```sh
+cd packages/sdk-java
+./gradlew publishToMavenLocal
+```
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("io.junjo:junjo-sdk:0.1.0")
+}
+```
+
+```xml
+<dependency>
+  <groupId>io.junjo</groupId>
+  <artifactId>junjo-sdk</artifactId>
+  <version>0.1.0</version>
+</dependency>
+```
+
+The build uses its own Gradle wrapper (Gradle 9.8.2, which needs JDK 17 or newer to run).
+
+## Quick start
+
+```java
+import io.junjo.sdk.*;
+import io.junjo.sdk.model.*;
+
+JunjoClient junjo = JunjoClient.builder()
+        .baseUrl("https://api.junjo.io")
+        .apiKey(System.getenv("JUNJO_API_KEY"))
+        .build();
+
+String player = Ids.namespaced("mc", playerUuid);   // "mc:2f0c1a3b-..."
+
+junjo.members().add("grp_main", player, "role_member", null, WriteOptions.idempotent())
+        .thenAccept(member -> System.out.println("version " + member.version()))
+        .exceptionally(err -> {
+            JunjoException e = (JunjoException) err.getCause();
+            System.err.println(e.code() + ": " + e.getMessage());
+            return null;
+        });
+```
+
+Namespaces on the client:
+
+| Namespace | Calls |
+|-----------|-------|
+| `groups()` | `get`, `create`, `list`, `kick`, `ban`, `unban` |
+| `members()` | `add`, `get`, `list`, `getAccess`, `getAccessMany`, `setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `importMembers` |
+| `roles()` | `create`, `get`, `list`, `update`, `delete`, `setEntries`, `grantPermission`, `revokePermission`, `setParents`, `getGraph` |
+| `permissions()` | `check`, `checkBatch` (split into chunks of 100) |
+| `bans()` | `add`, `remove`, `get`, `list`, `moderation` (with sanctions) |
+| `sanctions()` | `add`, `remove`, `list`, `forUser`, `history` |
+| `identities()` | `list`, `requestLinkCode`, `redeemLinkCode`, `unlink`, `setDisplayName`, `findByName` |
+| `events()` | `position`, `subscribe` |
+| `export()` | `read`, `open` |
+
+Return types follow two rules:
+
+- **Every paged list returns `JunjoResponse<Page<T>>`**: `groups().list`, `members().list`, `bans().list`, `sanctions().list` and `sanctions().history`. Reads that carry a [stream position](/api-reference/events#snapshots-and-the-stream) or an `ETag` return a `JunjoResponse` too (`roles().getGraph`, `roles().list`, `members().getAccess`, `members().getAccessMany`, `bans().moderation`, `sanctions().forUser`, `identities().list`). `JunjoResponse` has `value()`, `streamPosition()` and `etag()`; the last two are null when the server sent none.
+- **Single-resource reads return an `Optional`**, empty for `not_found`: `groups().get`, `members().get`, `roles().get`, `bans().get`.
+
+`close()` the client on shutdown: pending calls fail with `cancelled`, and the SDK's daemon threads and connections are released.
+
+### From the TypeScript SDK
+
+The Java names match the TypeScript SDK's. The differences come from Java itself:
+
+| TypeScript | Java |
+|------------|------|
+| `members.add(groupId, userId, { roleId, actorUserId })` | `members().add(groupId, userId, roleId, actorUserId, opts)` |
+| `members.import(groupId, input)` | `members().importMembers(groupId, request)` (`import` is a Java keyword) |
+| `members.getAccess(groupId, userId)` (null for a non-member) | `members().getAccess(groupId, userId)` (fails with `not_found` for a non-member) |
+| `members.getAccessMany(groupId, userIds)` | `members().getAccessMany(groupId, userIds)`, a list of `Optional` |
+| `members.overridePermission(...)`, `members.clearPermissionOverride(...)` | same names |
+| `roles.grantPermission(roleId, key, { value })` | `roles().grantPermission(roleId, key)` or `grantPermission(roleId, key, value, opts)` |
+| `roles.getGraph`, `roles.setEntries`, `roles.revokePermission` | same names |
+| `groups.kick`, `groups.ban`, `groups.unban` | same names |
+| `bans.add(input)` | `bans().add(CreateBanInput)` |
+| `sanctions.add(userId, AddSanctionInput)` | `sanctions().add(AddSanctionInput)`; the user id is part of the input's builder |
+| `isNotActive(err)` | `JunjoException.isNotActive()` |
+| `events.subscribe(handler, { types: ["game.user.banned"] })` | `events().subscribe(listener, SubscribeOptions.builder().types(EventType.GAME_USER_BANNED).build())` |
+| options objects (`{ idempotencyKey, ifMatch }`) | `WriteOptions.idempotent().withIfMatch(version)` |
+| `Promise<T>` | `CompletableFuture<T>` |
+
+Argument order follows the TypeScript SDK in the API classes: member calls take `(groupId, userId)`, permission checks take `(userId, groupId, permission)`. `GameMirror` has no TypeScript counterpart and takes the user first everywhere, as `permissions().check` does: `check(userId, groupId, permission)`, `track(userId, groupId)`, `access(userId, groupId)`.
+
+## Errors
+
+Every failure is a `JunjoException`, wrapped in a `CompletionException` when you `join()`:
+
+| Accessor | Meaning |
+|----------|---------|
+| `code()` | The server's [error code](/api-reference/errors), or an SDK code: `network_error`, `timeout`, `cancelled`, `invalid_wire_data`, `stream_overflow`, `unknown` (a non-2xx answer without the envelope). |
+| `status()` | The HTTP status; `0` when no response arrived. |
+| `requestId()` | The server's correlation id. |
+| `retryAfterSeconds()` | The `Retry-After` header. |
+| `details()` | The envelope's optional `details` object. `importRowErrors()` reads a bulk import's failing rows from it. |
+| `isNotActive()` | True for a lift with nothing to lift: `404 not_found` with `details.reason: "not_active"`. |
+
+Unknown server codes pass through unchanged; keep a default branch when switching on `code()`.
+
+## Timeouts and retries
+
+Every call has a connect timeout (default 10 s) and a request timeout that covers the whole response, body included (default 30 s). Both are set on the builder.
+
+Calls that are safe to repeat retry automatically: GETs, the read-only POSTs (`checkBatch`, `getAccessMany`), and writes that carry an `Idempotency-Key`. They retry on network errors, timeouts, 5xx, 408, 429 and 409 `idempotency_key_in_progress`, up to `maxAttempts` (default 3), with exponential backoff and full jitter. A `Retry-After` header is honoured exactly, up to `RetryPolicy.maxRetryAfter` (30 s); a longer one fails the call at once. Other writes are sent once.
+
+## Safe writes
+
+Every write takes an optional `WriteOptions`:
+
+```java
+// Idempotency-Key: a repeat within 24 hours returns the first result instead of writing again.
+junjo.bans().add(CreateBanInput.builder(player).reason("cheating").build(), WriteOptions.idempotent());
+
+// If-Match: refused with 412 precondition_failed when the member changed since it was read.
+Member m = junjo.members().get("grp_main", player).join().orElseThrow();
+junjo.members().assignRole("grp_main", player, "role_mod", moderatorId,
+        WriteOptions.idempotent().withIfMatch(m.version()));
+```
+
+`Member.version` and `MemberAccess.version` are the member version; `Ban.version` and `Sanction.version` are the person's moderation version, which bans and sanctions share. `bans().moderation(userId)` reads it for a person with nothing active; an id the game has never seen reads as version 0.
+
+## Local permission checks
+
+```java
+RoleGraph graph = junjo.roles().getGraph("grp_main").join().value();
+MemberAccess access = junjo.members().getAccess("grp_main", player).join().value();
+
+PermissionResolver.GroupResolver resolver = PermissionResolver.compile(graph);
+PermissionCheckResult result = resolver.check(access, "chat.color");
+```
+
+The resolver implements the [layered precedence](/api-reference/permissions): the member's overrides, then directly held roles, then their parents; the most specific key within the deciding layer; deny on ties. Both [permission modes](/api-reference/permissions#permission-modes) are supported. In `nodes` mode, case folding is ASCII-only, exactly like the server, so the answer never depends on the JVM's default locale. A member whose status is not `active` answers `allowed=false, source=none`, as on the server.
+
+## The game stream
+
+```java
+String position = junjo.events().position().join();
+// ... load your snapshot here ...
+
+GameSubscription sub = junjo.events().subscribe(
+        (event, pos) -> {
+            switch (event) {
+                case JunjoEvent.GameUserBanned b -> kickIfOnline(b.userId());
+                case JunjoEvent.RoleUpdated u -> reloadRoles(u.groupId());
+                default -> { }
+            }
+        },
+        SubscribeOptions.builder()
+                .from(position)
+                .types(EventType.GAME_USER_BANNED, EventType.ROLE_UPDATED)
+                .onResync(newPosition -> reloadSnapshot())
+                .onError(err -> log.error("game stream stopped", err))
+                .build()).join();
+```
+
+Events are a sealed `JunjoEvent` hierarchy of records; `type()` returns the `EventType` constant, whose `wire()` is the server's spelling. They are delivered in position order on the stream's own thread. Behaviour matches the TypeScript SDK's `junjo.events.subscribe`:
+
+- The first connection's failure fails the returned future and is not retried.
+- After that, when the server ends the stream (deploys, idle proxies), it reconnects with `Last-Event-ID` set to the last position seen, with backoff and full jitter (1 s to 30 s by default). Heartbeats advance the position too.
+- A connection that stays silent longer than `idleTimeout` (75 s; the server sends a heartbeat every 30 s) is dropped and resumed.
+- `410 stream_position_expired` on a reconnect opens a live stream first and then calls `onResync` with the new position; reload your snapshot there. Without `onResync` it is fatal.
+- Any other 4xx on a reconnect (`429 too_many_streams`, `401`) is fatal and reported once to `onError`.
+- Unknown event types are skipped, but their position still counts, so a newer server cannot break an older client.
+
+## Sanctions
+
+A [sanction](/api-reference/sanctions) is a game-wide restriction on a person, with a type your game defines (`mute`, `trade.lock`); at most one is active per person and type. Sanctions share the person's moderation version with game bans, so every write takes `If-Match` against it.
+
+```java
+Sanction mute = junjo.sanctions().add(
+        AddSanctionInput.builder(player, "mute")
+                .reason("spam")
+                .expiresAt(Instant.now().plus(Duration.ofHours(1)))
+                .actorUserId(moderatorId)
+                .build(),
+        WriteOptions.idempotent()).join();
+
+junjo.sanctions().remove(player, "mute", moderatorId, WriteOptions.none().withIfMatch(mute.version()));
+
+List<Sanction> active = junjo.sanctions().forUser(player).join().value();
+Page<SanctionHistoryEntry> history = junjo.sanctions().history(player, null).join().value();
+```
+
+`bans().moderation(userId)` returns the active sanctions next to the game ban. Expiry is lazy, as with bans: no event fires when a sanction lapses, so check `Sanction.isActiveAt(now)`. A lift with nothing to lift fails with `not_found` for which `isNotActive()` is true (that answer wins over a stale `If-Match`). `AddSanctionInput` validates the type pattern locally and refuses the reserved type `ban`.
+
+## Display names
+
+Each id can carry a display name, set on exactly that id:
+
+```java
+junjo.identities().setDisplayName(player, "Steve");          // null clears it
+List<DisplayNameMatch> hits = junjo.identities().findByName("steve", "mc").join();
+```
+
+`findByName` matches exactly, ignoring case, most recently named first, at most 20; the returned ids are the matching ids themselves. `Member.displayName()` and `MemberAccess.displayName()` carry the person-level name picked for your key, and `LinkedIdentity.displayName()` each id's own name. A change emits `identity.updated`.
+
+## Export
+
+The export needs a key with `canExport`; other keys fail with `permission_denied`. [`GET /v1/export`](/api-reference/export) streams the whole game as NDJSON. The SDK reads it line by line as it arrives and never holds the body:
+
+```java
+ExportSummary summary = junjo.export().read(record -> {
+    switch (record.kind()) {
+        case "person" -> backup.writePerson(record.json());
+        case "group" -> backup.writeGroup(record.json());
+        default -> { }
+    }
+}).join();
+// summary.position(): replay the game stream from here to catch writes made during the export
+```
+
+`read` runs on its own daemon thread and hands records over in order, header and end included. `open()` returns a blocking `ExportReader` iterator instead. Either way the export fails with `invalid_wire_data` when the end record is missing (a cut-short export), when its counts disagree with the records read, or when the header is not format `junjo-export` version 1, and with `stream_overflow` when one line passes 16 Mi characters. Records already handed over stay handed over, so discard your output on any failure.
+
+## GameMirror
+
+`GameMirror` runs the [snapshot and stream pattern](/api-reference/events#snapshots-and-the-stream) for the state a game server checks on its hot path:
+
+```java
+GameMirror mirror = GameMirror.builder(junjo)
+        .group("grp_main")
+        .snapshotFile(dataDir.resolve("junjo-mirror.snapshot"))   // optional
+        .onError(err -> log.warn("junjo mirror", err))
+        .onChange(change -> refreshCaches(change))                  // on the applier thread
+        .build();
+mirror.start();                  // keeps retrying through an outage; isReady() turns true once loaded
+
+mirror.track(player, "grp_main");              // loads the member's access asynchronously
+
+// Lock-free, no I/O.
+if (mirror.isBanned(player) == Answer.YES) disconnect(player);
+Answer canBuild = mirror.can(player, "grp_main", "build.place");   // YES, NO or UNKNOWN
+if (mirror.isSanctioned(player, "mute") == Answer.YES) blockChat(player);
+
+mirror.untrack(player, "grp_main");
+```
+
+How it stays current, all on one applier thread in stream order:
+
+| Event | Effect |
+|-------|--------|
+| `role.*`, `permission.*`, `group.updated` | Reload that group's role graph. |
+| `member.*`, `role.changed` | Reload a tracked member's access, unless the event's `memberVersion` is not newer than the loaded version. |
+| `game.user.banned`, `game.user.unbanned` | Update the ban map, unless the event's `moderationVersion` is not newer than the known one. |
+| `game.user.sanctioned`, `game.user.unsanctioned` | Update the sanction map, unless the event's `moderationVersion` is not newer than the known one. Ban and sanction versions are tracked apart, because their snapshots are read at different moments. |
+| `identity.linked`, `identity.unlinked` | Record the person's ids, and reload the bans, sanctions and tracked memberships of every id involved. |
+| `identity.updated` | Reload the tracked memberships of the person, which carry its display name. |
+| `410` on reconnect | Reload everything at the new position. |
+
+What else to know:
+
+- **Linked ids.** A person may hold several linked ids; the server names them by one rendered id. The mirror records each person's ids, so `isBanned`, the sanction reads, `check` and `track` answer for the person whatever id you pass. An id the mirror has not resolved yet answers `UNKNOWN` for bans and sanctions (unless that exact id is banned or sanctioned) and resolves in the background; call `resolve(id)` or `track` to resolve it first. `resolve` returns the id the mirror keys the person by.
+- **Answers.** `UNKNOWN` (or an empty `Optional`) means the state needed is not loaded yet. Sanction and ban expiry is judged against the mirror's clock, because the server emits nothing when one lapses.
+- **Changes.** `onChange` receives a `MirrorChange(kind, userId, groupId)` after each change is readable: `ACCESS`, `BAN`, `SANCTION`, `ROLE_GRAPH` or `DISPLAY_NAME`. A full load reports one change per kind with null ids. It runs on the applier thread and must not block; a throwing listener is logged and ignored.
+- **Outages.** A failed load keeps the previous state, reports to `onError` and retries with backoff. That includes `start()`: its future completes once the mirror is ready and never fails because the server is down.
+- **Snapshot file.** With `snapshotFile`, the mirror saves its state (position, role graphs, bans, sanctions, tracked members, resolved ids) at most every `snapshotInterval` (30 s) and on `close()`, using a temporary file, `fsync`, an atomic move and a CRC32 checksum. At start it loads the file and answers from it at once, then resumes the game stream from the saved position. **Data loaded from the file may be stale until the stream catches up.** When the saved position has expired, the mirror reloads everything from the server; an unreadable file is ignored and reported.
+- **Batched member loads.** `track` calls issued close together are loaded with one `getAccessMany` request per group (up to 100 ids). Member loads have their own timeout, `memberLoadTimeout` (5 s), separate from `loadTimeout` (60 s) for the bulk loads.
+- **Non-members.** A user with no membership in a group answers `source=none`, as `permissions().check` does. `defaultRoleForNonMembers(true)` checks such users against the group's default role instead; that is off by default because it then differs from the server's answer.
+- **Repeated checks.** `mirror.checker(userId, groupId)` returns a `MemberChecker` that gives the same answers as `check` but reuses the member's compiled overrides; `grantedKeys()` lists the keys that resolve to allowed.
+- **Reads.** `bans()`, `sanctions(userId)`, `sanctionsAll()`, `trackedMembers(groupId)`, `access(userId, groupId)` (metadata included), and stream health: `streamState()`, `isLive()`, `lastEventAt()`, `position()`.
+
+## WriteQueue
+
+`WriteQueue` keeps writes on disk until the server has answered them:
+
+```java
+WriteQueue queue = WriteQueue.builder(junjo, dataDir.resolve("junjo-writes.jsonl"))
+        .onConflict(o -> log.warn("stale write dropped: " + o.entry().write().label()))
+        .onRejected(o -> log.warn("write refused: " + o.error().code()))
+        .open();
+
+queue.enqueue(QueuedWrite.assignRole("grp_main", player, "role_vip", moderatorId).ifMatch(memberVersion));
+queue.enqueue(QueuedWrite.removeBan(player, moderatorId));
+queue.enqueue(QueuedWrite.removeSanction(player, "mute", moderatorId));
+
+queue.close();   // drains for up to closeTimeout (10 s); the rest is resent on the next open()
+```
+
+The `QueuedWrite` factories are named after the API calls and send exactly the same requests: `addMember`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `setMetadata`, `setNotes`, `kick`, `groupBan`, `groupUnban`, `addBan`, `removeBan`, `addSanction`, `removeSanction`, plus `custom` for any other route.
+
+- **Durable.** `enqueue` returns after the entry is appended to the journal and forced to disk; when the force fails, `enqueue` throws and the entry is not queued. Every journal line carries a CRC32. On open the journal is replayed and compacted through a temporary file, an atomic move and a directory `fsync`; when the file system cannot move atomically, the old journal is kept and an ERROR is logged.
+- **Dead letters.** Every entry the server refuses (`412` or another 4xx) is appended, with the status and the raw response body, to the dead-letter file next to the journal (`deadLetterFile()`, the journal's name plus `.dead`) before any callback runs. A journal line that fails its checksum, or the torn last line of a crashed append, is moved there too, with a reason.
+- **Replay-safe.** Each entry carries a random `Idempotency-Key` for its whole life, across retries and restarts. Add `ifMatch(version)` so a write is refused, not applied, if the state changed after you decided it; that also covers replays older than the server's 24-hour key retention.
+- **Ordered.** One drain thread sends entries in enqueue order. Network errors, timeouts, 5xx, 408, 429, 409 `idempotency_key_in_progress` and 401 retry the head entry with backoff (401 is kept so a rotated key does not wipe the queue).
+- **Outcomes.** 2xx calls `onSuccess`. `412 precondition_failed` drops the entry and calls `onConflict`. Any other 4xx drops it and calls `onRejected`.
+- **Lifts that find nothing to lift succeed.** A queued lift (`removeBan`, `groupUnban`, `removeSanction`) answered with `isNotActive()` counts as success. A `not_found` without that reason (an unknown group) is still a rejection.
+
+## Ids
+
+```java
+Ids.namespaced("mc", uuid);                         // "mc:2f0c1a3b-4d5e-6f70-8192-a3b4c5d6e7f8"
+Ids.canonicalize("mc:2F0C1A3B4D5E6F708192A3B4C5D6E7F8");
+```
+
+When a game [declares a canonical format](/api-reference/identity#canonical-formats) for a namespace, the server rejects every other spelling of an id; `Ids.namespaced` always produces the canonical lowercase, hyphenated form.
+
+## Example: a Minecraft server plugin
+
+This example shows one way to wire the SDK into a Paper plugin: players are `mc:` ids built from their UUIDs, the game thread reads only from the mirror, and moderation writes go through the write queue so they survive a restart or an outage.
+
+```java
+public final class JunjoPlugin extends JavaPlugin implements Listener {
+    private JunjoClient junjo;
+    private GameMirror mirror;
+    private WriteQueue queue;
+
+    @Override
+    public void onEnable() {
+        junjo = JunjoClient.builder()
+                .baseUrl("https://api.junjo.io")
+                .apiKey(System.getenv("JUNJO_API_KEY"))
+                .build();
+        mirror = GameMirror.builder(junjo)
+                .group("grp_server")
+                .snapshotFile(getDataFolder().toPath().resolve("junjo-mirror.snapshot"))
+                .onError(err -> getLogger().warning("junjo: " + err.getMessage()))
+                .build();
+        mirror.start();   // answers from the snapshot file at once if there is one
+        try {
+            queue = WriteQueue.builder(junjo, getDataFolder().toPath().resolve("junjo-writes.jsonl")).open();
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot open the Junjo write queue", e);
+        }
+        getServer().getPluginManager().registerEvents(this, this);
+    }
+
+    @EventHandler
+    public void onPreLogin(AsyncPlayerPreLoginEvent event) {
+        // An async thread: waiting here is fine and resolves the player's linked ids.
+        String id = Ids.namespaced("mc", event.getUniqueId());
+        mirror.track(id, "grp_server").orTimeout(3, TimeUnit.SECONDS).exceptionally(err -> null).join();
+        if (mirror.isBanned(id) == Answer.YES) {
+            event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED, Component.text("You are banned."));
+        }
+    }
+
+    @EventHandler
+    public void onChat(AsyncChatEvent event) {
+        String id = Ids.namespaced("mc", event.getPlayer().getUniqueId());
+        if (mirror.isSanctioned(id, "mute") == Answer.YES) event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onPlace(BlockPlaceEvent event) {
+        // The main thread: a lock-free read from memory, never a network call.
+        String id = Ids.namespaced("mc", event.getPlayer().getUniqueId());
+        if (!mirror.can(id, "grp_server", "build.place").orElse(false)) event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        mirror.untrack(Ids.namespaced("mc", event.getPlayer().getUniqueId()), "grp_server");
+    }
+
+    void mute(UUID player, UUID moderator, Duration length) throws IOException {
+        queue.enqueue(QueuedWrite.addSanction(AddSanctionInput.builder(Ids.namespaced("mc", player), "mute")
+                .expiresAt(Instant.now().plus(length))
+                .actorUserId(Ids.namespaced("mc", moderator))
+                .build()));
+    }
+
+    @Override
+    public void onDisable() {
+        queue.close();    // what is left is resent on the next start
+        mirror.close();   // saves the snapshot file
+        junjo.close();
+    }
+}
+```
+
+## Thread guarantees
+
+- `JunjoClient` is safe for concurrent use. Future completions run on the client's executor (a cached pool of daemon threads unless you supply one); do not block in them.
+- Stream events arrive on the subscription's own daemon thread, one at a time.
+- `GameMirror` reads never block and never do I/O; its writes, and its callbacks, happen on one applier thread.
+- `WriteQueue.enqueue` blocks only for the journal append and `fsync`. Its callbacks run on the drain thread.
+- Every SDK thread is a daemon, so a forgotten `close()` never keeps the JVM alive.
+
+## Shading
+
+The SDK loads no classes by name, uses no `ServiceLoader` and reads no resources by path, so it can be relocated with Shadow or Maven Shade. Relocate Gson with it if the host platform ships its own Gson, and leave the SDK's `module-info.class` out of the shaded jar: it names the original packages, which no longer exist after relocation.
+
+```kotlin
+tasks.shadowJar {
+    relocate("io.junjo.sdk", "com.yourgame.libs.junjo")
+    relocate("com.google.gson", "com.yourgame.libs.gson")
+    exclude("module-info.class")
+}
+```
+
+With Maven Shade, add a filter that excludes `module-info.class` for the `io.junjo:junjo-sdk` artifact. Only the API packages are exported from the module; `io.junjo.sdk.internal` is not supported API.
+
+## Building and testing the SDK itself
+
+```sh
+cd packages/sdk-java
+./gradlew build
+```
+
+The suite runs against the JDK's built-in HTTP server and the shared permission conformance vectors in `packages/shared/conformance`; no network is needed. Set `JUNJO_IT_BASE_URL` and `JUNJO_IT_API_KEY` (a disposable game's key) to also run the live end-to-end tests; the kind-limit and export scenarios additionally need `JUNJO_IT_ADMIN_TOKEN`.

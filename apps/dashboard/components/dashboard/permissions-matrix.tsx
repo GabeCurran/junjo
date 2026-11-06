@@ -5,6 +5,7 @@ import { AlertCircle, Key, Loader2, Plus } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
+  denyRolePermissionAction,
   grantRolePermissionAction,
   revokeRolePermissionAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
@@ -12,6 +13,9 @@ import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   type AdminPermissionDef,
   type AdminRole,
+  type RoleEntryState,
+  roleEntries,
+  roleEntryState,
 } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
@@ -93,12 +97,16 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
     return merged;
   }, [catalogKeys, localKeys]);
 
-  function isGranted(roleId: string, permission: string): boolean {
+  function stateOf(roleId: string, permission: string): RoleEntryState {
     const r = optimisticRoles.find((row) => row.id === roleId);
-    return Boolean(r?.permissions.includes(permission));
+    return r ? roleEntryState(r, permission) : "none";
   }
 
-  async function toggleCell(roleId: string, permission: string, currentlyGranted: boolean) {
+  // Each click moves a cell one step: no entry -> grant -> deny -> no
+  // entry.
+  async function toggleCell(roleId: string, permission: string, current: RoleEntryState) {
+    const next: RoleEntryState =
+      current === "none" ? "grant" : current === "grant" ? "deny" : "none";
     const key = cellKey(roleId, permission);
     setPending((p) => {
       const next = new Set(p);
@@ -112,17 +120,23 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
     setOptimisticRoles((rs) =>
       rs.map((r) => {
         if (r.id !== roleId) return r;
-        if (currentlyGranted) {
-          return { ...r, permissions: r.permissions.filter((p) => p !== permission) };
-        }
-        const next = [...r.permissions, permission].sort();
-        return { ...r, permissions: next };
+        const entries = roleEntries(r).filter((e) => e.permission !== permission);
+        if (next !== "none") entries.push({ permission, value: next === "grant" });
+        entries.sort((x, y) => (x.permission < y.permission ? -1 : 1));
+        return {
+          ...r,
+          entries,
+          permissions: entries.filter((e) => e.value).map((e) => e.permission),
+        };
       }),
     );
 
-    const result = currentlyGranted
-      ? await revokeRolePermissionAction(gameId, groupId, roleId, permission)
-      : await grantRolePermissionAction(gameId, groupId, roleId, permission);
+    const result =
+      next === "grant"
+        ? await grantRolePermissionAction(gameId, groupId, roleId, permission)
+        : next === "deny"
+          ? await denyRolePermissionAction(gameId, groupId, roleId, permission)
+          : await revokeRolePermissionAction(gameId, groupId, roleId, permission);
 
     setPending((p) => {
       const next = new Set(p);
@@ -155,7 +169,7 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
       // If this was a grant for a locally-added key, the server has now
       // registered it in the catalog so we can drop it from localKeys.
       // Next revalidation will include the key in `catalog` natively.
-      if (!currentlyGranted) {
+      if (next !== "none") {
         setLocalKeys((ks) => ks.filter((k) => k !== permission));
       }
     }
@@ -186,11 +200,14 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
       <CardHeader className="space-y-1.5">
         <CardTitle className="text-base">Permissions matrix</CardTitle>
         <CardDescription>
-          Each cell grants or revokes a permission for a role. Toggling a checkbox is a one-click
-          action; the first grant of a never-before-seen key registers it into this game's catalog
-          automatically. {numberFormatter.format(roles.length)}{" "}
-          {roles.length === 1 ? "role" : "roles"} x {numberFormatter.format(allKeys.length)}{" "}
-          {allKeys.length === 1 ? "key" : "keys"}.
+          Each cell shows the entry stored on that role for that key: granted, denied, or none.
+          Clicking a cell moves it from none to granted to denied and back to none. A role also
+          inherits its parent roles' entries, and in nodes mode a wildcard entry covers more
+          specific keys, so an empty cell does not mean the role lacks access. Use the permission
+          check to see a member's effective access. The first write of a never-before-seen key
+          registers it into this game's catalog automatically.{" "}
+          {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"} x{" "}
+          {numberFormatter.format(allKeys.length)} {allKeys.length === 1 ? "key" : "keys"}.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -249,7 +266,7 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
             keys={allKeys}
             catalogKeys={catalogKeys}
             pending={pending}
-            isGranted={isGranted}
+            stateOf={stateOf}
             onToggle={toggleCell}
           />
         )}
@@ -278,11 +295,18 @@ interface MatrixTableProps {
   keys: string[];
   catalogKeys: string[];
   pending: Set<string>;
-  isGranted: (roleId: string, permission: string) => boolean;
-  onToggle: (roleId: string, permission: string, currentlyGranted: boolean) => void;
+  stateOf: (roleId: string, permission: string) => RoleEntryState;
+  onToggle: (roleId: string, permission: string, current: RoleEntryState) => void;
 }
 
-function MatrixTable({ roles, keys, catalogKeys, pending, isGranted, onToggle }: MatrixTableProps) {
+const NEXT_ACTION: Record<RoleEntryState, string> = {
+  none: "Grant",
+  grant: "Deny",
+  deny: "Clear the entry for",
+};
+
+function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: MatrixTableProps) {
+  const names = useMemo(() => new Map(roles.map((r) => [r.id, r.name])), [roles]);
   const catalogSet = useMemo(() => new Set(catalogKeys), [catalogKeys]);
   return (
     <div className="overflow-x-auto rounded-md border border-border">
@@ -338,18 +362,23 @@ function MatrixTable({ roles, keys, catalogKeys, pending, isGranted, onToggle }:
                   <span className="font-mono tabular-nums text-xs text-muted-foreground">
                     priority {role.priority}
                   </span>
+                  {role.parents && role.parents.length > 0 ? (
+                    <span className="text-xs text-muted-foreground">
+                      inherits {role.parents.map((p) => names.get(p) ?? p).join(", ")}
+                    </span>
+                  ) : null}
                 </div>
               </th>
               {keys.map((key) => {
-                const granted = isGranted(role.id, key);
+                const state = stateOf(role.id, key);
                 const isPending = pending.has(cellKey(role.id, key));
                 return (
                   <td key={key} className="border-l border-border px-3 py-3 align-top">
                     <MatrixCell
-                      granted={granted}
+                      state={state}
                       pending={isPending}
-                      onToggle={() => onToggle(role.id, key, granted)}
-                      ariaLabel={`${granted ? "Revoke" : "Grant"} ${key} for ${role.name}`}
+                      onToggle={() => onToggle(role.id, key, state)}
+                      ariaLabel={`${key} for ${role.name}: ${state === "none" ? "no entry" : state === "grant" ? "granted" : "denied"}. ${NEXT_ACTION[state]} ${key} for ${role.name}.`}
                     />
                   </td>
                 );
@@ -363,36 +392,29 @@ function MatrixTable({ roles, keys, catalogKeys, pending, isGranted, onToggle }:
 }
 
 interface MatrixCellProps {
-  granted: boolean;
+  state: RoleEntryState;
   pending: boolean;
   onToggle: () => void;
   ariaLabel: string;
 }
 
-// Native `<input type="checkbox">` for semantics + free keyboard-navigation
-// support. The pending overlay ships as a sibling icon positioned over the
-// checkbox; we keep the checkbox in the DOM (just disabled) so the focus
-// ring keeps its place.
-function MatrixCell({ granted, pending, onToggle, ariaLabel }: MatrixCellProps) {
+// A button rather than a checkbox: a cell has three states. The pending
+// spinner sits over the button so the focus ring keeps its place.
+function MatrixCell({ state, pending, onToggle, ariaLabel }: MatrixCellProps) {
   return (
-    <label
-      className={cn(
-        "relative inline-flex h-6 w-6 cursor-pointer items-center justify-center",
-        pending && "cursor-wait",
-      )}
-    >
-      <input
-        type="checkbox"
-        checked={granted}
+    <span className="relative inline-flex h-6 w-6 items-center justify-center">
+      <button
+        type="button"
+        onClick={onToggle}
         disabled={pending}
-        onChange={onToggle}
         aria-label={ariaLabel}
+        title={state === "none" ? "no entry" : state === "grant" ? "granted" : "denied"}
         className={cn(
-          "h-5 w-5 cursor-pointer appearance-none rounded border transition-colors",
+          "h-5 w-5 cursor-pointer rounded border transition-colors",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-          granted
-            ? "border-primary bg-primary hover:bg-primary/90"
-            : "border-input bg-background hover:bg-accent",
+          state === "grant" && "border-primary bg-primary hover:bg-primary/90",
+          state === "deny" && "border-destructive bg-destructive hover:bg-destructive/90",
+          state === "none" && "border-input bg-background hover:bg-accent",
           pending && "cursor-wait opacity-60",
         )}
       />
@@ -401,7 +423,7 @@ function MatrixCell({ granted, pending, onToggle, ariaLabel }: MatrixCellProps) 
           className="pointer-events-none absolute h-3 w-3 animate-spin text-muted-foreground"
           aria-hidden
         />
-      ) : granted ? (
+      ) : state === "grant" ? (
         <svg
           aria-hidden
           viewBox="0 0 12 12"
@@ -415,7 +437,20 @@ function MatrixCell({ granted, pending, onToggle, ariaLabel }: MatrixCellProps) 
           <title>granted</title>
           <path d="M2.5 6.5L5 9l4.5-5" />
         </svg>
+      ) : state === "deny" ? (
+        <svg
+          aria-hidden
+          viewBox="0 0 12 12"
+          className="pointer-events-none absolute h-3 w-3 text-destructive-foreground"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+        >
+          <title>denied</title>
+          <path d="M3 3l6 6M9 3l-6 6" />
+        </svg>
       ) : null}
-    </label>
+    </span>
   );
 }

@@ -13,9 +13,16 @@ import type {
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
 import { UNKNOWN_EVENT_TYPE, type WireJunjoEvent, deserializeEvent } from "./events.js";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { paginate } from "./pagination.js";
 import { parseWireDate } from "./wire.js";
+
+export type {
+  CreateWebhookEndpointInput,
+  UpdateWebhookEndpointInput,
+  WebhookEndpoint,
+  WebhookEndpointWithSecret,
+};
 
 /**
  * Signature scheme version prefixed onto every signature. Must stay in
@@ -319,6 +326,8 @@ interface WireWebhookEndpoint {
   url: string;
   events: string[];
   format: string;
+  // Absent from servers that predate namespace preferences.
+  preferredNamespaces?: string[];
   createdAt: string;
   disabledAt: string | null;
 }
@@ -334,6 +343,7 @@ function deserializeEndpoint(w: WireWebhookEndpoint): WebhookEndpoint {
     url: w.url,
     events: w.events as JunjoEventType[],
     format: w.format as WebhookEndpointFormat,
+    preferredNamespaces: w.preferredNamespaces ?? [],
     createdAt: parseWireDate(w.createdAt, "createdAt"),
     disabledAt: w.disabledAt === null ? null : parseWireDate(w.disabledAt, "disabledAt"),
   };
@@ -355,16 +365,20 @@ export class WebhookEndpointsApi {
    */
   async create(
     input: CreateWebhookEndpointInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<WebhookEndpointWithSecret> {
     const body: Record<string, unknown> = { url: input.url };
     if (input.events !== undefined) body.events = input.events;
     if (input.secret !== undefined) body.secret = input.secret;
     if (input.format !== undefined) body.format = input.format;
-    const wire = await this.http.post<WireWebhookEndpointWithSecret>("/v1/webhooks", body, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    if (input.preferredNamespaces !== undefined) {
+      body.preferredNamespaces = input.preferredNamespaces;
+    }
+    const wire = await this.http.post<WireWebhookEndpointWithSecret>(
+      "/v1/webhooks",
+      body,
+      writeOptions(opts),
+    );
     return deserializeEndpointWithSecret(wire);
   }
 
@@ -413,17 +427,20 @@ export class WebhookEndpointsApi {
   async update(
     id: WebhookEndpointId,
     input: UpdateWebhookEndpointInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<WebhookEndpoint> {
     const body: Record<string, unknown> = {};
     if (input.url !== undefined) body.url = input.url;
     if (input.events !== undefined) body.events = input.events;
     if (input.disabled !== undefined) body.disabled = input.disabled;
     if (input.format !== undefined) body.format = input.format;
+    if (input.preferredNamespaces !== undefined) {
+      body.preferredNamespaces = input.preferredNamespaces;
+    }
     const wire = await this.http.patch<WireWebhookEndpoint>(
       `/v1/webhooks/${encodeURIComponent(id)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeEndpoint(wire);
   }
@@ -432,14 +449,12 @@ export class WebhookEndpointsApi {
    * Hard delete; pending deliveries are cascaded by the database.
    * Calling on a missing id throws `JunjoError` with `code: "not_found"`.
    */
-  async delete(
-    id: WebhookEndpointId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
-    await this.http.delete<void>(`/v1/webhooks/${encodeURIComponent(id)}`, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async delete(id: WebhookEndpointId, opts?: WriteOptions): Promise<void> {
+    await this.http.delete<void>(
+      `/v1/webhooks/${encodeURIComponent(id)}`,
+      undefined,
+      writeOptions(opts),
+    );
   }
 }
 

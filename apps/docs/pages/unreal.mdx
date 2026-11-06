@@ -48,8 +48,8 @@ Fetch the subsystem with `GetGameInstance()->GetSubsystem<UJunjoSubsystem>()` in
 | `AddMember` | `FOnJunjoCompleted` | Server-to-server add. Ignores the group's visibility so provisioning does not have to make internal groups public; bans are still enforced. Idempotent, and an optional `RoleId` is assigned in the same transaction. |
 | `LeaveGroup` | `FOnJunjoCompleted` | |
 | `KickMember` | `FOnJunjoCompleted` | A kicked user may rejoin; bans are separate. |
-| `BanUser` | `FOnJunjoCompleted` | Game-wide ban with optional expiry and audit attribution. |
-| `UnbanUser` | `FOnJunjoCompleted` | Lifts a game-wide ban. |
+| `BanUser` | `FOnJunjoCompleted` | Game ban with optional expiry and audit attribution. |
+| `UnbanUser` | `FOnJunjoCompleted` | Lifts a game ban. |
 | `SubscribeToGroupEvents` | returns `UJunjoEventStream*` | Live SSE stream (below); null when the subsystem is inactive. |
 
 Result payloads are Blueprint-friendly USTRUCT mirrors of the native types (`FJunjoGroup`, `FJunjoMember`, `FJunjoRole`, pages, params), with FDateTime timestamps in UTC and raw-JSON passthrough for metadata.

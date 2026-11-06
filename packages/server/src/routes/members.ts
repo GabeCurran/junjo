@@ -1,20 +1,17 @@
-import type { GroupMember, MemberPermissionOverride, Prisma, PrismaClient } from "@prisma/client";
+import type { GroupMember, MemberPermissionOverride, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
+import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
-import { findJunjoUserId } from "../identity.js";
+import { findJunjoUserId, renderPeople } from "../identity.js";
+import { setEtag } from "../versions.js";
 import { listMembersForUserQuery } from "./members.schema.js";
-
-type MembersClient = PrismaClient | Prisma.TransactionClient;
 
 // `listForUser` has no pagination wrapper; this caps the bare-array
 // response. A user with more memberships in a single game would need a
 // paginated rewrite.
 export const LIST_FOR_USER_HARD_CAP = 1000;
 
-export async function loadMemberRoleIds(
-  client: MembersClient,
-  groupMemberId: string,
-): Promise<string[]> {
+export async function loadMemberRoleIds(client: Db, groupMemberId: string): Promise<string[]> {
   const rows = await client.memberRole.findMany({
     where: { groupMemberId },
     select: { roleId: true },
@@ -25,7 +22,7 @@ export async function loadMemberRoleIds(
 // Avoids an N+1 query per page. Returns `Map<groupMemberId, roleId[]>`;
 // callers fall back to `[]` for members with no roles.
 export async function batchLoadMemberRoleIds(
-  client: MembersClient,
+  client: Db,
   groupMemberIds: string[],
 ): Promise<Map<string, string[]>> {
   if (groupMemberIds.length === 0) return new Map();
@@ -42,21 +39,6 @@ export async function batchLoadMemberRoleIds(
   return map;
 }
 
-// Maps a page of GroupMember rows back to dev-supplied user ids without
-// an N+1 ExternalIdentity query.
-export async function batchLoadExternalUserIds(
-  client: MembersClient,
-  gameId: string,
-  junjoUserIds: string[],
-): Promise<Map<string, string>> {
-  if (junjoUserIds.length === 0) return new Map();
-  const rows = await client.externalIdentity.findMany({
-    where: { gameId, junjoUserId: { in: junjoUserIds } },
-    select: { junjoUserId: true, externalUserId: true },
-  });
-  return new Map(rows.map((r) => [r.junjoUserId, r.externalUserId]));
-}
-
 export interface WireMember {
   id: string;
   groupId: string;
@@ -68,14 +50,18 @@ export interface WireMember {
   notesPrivate: string | null;
   joinedAt: string;
   bannedUntil: string | null;
+  version: number;
+  displayName: string | null;
 }
 
-// Wire `userId` is the dev's external id; the caller looks it up via
-// ExternalIdentity (or threads it through from the request when on hand).
+// Wire `userId` is the rendered external id (see `renderUserIds`), never
+// the id the request happened to name the person by; `displayName` is
+// the person-level name (see `renderPeople`).
 export function serializeMember(
   member: GroupMember,
   externalUserId: string,
   roleIds: string[] = [],
+  displayName: string | null = null,
 ): WireMember {
   return {
     id: member.id,
@@ -88,7 +74,22 @@ export function serializeMember(
     notesPrivate: member.notesPrivate,
     joinedAt: member.joinedAt.toISOString(),
     bannedUntil: member.bannedUntil ? member.bannedUntil.toISOString() : null,
+    version: member.version,
+    displayName,
   };
+}
+
+// `serializeMember` for a member the caller resolved from `requestedId`,
+// rendering the id and display name for the current request.
+export async function serializeMemberFor(
+  client: Db,
+  gameId: string,
+  member: GroupMember,
+  requestedId: string,
+  roleIds: string[] = [],
+): Promise<WireMember> {
+  const who = (await renderPeople(client, gameId, [member.junjoUserId])).get(member.junjoUserId);
+  return serializeMember(member, who?.userId ?? requestedId, roleIds, who?.displayName ?? null);
 }
 
 export interface WireMemberPermissionOverride {
@@ -134,14 +135,12 @@ export function getMemberByIdHandler(prisma: PrismaClient): Handler {
     if (member.group.gameId !== gameId) throw Errors.notFound("member");
     if (member.group.softDeletedAt) throw Errors.notFound("member");
 
-    const identity = await prisma.externalIdentity.findFirst({
-      where: { gameId, junjoUserId: member.junjoUserId },
-      select: { externalUserId: true },
-    });
-    if (!identity) throw Errors.notFound("member");
+    const who = (await renderPeople(prisma, gameId, [member.junjoUserId])).get(member.junjoUserId);
+    if (!who) throw Errors.notFound("member");
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(serializeMember(member, identity.externalUserId, roleIds));
+    setEtag(c, member.version);
+    return c.json(serializeMember(member, who.userId, roleIds, who.displayName));
   };
 }
 
@@ -185,6 +184,11 @@ export function listMembersForUserHandler(prisma: PrismaClient): Handler {
       members.map((m) => m.id),
     );
 
-    return c.json(members.map((m) => serializeMember(m, externalUserId, roleMap.get(m.id) ?? [])));
+    const who = (await renderPeople(prisma, gameId, [junjoUserId])).get(junjoUserId);
+    const shownId = who?.userId ?? externalUserId;
+    const displayName = who?.displayName ?? null;
+    return c.json(
+      members.map((m) => serializeMember(m, shownId, roleMap.get(m.id) ?? [], displayName)),
+    );
   };
 }

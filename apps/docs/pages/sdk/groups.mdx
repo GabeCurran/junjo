@@ -552,6 +552,8 @@ member.status; // "kicked"
 | `groupId` | `GroupId` | The group. |
 | `userId` | `UserId` | The kicked user's external id. |
 | `opts.reason` | string | Optional. Up to 500 characters. Lands on the `member.kicked` audit entry's payload; `null` when omitted. |
+| `opts.ifMatch` | number \| string | Optional. The member's `version`; a mismatch rejects with `precondition_failed` and changes nothing. See [Safe writes](/sdk#safe-writes). |
+| `opts.idempotencyKey` | string | Optional. Sent as `Idempotency-Key`, so a retry does not apply the write twice. |
 
 ### Returns
 
@@ -563,6 +565,7 @@ member.status; // "kicked"
 |------|--------|------|
 | `bad_request` | 400 | `reason` longer than 500 characters. |
 | `not_found` | 404 | Same collapsed-existence semantics as `leave`. |
+| `precondition_failed` | 412 | `opts.ifMatch` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ### See also
@@ -571,7 +574,7 @@ member.status; // "kicked"
 
 ## `ban(groupId, userId, opts?)`
 
-Per-group ban. Distinct from `kick`: the banned user is rejected with `403 banned` from `groups.join` and `acceptInvitation` until the ban is lifted (explicitly or via `expiresAt` elapsing). For game-wide bans that apply across every group in the game, use [`junjo.bans.add`](/sdk/bans).
+Per-group ban. Distinct from `kick`: the banned user is rejected with `403 banned` from `groups.join` and `acceptInvitation` until the ban is lifted (explicitly or via `expiresAt` elapsing). For game bans that apply across every group in the game, use [`junjo.bans.add`](/sdk/bans).
 
 ```ts
 const banned = await junjo.groups.ban(
@@ -596,15 +599,23 @@ banned.bannedUntil; // Date | null
 | `opts.reason` | string \| null | Optional. Up to 500 characters. Lands on the audit entry and the `member.banned` event payload. |
 | `opts.expiresAt` | Date \| string \| null | Optional. ISO string or `Date`. Omit / `null` for a permanent ban. Lazy expiry: read paths treat an elapsed value as not-banned without firing an `unbanned` event. |
 | `opts.actorUserId` | `UserId` | Optional moderator attribution. Populates the audit `actorUserId` and is surfaced on the ban-history timeline. |
+| `opts.ifMatch` | number \| string | Optional. The member's `version`; a mismatch rejects with `precondition_failed` and changes nothing. See [Safe writes](/sdk#safe-writes). |
+| `opts.idempotencyKey` | string | Optional. Sent as `Idempotency-Key`, so a retry does not apply the write twice. |
 
 ### Returns
 
-`Member` with `status: "banned"` and `bannedUntil` set (or `null` for permanent).
+`Member` with `status: "banned"`, `bannedUntil` set (or `null` for permanent) and its new `version`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `precondition_failed` | 412 | `opts.ifMatch` does not match the member's version. |
 
 ### See also
 
 - [`POST /v1/groups/:id/members/:userId/ban`](/api-reference/groups#post-v1groupsidmembersuseridban) - the underlying HTTP route.
-- [`junjo.bans.add`](/sdk/bans) - game-wide ban across every group.
+- [`junjo.bans.add`](/sdk/bans) - game ban across every group.
 
 ## `unban(groupId, userId, opts?)`
 
@@ -626,12 +637,27 @@ restored.status; // "left"
 | `groupId` | `GroupId` | The group. |
 | `userId` | `UserId` | The banned user. |
 | `opts.actorUserId` | `UserId` | Optional moderator attribution. Populates the audit `actorUserId` and the ban-history timeline. |
+| `opts.ifMatch` | number \| string | Optional. The member's `version`; a mismatch rejects with `precondition_failed` and changes nothing. See [Safe writes](/sdk#safe-writes). |
+| `opts.idempotencyKey` | string | Optional. Sent as `Idempotency-Key`, so a retry does not apply the write twice. |
+
+With no active ban to lift (no `GroupMember` row for the user, or the row is not currently banned) the call rejects with `not_found`, which `isNotActive(err)` recognises. A replayed unban can count it as done ([safe retries](/api-reference#safe-retries-for-queued-writes)). An unknown group rejects with a plain `not_found`.
+
+```ts
+import { isNotActive } from "@junjo.io/sdk";
+
+try {
+  await junjo.groups.unban(groupId, userId, { ifMatch: queued.version, idempotencyKey: queued.key });
+} catch (e) {
+  if (!isNotActive(e)) throw e;
+}
+```
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `not_found` | 404 | Unknown group, or no `GroupMember` row for the user, or the row is not currently banned. |
+| `not_found` | 404 | Unknown group, or no `GroupMember` row for the user, or the row is not currently banned. The last two carry `details.reason: "not_active"`. |
+| `precondition_failed` | 412 | `opts.ifMatch` does not match the member's version. |
 
 ## `banHistory(groupId, opts?)`
 
@@ -914,6 +940,8 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 - **No replay across reconnects.** Events published while a subscriber is disconnected are lost. Use [`audit.list`](/api-reference/audit) or [webhooks](/api-reference/webhooks) for durable propagation.
 - **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
 - **Unknown event types are skipped.** When a newer server sends an event type this SDK predates, the frame is dropped without invoking `handler` and the stream stays alive. Upgrade the SDK to receive the new type.
+- **`member.updated`.** A member's metadata, notes, or permission overrides changed. It is a change signal with no new values; see [`member.updated`](/sdk/events#memberupdated).
+- **Game stream.** To receive every group's events (and game bans, friends, identity changes) on one resumable connection, use [`junjo.events.subscribe`](/sdk/events).
 - **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
 
 ### Errors

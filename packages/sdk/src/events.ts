@@ -1,9 +1,12 @@
 import type {
   GameId,
   GroupId,
+  IdentityChangeField,
   JunjoEvent,
+  MemberChangeField,
   MemberLeftEvent,
   PermissionKey,
+  RoleChangeField,
   RoleId,
   UserId,
 } from "@junjo.io/shared";
@@ -27,7 +30,8 @@ interface WireEventBase {
 }
 
 // Group-scoped events carry the routing groupId; user-scoped events
-// (friends, game-wide bans) have no group context and omit it, matching
+// (friends, game-wide bans and sanctions, identity changes) have no
+// group context and omit it, matching
 // `GroupEventBase` / `UserEventBase` in @junjo.io/shared.
 interface WireGroupEventBase extends WireEventBase {
   groupId: string;
@@ -37,6 +41,7 @@ interface WireMemberJoinedEvent extends WireGroupEventBase {
   type: "member.joined";
   userId: string;
   member: WireMember;
+  memberVersion: number;
 }
 
 interface WireMemberLeftEvent extends WireGroupEventBase {
@@ -44,6 +49,7 @@ interface WireMemberLeftEvent extends WireGroupEventBase {
   userId: string;
   reason: "left" | "kicked";
   kickedBy?: string;
+  memberVersion: number;
 }
 
 interface WireMemberInvitedEvent extends WireGroupEventBase {
@@ -51,16 +57,25 @@ interface WireMemberInvitedEvent extends WireGroupEventBase {
   invitation: WireInvitation;
 }
 
+interface WireMemberUpdatedEvent extends WireGroupEventBase {
+  type: "member.updated";
+  userId: string;
+  changed: string[];
+  memberVersion: number;
+}
+
 interface WireMemberBannedEvent extends WireGroupEventBase {
   type: "member.banned";
   userId: string;
   reason: string | null;
   bannedUntil: string | null;
+  memberVersion: number;
 }
 
 interface WireMemberUnbannedEvent extends WireGroupEventBase {
   type: "member.unbanned";
   userId: string;
+  memberVersion: number;
 }
 
 interface WireRoleCreatedEvent extends WireGroupEventBase {
@@ -77,6 +92,13 @@ interface WireRoleChangedEvent extends WireGroupEventBase {
   // when supplied on the request body. Null for legacy callers and
   // server-side admin paths that don't attribute an actor.
   actorUserId: string | null;
+  memberVersion: number;
+}
+
+interface WireRoleUpdatedEvent extends WireGroupEventBase {
+  type: "role.updated";
+  roleId: string;
+  changed: string[];
 }
 
 interface WireRoleDeletedEvent extends WireGroupEventBase {
@@ -161,23 +183,67 @@ interface WireFriendUnblockedEvent extends WireEventBase {
 interface WireGameUserBannedEvent extends WireEventBase {
   type: "game.user.banned";
   junjoUserId: string;
+  userId: string;
   reason: string | null;
   expiresAt: string | null;
+  moderationVersion: number;
 }
 
 interface WireGameUserUnbannedEvent extends WireEventBase {
   type: "game.user.unbanned";
   junjoUserId: string;
+  userId: string;
+  moderationVersion: number;
+}
+
+interface WireGameUserSanctionedEvent extends WireEventBase {
+  type: "game.user.sanctioned";
+  userId: string;
+  sanctionType: string;
+  reason: string | null;
+  expiresAt: string | null;
+  moderationVersion: number;
+}
+
+interface WireGameUserUnsanctionedEvent extends WireEventBase {
+  type: "game.user.unsanctioned";
+  userId: string;
+  sanctionType: string;
+  moderationVersion: number;
+}
+
+interface WireIdentityUpdatedEvent extends WireEventBase {
+  type: "identity.updated";
+  userId: string;
+  changedUserId: string;
+  displayName: string | null;
+  changed: string[];
+}
+
+interface WireIdentityLinkedEvent extends WireEventBase {
+  type: "identity.linked";
+  userId: string;
+  linkedUserId: string;
+  identities: string[];
+}
+
+interface WireIdentityUnlinkedEvent extends WireEventBase {
+  type: "identity.unlinked";
+  userId: string;
+  unlinkedUserId: string;
+  identities: string[];
 }
 
 export type WireJunjoEvent =
   | WireMemberJoinedEvent
   | WireMemberLeftEvent
   | WireMemberInvitedEvent
+  | WireMemberUpdatedEvent
   | WireMemberBannedEvent
   | WireMemberUnbannedEvent
   | WireRoleCreatedEvent
   | WireRoleChangedEvent
+  | WireRoleUpdatedEvent
   | WireRoleDeletedEvent
   | WirePermissionGrantedEvent
   | WirePermissionRevokedEvent
@@ -192,7 +258,12 @@ export type WireJunjoEvent =
   | WireFriendBlockedEvent
   | WireFriendUnblockedEvent
   | WireGameUserBannedEvent
-  | WireGameUserUnbannedEvent;
+  | WireGameUserUnbannedEvent
+  | WireGameUserSanctionedEvent
+  | WireGameUserUnsanctionedEvent
+  | WireIdentityLinkedEvent
+  | WireIdentityUnlinkedEvent
+  | WireIdentityUpdatedEvent;
 
 /**
  * Thrown (with this code) when the server sends an event type this SDK
@@ -217,6 +288,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         type: "member.joined",
         userId: w.userId as UserId,
         member: deserializeMember(w.member),
+        memberVersion: w.memberVersion,
       };
     case "member.left": {
       const event: MemberLeftEvent = {
@@ -225,6 +297,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         type: "member.left",
         userId: w.userId as UserId,
         reason: w.reason,
+        memberVersion: w.memberVersion,
       };
       if (w.kickedBy !== undefined) event.kickedBy = w.kickedBy as UserId;
       return event;
@@ -236,6 +309,15 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         type: "member.invited",
         invitation: deserializeInvitation(w.invitation),
       };
+    case "member.updated":
+      return {
+        ...base,
+        groupId: w.groupId as GroupId,
+        type: "member.updated",
+        userId: w.userId as UserId,
+        changed: w.changed.map((f) => f as MemberChangeField),
+        memberVersion: w.memberVersion,
+      };
     case "member.banned":
       return {
         ...base,
@@ -244,6 +326,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         userId: w.userId as UserId,
         reason: w.reason,
         bannedUntil: w.bannedUntil === null ? null : parseWireDate(w.bannedUntil, "bannedUntil"),
+        memberVersion: w.memberVersion,
       };
     case "member.unbanned":
       return {
@@ -251,6 +334,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         groupId: w.groupId as GroupId,
         type: "member.unbanned",
         userId: w.userId as UserId,
+        memberVersion: w.memberVersion,
       };
     case "role.created":
       return {
@@ -268,6 +352,15 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         added: w.added.map((r) => r as RoleId),
         removed: w.removed.map((r) => r as RoleId),
         actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
+        memberVersion: w.memberVersion,
+      };
+    case "role.updated":
+      return {
+        ...base,
+        groupId: w.groupId as GroupId,
+        type: "role.updated",
+        roleId: w.roleId as RoleId,
+        changed: w.changed.map((f) => f as RoleChangeField),
       };
     case "role.deleted":
       return {
@@ -368,14 +461,61 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         ...base,
         type: "game.user.banned",
         junjoUserId: w.junjoUserId,
+        userId: w.userId as UserId,
         reason: w.reason,
         expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
+        moderationVersion: w.moderationVersion,
       };
     case "game.user.unbanned":
       return {
         ...base,
         type: "game.user.unbanned",
         junjoUserId: w.junjoUserId,
+        userId: w.userId as UserId,
+        moderationVersion: w.moderationVersion,
+      };
+    case "game.user.sanctioned":
+      return {
+        ...base,
+        type: "game.user.sanctioned",
+        userId: w.userId as UserId,
+        sanctionType: w.sanctionType,
+        reason: w.reason,
+        expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
+        moderationVersion: w.moderationVersion,
+      };
+    case "game.user.unsanctioned":
+      return {
+        ...base,
+        type: "game.user.unsanctioned",
+        userId: w.userId as UserId,
+        sanctionType: w.sanctionType,
+        moderationVersion: w.moderationVersion,
+      };
+    case "identity.updated":
+      return {
+        ...base,
+        type: "identity.updated",
+        userId: w.userId as UserId,
+        changedUserId: w.changedUserId as UserId,
+        displayName: w.displayName,
+        changed: w.changed.map((f) => f as IdentityChangeField),
+      };
+    case "identity.linked":
+      return {
+        ...base,
+        type: "identity.linked",
+        userId: w.userId as UserId,
+        linkedUserId: w.linkedUserId as UserId,
+        identities: w.identities.map((id) => id as UserId),
+      };
+    case "identity.unlinked":
+      return {
+        ...base,
+        type: "identity.unlinked",
+        userId: w.userId as UserId,
+        unlinkedUserId: w.unlinkedUserId as UserId,
+        identities: w.identities.map((id) => id as UserId),
       };
     default: {
       // `w` is `never` here for compile-time-known wire events; at

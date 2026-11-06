@@ -6,11 +6,13 @@ import type {
   Page,
   PageOptions,
   UserId,
+  UserModeration,
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
-import type { HttpClient } from "./http.js";
+import { type ConditionalWriteOptions, type HttpClient, writeOptions } from "./http.js";
 import { paginate } from "./pagination.js";
-import { parseWireDate } from "./wire.js";
+import { type WireSanction, deserializeSanction } from "./sanctions.js";
+import { parseWireDate, toWireDate } from "./wire.js";
 
 interface WireGameBan {
   id: string;
@@ -20,6 +22,8 @@ interface WireGameBan {
   expiresAt: string | null;
   reason: string | null;
   bannedBy: string | null;
+  issuer: string | null;
+  version: number;
 }
 
 function deserializeBan(w: WireGameBan): Ban {
@@ -31,6 +35,8 @@ function deserializeBan(w: WireGameBan): Ban {
     expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
     reason: w.reason,
     bannedBy: w.bannedBy === null ? null : (w.bannedBy as UserId),
+    issuer: w.issuer,
+    version: w.version,
   };
 }
 
@@ -45,6 +51,7 @@ export interface WireBanHistoryEntry {
   expiresAt: string | null;
   eventAt: string;
   actorUserId: string | null;
+  issuer: string | null;
 }
 
 export function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEntry {
@@ -59,6 +66,7 @@ export function deserializeBanHistoryEntry(w: WireBanHistoryEntry): BanHistoryEn
     expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
     eventAt: parseWireDate(w.eventAt, "eventAt"),
     actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
+    issuer: w.issuer,
   };
 }
 
@@ -84,6 +92,19 @@ export interface CreateBanInput {
    * Surfaces back as `Ban.bannedBy` and on audit / BanHistory rows.
    */
   actorUserId?: UserId;
+  /**
+   * When the ban started, for a ban carried over from another system.
+   * At most 60 seconds in the future. Recorded on the ban and as its
+   * history row's `eventAt`; when sent it replaces an active ban's
+   * original start. Omit to use the time of the call.
+   */
+  bannedAt?: Date | string;
+  /**
+   * Free-text issuer (1 to 128 characters) for a ban not issued by a
+   * Junjo user. Stored and returned verbatim as `Ban.issuer`; never
+   * resolved to a user. Independent of `actorUserId`.
+   */
+  issuer?: string;
 }
 
 /** Options for {@link BansApi.list}. */
@@ -120,6 +141,10 @@ export interface ListBanHistoryOptions extends PageOptions {
  * active. Per-group ban (`groups.ban(...)`) is scoped to one group.
  * The two compose: enforcement on the server checks game-level
  * first, then per-group.
+ *
+ * `add` and `remove` accept `idempotencyKey`, and `ifMatch` with the
+ * person's moderation version (`Ban.version`, or `moderation(userId)`
+ * for a person with no active ban).
  */
 export class BansApi {
   constructor(private readonly http: HttpClient) {}
@@ -151,10 +176,7 @@ export class BansApi {
     return paginate((cursor) => this.list({ ...opts, cursor }));
   }
 
-  async add(
-    input: CreateBanInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Ban> {
+  async add(input: CreateBanInput, opts?: ConditionalWriteOptions): Promise<Ban> {
     const body: Record<string, unknown> = { userId: input.userId };
     if (input.reason !== undefined) body.reason = input.reason;
     if (input.expiresAt !== undefined) {
@@ -166,22 +188,59 @@ export class BansApi {
             : input.expiresAt;
     }
     if (input.actorUserId !== undefined) body.actorUserId = input.actorUserId;
-    const wire = await this.http.post<WireGameBan>("/v1/bans", body, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    if (input.bannedAt !== undefined) {
+      body.bannedAt = toWireDate(input.bannedAt);
+    }
+    if (input.issuer !== undefined) body.issuer = input.issuer;
+    const wire = await this.http.post<WireGameBan>("/v1/bans", body, writeOptions(opts));
     return deserializeBan(wire);
   }
 
+  /**
+   * Lifts the active game ban. With no active ban to lift (including a
+   * user the game has never seen) it throws `not_found` with
+   * `details.reason === "not_active"`, which `isNotActive(err)`
+   * recognises. That answer wins over a stale `ifMatch`.
+   */
   async remove(
     userId: UserId,
-    opts?: { actorUserId?: UserId; signal?: AbortSignal; timeoutMs?: number },
+    opts?: ConditionalWriteOptions & { actorUserId?: UserId },
   ): Promise<void> {
     await this.http.delete<unknown>(
       `/v1/bans/${encodeURIComponent(userId)}`,
       opts?.actorUserId !== undefined ? { actorUserId: opts.actorUserId } : undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
+  }
+
+  /**
+   * A person's moderation state in one read (GET
+   * /v1/users/:userId/moderation): the moderation version, the active
+   * game ban or null, and the active sanctions newest first. A user
+   * the game has never seen resolves to version 0 with no ban and no
+   * sanctions, so the result is always usable as the `ifMatch` of the
+   * next ban or sanction write.
+   */
+  async moderation(
+    userId: UserId,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<UserModeration> {
+    const wire = await this.http.get<{
+      userId: string;
+      version: number;
+      ban: WireGameBan | null;
+      sanctions?: WireSanction[];
+    }>(`/v1/users/${encodeURIComponent(userId)}/moderation`, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
+    return {
+      userId: wire.userId as UserId,
+      version: wire.version,
+      ban: wire.ban === null ? null : deserializeBan(wire.ban),
+      // A server predating sanctions omits the field; it then has none.
+      sanctions: (wire.sanctions ?? []).map(deserializeSanction),
+    };
   }
 
   /**

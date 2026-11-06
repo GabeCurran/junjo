@@ -592,7 +592,7 @@ describe.skipIf(!TEST_DATABASE_URL)("event publishing from mutation routes", () 
     expect(events).toHaveLength(0);
   });
 
-  it("members.setMetadata publishes nothing (no event type for member metadata)", async () => {
+  it("members.setMetadata publishes member.updated with changed metadata", async () => {
     const group = await makeGroup();
     const { externalUserId } = await makeMember(group.id);
     const events = recorder(hub, group.id);
@@ -601,6 +601,26 @@ describe.skipIf(!TEST_DATABASE_URL)("event publishing from mutation routes", () 
       method: "PATCH",
       headers: { authorization: authHeader, "content-type": "application/json" },
       body: JSON.stringify({ metadata: { foo: "bar" } }),
+    });
+    expect(res.status).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "member.updated",
+      groupId: group.id,
+      userId: externalUserId,
+      changed: ["metadata"],
+    });
+  });
+
+  it("members.setNotes with unchanged values publishes nothing", async () => {
+    const group = await makeGroup();
+    const { externalUserId } = await makeMember(group.id);
+    const events = recorder(hub, group.id);
+
+    const res = await app.request(`/v1/groups/${group.id}/members/${externalUserId}`, {
+      method: "PATCH",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify({ notesPublic: null }),
     });
     expect(res.status).toBe(200);
     expect(events).toHaveLength(0);

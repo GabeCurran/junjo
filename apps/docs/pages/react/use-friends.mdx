@@ -16,7 +16,7 @@ function FriendsPanel({ userId }: { userId: string }) {
       </li>
       {friends.map((f) => (
         <li key={f.id}>
-          {f.junjoUserId} (since {f.since.toLocaleDateString()})
+          {f.displayName ?? f.junjoUserId} (since {f.since.toLocaleDateString()})
         </li>
       ))}
     </ul>
@@ -45,7 +45,7 @@ interface UseFriendsResult {
 
 | Field | Meaning |
 |-------|---------|
-| `friends` | The current page of `Friendship` rows (the OTHER party per row, sorted by `since` desc). `[]` until the first response lands. |
+| `friends` | The current page of `Friendship` rows (the OTHER party per row, sorted by `since` desc), each with the friend's `displayName` (`string \| null`, picked by the [display name rule](/sdk/identities#display-names)). `[]` until the first response lands. |
 | `loading` | `true` from mount until the first `friends.list` response (success or error), and again while a `refetch` is in flight. |
 | `error` | The most recent fetch error. Cleared when the next fetch starts. |
 | `refetch` | Re-runs the fetch with the current arguments. Returns a `Promise` that resolves when the response lands. |

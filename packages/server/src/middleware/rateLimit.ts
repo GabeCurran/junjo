@@ -90,6 +90,20 @@ export class RateLimiter {
     return { allowed: true };
   }
 
+  // Whether `consume` would currently allow `key`, without spending a
+  // token. Lets a caller charge a bucket only for failed attempts while
+  // still refusing once it is spent.
+  wouldAllow(key: string, scale = 1): boolean {
+    const bucket = this.buckets.get(key);
+    if (!bucket) return true;
+    const elapsedMs = Math.max(0, this.now() - bucket.lastRefillMs);
+    const refilled = Math.min(
+      this.config.burst * scale,
+      bucket.tokens + elapsedMs * this.tokensPerMs * scale,
+    );
+    return refilled >= 1;
+  }
+
   // Walks the map and removes buckets whose tokens have refilled to
   // capacity at `nowMs`. Safe because a fully-refilled bucket is
   // observationally identical to a missing bucket -- the next consume

@@ -28,10 +28,15 @@ export interface AdminAuditEntry {
   action: string;
   gameId: string;
   gameName: string;
-  groupId: string;
-  groupName: string;
+  // Null for game-scoped actions (bans, identity links); groupName is
+  // then null too.
+  groupId: string | null;
+  groupName: string | null;
   groupSoftDeleted: boolean;
   actorUserId: string | null;
+  // The API key whose request wrote the entry; null for dashboard and
+  // system writes.
+  apiKey: AdminAuditApiKey | null;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -59,8 +64,25 @@ export interface AdminApiKey {
   id: string;
   gameId: string;
   prefix: string;
+  // Operator-facing label, shown on audit entries the key wrote.
+  name: string | null;
+  // Ordered namespace preference for user ids read through this key.
+  preferredNamespaces: string[];
+  // Whether the key may read the game export.
+  canExport: boolean;
   createdAt: string;
   revokedAt: string | null;
+}
+
+// Mirrors the server's API key limits (packages/server routes/admin.schema.ts
+// and @junjo.io/shared MAX_PREFERRED_NAMESPACES).
+export const ADMIN_API_KEY_NAME_MAX_LENGTH = 64;
+export const ADMIN_API_KEY_MAX_PREFERRED_NAMESPACES = 8;
+
+export interface AdminApiKeyInput {
+  name?: string | null;
+  preferredNamespaces?: string[];
+  canExport?: boolean;
 }
 
 export interface AdminApiKeyList {
@@ -224,6 +246,12 @@ export interface CreateAdminGroupInvitationInput {
   expiresIn?: string;
 }
 
+export interface AdminPermissionEntry {
+  permission: string;
+  // true grants the key, false denies it.
+  value: boolean;
+}
+
 export interface AdminRole {
   id: string;
   groupId: string;
@@ -231,8 +259,27 @@ export interface AdminRole {
   priority: number;
   color: string | null;
   isDefault: boolean;
+  // Granted keys only. Denies are listed in `entries`.
   permissions: string[];
+  // Every entry stored on the role, grants and denies. Older servers
+  // omit it; readers fall back to `permissions` as all-grant entries.
+  entries?: AdminPermissionEntry[];
+  // Ids of roles this role inherits from, in the same group.
+  parents?: string[];
+  metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export type RoleEntryState = "grant" | "deny" | "none";
+
+export function roleEntries(role: AdminRole): AdminPermissionEntry[] {
+  return role.entries ?? role.permissions.map((permission) => ({ permission, value: true }));
+}
+
+export function roleEntryState(role: AdminRole, permission: string): RoleEntryState {
+  const entry = roleEntries(role).find((e) => e.permission === permission);
+  if (!entry) return "none";
+  return entry.value ? "grant" : "deny";
 }
 
 export interface AdminPermissionDef {
@@ -258,10 +305,17 @@ export interface UpdateAdminRoleInput {
   isDefault?: boolean;
 }
 
+export interface AdminAuditApiKey {
+  id: string;
+  name: string | null;
+  prefix: string;
+}
+
 export interface AdminGroupAuditEntry {
   id: string;
   groupId: string;
   actorUserId: string | null;
+  apiKey: AdminAuditApiKey | null;
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;

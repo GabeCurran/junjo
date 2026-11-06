@@ -12,13 +12,15 @@ The group-scoped routes (`GET /v1/groups/:id/members` and `GET /v1/groups/:id/me
 |-------|------|-------|
 | `id` | string | Server-generated cuid. |
 | `groupId` | string | The group this membership is in. |
-| `userId` | string | The dev's external user id (the same value the SDK passed in or the row was seeded with), not the internal `JunjoUser` id. |
+| `userId` | string | The dev's external user id, not the internal `JunjoUser` id. For a person with a single id this is the value the SDK passed in or the row was seeded with; for a person with [linked ids](/api-reference/identity) it follows the [rendering rule](/api-reference/identity#the-rendering-rule). |
 | `status` | string | `"active"`, `"invited"`, `"left"`, `"kicked"`, or `"banned"`. |
 | `roles` | string[] | Role ids the member is assigned to. |
 | `metadata` | object | Free-form per-game state; defaults to `{}`. |
 | `notesPublic` | string \| null | Officer-readable note visible to other members. |
 | `notesPrivate` | string \| null | Officer-only note. |
 | `joinedAt` | string | ISO 8601 timestamp. |
+| `version` | integer | Starts at 1 and rises by one with every write that changes the member. Sent as `If-Match` to make a member-scoped write conditional. See [Member versions](/api-reference/groups#member-versions). |
+| `displayName` | string \| null | The person's [display name](/api-reference/identity#display-names): the name of the id `userId` shows, or, when that id has none, the most recently set name among the person's ids; `null` when none is set. Present on member reads and write responses; not part of the `member` inside `member.joined` events. |
 | `bannedUntil` | string \| null | Only meaningful while a per-group ban is active (`status` is `"banned"`): `null` means a permanent ban, an ISO 8601 timestamp is when the ban lapses. A past timestamp means the ban has lapsed (lazy expiry; the server does not auto-flip `status`). Always `null` for non-banned members. |
 
 ## `GET /v1/members/:id`
@@ -33,7 +35,7 @@ Fetches a single member by their `GroupMember.id`. Scoped to the calling game (a
 
 ### Response
 
-`200 OK` with a `Member` body.
+`200 OK` with a `Member` body and an `ETag` header carrying the member's version (`"3"`).
 
 ### Errors
 

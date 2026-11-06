@@ -1,6 +1,6 @@
 # C++ SDK
 
-The Junjo.io SDK for C++ is a C++20 client library for game servers and backends written in C++. It covers the domain surface (groups, members, roles, invitations, permission checks, game-wide bans, friends, audit logs, webhook endpoint management and delivery verification, live SSE event subscriptions) behind a `junjo::Client` whose every call returns a typed `junjo::Result<T>` instead of throwing.
+The Junjo.io SDK for C++ is a C++20 client library for game servers and backends written in C++. It covers the domain surface (groups, members, roles, invitations, permission checks, game bans, friends, audit logs, webhook endpoint management and delivery verification, live SSE event subscriptions) behind a `junjo::Client` whose every call returns a typed `junjo::Result<T>` instead of throwing.
 
 This is a server-side SDK. The per-game API key (`jk_<prefix>.<secret>`) is a full-control credential; keep it inside your game server or backend, never in a client binary players can read.
 

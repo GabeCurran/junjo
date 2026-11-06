@@ -184,6 +184,8 @@ node packages/server/dist/index.js
 | `RATE_LIMIT_PER_MINUTE` | no | `600` | Sustained refill rate of the token-bucket rate limit on `/v1/*` routes. Every request drains a shared per-source bucket sized at 20x the per-key budget (so fleets and dashboards behind one egress fit, while one source cannot mint fresh budgets by rotating fabricated keys or headers); requests carrying a parseable API key also drain that key prefix's bucket before the scrypt verify cost. Set to `0` to disable rate limiting entirely (e.g., when running behind a gateway that handles it). Must be a non-negative integer. |
 | `RATE_LIMIT_BURST` | no | `100` | Maximum bucket capacity for the per-API-key rate limit. A saturated bucket lets up to `burst` requests through back-to-back before the sustained rate caps further calls. Set to `0` to disable. Both `RATE_LIMIT_PER_MINUTE` and `RATE_LIMIT_BURST` must be positive for rate limiting to be active. |
 | `TRUST_PROXY` | no | `false` | Set to `true` when a trusted proxy fronts the server and appends the client address to `x-forwarded-for` (Railway, nginx, any standard LB); the rate limiter then keys keyless traffic on the rightmost header hop, the one value clients cannot forge. Default `false` ignores the header entirely and uses the socket address, which is correct for direct exposure. Deployments behind a proxy must set this to `true`, or all keyless traffic shares the proxy's socket-address bucket. |
+| `EVENT_LOG_RETENTION_HOURS` | no | `24` | How long the event log keeps events for [game streams](/api-reference/events#get-v1events) to resume from (1 to 8760). A stream asking to resume from an older position gets `410 stream_position_expired`. Every event is one row; size the window to how long your clients may stay disconnected. |
+| `EVENT_STREAM_POLL_MS` | no | `1000` | How often each game with open game streams reads the event log without a local write to wake it. This is how events written through other server instances reach this one's streams. `0` disables polling, which is correct only for a single-instance deployment. |
 | `WEBHOOK_ALLOW_PRIVATE_HOSTS` | no | `false` | When unset or `false`, `POST /v1/webhooks` and `PATCH /v1/webhooks/:id` reject URLs whose hostname is loopback, link-local (including the cloud metadata endpoint), RFC1918 private, RFC6598 CGNAT, IPv6 ULA, or `0.0.0.0`. The check is lexical (no DNS resolution). Set to `true` or `1` only for self-host development where receivers run on the same machine. |
 | `LOG_LEVEL` | no | `info` | Minimum level the structured logger emits. One of `error`, `warn`, `info`, `debug`, `silent`. Production (`NODE_ENV=production`) writes one JSON object per line on stdout; any other environment pretty-prints via `pino-pretty`. Pipe the production stream into your log aggregator (Datadog, Loki, CloudWatch, ELK) and filter on `level`, `service`, `msg`, plus per-line context fields like `deliveryId` (webhook worker), `path`/`method` (unhandled errors), `signal` (shutdown). |
 | `JUNJO_MAX_PAGE_SIZE` | no | `100` | Upper bound on the `limit` query parameter for every list endpoint (`/v1/groups`, `/v1/groups/:id/members`, `/v1/groups/:id/invitations`, audit, friends, admin lists, etc.). Defaults to `100`, matching cloud's abuse-protection ceiling. Self-hosters with smaller fleets or trusted clients can raise this; the SDK and webhook delivery worker honor whatever value the server accepts, so no client-side change is needed beyond passing a higher `limit`. Must be a positive integer. |
@@ -229,6 +231,8 @@ The script refuses to do anything dangerous on a database it cannot reach, but i
 ### Backups
 
 Junjo does not ship a backup tool. Use whatever your Postgres provider gives you: managed providers (Supabase, Neon, RDS, Railway) all have one-click backups; for self-managed Postgres, `pg_dump` on a cron is enough. The schema is single-tenant per game (every row carries a `gameId` foreign key), so a logical dump restores cleanly.
+
+For a per-game copy that does not need database access, give an API key `canExport` and read [`GET /v1/export`](/api-reference/export): one NDJSON file with every group, member, role, ban, sanction and friend record of the game, and no credentials.
 
 The two operationally interesting tables are `WebhookDelivery` (the queue the worker drains; rows are short-lived after a delivery succeeds) and `AuditEntry` (the durable audit log; grows monotonically). Neither needs special handling.
 
@@ -305,9 +309,10 @@ The deeper `/v1/whoami` route remains available behind a valid API key for calle
 
 ## Background workers
 
-Two `setInterval` schedulers run inside the server process:
+These `setInterval` schedulers run inside the server process:
 
 - **Soft-delete sweeper** (one tick per hour): deletes `Group` rows whose `softDeletedAt` is older than 7 days. The interval handle is `unref`'d so it never keeps the process alive on its own.
+- **Idle-group sweeper** (one tick per 10 minutes): soft-deletes live groups whose kind sets `idleDeleteHours` and whose membership has not changed for that long, emitting `group.deleted` for each. It does nothing for games that set no [kind limits](/api-reference/groups#kind-limits).
 - **Webhook delivery worker** (one tick per 5 seconds, batch=50): polls `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api-reference/webhooks.mdx`](/api-reference/webhooks).
 
 Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
@@ -324,7 +329,9 @@ The V1 server is single-process. Both background workers run on every instance, 
 
 - Each instance runs its own soft-delete sweep every hour. The `deleteMany` against `softDeletedAt < cutoff` is idempotent, so duplicates are silently no-ops; the only cost is the extra query.
 - Each instance polls the webhook queue. The `WebhookDelivery.update` that transitions a row from `pending` to `sent` is atomic, so the same row will not be POSTed twice; the worst case is two instances racing on the same batch and one losing the update with no row changed.
-- The SSE hub is **per-process**. A subscriber connected to instance A does not see events published on instance B. For multi-instance SSE you need either a sticky-session load balancer (so a given subscriber stays on the same instance) or a transport-level pub/sub bus (Redis, NATS, Postgres `LISTEN`/`NOTIFY`); the `EventHub` interface is the seam where that lands. V2 will ship a Redis transport.
+- The **game stream** works across instances: every instance reads the shared event log, delivering its own writes immediately and other instances' writes within `EVENT_STREAM_POLL_MS` (default 1 second). Each instance also runs the event log sweeper; its deletes are idempotent.
+- **Group streams** are per-process. A group stream connected to instance A does not see events written through instance B. For multi-instance group streams you need a sticky-session load balancer or a transport-level bus behind the `EventHub` interface; clients that must not miss events should use the game stream.
+- The game stream limits (10 open streams per key, 200 per game) and the rate limiters are counted per instance.
 
 The path to scaling out cleanly: run one instance, add the second when you actually need it, and at that point either flip on sticky sessions or wire in the cross-process bus. Do not pre-build for it.
 

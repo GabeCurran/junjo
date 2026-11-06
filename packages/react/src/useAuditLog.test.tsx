@@ -40,6 +40,7 @@ function makeEntry(seq: number, overrides: Partial<AuditEntry> = {}): AuditEntry
     id: `aud_${seq}` as AuditEntryId,
     groupId: GROUP_ID,
     actorUserId: null,
+    apiKey: null,
     action: "group.updated",
     targetId: null,
     payload: {},
@@ -82,6 +83,53 @@ describe("useAuditLog", () => {
     expect(result.current.error).toBeNull();
     expect(h.list).toHaveBeenCalledTimes(1);
     expect(h.list).toHaveBeenCalledWith(GROUP_ID, {});
+  });
+
+  it("surfaces the writing apiKey on entries parsed from the wire", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "aud_key",
+                groupId: GROUP_ID,
+                actorUserId: null,
+                apiKey: { id: "key_1", name: "backend", prefix: "jk_abc123" },
+                action: "group.updated",
+                targetId: null,
+                payload: {},
+                createdAt: "2026-04-28T00:00:01.000Z",
+              },
+              {
+                id: "aud_dashboard",
+                groupId: GROUP_ID,
+                actorUserId: null,
+                apiKey: null,
+                action: "group.updated",
+                targetId: null,
+                payload: {},
+                createdAt: "2026-04-28T00:00:00.000Z",
+              },
+            ],
+            nextCursor: null,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const client = new Junjo({
+      apiKey: "test_prefix.test_secret",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const { result } = renderHook(() => useAuditLog(GROUP_ID), { wrapper: wrapper(client) });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.entries.map((e) => e.apiKey)).toEqual([
+      { id: "key_1", name: "backend", prefix: "jk_abc123" },
+      null,
+    ]);
   });
 
   it("forwards a custom limit to audit.list", async () => {

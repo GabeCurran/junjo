@@ -3,6 +3,7 @@
 // Schemas for the admin-token-gated endpoints in `routes/admin.ts`.
 
 import { z } from "zod";
+import { preferredNamespacesSchema } from "../config/schema.js";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
 import { pageLimit } from "./page.schema.js";
 
@@ -133,11 +134,19 @@ export const ADMIN_ROLE_NAME_MAX_LENGTH = 64;
 const ADMIN_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const ADMIN_HEX_COLOR_MESSAGE = "must be a 7-character hex color (e.g. #ff5050)";
 
+const ADMIN_ROLE_METADATA_MAX_SERIALIZED = 16 * 1024;
+const adminRoleMetadata = z
+  .record(z.unknown())
+  .refine((m) => JSON.stringify(m).length <= ADMIN_ROLE_METADATA_MAX_SERIALIZED, {
+    message: `metadata exceeds ${ADMIN_ROLE_METADATA_MAX_SERIALIZED} serialized characters`,
+  });
+
 export const adminCreateRoleBody = z.object({
   name: z.string().min(1).max(ADMIN_ROLE_NAME_MAX_LENGTH),
   priority: z.number().int(),
   color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).optional(),
   isDefault: z.boolean().optional(),
+  metadata: adminRoleMetadata.optional(),
 });
 
 export const adminUpdateRoleBody = z
@@ -146,6 +155,7 @@ export const adminUpdateRoleBody = z
     priority: z.number().int().optional(),
     color: z.string().regex(ADMIN_HEX_COLOR_PATTERN, ADMIN_HEX_COLOR_MESSAGE).nullable().optional(),
     isDefault: z.boolean().optional(),
+    metadata: adminRoleMetadata.optional(),
   })
   .refine((d) => Object.values(d).some((v) => v !== undefined), {
     message: "at least one field is required",
@@ -154,6 +164,7 @@ export const adminUpdateRoleBody = z
 // Mirrors the per-game `grantPermissionBody`.
 export const adminGrantPermissionBody = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
+  value: z.boolean().optional(),
 });
 
 // Mirrors the per-game `setRelationshipBody` / `clearRelationshipQuery`;
@@ -324,3 +335,31 @@ export const ANALYTICS_MEMBER_ACTIVITY_HOURS = 24;
 
 export const ADMIN_ROLE_DISTRIBUTION_TOP_N = 10;
 export const ADMIN_PERMISSION_USAGE_TOP_N = 15;
+
+export const API_KEY_NAME_MAX_LENGTH = 64;
+const apiKeyNameSchema = z.string().trim().min(1).max(API_KEY_NAME_MAX_LENGTH);
+
+// POST /v1/admin/games/:gameId/api-keys. The body is optional.
+export const adminCreateApiKeyBody = z
+  .object({
+    name: apiKeyNameSchema.optional(),
+    preferredNamespaces: preferredNamespacesSchema.optional(),
+    canExport: z.boolean().optional(),
+  })
+  .strict();
+
+// PATCH /v1/admin/games/:gameId/api-keys/:keyId. `name: null` clears it.
+export const adminUpdateApiKeyBody = z
+  .object({
+    name: z.union([apiKeyNameSchema, z.null()]).optional(),
+    preferredNamespaces: preferredNamespacesSchema.optional(),
+    canExport: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (body) =>
+      body.name !== undefined ||
+      body.preferredNamespaces !== undefined ||
+      body.canExport !== undefined,
+    "body must include `name`, `preferredNamespaces` or `canExport`",
+  );

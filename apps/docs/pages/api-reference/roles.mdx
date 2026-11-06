@@ -1,8 +1,8 @@
 # Roles
 
-A `Role` is a named bundle of authority within one group. Roles carry a `priority` (higher = more authority), an optional color, a flag indicating whether they should be auto-assigned to new members, and a list of permission keys (populated via the grant / revoke routes documented below).
+A `Role` is a named bundle of authority within one group. Roles carry a `priority` (higher = more authority), an optional color, a flag indicating whether they should be auto-assigned to new members, free-form `metadata`, a list of **entries** (each one grants or denies a permission key), and optional **parent roles** whose entries they inherit. How entries and parents combine into an answer is described on the [permissions reference](/api-reference/permissions) and in [core concepts](/core-concepts#how-a-check-is-resolved).
 
-The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/roles`) live on this page; so do the by-id routes (`GET /v1/roles/:id`, `PATCH /v1/roles/:id`, `DELETE /v1/roles/:id`) and the permission-management routes (`POST /v1/roles/:id/permissions`, `DELETE /v1/roles/:id/permissions/:permission`).
+The group-scoped routes (`POST /v1/groups/:id/roles`, `GET /v1/groups/:id/roles`, `GET /v1/groups/:id/role-graph`) live on this page; so do the by-id routes (`GET /v1/roles/:id`, `PATCH /v1/roles/:id`, `DELETE /v1/roles/:id`), the entry routes (`POST /v1/roles/:id/permissions`, `DELETE /v1/roles/:id/permissions/:permission`, `PUT /v1/roles/:id/entries`), the parent route (`PUT /v1/roles/:id/parents`) and the member access read (`GET /v1/groups/:id/members/:userId/access`).
 
 ## Wire format
 
@@ -16,8 +16,31 @@ The group-scoped routes (`POST /v1/groups/:id/roles` and `GET /v1/groups/:id/rol
 | `priority` | number | Integer. Higher = more authority. Used by the SDK's "can-act-on" helpers. |
 | `color` | string \| null | A 7-character hex color (e.g. `"#ff5050"`) if present, null otherwise. |
 | `isDefault` | boolean | A per-role flag the dev can set; multiple roles in a group may carry it. The single canonical "default role" lives on `Group.defaultRoleId`. |
-| `permissions` | string[] | Permission keys granted to this role. Populated by the grant / revoke routes; `[]` on a freshly-created role. |
+| `permissions` | string[] | The keys this role grants: every entry whose `value` is true, sorted by key. Deny entries are not listed here. `[]` on a freshly-created role. |
+| `entries` | `{ permission: string, value: boolean }[]` | Every entry on the role, sorted by key. `value: true` grants the key, `value: false` denies it. |
+| `parents` | string[] | Ids of the roles this role inherits from, all in the same group, sorted. |
+| `metadata` | object | Free-form JSON object, at most 16 KB serialized. `{}` by default. |
 | `createdAt` | string | ISO 8601 timestamp. |
+
+```json
+{
+  "id": "role_vip",
+  "groupId": "grp_network",
+  "name": "VIP",
+  "priority": 40,
+  "color": "#e6b800",
+  "isDefault": false,
+  "permissions": ["chat.color", "shop.*"],
+  "entries": [
+    { "permission": "chat.color", "value": true },
+    { "permission": "shop.*", "value": true },
+    { "permission": "shop.refund", "value": false }
+  ],
+  "parents": ["role_member"],
+  "metadata": { "prefix": "[VIP]" },
+  "createdAt": "2026-11-05T12:00:00.000Z"
+}
+```
 
 ## `POST /v1/groups/:id/roles`
 
@@ -40,6 +63,9 @@ Creates a new role inside the named group. Writes a `role.created` audit entry i
 | `priority` | yes | | Integer. Negative values are allowed (treat as "deprioritized"). |
 | `color` | no | `null` | If present, must match `^#[0-9a-fA-F]{6}$`. |
 | `isDefault` | no | `false` | Per-role tag. Multiple roles in one group can carry it. |
+| `metadata` | no | `{}` | Free-form JSON object, at most 16 KB serialized. |
+
+In `"nodes"` [permission mode](/api-reference/permissions#permission-modes), `name` must also be unique ignoring case.
 
 `permissions` is intentionally not part of the create body; the grant route (`POST /v1/roles/:id/permissions`, documented below) is the dedicated path for adding permission keys.
 
@@ -131,7 +157,7 @@ Fetches a single role by `Role.id`. Scoped to the calling game (a role whose gro
 
 ## `PATCH /v1/roles/:id`
 
-Updates one or more fields on an existing role. The body is partial: any subset of `{ name, priority, color, isDefault }`. Empty body returns `400`.
+Updates one or more fields on an existing role. The body is partial: any subset of `{ name, priority, color, isDefault, metadata }`. Empty body returns `400`. A non-noop PATCH emits a [`role.updated`](#the-roleupdated-event) event naming the changed fields.
 
 Each field is diffed per-field against the stored row. Only fields whose new value differs from stored go into the update statement and the audit `payload`. A no-op PATCH (every supplied value equals the stored one) skips the DB write entirely, returns the unchanged role, and writes no audit entry.
 
@@ -150,6 +176,7 @@ Each field is diffed per-field against the stored row. Only fields whose new val
 | `priority` | number | Integer. |
 | `color` | string \| null | 7-char hex; pass `null` to clear. |
 | `isDefault` | boolean | |
+| `metadata` | object | Replaces the whole metadata object. At most 16 KB serialized. |
 
 ### Response
 
@@ -200,6 +227,8 @@ On success, writes a `role.deleted` audit entry containing the deleted row's sna
 }
 ```
 
+Roles that inherited from the deleted role lose it as a parent, and each gets a [`role.updated`](#the-roleupdated-event) event with `changed: ["parents"]`.
+
 ### Response
 
 `204 No Content` on success.
@@ -214,9 +243,9 @@ On success, writes a `role.deleted` audit entry containing the deleted row's sna
 
 ## `POST /v1/roles/:id/permissions`
 
-Grants a permission key to a role. The route is **idempotent**: granting a permission the role already has returns the unchanged role with no audit entry and no DB write.
+Adds or changes one entry on a role. Without `value`, or with `value: true`, the entry grants the key; with `value: false` it denies it. The route is idempotent: writing an entry the role already holds with the same value returns the unchanged role with no audit entry and no DB write.
 
-The first time a permission key is granted on a given game, it is auto-registered into `PermissionDef` (the per-game catalog of "known keys" the dashboard and SDK validators consult). Subsequent grants of the same key reuse the existing `PermissionDef` row; revoking the key later does not remove the def.
+The first time a permission key is written on a given game, it is auto-registered into `PermissionDef` (the per-game catalog of "known keys" the dashboard and SDK validators consult). Subsequent writes of the same key reuse the existing `PermissionDef` row; removing the entry later does not remove the def.
 
 ### Request
 
@@ -224,9 +253,22 @@ The first time a permission key is granted on a given game, it is auto-registere
 { "permission": "invite_member" }
 ```
 
+```json
+{ "permission": "shop.refund", "value": false }
+```
+
 | Field | Required | Notes |
 |-------|----------|-------|
-| `permission` | yes | 1-128 characters. Free-form string; the dev defines their own keys. |
+| `permission` | yes | 1-128 characters. Free-form string; the dev defines their own keys. In `"nodes"` mode it is lowercased and must pass the [key rules](/api-reference/permissions#permission-modes). |
+| `value` | no | Boolean, default `true`. `false` stores a deny entry. |
+
+A role holds at most 5,000 entries; adding a new key to a full role returns `400`.
+
+### Events
+
+- A key that becomes granted emits `permission.granted`.
+- A grant that becomes a deny emits `permission.revoked` and then `role.updated`.
+- A new deny entry emits `role.updated` only.
 
 ### Response
 
@@ -234,7 +276,7 @@ The first time a permission key is granted on a given game, it is auto-registere
 
 ### Audit log
 
-One `permission.granted` entry per non-noop grant:
+One `permission.granted` entry per write that makes the key granted (a deny turned into a grant adds `"before": { "value": false }` to the payload). Writes that store a deny record a `role.entries.changed` entry instead, with the same diff payload as [`PUT /v1/roles/:id/entries`](#put-v1rolesidentries).
 
 ```json
 {
@@ -257,7 +299,9 @@ One `permission.granted` entry per non-noop grant:
 
 ## `DELETE /v1/roles/:id/permissions/:permission`
 
-Revokes a permission key from a role. The route is **idempotent**: revoking a permission the role does not have returns the unchanged role with no audit entry. The `PermissionDef` registry is preserved (revoke does not "forget" the key for the game).
+Removes the role's entry for a key, whether it grants or denies. The route is idempotent: removing an entry the role does not have returns the unchanged role with no audit entry. In `"nodes"` mode the key is lowercased before lookup. The `PermissionDef` registry is preserved (removal does not "forget" the key for the game).
+
+Removing a grant emits `permission.revoked` and records a `permission.revoked` audit entry. Removing a deny emits `role.updated` and records `role.entries.changed`.
 
 ### Path parameters
 
@@ -291,3 +335,187 @@ One `permission.revoked` entry per non-noop revoke:
 |------|--------|------|
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `PUT /v1/roles/:id/entries`
+
+Replaces a role's whole entry list in one transaction. Keys not in the list are removed, keys whose value changes are updated, and new keys are added (and registered in the catalog). A request that changes nothing writes nothing.
+
+### Request
+
+```json
+{
+  "entries": [
+    { "permission": "*", "value": true },
+    { "permission": "chat.mute.exempt", "value": false },
+    { "permission": "shop.admin.*", "value": false }
+  ]
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `entries` | yes | Array of at most 5,000 `{ permission, value }` objects. A key may appear once; in `"nodes"` mode keys are lowercased first, so two spellings of one key are duplicates. `[]` clears the role. |
+
+### Response
+
+`200 OK` with the updated `Role` body.
+
+### Audit log and events
+
+One `role.entries.changed` audit entry per non-noop replace, carrying the diff:
+
+```json
+{
+  "action": "role.entries.changed",
+  "targetId": "<roleId>",
+  "payload": {
+    "roleId": "<roleId>",
+    "added": [{ "permission": "shop.admin.*", "value": false }],
+    "removed": [{ "permission": "shop.legacy", "value": true }],
+    "changed": [{ "permission": "chat.mute.exempt", "before": true, "after": false }]
+  }
+}
+```
+
+One `role.updated` event with `changed: ["entries"]`. A replace does not emit per-key `permission.granted` / `permission.revoked` events.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body, over 5,000 entries, a duplicate key, a key over 128 characters, or a key that breaks the `"nodes"` key rules. |
+| `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## Role parents
+
+A role inherits the entries of its parent roles, one layer further from the member than the role itself; a parent's parents sit one layer further again. The first layer with a matching entry decides a check, so a role's own entries always beat what it inherits. A role reachable through several paths counts at its shortest distance.
+
+Limits: up to 32 parents per role, and inheritance chains up to 100 levels deep. Parents must be in the same group. Cycles are rejected when written.
+
+## `PUT /v1/roles/:id/parents`
+
+Replaces a role's whole parent list.
+
+### Request
+
+```json
+{ "parents": ["role_member", "role_pet_bundle"] }
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `parents` | yes | Array of at most 32 role ids. Duplicates are ignored. `[]` clears the role's parents. |
+
+### Response
+
+`200 OK` with the updated `Role` body.
+
+### Audit log and events
+
+One `role.parents.set` audit entry per non-noop write, with `payload: { roleId, before, after }` (sorted id lists), and one `role.updated` event with `changed: ["parents"]`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body, over 32 parents, or the change would make an inheritance chain deeper than 100 levels. |
+| `parent_cycle` | 400 | The role lists itself, or the change would close a cycle. |
+| `role_group_mismatch` | 400 | A parent belongs to another group. |
+| `not_found` | 404 | The role or a parent is missing, cross-game, or in a soft-deleted group. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `GET /v1/groups/:id/role-graph`
+
+Everything needed to resolve checks for the group locally, in one read: the game's permission mode, the group's default role, and every role with its entries, parents and metadata. Roles are ordered by priority descending, then id descending.
+
+```json
+{
+  "groupId": "grp_network",
+  "mode": "nodes",
+  "defaultRoleId": "role_default",
+  "roles": [
+    {
+      "id": "role_admin",
+      "groupId": "grp_network",
+      "name": "Admin",
+      "priority": 100,
+      "color": null,
+      "isDefault": false,
+      "permissions": ["*"],
+      "entries": [{ "permission": "*", "value": true }],
+      "parents": ["role_vip"],
+      "metadata": {},
+      "createdAt": "2026-11-05T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+Each element of `roles` is a full [`Role`](#wire-format).
+
+Returns `404 not_found` for a missing, cross-game or soft-deleted group.
+
+## `GET /v1/groups/:id/members/:userId/access`
+
+One member's inputs to resolution, in one read: their status, the roles they hold directly, their overrides and their metadata. Roles reached through inheritance come from the role graph.
+
+```json
+{
+  "groupId": "grp_network",
+  "userId": "user_alice",
+  "status": "active",
+  "roleIds": ["role_vip"],
+  "overrides": [
+    {
+      "groupId": "grp_network",
+      "userId": "user_alice",
+      "permission": "chat.color",
+      "grant": false,
+      "setAt": "2026-11-05T12:00:00.000Z",
+      "setBy": null
+    }
+  ],
+  "version": 4,
+  "displayName": "Alice",
+  "metadata": { "prefix": "[VIP]" }
+}
+```
+
+`version` is the member's [version](/api-reference/groups#member-versions), also sent as the `ETag` header, so an access snapshot can be paired with conditional writes.
+
+Only `active` members exercise permissions; the status is returned so a local resolver can apply the same gate. Returns `404 not_found` when the group, the user's identity, or the membership row does not exist.
+
+## `POST /v1/groups/:id/members/access`
+
+The same read for up to 100 users in one request, for a cache that loads many members at once (a game server after a restart, for example).
+
+```json
+{ "userIds": ["mc:2f0c6a1e-0b6f-4f0e-9c1a-5d2b7e8f9a10", "mc:9d3b1c2a-4e5f-4a6b-8c7d-0e1f2a3b4c5d"] }
+```
+
+The answer lines up with `userIds`: entry `i` is the access object for `userIds[i]`, or `null` when that id names no member of the group. Any of a person's linked ids finds them; the object names the person by your [rendering rule](/api-reference/identity#the-rendering-rule), so match entries by position, not by `userId`.
+
+```json
+{ "items": [{ "groupId": "grp_network", "userId": "mc:2f0c6a1e-0b6f-4f0e-9c1a-5d2b7e8f9a10", "status": "active", "roleIds": ["role_vip"], "overrides": [], "version": 4, "displayName": "Alice", "metadata": {} }, null] }
+```
+
+The response carries `Junjo-Stream-Position`, read before the data (see [snapshots and the stream](/api-reference/events#snapshots-and-the-stream)), and no `ETag`; each item carries its own `version`. One to 100 ids, otherwise `400 bad_request`. `404 not_found` when the group does not exist.
+
+## The `role.updated` event
+
+`role.updated` is a group-scoped event delivered over SSE and webhooks. It is a change signal: it says which parts of a role changed, not their new values, so consumers re-read the role or the role graph.
+
+```json
+{
+  "type": "role.updated",
+  "id": "a41c9e07d2b85f3e6c10d4a7",
+  "occurredAt": "2026-11-05T12:00:00.000Z",
+  "gameId": "game_...",
+  "groupId": "grp_network",
+  "roleId": "role_vip",
+  "changed": ["entries"]
+}
+```
+
+`changed` lists any of `name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`. Single-route changes that only add or remove a grant emit `permission.granted` / `permission.revoked` and no `role.updated`.

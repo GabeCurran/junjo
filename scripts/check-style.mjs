@@ -70,6 +70,7 @@ const SKIP_EXTS = new Set([
   ".otf",
   ".pdf",
   ".zip",
+  ".jar",
   ".gz",
   ".rbxm",
   ".rbxmx",

@@ -1,0 +1,109 @@
+# useSanctions
+
+Returns a person's active [sanctions](/sdk/sanctions), newest first.
+Fetch-on-mount and refetch-driven (no stream subscription of its own):
+`game.user.sanctioned` / `game.user.unsanctioned` have no group, so they
+fire on [webhooks](/api-reference/webhooks) and the game stream only. A
+[`useGameEvents`](/react/use-game-events) handler filtered to them can
+call `refetch`.
+
+```tsx
+import { useGameEvents, useJunjo, useSanctions } from "@junjo.io/react";
+import type { UserId } from "@junjo.io/sdk";
+
+function SanctionPanel({ userId }: { userId: UserId }) {
+  const junjo = useJunjo();
+  const { sanctions, loading, error, refetch } = useSanctions(userId);
+  useGameEvents(
+    (event) => {
+      if ("userId" in event && event.userId === userId) void refetch();
+    },
+    { types: ["game.user.sanctioned", "game.user.unsanctioned"] },
+  );
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {sanctions.map((s) => (
+        <li key={s.id}>
+          {s.type} {s.expiresAt ? `until ${s.expiresAt.toLocaleString()}` : "(permanent)"}
+          {s.reason ? `: ${s.reason}` : null}
+          <button
+            type="button"
+            onClick={async () => {
+              await junjo.sanctions.remove(userId, s.type, { ifMatch: s.version });
+              await refetch();
+            }}
+          >
+            Lift
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useSanctions(userId: UserId): UseSanctionsResult;
+
+interface UseSanctionsResult {
+  sanctions: Sanction[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `sanctions` | The person's active sanctions, newest first. `[]` until the first response lands, and `[]` for an id the game has never seen. Each `Sanction` carries `version`, the person's moderation version when the list loaded, usable as `ifMatch`. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error. Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch. |
+
+Changing `userId` refetches. The shared fetch engine (argument-change
+refetches, unstable `refetch` identity, overlapping-refetch behavior) is
+documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+Expiry is lazy and emits no event, so a sanction whose `expiresAt` has
+passed stays in `sanctions` until the next fetch. Compare `expiresAt`
+with the current time if the screen must hide it sooner.
+
+## Mutations
+
+`junjo.sanctions.add(userId, { type, ... })` and
+`junjo.sanctions.remove(userId, type)` are the write surface; call
+`refetch` after either. Pair them with [`useMutation`](/react/use-mutation)
+for pending and error state. A lift that finds nothing to lift rejects
+with `not_found`; `isNotActive(err)` from `@junjo.io/sdk` recognises it.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Called outside a
+`<JunjoProvider>`, it throws synchronously with the same descriptive
+message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.sanctions.forUser` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.sanctions, {
+  forUser: vi.fn().mockResolvedValue([]),
+});
+```
+
+### See also
+
+- [`junjo.sanctions`](/sdk/sanctions): the underlying SDK namespace.
+- [`useBans`](/react/use-bans): the game ban list.

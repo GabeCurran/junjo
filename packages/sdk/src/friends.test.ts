@@ -288,6 +288,22 @@ describe("friends.list", () => {
     expect(page.items[0]?.since).toBeInstanceOf(Date);
     expect(page.items[0]?.since.toISOString()).toBe(friendshipFixture.since);
     expect(page.nextCursor).toBe("rel_fr1");
+    expect(page.items[0] && "displayName" in page.items[0]).toBe(false);
+  });
+
+  it("carries each friend's displayName when the entry has one", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        items: [
+          { ...friendshipFixture, displayName: "Bob" },
+          { ...friendshipFixture, id: "rel_fr2", displayName: null },
+        ],
+        nextCursor: null,
+      }),
+    );
+    const page = await makeClient(fetchMock).friends.list("user_alice" as UserId);
+    expect(page.items[0]?.displayName).toBe("Bob");
+    expect(page.items[1]?.displayName).toBeNull();
   });
 
   it("forwards limit, cursor, tagId, and viewer as query parameters", async () => {

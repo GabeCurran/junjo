@@ -8,12 +8,14 @@ import type {
   UserId,
 } from "@junjo.io/shared";
 import type { HttpClient } from "./http.js";
-import { parseWireDate } from "./wire.js";
+import { parseWireDate, toWireDate } from "./wire.js";
 
 export interface WireAuditEntry {
   id: string;
   groupId: string;
   actorUserId: string | null;
+  // Absent from servers that predate API key attribution.
+  apiKey?: { id: string; name: string | null; prefix: string } | null;
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;
@@ -25,6 +27,7 @@ export function deserializeAuditEntry(w: WireAuditEntry): AuditEntry {
     id: w.id as AuditEntryId,
     groupId: w.groupId as GroupId,
     actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
+    apiKey: w.apiKey ? { id: w.apiKey.id, name: w.apiKey.name, prefix: w.apiKey.prefix } : null,
     action: w.action as AuditAction,
     targetId: w.targetId,
     payload: w.payload,
@@ -49,7 +52,7 @@ export class AuditApi {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     if (opts?.before !== undefined) {
-      params.set("before", opts.before instanceof Date ? opts.before.toISOString() : opts.before);
+      params.set("before", toWireDate(opts.before));
     }
     if (opts?.actions !== undefined) {
       for (const action of opts.actions) params.append("actions", action);
