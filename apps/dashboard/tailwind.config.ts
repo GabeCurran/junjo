@@ -1,6 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import type { Config } from "tailwindcss";
 import animate from "tailwindcss-animate";
+import defaultTheme from "tailwindcss/defaultTheme";
 
 const config: Config = {
   darkMode: "class",
@@ -89,7 +90,13 @@ const config: Config = {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ["var(--font-sans)", ...defaultTheme.fontFamily.sans],
+        mono: defaultTheme.fontFamily.mono,
+      },
       colors: {
+        allow: "hsl(var(--allow))",
+        warn: "hsl(var(--warn))",
         // Brand coral palette anchored on `--primary` (#f76a6a at 500).
         // Tremor v3 charts accept a "coral" color name and resolve it to
         // `fill-coral-500` / `stroke-coral-500` etc., which is why every

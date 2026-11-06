@@ -1,19 +1,18 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { Activity } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { ThemeToggle } from "../theme-toggle";
-import { SidebarNav } from "./sidebar-nav";
+import { type NavGame, SidebarBrand, SidebarNav } from "./sidebar-nav";
 
 // Mobile-only top bar + drop-down nav. Renders nothing on >=md screens.
 // The desktop sidebar in (dashboard)/layout.tsx is hidden below md
 // (hidden md:block); this fills the gap. Pattern mirrors ../starworks/src
 // /components/Header.tsx: hamburger morphs to X on tap, the menu slides
 // down from below the top bar with origin-top scale + max-h transition.
-export function MobileNav() {
+export function MobileNav({ games }: { games: readonly NavGame[] }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -45,12 +44,7 @@ export function MobileNav() {
        * z-40 so the burger->X morph remains clickable when the menu is
        * open. */}
       <div className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-card px-4 md:hidden">
-        <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Activity className="h-4 w-4" aria-hidden />
-          </div>
-          <span className="text-base font-semibold tracking-tight">Junjo</span>
-        </div>
+        <SidebarBrand className="px-0" />
         <div className="flex items-center gap-1">
           <ThemeToggle />
           <button
@@ -122,7 +116,7 @@ export function MobileNav() {
             open ? "translate-y-0" : "-translate-y-2"
           }`}
         >
-          <SidebarNav />
+          <SidebarNav games={games} />
         </div>
       </nav>
     </>

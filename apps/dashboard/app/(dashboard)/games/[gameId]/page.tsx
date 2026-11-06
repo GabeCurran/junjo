@@ -1,18 +1,20 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { ActivityLine } from "../../../../components/dashboard/activity-line";
 import { ApiKeysSection } from "../../../../components/dashboard/api-keys-section";
-import { GameDetailHeader } from "../../../../components/dashboard/game-detail-header";
-import { Topbar } from "../../../../components/dashboard/topbar";
+import { GameFigures } from "../../../../components/dashboard/game-detail-header";
+import { LiveRefresh } from "../../../../components/dashboard/live-refresh";
+import { PageHeader } from "../../../../components/dashboard/page-header";
+import { Notice, Section } from "../../../../components/ui/section";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../../components/ui/card";
-import { AdminDisabledError, type AdminGame, fetchAdminGame } from "../../../../lib/admin";
+  AdminDisabledError,
+  type AdminGame,
+  fetchAdminGame,
+  fetchAdminGameAudit,
+} from "../../../../lib/admin";
 
 interface GameDetailPageProps {
   params: Promise<{ gameId: string }>;
@@ -20,9 +22,6 @@ interface GameDetailPageProps {
 
 export async function generateMetadata(props: GameDetailPageProps) {
   const params = await props.params;
-  // Best-effort title: fall back to the gameId if the lookup fails. The page
-  // body itself shows a more descriptive empty state when the lookup fails;
-  // the title only uses the name when we can fetch it cheaply.
   try {
     const game = await fetchAdminGame(params.gameId);
     return { title: `${game.name} | Junjo Dashboard` };
@@ -31,96 +30,107 @@ export async function generateMetadata(props: GameDetailPageProps) {
   }
 }
 
-function ApiKeysSectionSkeleton() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-24 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-border py-3 last:border-0"
-            >
-              <div className="h-4 w-32 rounded bg-muted" />
-              <div className="flex gap-3">
-                <div className="h-4 w-20 rounded bg-muted" />
-                <div className="h-4 w-20 rounded bg-muted" />
-                <div className="h-6 w-16 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
+async function GameActivity({ game }: { game: AdminGame }) {
+  try {
+    const page = await fetchAdminGameAudit(game.id, { limit: 15 }, { revalidate: 0 });
+    if (page.items.length === 0) {
+      return <Notice title="No activity yet" body="Changes in this game show up here." />;
+    }
+    return (
+      <ul className="divide-y divide-border/60">
+        {page.items.map((entry) => (
+          <ActivityLine key={entry.id} entry={entry} />
+        ))}
+      </ul>
+    );
+  } catch (err) {
+    return (
+      <Notice
+        title="Could not load activity"
+        body={err instanceof Error ? err.message : "The audit request failed."}
+      />
+    );
+  }
 }
 
-interface ErrorCardProps {
-  title: string;
-  body: string;
-}
-
-function ErrorCard({ title, body }: ErrorCardProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{body}</CardDescription>
-      </CardHeader>
-    </Card>
-  );
-}
-
-async function GameBody({ gameId }: { gameId: string }) {
+export default async function GameDetailPage(props: GameDetailPageProps) {
+  const { gameId } = await props.params;
   let game: AdminGame;
   try {
     game = await fetchAdminGame(gameId);
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load games. The token gates every cross-game admin endpoint."
-        />
-      );
-    }
-    // Map the server's "admin request failed: game not found" message to a
-    // Next.js 404. The lib/admin helper surfaces JunjoError envelopes via
-    // `Error("admin request failed: <message>")`; the substring match is
-    // intentionally narrow.
-    if (err instanceof Error && /not.?found/i.test(err.message)) {
+    if (
+      err instanceof Error &&
+      !(err instanceof AdminDisabledError) &&
+      /not.?found/i.test(err.message)
+    ) {
       notFound();
     }
     return (
-      <ErrorCard
-        title="Could not load game"
-        body={err instanceof Error ? err.message : "unknown error fetching the game"}
-      />
+      <>
+        <PageHeader title="Game" />
+        <main className="flex-1 px-6 pb-12 pt-4">
+          <Notice
+            title={
+              err instanceof AdminDisabledError
+                ? "Cross-game access is off"
+                : "Could not load the game"
+            }
+            body={
+              err instanceof AdminDisabledError
+                ? "Set JUNJO_ADMIN_TOKEN on the dashboard and the server to open games."
+                : err instanceof Error
+                  ? err.message
+                  : "The game request failed."
+            }
+          />
+        </main>
+      </>
     );
   }
 
-  return (
-    <div className="space-y-6">
-      <GameDetailHeader game={game} />
-      <Suspense fallback={<ApiKeysSectionSkeleton />}>
-        <ApiKeysSection gameId={game.id} />
-      </Suspense>
-    </div>
-  );
-}
-
-export default async function GameDetailPage(props: GameDetailPageProps) {
-  const params = await props.params;
+  const base = `/games/${encodeURIComponent(game.id)}`;
   return (
     <>
-      <Topbar title="Game detail" description="Issue and revoke API keys for this game." />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-2xl">
-          <GameBody gameId={params.gameId} />
+      <PageHeader
+        title={game.name}
+        meta={
+          <>
+            <span className="font-mono">{game.id}</span>
+            <span className="mx-2 text-border">/</span>
+            created {dateFormatter.format(new Date(game.createdAt))}
+          </>
+        }
+      />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="flex max-w-screen-xl flex-col gap-10">
+          <GameFigures game={game} />
+          <div className="grid gap-10 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <Suspense fallback={<div className="h-48 animate-pulse rounded bg-muted" />}>
+              <ApiKeysSection gameId={game.id} />
+            </Suspense>
+            <Section
+              title="Recent activity"
+              actions={
+                <>
+                  <LiveRefresh storageKey={`junjo.live.${game.id}`} />
+                  <Link href={`${base}/audit`} className="text-sm text-primary hover:underline">
+                    Full audit log
+                  </Link>
+                </>
+              }
+            >
+              <Suspense fallback={<div className="h-48 animate-pulse rounded bg-muted" />}>
+                <GameActivity game={game} />
+              </Suspense>
+            </Section>
+          </div>
         </div>
       </main>
     </>

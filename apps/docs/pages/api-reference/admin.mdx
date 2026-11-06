@@ -1961,6 +1961,44 @@ curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
 }
 ```
 
+## Per-game routes as any game: `/v1/admin/games/:gameId/as-game/*`
+
+Every per-game route is also served under `/v1/admin/games/:gameId/as-game`, authenticated by the admin token instead of an API key. The request runs the same handler as if a key for `:gameId` had authenticated it, so the request body, query, response and errors match the per-game route. For example, `GET /v1/admin/games/G/as-game/users/U/moderation` answers exactly like `GET /v1/users/U/moderation` called with a key for game `G`. The admin token already reads and writes every game through the routes above, so the mount grants nothing new; it saves the dashboard from needing an admin copy of each per-game route.
+
+```bash
+curl https://api.junjo.io/v1/admin/games/$GAME_ID/as-game/users/alice/moderation \
+  -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN"
+```
+
+### Behavior
+
+- **Game.** Taken from `:gameId`. The game's declared id formats (`identity.formats` in its [config](#patch-v1admingamesgameidconfig)) apply, the same as for a key request.
+- **Attribution.** Writes carry no API key: audit entries record `apiKeyId: null`, like every other admin-token write. No [preferred namespaces](./identity#preferred-namespaces) apply, so each person renders as their earliest-linked id. A response can therefore name a person differently from the same call made with a key that has a preference.
+- **Idempotency.** A malformed `Idempotency-Key` header still returns `400 bad_request`, but no record is kept, since records are scoped to an API key. A retried write runs again. Use `If-Match` where the route supports it to guard retries.
+- **Isolation.** Each request sees only the path's game, exactly as a key for that game would.
+
+### Routes not served
+
+These per-game routes read the authenticating key itself, so the mount leaves them out and they answer `404`:
+
+| Route | Why |
+|-------|-----|
+| `GET /events` | The game event stream holds per-key stream slots and re-checks the key's revocation while open. |
+| `GET /events/:groupId` | The group event stream re-checks the key's revocation while open. |
+| `GET /export` | The export requires a key with `canExport`. |
+| `POST /link-codes/redeem` | Failed redeems spend a per-key budget. |
+
+`GET /events/position` is served. The unauthenticated `GET /invitations/:code` is not part of the per-game set; call it directly.
+
+### Errors
+
+| Status | Code | When |
+|--------|------|------|
+| 401 | `invalid_admin_token` | Missing, wrong or per-game bearer token, or admin endpoints disabled. |
+| 404 | `not_found` | No game has this `:gameId` (`"game not found"`), or the path is not a served per-game route. |
+
+Every other error is the per-game route's own.
+
 ## SDK
 
 Not part of the per-game `@junjo.io/sdk` surface. The dashboard calls these endpoints directly via `fetch` because the per-game SDK shape (one `Junjo` instance, one API key, one game) does not fit a server-wide query.

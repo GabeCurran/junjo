@@ -1,24 +1,22 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { CheckCircle2, MinusCircle, ShieldOff, UserX, XCircle } from "lucide-react";
 import { useActionState, useId } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
+  type CheckPermissionInputs,
   type CheckPermissionResult,
   checkPermissionAction,
 } from "../../app/(dashboard)/games/[gameId]/permissions/check/actions";
 import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   type AdminPermissionCheckResult,
-  type AdminPermissionSource,
 } from "../../lib/admin-shared";
-import { Badge } from "../ui/badge";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
-import { Label } from "../ui/label";
+import { RoleChip } from "../ui/role-chip";
 
 interface PermissionCheckTesterProps {
   gameId: string;
@@ -30,7 +28,7 @@ function SubmitButton() {
   const { pending } = useFormStatus();
   return (
     <Button type="submit" disabled={pending}>
-      {pending ? "Resolving..." : "Run check"}
+      {pending ? "Checking..." : "Check permission"}
     </Button>
   );
 }
@@ -40,165 +38,176 @@ export function PermissionCheckTester({ gameId }: PermissionCheckTesterProps) {
   const userIdId = useId();
   const groupIdId = useId();
   const permissionId = useId();
+  const contextId = useId();
 
   const echoedInputs = state.ok ? state.inputs : (state.inputs ?? null);
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Resolve a (user, group, permission) triple</CardTitle>
-          <CardDescription>
-            Returns the same answer the dev's runtime <code className="font-mono">junjo.can()</code>{" "}
-            call sees. Reads through the same in-process cache mutations invalidate, so a recent
-            grant or revoke shows up immediately.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form action={formAction} className="space-y-4">
-            <input type="hidden" name="gameId" value={gameId} />
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor={userIdId}>External user id</Label>
-                <Input
-                  id={userIdId}
-                  name="userId"
-                  required
-                  defaultValue={echoedInputs?.userId ?? ""}
-                  placeholder="user_2abc..."
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor={groupIdId}>Group id</Label>
-                <Input
-                  id={groupIdId}
-                  name="groupId"
-                  required
-                  defaultValue={echoedInputs?.groupId ?? ""}
-                  placeholder="grp_..."
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor={permissionId}>Permission key</Label>
-                <Input
-                  id={permissionId}
-                  name="permission"
-                  required
-                  maxLength={ADMIN_PERMISSION_KEY_MAX_LENGTH}
-                  defaultValue={echoedInputs?.permission ?? ""}
-                  placeholder="invite_member"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-              </div>
-            </div>
-            {!state.ok && state.error ? (
-              <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {state.error}
-              </div>
-            ) : null}
-            <div className="flex justify-end">
-              <SubmitButton />
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-      {state.ok ? <ResultPanel result={state.result} inputs={state.inputs} /> : null}
+    <div className="flex flex-col gap-8">
+      <form
+        action={formAction}
+        className="grid items-end gap-3 rounded-md border border-border p-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+      >
+        <input type="hidden" name="gameId" value={gameId} />
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={userIdId} className="text-xs text-muted-foreground">
+            User id
+          </label>
+          <Input
+            id={userIdId}
+            name="userId"
+            required
+            defaultValue={echoedInputs?.userId ?? ""}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={groupIdId} className="text-xs text-muted-foreground">
+            Group id
+          </label>
+          <Input
+            id={groupIdId}
+            name="groupId"
+            required
+            defaultValue={echoedInputs?.groupId ?? ""}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={permissionId} className="text-xs text-muted-foreground">
+            Permission
+          </label>
+          <Input
+            id={permissionId}
+            name="permission"
+            required
+            maxLength={ADMIN_PERMISSION_KEY_MAX_LENGTH}
+            defaultValue={echoedInputs?.permission ?? ""}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={contextId} className="text-xs text-muted-foreground">
+            Context (optional)
+          </label>
+          <Input
+            id={contextId}
+            name="context"
+            placeholder="world=pvp"
+            defaultValue={echoedInputs?.context ?? ""}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
+        </div>
+        <SubmitButton />
+        {!state.ok && state.error ? (
+          <p role="alert" className="text-sm text-destructive md:col-span-2 xl:col-span-5">
+            {state.error}
+          </p>
+        ) : null}
+      </form>
+      <div aria-live="polite">
+        {state.ok ? (
+          <ResultPanel result={state.result} inputs={state.inputs} role={state.role} />
+        ) : null}
+      </div>
     </div>
   );
 }
 
 interface ResultPanelProps {
   result: AdminPermissionCheckResult;
-  inputs: { userId: string; groupId: string; permission: string };
+  inputs: CheckPermissionInputs;
+  role?: { name: string; color: string | null };
 }
 
-function ResultPanel({ result, inputs }: ResultPanelProps) {
-  const explanation = explainResult(result);
-  const SourceIcon = sourceIcon(result.source);
-
+function ResultPanel({ result, inputs, role }: ResultPanelProps) {
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="text-base">Result</CardTitle>
-          <Badge variant={result.allowed ? "default" : "destructive"}>
-            {result.allowed ? "Allowed" : "Denied"}
-          </Badge>
-          <Badge variant="muted">
-            <SourceIcon className="mr-1 h-3 w-3" aria-hidden />
-            source: {result.source}
-          </Badge>
-          {result.viaRoleId ? (
-            <Badge variant="outline" className="font-mono">
-              viaRoleId: {result.viaRoleId}
-            </Badge>
-          ) : null}
-        </div>
-        <CardDescription>{explanation}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid gap-3 text-xs md:grid-cols-3">
-          <div>
-            <dt className="text-muted-foreground">External user id</dt>
-            <dd className="mt-1 break-all font-mono">{inputs.userId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Group id</dt>
-            <dd className="mt-1 break-all font-mono">{inputs.groupId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Permission key</dt>
-            <dd className="mt-1 break-all font-mono">{inputs.permission}</dd>
-          </div>
-        </dl>
-      </CardContent>
-    </Card>
+    <section className="flex flex-col gap-3">
+      <p
+        className={cn(
+          "font-condensed text-4xl font-semibold tracking-tight",
+          result.allowed ? "text-allow" : "text-destructive",
+        )}
+      >
+        {result.allowed ? "Allowed" : "Denied"}
+      </p>
+      <p className="text-sm">{decidedBy(result)}</p>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Source</dt>
+        <dd>{SOURCE_LABELS[result.source] ?? result.source}</dd>
+        {result.viaRoleId ? (
+          <>
+            <dt className="text-muted-foreground">Role</dt>
+            <dd>
+              {role ? (
+                <RoleChip name={role.name} color={role.color} title={result.viaRoleId} />
+              ) : (
+                <span className="break-all font-mono text-xs leading-5">{result.viaRoleId}</span>
+              )}
+            </dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">User</dt>
+        <dd className="break-all font-mono text-xs leading-5">{inputs.userId}</dd>
+        <dt className="text-muted-foreground">Group</dt>
+        <dd className="break-all font-mono text-xs leading-5">{inputs.groupId}</dd>
+        <dt className="text-muted-foreground">Permission</dt>
+        <dd className="break-all font-mono text-xs leading-5">{inputs.permission}</dd>
+        {inputs.context ? (
+          <>
+            <dt className="text-muted-foreground">Checked in</dt>
+            <dd className="break-all font-mono text-xs leading-5">{inputs.context}</dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">Decided by</dt>
+        <dd className="break-all text-xs leading-5">
+          {result.context ? (
+            <span className="font-mono">
+              {Object.entries(result.context)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(", ")}
+            </span>
+          ) : (
+            "a global entry"
+          )}
+        </dd>
+      </dl>
+    </section>
   );
 }
 
-function sourceIcon(source: AdminPermissionSource) {
-  switch (source) {
-    case "role":
-      return CheckCircle2;
-    case "override":
-      return ShieldOff;
-    case "default":
-      return MinusCircle;
-    case "none":
-      return UserX;
-    default:
-      return XCircle;
-  }
-}
+const SOURCE_LABELS: Record<string, string> = {
+  role: "Role entry",
+  override: "Member override",
+  default: "Default",
+  none: "No membership",
+};
 
-// Plain-English explanation rendered next to the result badge. The
-// `role` and `override` branches surface the `allowed` flag because
-// overrides can resolve in either direction ("Revoked by member-level
-// override" needs to be distinct from "Granted by member-level
-// override"); role grants are always positive in V1.
-function explainResult(result: AdminPermissionCheckResult): string {
+// One line on what decided the result. Roles and overrides can decide in
+// either direction, so both branches read the `allowed` flag.
+function decidedBy(result: AdminPermissionCheckResult): string {
   switch (result.source) {
     case "role":
-      return result.viaRoleId
-        ? `Granted by role ${result.viaRoleId} (the highest-priority role this member has that grants the permission).`
-        : "Granted by a role this member has.";
+      return result.allowed
+        ? "A role entry the user holds grants it."
+        : "A role entry the user holds denies it.";
     case "override":
       return result.allowed
-        ? "Granted by member-level override (the override sits above any role-derived rule)."
-        : "Revoked by member-level override (the override sits above any role-derived rule).";
+        ? "A member override grants it, ahead of any role."
+        : "A member override denies it, ahead of any role.";
     case "default":
-      return "Active member with no role-derived grant and no override - permission denied by default.";
+      return "No role entry or override matches, so the default applies.";
     case "none":
-      return "Not a member of the group, or member is not in active status. The user has no effective standing here.";
+      return "The user is not an active member of this group.";
     default:
-      return "Unknown source.";
+      return `Decided by ${result.source}.`;
   }
 }

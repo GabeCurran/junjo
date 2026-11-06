@@ -1,12 +1,13 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { Eye, EyeOff, Layers, Lock, Users } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-
-import type { AdminGroup } from "../../lib/admin";
-import { Badge } from "../ui/badge";
-import { Card, CardContent } from "../ui/card";
+import type { AdminGroup } from "../../lib/admin-shared";
 
 const numberFormatter = new Intl.NumberFormat("en-US");
+
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
 
 const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
@@ -16,57 +17,59 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
 });
 
-const VISIBILITY_ICON: Record<string, LucideIcon> = {
-  public: Eye,
-  "invite-only": Lock,
-  secret: EyeOff,
+// Labels for the stored visibility values; unknown values show as stored.
+const VISIBILITY_LABELS: Record<string, string> = {
+  public: "Public",
+  "invite-only": "Invite-only",
+  secret: "Secret",
 };
 
-interface GroupDetailHeaderProps {
-  group: AdminGroup;
+export function visibilityLabel(visibility: string): string {
+  return VISIBILITY_LABELS[visibility] ?? visibility;
 }
 
-export function GroupDetailHeader({ group }: GroupDetailHeaderProps) {
-  const VisibilityIcon = VISIBILITY_ICON[group.visibility] ?? Lock;
+// The page header's meta line: id, kind, visibility.
+export function GroupMeta({ group }: { group: AdminGroup }) {
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-md border border-border bg-card text-primary">
-            <Layers className="h-6 w-6" aria-hidden />
-          </div>
-          <div className="flex flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold tracking-tight">{group.name}</h2>
-              <Badge variant="muted" className="font-mono">
-                {group.kind}
-              </Badge>
-              <Badge variant="secondary" className="inline-flex items-center gap-1">
-                <VisibilityIcon className="h-3 w-3" aria-hidden />
-                {group.visibility}
-              </Badge>
-            </div>
-            <p className="font-mono text-xs text-muted-foreground">{group.id}</p>
-            <p className="text-xs text-muted-foreground">
-              Created {dateTimeFormatter.format(new Date(group.createdAt))} - Updated{" "}
-              {dateTimeFormatter.format(new Date(group.updatedAt))}
-            </p>
-          </div>
-        </div>
-        <Card className="sm:w-56">
-          <CardContent className="flex items-center justify-between gap-4 p-4">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                Active members
-              </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">
-                {numberFormatter.format(group.memberCount)}
-              </p>
-            </div>
-            <Users className="h-6 w-6 text-muted-foreground" aria-hidden />
-          </CardContent>
-        </Card>
-      </div>
+    <>
+      <span className="font-mono">{group.id}</span>
+      <span className="mx-2 text-border">/</span>
+      {group.kind}
+      <span className="mx-2 text-border">/</span>
+      {visibilityLabel(group.visibility)}
+    </>
+  );
+}
+
+function Figure({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="flex flex-col-reverse">
+      <dt className="mt-1 text-sm text-muted-foreground">{label}</dt>
+      <dd className="font-condensed text-3xl font-semibold tabular-nums leading-none">{value}</dd>
     </div>
+  );
+}
+
+function DateFigure({ iso, label }: { iso: string; label: string }) {
+  return (
+    <div className="flex flex-col-reverse">
+      <dt className="mt-1 text-sm text-muted-foreground">{label}</dt>
+      <dd className="text-base font-medium tabular-nums leading-none">
+        <time dateTime={iso} title={dateTimeFormatter.format(new Date(iso))}>
+          {dateFormatter.format(new Date(iso))}
+        </time>
+      </dd>
+    </div>
+  );
+}
+
+// The group's size and age, as a row of figures under the page header.
+export function GroupFigures({ group }: { group: AdminGroup }) {
+  return (
+    <dl className="flex flex-wrap items-end gap-x-12 gap-y-4">
+      <Figure value={numberFormatter.format(group.memberCount)} label="active members" />
+      <DateFigure iso={group.createdAt} label="created" />
+      <DateFigure iso={group.updatedAt} label="updated" />
+    </dl>
   );
 }

@@ -2,12 +2,12 @@
 "use client";
 
 import { Legend, LineChart } from "@tremor/react";
-import { TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminGroupGrowth, AdminGroupGrowthSeries } from "../../lib/admin-shared";
 import { CHART_MULTI_PALETTE, ChartTooltip } from "../../lib/chart-colors";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Section } from "../ui/section";
+import { ChartEmpty } from "./analytics-empty-state";
 
 interface GroupGrowthChartProps {
   data: AdminGroupGrowth;
@@ -94,20 +94,6 @@ function describeBucketSize(bucketSizeMs: number): string {
   return `every ${days} day${days === 1 ? "" : "s"}`;
 }
 
-function formatWindow(from: string, to: string): string {
-  return `${formatShortDate(from)} - ${formatShortDate(to)}`;
-}
-
-function formatShortDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(d);
-}
-
 // Picks a tick formatter that matches the bucket cadence. Hourly /
 // 6-hourly buckets show time; daily and coarser only show the date.
 // Falls back to a date-with-time short stamp so a custom server-side
@@ -155,67 +141,35 @@ export function GroupGrowthChart({ data }: GroupGrowthChartProps) {
   const cadence = describeBucketSize(data.bucketSizeMs);
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start gap-3 space-y-0">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-secondary">
-          <TrendingUp className="h-4 w-4 text-secondary-foreground" aria-hidden />
+    <Section title="Group growth" meta={`Active members, ${cadence}`}>
+      {hasSeries && hasBuckets ? (
+        <div className="flex flex-col gap-3">
+          <LineChart
+            data={rows}
+            index="bucket"
+            categories={categoryNames}
+            colors={colors}
+            valueFormatter={formatCount}
+            yAxisWidth={48}
+            showLegend={false}
+            customTooltip={ChartTooltip}
+            allowDecimals={false}
+            connectNulls
+            // Wide windows produce 50+ buckets; show only the first and
+            // last x-axis ticks to avoid crowding. Narrow windows keep
+            // every label.
+            startEndOnly={data.buckets.length > 12}
+            className="h-80"
+          />
+          <Legend categories={categoryNames} colors={colors} className="justify-center" />
         </div>
-        <div className="flex-1 space-y-1.5">
-          <CardTitle className="text-base">Group growth over time</CardTitle>
-          <CardDescription>
-            Cumulative active member counts at every bucket boundary. Top groups by current member
-            count plus an "All others" aggregate when the game has more groups than the configured
-            top-N.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Window</p>
-            <p className="mt-1 font-medium text-foreground">{formatWindow(data.from, data.to)}</p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Cadence</p>
-            <p className="mt-1 font-medium capitalize text-foreground">{cadence}</p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Series</p>
-            <p className="mt-1 font-medium tabular-nums text-foreground">
-              {formatCount(columns.length)}
-            </p>
-          </div>
-        </div>
-
-        {hasSeries && hasBuckets ? (
-          <div className="flex flex-col gap-3">
-            <LineChart
-              data={rows}
-              index="bucket"
-              categories={categoryNames}
-              colors={colors}
-              valueFormatter={formatCount}
-              yAxisWidth={48}
-              showLegend={false}
-              customTooltip={ChartTooltip}
-              allowDecimals={false}
-              connectNulls
-              // Wide windows produce 50+ buckets; show only the first and
-              // last x-axis ticks to avoid crowding. Narrow windows keep
-              // every label.
-              startEndOnly={data.buckets.length > 12}
-              className="h-80"
-            />
-            <Legend categories={categoryNames} colors={colors} className="justify-center" />
-          </div>
-        ) : (
-          <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
-            {data.buckets.length === 0
-              ? "No buckets generated for this window. Pick a wider range."
-              : "No groups in this game yet. Create a group to start tracking growth."}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      ) : (
+        <ChartEmpty>
+          {data.buckets.length === 0
+            ? "A wider date range fills this chart."
+            : "Groups with active members fill this chart."}
+        </ChartEmpty>
+      )}
+    </Section>
   );
 }

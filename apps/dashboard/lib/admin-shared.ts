@@ -363,6 +363,8 @@ export interface AdminGroupAuditPage {
   nextCursor: string | null;
 }
 
+// Mirrors `AUDIT_ACTIONS` in `packages/server/src/routes/audit.schema.ts`,
+// in the same order; the server refuses an `actions` filter outside it.
 export const ADMIN_AUDIT_ACTIONS: readonly string[] = [
   "group.created",
   "group.updated",
@@ -372,22 +374,80 @@ export const ADMIN_AUDIT_ACTIONS: readonly string[] = [
   "group.relationship.cleared",
   "group.parent.set",
   "group.parent.cleared",
+  "group.passcode.set",
+  "group.passcode.cleared",
   "member.invited",
   "member.joined",
   "member.left",
   "member.kicked",
+  "member.banned",
+  "member.unbanned",
   "member.metadata.updated",
   "member.notes.updated",
+  "game.user.banned",
+  "game.user.unbanned",
+  "game.user.sanctioned",
+  "game.user.unsanctioned",
+  "game.permissions.mode.set",
   "role.created",
   "role.updated",
   "role.deleted",
   "role.assigned",
   "role.unassigned",
+  "role.entries.changed",
+  "role.parents.set",
   "permission.granted",
   "permission.revoked",
   "permission.override.set",
   "permission.override.cleared",
+  "identity.linked",
+  "identity.unlinked",
 ];
+
+// Plain-word names for the action filter. The filter still sends the
+// action string itself.
+export const ADMIN_AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
+  "group.created": "Group created",
+  "group.updated": "Group edited",
+  "group.deleted": "Group deleted",
+  "group.restored": "Group restored",
+  "group.relationship.set": "Relationship set",
+  "group.relationship.cleared": "Relationship cleared",
+  "group.parent.set": "Parent group set",
+  "group.parent.cleared": "Parent group cleared",
+  "group.passcode.set": "Passcode set",
+  "group.passcode.cleared": "Passcode cleared",
+  "member.invited": "Member invited",
+  "member.joined": "Member joined",
+  "member.left": "Member left",
+  "member.kicked": "Member kicked",
+  "member.banned": "Member banned from a group",
+  "member.unbanned": "Member unbanned from a group",
+  "member.metadata.updated": "Member metadata changed",
+  "member.notes.updated": "Member notes changed",
+  "game.user.banned": "User banned from the game",
+  "game.user.unbanned": "User unbanned from the game",
+  "game.user.sanctioned": "Sanction added",
+  "game.user.unsanctioned": "Sanction lifted",
+  "game.permissions.mode.set": "Permission mode changed",
+  "role.created": "Role created",
+  "role.updated": "Role edited",
+  "role.deleted": "Role deleted",
+  "role.assigned": "Role given",
+  "role.unassigned": "Role taken away",
+  "role.entries.changed": "Role permissions changed",
+  "role.parents.set": "Role inheritance changed",
+  "permission.granted": "Permission granted",
+  "permission.revoked": "Permission revoked",
+  "permission.override.set": "Override set",
+  "permission.override.cleared": "Override cleared",
+  "identity.linked": "Identity linked",
+  "identity.unlinked": "Identity unlinked",
+};
+
+export function adminAuditActionLabel(action: string): string {
+  return ADMIN_AUDIT_ACTION_LABELS[action] ?? action;
+}
 
 export const ADMIN_AUDIT_PAGE_SIZE_OPTIONS: readonly number[] = [25, 50, 100];
 export const ADMIN_AUDIT_DEFAULT_PAGE_SIZE = 50;
@@ -499,6 +559,8 @@ export interface AdminPermissionCheckResult {
   allowed: boolean;
   source: AdminPermissionSource;
   viaRoleId?: string;
+  // The deciding entry's context; absent when a global entry decided.
+  context?: AdminPermissionContext;
 }
 
 export interface AdminRoleSlice {
@@ -531,4 +593,28 @@ export interface FetchAdminPermissionCheckParams {
   userId: string;
   groupId: string;
   permission: string;
+  // Absent or empty checks only global entries.
+  context?: AdminPermissionContext;
 }
+
+// Game config shapes the settings page edits. Mirrors GameConfig in
+// `packages/shared/src/types.ts`.
+export type AdminPermissionMode = "exact" | "nodes";
+export const ADMIN_PERMISSION_MODES: readonly AdminPermissionMode[] = ["exact", "nodes"];
+
+// Context key to value inheritance: each value lists the values whose
+// entries it also sees, nearest first.
+export type AdminContextInheritance = Record<string, { inherit: Record<string, string[]> }>;
+export const ADMIN_CONTEXT_KEY_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+
+export type AdminUserIdFormat = "uuid";
+export const ADMIN_USER_ID_FORMATS: readonly AdminUserIdFormat[] = ["uuid"];
+export const ADMIN_USER_ID_NAMESPACE_PATTERN = /^[a-z0-9_-]{1,32}$/;
+
+export interface AdminGroupKindLimits {
+  maxMembers?: number;
+  maxPerUser?: number;
+  deleteWhenEmpty?: boolean;
+  idleDeleteHours?: number;
+}
+export const ADMIN_GROUP_KIND_MAX_LENGTH = 64;

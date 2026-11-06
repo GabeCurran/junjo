@@ -1,12 +1,11 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { Activity } from "lucide-react";
 import { useMemo } from "react";
 
 import type { AdminMemberActivity } from "../../lib/admin-shared";
-import { CHART_BRAND_HSL } from "../../lib/chart-colors";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Section } from "../ui/section";
+import { ChartEmpty } from "./analytics-empty-state";
 
 interface MemberActivityHeatmapProps {
   data: AdminMemberActivity;
@@ -29,23 +28,6 @@ const HOURS: ReadonlyArray<number> = [
 // readable without overlapping; hover or focus on any cell still reveals
 // its exact hour through the cell's `title` and `aria-label`.
 const HOUR_LABEL_STRIDE = 3;
-
-function describeWindow(data: AdminMemberActivity): string {
-  if (data.from && data.to) return `From ${formatDate(data.from)} to ${formatDate(data.to)}`;
-  if (data.from && !data.to) return `Since ${formatDate(data.from)}`;
-  if (!data.from && data.to) return `Up to ${formatDate(data.to)}`;
-  return "All-time";
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(d);
-}
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
@@ -98,15 +80,11 @@ function intensity(count: number, max: number): number {
   return 0.08 + 0.92 * Math.sqrt(ratio);
 }
 
-// Coral brand HSL (mirrors `--primary` in `app/globals.css`). The
-// heatmap interpolates opacity on this hue / saturation / lightness
-// anchor to produce its intensity ramp; sourcing from chart-colors
-// means a brand re-tint flows through every chart at once.
-const HEATMAP_HSL = CHART_BRAND_HSL;
-
+// The intensity ramp is the `--primary` coral token at varying opacity,
+// so the heatmap follows the theme's own coral in light and dark mode.
 function cellStyle(opacity: number): React.CSSProperties {
   if (opacity <= 0) return {};
-  return { backgroundColor: `hsl(${HEATMAP_HSL} / ${opacity})` };
+  return { backgroundColor: `hsl(var(--primary) / ${opacity})` };
 }
 
 function describeCell(dow: number, hour: number, count: number): string {
@@ -121,55 +99,23 @@ export function MemberActivityHeatmap({ data }: MemberActivityHeatmapProps) {
   const peak = useMemo(() => pickPeak(data.cells), [data.cells]);
   const hasActivity = data.totalEvents > 0;
 
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-start gap-3 space-y-0">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-secondary">
-          <Activity className="h-4 w-4 text-secondary-foreground" aria-hidden />
-        </div>
-        <div className="flex-1 space-y-1.5">
-          <CardTitle className="text-base">Member activity heatmap</CardTitle>
-          <CardDescription>
-            Audit-entry counts bucketed by UTC day-of-week and hour-of-day across every group in
-            this game. Every action type contributes; entries from soft-deleted groups are included
-            so prior activity stays visible after a group is removed.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Window</p>
-            <p className="mt-1 font-medium text-foreground">{describeWindow(data)}</p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Total events</p>
-            <p className="mt-1 font-medium tabular-nums text-foreground">
-              {formatCount(data.totalEvents)}
-            </p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Peak hour (UTC)</p>
-            <p className="mt-1 font-medium text-foreground">
-              {peak
-                ? `${DAY_LABELS[peak.dow]} ${formatHour(peak.hour)} - ${formatCount(peak.count)}`
-                : "-"}
-            </p>
-          </div>
-        </div>
+  const total = data.totalEvents;
+  const busiest = peak ? `, busiest ${DAY_LABELS[peak.dow]} ${formatHour(peak.hour)}` : "";
 
-        {hasActivity ? (
-          <div className="space-y-2">
-            <HeatmapTable cells={data.cells} max={max} />
-            <HeatmapLegend max={max} />
-          </div>
-        ) : (
-          <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
-            No audit activity in this window. Pick a wider date range or wait for events to land.
-          </div>
-        )}
-      </CardContent>
-    </Card>
+  return (
+    <Section
+      title="Activity by hour"
+      meta={`${formatCount(total)} ${total === 1 ? "event" : "events"} in UTC${busiest}`}
+    >
+      {hasActivity ? (
+        <div className="space-y-2">
+          <HeatmapTable cells={data.cells} max={max} />
+          <HeatmapLegend max={max} />
+        </div>
+      ) : (
+        <ChartEmpty>Audit entries written in this range fill this chart.</ChartEmpty>
+      )}
+    </Section>
   );
 }
 

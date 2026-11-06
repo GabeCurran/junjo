@@ -50,7 +50,7 @@ test.describe("dashboard smoke", () => {
   test("nav exposes the top-level destinations and a game's own menu", async ({ page }) => {
     await page.goto("/overview");
     const nav = page.getByRole("navigation");
-    for (const label of ["Dashboard", "Games"]) {
+    for (const label of ["Overview", "Games"]) {
       await expect(nav.getByRole("link", { name: label }).first()).toBeVisible();
     }
     await page.goto("/games");

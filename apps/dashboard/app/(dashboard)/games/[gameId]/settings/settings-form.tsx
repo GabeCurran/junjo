@@ -1,42 +1,52 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { useState, useTransition } from "react";
-import type { AdminGameConfig, AdminGameConfigPatch } from "../../../../../lib/admin";
-import { updateGameConfigAction } from "./actions";
+import { useState } from "react";
 
-const VISIBILITY_OPTIONS: ("private" | "friends-only" | "public")[] = [
-  "private",
-  "friends-only",
-  "public",
+import type { AdminGameConfig, AdminGameConfigPatch } from "../../../../../lib/admin";
+import { PermissionSettings } from "./permission-settings";
+import {
+  NumberField,
+  SaveStatus,
+  Segmented,
+  SettingRow,
+  SettingsGroup,
+  Switch,
+  TextField,
+  useConfigSave,
+} from "./primitives";
+import { StructureSettings } from "./structure-settings";
+
+type Visibility = "private" | "friends-only" | "public";
+
+const VISIBILITY_OPTIONS: readonly { value: Visibility; label: string }[] = [
+  { value: "private", label: "Private" },
+  { value: "friends-only", label: "Friends only" },
+  { value: "public", label: "Public" },
 ];
+
+const SECTIONS = [
+  { id: "permissions", label: "Permissions" },
+  { id: "identity", label: "Identity" },
+  { id: "groups", label: "Groups" },
+  { id: "friends", label: "Friends" },
+  { id: "blocks", label: "Blocks" },
+] as const;
 
 interface SettingsFormProps {
   initial: AdminGameConfig;
   gameId: string;
 }
 
-export function SettingsForm({ initial, gameId }: SettingsFormProps) {
+// Friends, tags, visibility and blocks: each control saves on change.
+function SocialSettings({ initial, gameId }: SettingsFormProps) {
   const [config, setConfig] = useState(initial.config);
   const [networkId, setNetworkId] = useState<string | null>(initial.networkId);
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const friendsSave = useConfigSave(gameId);
+  const blocksSave = useConfigSave(gameId);
 
-  const submit = (patch: AdminGameConfigPatch) => {
-    setError(null);
-    startTransition(async () => {
-      const result = await updateGameConfigAction(gameId, patch);
-      if (!result.ok) {
-        setError(result.error ?? "save failed");
-      } else {
-        setSavedAt(new Date());
-      }
-    });
-  };
-
-  const updateFriends = (patch: AdminGameConfigPatch["config"]) => {
-    const friendsPatch = patch?.friends;
+  const updateFriends = (patch: NonNullable<AdminGameConfigPatch["config"]>) => {
+    const friendsPatch = patch.friends;
     if (!friendsPatch) return;
     setConfig((prev) => ({
       ...prev,
@@ -48,350 +58,210 @@ export function SettingsForm({ initial, gameId }: SettingsFormProps) {
         visibility: { ...prev.friends.visibility, ...(friendsPatch.visibility ?? {}) },
       },
     }));
-    submit({ config: patch });
-  };
-
-  const updateBlocks = (patch: AdminGameConfigPatch["config"]) => {
-    if (!patch?.blocks) return;
-    setConfig((prev) => ({ ...prev, blocks: { ...prev.blocks, ...patch.blocks } }));
-    submit({ config: patch });
-  };
-
-  const updateNetworkId = (value: string | null) => {
-    setNetworkId(value);
-    submit({ networkId: value });
+    friendsSave.save({ config: patch });
   };
 
   const f = config.friends;
-  const b = config.blocks;
+  const pending = friendsSave.pending;
 
   return (
-    <div className="flex flex-col gap-6">
-      {error ? (
-        <div className="rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      ) : null}
-      {savedAt && !error ? (
-        <div className="text-xs text-muted-foreground">
-          Saved {savedAt.toLocaleTimeString()}
-          {pending ? " (saving...)" : ""}
-        </div>
-      ) : null}
-
-      {/* Friends */}
-      <Section title="Friends">
-        <Toggle
-          label="Enable friends"
-          description="Master switch. When off, every friends route returns 404."
-          checked={f.enabled}
-          disabled={pending}
-          onChange={(v) => updateFriends({ friends: { enabled: v } })}
-        />
-        <Radio
-          label="Friend scope"
-          description="Just this game isolates friendships per game. Shared across my game network lets sibling games with the same Network ID see each others friendships."
-          value={f.scope}
-          options={[
-            { value: "per-game", label: "Just this game" },
-            { value: "network", label: "Shared across my game network" },
-          ]}
-          disabled={pending}
-          onChange={(v) => updateFriends({ friends: { scope: v as "per-game" | "network" } })}
-        />
-        {f.scope === "network" ? (
-          <TextInput
-            label="Network ID"
-            description="Sibling games with the same value AND scope=network share visibility."
-            value={networkId ?? ""}
+    <>
+      <SettingsGroup id="friends" title="Friends" status={<SaveStatus {...friendsSave} />}>
+        <SettingRow label="Friends" hint="Off turns every friends route into a 404.">
+          <Switch
+            label="Enable friends"
+            checked={f.enabled}
             disabled={pending}
-            onCommit={(v) => updateNetworkId(v.length > 0 ? v : null)}
+            onChange={(v) => updateFriends({ friends: { enabled: v } })}
           />
-        ) : null}
-        <Toggle
-          label="Require friend request acceptance"
-          description="When off, sending a request creates the friendship immediately (no pending state)."
-          checked={f.requestsRequired}
-          disabled={pending}
-          onChange={(v) => updateFriends({ friends: { requestsRequired: v } })}
-        />
-        <NumberInput
-          label="Max friends per user"
-          value={f.maxFriends}
-          disabled={pending}
-          onCommit={(v) => updateFriends({ friends: { maxFriends: v } })}
-        />
-        <NumberInput
-          label="Max pending outbound requests"
-          value={f.maxPendingRequests}
-          disabled={pending}
-          onCommit={(v) => updateFriends({ friends: { maxPendingRequests: v } })}
-        />
-      </Section>
-
-      {/* Tags & discovery */}
-      <Section title="Tags &amp; discovery">
-        <Toggle
-          label="Enable friend tags"
-          description="When off, tag routes return 404 and the dashboard hides tag UI."
-          checked={f.tags.enabled}
-          disabled={pending}
-          onChange={(v) => updateFriends({ friends: { tags: { enabled: v } } })}
-        />
-        <NumberInput
-          label="Max tags per user"
-          value={f.tags.maxPerUser}
-          disabled={pending}
-          onCommit={(v) => updateFriends({ friends: { tags: { maxPerUser: v } } })}
-        />
-        <Toggle
-          label="Enable mutual-friend suggestions"
-          checked={f.discovery.enabled}
-          disabled={pending}
-          onChange={(v) => updateFriends({ friends: { discovery: { enabled: v } } })}
-        />
-        <NumberInput
-          label="Minimum mutual friends for suggestions"
-          value={f.discovery.minMutuals}
-          disabled={pending}
-          onCommit={(v) => updateFriends({ friends: { discovery: { minMutuals: v } } })}
-        />
-      </Section>
-
-      {/* Visibility */}
-      <Section title="Visibility">
-        <CheckboxGroup
-          label="Allowed visibility levels"
-          description="The set users can choose from. Restricting this never deletes existing data."
-          values={f.visibility.allowed}
-          options={VISIBILITY_OPTIONS}
-          disabled={pending}
-          onChange={(values) =>
-            updateFriends({
-              friends: {
-                visibility: {
-                  allowed: values as ("private" | "friends-only" | "public")[],
-                },
-              },
-            })
-          }
-        />
-        <Radio
-          label="Default visibility for new users"
-          value={f.visibility.default}
-          options={f.visibility.allowed.map((v) => ({ value: v, label: v }))}
-          disabled={pending}
-          onChange={(v) =>
-            updateFriends({
-              friends: {
-                visibility: {
-                  default: v as "private" | "friends-only" | "public",
-                },
-              },
-            })
-          }
-        />
-      </Section>
-
-      {/* Blocks */}
-      <Section title="Blocks">
-        <Toggle
-          label="Enable blocks"
-          description="When off, block routes return 404."
-          checked={b.enabled}
-          disabled={pending}
-          onChange={(v) => updateBlocks({ blocks: { enabled: v } })}
-        />
-      </Section>
-    </div>
-  );
-}
-
-// =====================================================================
-// Tiny form primitives (kept inline to avoid pulling in another file
-// for a one-page surface)
-// =====================================================================
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <fieldset className="rounded-lg border border-border bg-card p-4">
-      <legend className="px-2 text-sm font-semibold">{title}</legend>
-      <div className="flex flex-col gap-4">{children}</div>
-    </fieldset>
-  );
-}
-
-function Toggle({
-  label,
-  description,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-start gap-3">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-1 h-4 w-4"
-      />
-      <div className="flex flex-col gap-0.5">
-        <span className="text-sm">{label}</span>
-        {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
-      </div>
-    </label>
-  );
-}
-
-function Radio({
-  label,
-  description,
-  value,
-  options,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  description?: string;
-  value: string;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-sm font-medium">{label}</span>
-      {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
-      <div className="mt-1 flex flex-col gap-1">
-        {options.map((opt) => (
-          <label key={opt.value} className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name={label}
-              value={opt.value}
-              checked={value === opt.value}
-              disabled={disabled}
-              onChange={() => onChange(opt.value)}
+        </SettingRow>
+        <SettingRow
+          label="Scope"
+          hint="Network shares friendships with games that use the same network id."
+        >
+          <div className="flex flex-col gap-3">
+            <Segmented
+              label="Friend scope"
+              value={f.scope}
+              options={[
+                { value: "per-game", label: "This game" },
+                { value: "network", label: "Network" },
+              ]}
+              disabled={pending}
+              onChange={(v) => updateFriends({ friends: { scope: v } })}
             />
-            {opt.label}
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function CheckboxGroup({
-  label,
-  description,
-  values,
-  options,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  description?: string;
-  values: string[];
-  options: string[];
-  disabled?: boolean;
-  onChange: (next: string[]) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-sm font-medium">{label}</span>
-      {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
-      <div className="mt-1 flex flex-col gap-1">
-        {options.map((opt) => (
-          <label key={opt} className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={values.includes(opt)}
-              disabled={disabled || (values.length === 1 && values[0] === opt)}
-              onChange={(e) => {
-                const next = e.target.checked
-                  ? Array.from(new Set([...values, opt]))
-                  : values.filter((v) => v !== opt);
-                if (next.length === 0) return; // never allow empty
-                onChange(next);
-              }}
+            {f.scope === "network" ? (
+              <TextField
+                value={networkId ?? ""}
+                placeholder="network id"
+                disabled={pending}
+                onCommit={(v) => {
+                  const next = v.length > 0 ? v : null;
+                  setNetworkId(next);
+                  friendsSave.save({ networkId: next });
+                }}
+              />
+            ) : null}
+          </div>
+        </SettingRow>
+        <SettingRow label="Requests" hint="Off makes a request an instant friendship.">
+          <Switch
+            label="Require friend request acceptance"
+            checked={f.requestsRequired}
+            disabled={pending}
+            onChange={(v) => updateFriends({ friends: { requestsRequired: v } })}
+          />
+        </SettingRow>
+        <SettingRow label="Max friends" htmlFor="max-friends">
+          <NumberField
+            id="max-friends"
+            value={f.maxFriends}
+            min={1}
+            max={100_000}
+            disabled={pending}
+            onCommit={(v) => updateFriends({ friends: { maxFriends: v } })}
+          />
+        </SettingRow>
+        <SettingRow label="Max pending requests" htmlFor="max-pending">
+          <NumberField
+            id="max-pending"
+            value={f.maxPendingRequests}
+            min={1}
+            max={10_000}
+            disabled={pending}
+            onCommit={(v) => updateFriends({ friends: { maxPendingRequests: v } })}
+          />
+        </SettingRow>
+        <SettingRow label="Tags" hint="Labels people put on their friends.">
+          <div className="flex items-center gap-4">
+            <Switch
+              label="Enable friend tags"
+              checked={f.tags.enabled}
+              disabled={pending}
+              onChange={(v) => updateFriends({ friends: { tags: { enabled: v } } })}
             />
-            {opt}
-          </label>
-        ))}
+            <span className="text-sm text-muted-foreground">up to</span>
+            <NumberField
+              value={f.tags.maxPerUser}
+              min={1}
+              max={1000}
+              disabled={pending}
+              onCommit={(v) => updateFriends({ friends: { tags: { maxPerUser: v } } })}
+            />
+            <span className="text-sm text-muted-foreground">per person</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Suggestions" hint="Suggest people who share enough mutual friends.">
+          <div className="flex items-center gap-4">
+            <Switch
+              label="Enable mutual-friend suggestions"
+              checked={f.discovery.enabled}
+              disabled={pending}
+              onChange={(v) => updateFriends({ friends: { discovery: { enabled: v } } })}
+            />
+            <span className="text-sm text-muted-foreground">at</span>
+            <NumberField
+              value={f.discovery.minMutuals}
+              min={1}
+              max={50}
+              disabled={pending}
+              onCommit={(v) => updateFriends({ friends: { discovery: { minMutuals: v } } })}
+            />
+            <span className="text-sm text-muted-foreground">mutuals</span>
+          </div>
+        </SettingRow>
+        <SettingRow
+          label="List visibility"
+          hint="Which levels people can pick, and the one new people start with. Narrowing it keeps existing choices."
+        >
+          <div className="flex flex-col gap-2">
+            {VISIBILITY_OPTIONS.map((opt) => {
+              const allowed = f.visibility.allowed.includes(opt.value);
+              const isDefault = f.visibility.default === opt.value;
+              return (
+                <div key={opt.value} className="flex items-center gap-4 text-sm">
+                  <label className="flex w-36 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={allowed}
+                      disabled={pending || isDefault}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...f.visibility.allowed, opt.value]
+                          : f.visibility.allowed.filter((v) => v !== opt.value);
+                        if (next.length > 0) {
+                          updateFriends({ friends: { visibility: { allowed: next } } });
+                        }
+                      }}
+                      className="h-4 w-4"
+                    />
+                    {opt.label}
+                  </label>
+                  {isDefault ? (
+                    <span className="text-muted-foreground">Default</span>
+                  ) : allowed ? (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() =>
+                        updateFriends({ friends: { visibility: { default: opt.value } } })
+                      }
+                      className="text-primary hover:underline disabled:opacity-50"
+                    >
+                      Make default
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup id="blocks" title="Blocks" status={<SaveStatus {...blocksSave} />}>
+        <SettingRow label="Blocks" hint="Off turns every block route into a 404.">
+          <Switch
+            label="Enable blocks"
+            checked={config.blocks.enabled}
+            disabled={blocksSave.pending}
+            onChange={(v) => {
+              setConfig((prev) => ({ ...prev, blocks: { ...prev.blocks, enabled: v } }));
+              blocksSave.save({ config: { blocks: { enabled: v } } });
+            }}
+          />
+        </SettingRow>
+      </SettingsGroup>
+    </>
+  );
+}
+
+export function SettingsForm({ initial, gameId }: SettingsFormProps) {
+  const c = initial.config;
+  return (
+    <div className="grid gap-10 lg:grid-cols-[10rem_minmax(0,1fr)]">
+      <nav aria-label="Settings sections" className="hidden lg:block">
+        <ul className="sticky top-8 flex flex-col gap-0.5 text-sm">
+          {SECTIONS.map((s) => (
+            <li key={s.id}>
+              <a
+                href={`#${s.id}`}
+                className="block rounded-sm px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {s.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <div className="flex min-w-0 flex-col gap-10">
+        <PermissionSettings
+          gameId={gameId}
+          mode={c.permissions.mode}
+          contexts={c.permissions.contexts}
+        />
+        <StructureSettings gameId={gameId} formats={c.identity.formats} kinds={c.groups.kinds} />
+        <SocialSettings initial={initial} gameId={gameId} />
       </div>
     </div>
-  );
-}
-
-function TextInput({
-  label,
-  description,
-  value,
-  disabled,
-  onCommit,
-}: {
-  label: string;
-  description?: string;
-  value: string;
-  disabled?: boolean;
-  onCommit: (v: string) => void;
-}) {
-  const [local, setLocal] = useState(value);
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-sm font-medium">{label}</span>
-      {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
-      <input
-        type="text"
-        value={local}
-        disabled={disabled}
-        onChange={(e) => setLocal(e.target.value)}
-        onBlur={() => {
-          if (local !== value) onCommit(local);
-        }}
-        className="rounded-md border border-border bg-background px-2 py-1 text-sm"
-      />
-    </label>
-  );
-}
-
-function NumberInput({
-  label,
-  description,
-  value,
-  disabled,
-  onCommit,
-}: {
-  label: string;
-  description?: string;
-  value: number;
-  disabled?: boolean;
-  onCommit: (v: number) => void;
-}) {
-  const [local, setLocal] = useState(String(value));
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-sm font-medium">{label}</span>
-      {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
-      <input
-        type="number"
-        value={local}
-        disabled={disabled}
-        onChange={(e) => setLocal(e.target.value)}
-        onBlur={() => {
-          const n = Number(local);
-          if (Number.isFinite(n) && n !== value) onCommit(n);
-        }}
-        className="w-32 rounded-md border border-border bg-background px-2 py-1 text-sm"
-      />
-    </label>
   );
 }

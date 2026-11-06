@@ -58,15 +58,14 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
       <DialogTrigger asChild>
         <Button size="sm">
           <Plus className="h-3.5 w-3.5" aria-hidden />
-          Add role
+          Create role
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Create role</DialogTitle>
           <DialogDescription>
-            Roles group permissions and can be assigned to members. Higher priority wins when
-            resolving conflicts; the optional color is a visual hint in the members table.
+            Higher priority wins when a member's roles disagree.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -83,7 +82,7 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
               autoComplete="off"
             />
             <p className="text-xs text-muted-foreground">
-              Up to {ADMIN_ROLE_NAME_MAX_LENGTH} characters. Must be unique within this group.
+              Unique in this group, up to {ADMIN_ROLE_NAME_MAX_LENGTH} characters.
             </p>
           </div>
           <div className="space-y-2">
@@ -96,10 +95,7 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
               defaultValue={0}
               step={1}
             />
-            <p className="text-xs text-muted-foreground">
-              Integer. Higher values win priority tiebreaks; common values: 0 (member), 50
-              (officer), 100 (leader).
-            </p>
+            <p className="text-xs text-muted-foreground">A whole number. Higher wins ties.</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor={colorId}>Color (optional)</Label>
@@ -112,8 +108,7 @@ export function CreateRoleDialog({ gameId, groupId }: CreateRoleDialogProps) {
               pattern="^#[0-9a-fA-F]{6}$"
             />
             <p className="text-xs text-muted-foreground">
-              Hex value like <code>#6366f1</code>. Surfaces as a dot next to the role name in the
-              members table. Leave blank for no color.
+              A six-digit hex color. The role shows in it everywhere. Leave blank for none.
             </p>
           </div>
           <div className="flex items-center gap-2">

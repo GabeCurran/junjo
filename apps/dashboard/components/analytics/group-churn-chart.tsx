@@ -2,11 +2,11 @@
 "use client";
 
 import { BarChart } from "@tremor/react";
-import { ActivitySquare } from "lucide-react";
 
 import type { AdminGroupChurn } from "../../lib/admin-shared";
 import { CHART_BRAND_COLOR, ChartTooltip } from "../../lib/chart-colors";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Section } from "../ui/section";
+import { ChartEmpty } from "./analytics-empty-state";
 
 interface GroupChurnChartProps {
   data: AdminGroupChurn;
@@ -26,37 +26,8 @@ function buildChartRows(data: AdminGroupChurn) {
   }));
 }
 
-// Renders the wire `from` / `to` window as one of: a preset-style "last X"
-// hint when only `from` is set (most common case from the date-range
-// picker's preset rows), or an explicit "from X to Y" sentence when both
-// bounds are set, or an "all-time" callout when both are omitted (only
-// reachable today via hand-edited URLs; the picker always sends `from`).
-function describeWindow(data: AdminGroupChurn): string {
-  if (data.from && data.to) {
-    return `From ${formatDate(data.from)} to ${formatDate(data.to)}`;
-  }
-  if (data.from && !data.to) {
-    return `Since ${formatDate(data.from)}`;
-  }
-  if (!data.from && data.to) {
-    return `Up to ${formatDate(data.to)}`;
-  }
-  return "All-time";
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(d);
-}
-
-// Single-axis number formatter for the Y-axis ticks and tooltip values.
-// Counts are always non-negative integers; rendering with thousands
-// separators (e.g., "1,254") matches the home page's stat tiles.
+// Y-axis ticks, tooltip values and the meta line: non-negative integer
+// counts with thousands separators.
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
@@ -66,61 +37,34 @@ export function GroupChurnChart({ data }: GroupChurnChartProps) {
   const hasDepartures = data.totalDeparturesInWindow > 0;
   const hasGroups = data.totalGroupsInWindow > 0;
 
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-start gap-3 space-y-0">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-secondary">
-          <ActivitySquare className="h-4 w-4 text-secondary-foreground" aria-hidden />
-        </div>
-        <div className="flex-1 space-y-1.5">
-          <CardTitle className="text-base">Group churn distribution</CardTitle>
-          <CardDescription>
-            Tenure histogram of kicked + left members across groups created in the selected window.
-            Bins are half-open; a tenure that lands exactly on a boundary goes into the higher bin.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Window</p>
-            <p className="mt-1 font-medium text-foreground">{describeWindow(data)}</p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Groups in window</p>
-            <p className="mt-1 font-medium tabular-nums text-foreground">
-              {formatCount(data.totalGroupsInWindow)}
-            </p>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <p className="text-muted-foreground">Total departures</p>
-            <p className="mt-1 font-medium tabular-nums text-foreground">
-              {formatCount(data.totalDeparturesInWindow)}
-            </p>
-          </div>
-        </div>
+  const departures = data.totalDeparturesInWindow;
+  const groups = data.totalGroupsInWindow;
 
-        {hasDepartures ? (
-          <BarChart
-            data={rows}
-            index="bin"
-            categories={[VALUE_KEY]}
-            colors={[CHART_BRAND_COLOR]}
-            customTooltip={ChartTooltip}
-            valueFormatter={formatCount}
-            yAxisWidth={48}
-            showLegend={false}
-            allowDecimals={false}
-            className="h-72"
-          />
-        ) : (
-          <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
-            {hasGroups
-              ? "No kicked or left members yet for groups created in this window. Pick a wider range or wait for activity."
-              : "No groups were created in this window. Pick a wider range or check the games list to confirm activity."}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+  return (
+    <Section
+      title="Churn by tenure"
+      meta={`${formatCount(departures)} ${departures === 1 ? "departure" : "departures"} from ${formatCount(groups)} ${groups === 1 ? "group" : "groups"} created in this range`}
+    >
+      {hasDepartures ? (
+        <BarChart
+          data={rows}
+          index="bin"
+          categories={[VALUE_KEY]}
+          colors={[CHART_BRAND_COLOR]}
+          customTooltip={ChartTooltip}
+          valueFormatter={formatCount}
+          yAxisWidth={48}
+          showLegend={false}
+          allowDecimals={false}
+          className="h-72"
+        />
+      ) : (
+        <ChartEmpty>
+          {hasGroups
+            ? "Members who leave or get kicked from these groups fill this chart."
+            : "Groups created in this range, and the members who leave them, fill this chart."}
+        </ChartEmpty>
+      )}
+    </Section>
   );
 }

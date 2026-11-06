@@ -1,18 +1,22 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { Activity, ArrowDown, ArrowRight, Mail } from "lucide-react";
+import { Mail } from "lucide-react";
 import { JetBrains_Mono } from "next/font/google";
+import type { ReactNode } from "react";
+
+import { RoleChip } from "../components/ui/role-chip";
 
 // Public marketing landing page. This is the ONLY route served without the
 // Basic Auth gate (see middleware.ts): it is fully static (no runtime env,
 // no data fetching), so Next prerenders it at build time and the admin
 // dashboard stays private at /overview and friends.
 
-const jbMono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "700"] });
+// Code samples only; every other line of text uses the page's family.
+const jbMono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500"] });
 
 export const metadata = {
-  title: "Junjo - Social infrastructure for multiplayer games",
+  title: "Junjo - Guilds, ranks and moderation for multiplayer games",
   description:
-    "Guilds, clans, parties, ranks, permissions, friends, bans, invitations, and live events for multiplayer games. Native SDKs for TypeScript, React, Roblox, C++, and Unreal Engine. Works with your existing auth. Self-hostable.",
+    "Groups, ranks, permissions, friends, bans, sanctions and a live event stream for multiplayer games. SDKs for TypeScript, React, Java, Roblox, C++ and Unreal Engine. Works with your existing auth. Self-hostable.",
 };
 
 const GITHUB_URL = "https://github.com/GabeCurran/junjo";
@@ -23,117 +27,91 @@ const CONTACT_MAILTO = "mailto:gabecurran01@gmail.com?subject=Junjo%20hosted%20b
 // External links open in a new tab; the reader keeps their place here.
 const EXT = { target: "_blank", rel: "noopener noreferrer" } as const;
 
-// The real client surface from packages/sdk/src/index.ts. The grid below
-// renders these verbatim: the page's structure IS the SDK's structure.
-const NAMESPACES: readonly { ns: string; body: string }[] = [
+// The client surface from packages/sdk/src/index.ts, in the SDK's words.
+const SURFACE: readonly { ns: string; body: string }[] = [
+  { ns: "groups", body: "Guilds, clans, parties and sub-groups, with per-kind limits." },
+  { ns: "roles", body: "Ranks with grants, denies, inheritance and per-world entries." },
+  { ns: "members", body: "Rosters, joins, kicks, promotions and bulk import." },
+  { ns: "permissions", body: "One check or a hundred, answered by the deciding rule." },
+  { ns: "bans", body: "Game and group bans with full history." },
+  { ns: "sanctions", body: "Mutes and any other timed restriction your game defines." },
+  { ns: "identities", body: "Linked accounts across platforms, and display names." },
+  { ns: "friends", body: "Requests, tags, suggestions and blocks." },
+  { ns: "invitations", body: "Direct invites and links, with expiry." },
+  { ns: "events", body: "One ordered stream of every change, resumable." },
+];
+
+const SERVER_FEATURES: readonly { title: string; body: string }[] = [
   {
-    ns: "groups",
-    body: "Guilds, clans, parties, and sub-groups with capacity and visibility rules.",
+    title: "Permissions per world",
+    body: "Grant build in creative and deny it in survival on the same rank. Worlds inherit from each other, nearest first.",
   },
-  { ns: "roles", body: "Multi-tier ranks with per-group permission overrides." },
-  { ns: "members", body: "Rosters, joins, kicks, and promotions." },
-  { ns: "invitations", body: "Direct and bulk invites with expiry and revocation." },
-  { ns: "friends", body: "Requests, tags, suggestions, and blocklists." },
-  { ns: "bans", body: "Group-level and game-level bans with full history." },
-  { ns: "webhooks", body: "Signed delivery with automatic endpoint disabling." },
-  { ns: "audit", body: "Every mutation recorded and queryable." },
+  {
+    title: "Checks without a round trip",
+    body: "The Java mirror keeps bans, ranks and the players you track in memory and answers from memory, then follows the stream to stay current.",
+  },
+  {
+    title: "Writes that survive a restart",
+    body: "A write queue on disk replays bans and promotions after an outage, with versions so a stale write never wins.",
+  },
+  {
+    title: "One stream for the whole game",
+    body: "Every change in order, with a position to resume from. Your other servers and your website see the same thing.",
+  },
 ];
 
-const ROSTER: readonly { name: string; rank: string; lead?: boolean }[] = [
-  { name: "aria", rank: "Leader", lead: true },
-  { name: "bramble", rank: "Officer" },
-  { name: "kestrel", rank: "Member" },
-];
+const KW = "text-primary";
 
-function CodePanel() {
+function Code({ file, children }: { file: string; children: ReactNode }) {
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <span className="h-2.5 w-2.5 rounded-full bg-muted" aria-hidden />
-        <span className="h-2.5 w-2.5 rounded-full bg-muted" aria-hidden />
-        <span className="h-2.5 w-2.5 rounded-full bg-primary/70" aria-hidden />
-        <span className={`${jbMono.className} ml-2 text-xs text-muted-foreground`}>guilds.ts</span>
-      </div>
-      <pre className={`${jbMono.className} overflow-x-auto p-4 text-xs leading-6 text-foreground`}>
-        <code>
-          <span className="text-primary">{"import"}</span>
-          {" { Junjo } "}
-          <span className="text-primary">{"from"}</span>
-          {' "@junjo.io/sdk";\n\n'}
-          <span className="text-primary">{"const"}</span>
-          {" guild = "}
-          <span className="text-primary">{"await"}</span>
-          {" junjo.groups.create({\n"}
-          {'  kind: "guild",\n'}
-          {'  name: "Crimson Dawn",\n'}
-          {"});\n\n"}
-          <span className="text-primary">{"await"}</span>
-          {" junjo.groups\n"}
-          {'  .inviteByUserId(guild.id, "user_123");\n\n'}
-          <span className="text-primary">{"const"}</span>
-          {" allowed = "}
-          <span className="text-primary">{"await"}</span>
-          {" junjo.can(\n"}
-          {'  "user_123", guild.id, "invite_member"\n'}
-          {");\n"}
-        </code>
+    <figure className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
+      <figcaption
+        className={`${jbMono.className} border-b border-border px-4 py-2 text-xs text-muted-foreground`}
+      >
+        {file}
+      </figcaption>
+      <pre
+        className={`${jbMono.className} overflow-x-auto p-4 text-[13px] leading-6 text-foreground`}
+      >
+        <code>{children}</code>
       </pre>
-    </div>
+    </figure>
   );
 }
 
-// The signature: the state the code above just wrote. A guild roster with
-// ranks, the invited player arriving, and the permission check resolving.
-function GuildCard() {
+const ROSTER: readonly { name: string; rank: string; color: string }[] = [
+  { name: "aria", rank: "Leader", color: "#E2B44A" },
+  { name: "bramble", rank: "Officer", color: "#F76A6A" },
+  { name: "kestrel", rank: "Member", color: "#6A9CF7" },
+];
+
+// The state the code beside it just wrote: the guild's roster in its own
+// rank colors, the invited player arriving, and the check resolving.
+function GuildState() {
   return (
-    <div className="relative min-w-0 rounded-lg border border-border bg-card shadow-lg">
-      <p
-        className={`${jbMono.className} border-b border-border px-4 py-2.5 text-xs text-muted-foreground`}
-      >
-        {"// state after running guilds.ts"}
-      </p>
-      <div className="px-4 py-3">
-        <div className="flex items-baseline justify-between">
-          <h3 className="text-base font-semibold tracking-tight">Crimson Dawn</h3>
-          <span className={`${jbMono.className} text-xs text-muted-foreground`}>guild - 4/25</span>
-        </div>
-        <ul className="mt-3 space-y-2">
-          {ROSTER.map((m) => (
-            <li key={m.name} className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2">
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${m.lead ? "bg-primary" : "bg-muted-foreground/50"}`}
-                  aria-hidden
-                />
-                <span className={jbMono.className}>{m.name}</span>
-              </span>
-              <span
-                className={`rounded border px-1.5 py-0.5 text-xs ${
-                  m.lead ? "border-primary/40 text-primary" : "border-border text-muted-foreground"
-                }`}
-              >
-                {m.rank}
-              </span>
-            </li>
-          ))}
-          <li className="landing-join flex items-center justify-between text-sm">
-            <span className="flex items-center gap-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden />
-              <span className={jbMono.className}>user_123</span>
-              <span className={`${jbMono.className} text-xs text-primary`}>joined via invite</span>
-            </span>
-            <span className="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
-              Member
-            </span>
-          </li>
-        </ul>
-        <p
-          className={`${jbMono.className} landing-check mt-3 border-t border-border pt-3 text-xs text-muted-foreground`}
-        >
-          {'can("user_123", "invite_member") '}
-          <span className="text-primary">{"-> true"}</span>
-        </p>
+    <div className="min-w-0 rounded-md border border-border bg-card">
+      <div className="flex items-baseline justify-between border-b border-border px-4 py-2.5">
+        <h3 className="font-condensed text-xl font-semibold tracking-tight">Crimson Dawn</h3>
+        <span className="text-xs text-muted-foreground">guild, 4 of 25</span>
       </div>
+      <ul className="divide-y divide-border/60 px-4">
+        {ROSTER.map((m) => (
+          <li key={m.name} className="flex items-center justify-between py-2 text-sm">
+            <span>{m.name}</span>
+            <RoleChip name={m.rank} color={m.color} />
+          </li>
+        ))}
+        <li className="landing-join flex items-center justify-between py-2 text-sm">
+          <span>
+            steve <span className="ml-1 text-xs text-muted-foreground">joined by invite</span>
+          </span>
+          <RoleChip name="Member" color="#6A9CF7" />
+        </li>
+      </ul>
+      <p className="landing-check border-t border-border px-4 py-2.5 text-sm">
+        steve can invite: <span className="font-semibold text-allow">yes</span>
+        <span className="text-muted-foreground">, from Member</span>
+      </p>
     </div>
   );
 }
@@ -141,35 +119,22 @@ function GuildCard() {
 export default function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col">
-      {/* Top nav */}
       <header className="border-b border-border">
         <div className="mx-auto flex h-14 max-w-screen-lg items-center justify-between px-6">
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <Activity className="h-4 w-4" aria-hidden />
-            </div>
-            <span className="text-base font-semibold tracking-tight">Junjo</span>
-          </div>
+          <span className="flex items-center gap-2 font-condensed text-xl font-bold tracking-tight">
+            <span aria-hidden className="h-2.5 w-2.5 rounded-full bg-primary" />
+            Junjo
+          </span>
           <nav className="flex items-center gap-4 text-sm sm:gap-5">
-            <a
-              href={DOCS_URL}
-              {...EXT}
-              className="text-muted-foreground transition-colors hover:text-foreground"
-            >
+            <a href={DOCS_URL} {...EXT} className="text-muted-foreground hover:text-foreground">
               Docs
             </a>
-            <a
-              href={GITHUB_URL}
-              {...EXT}
-              className="text-muted-foreground transition-colors hover:text-foreground"
-            >
+            <a href={GITHUB_URL} {...EXT} className="text-muted-foreground hover:text-foreground">
               GitHub
             </a>
-            {/* License and Admin live in the footer too, so they yield on
-                small screens to keep the header on one uncrowded line. */}
             <a
               href="/license"
-              className="hidden text-muted-foreground transition-colors hover:text-foreground sm:inline"
+              className="hidden text-muted-foreground hover:text-foreground sm:inline"
             >
               License
             </a>
@@ -178,7 +143,7 @@ export default function LandingPage() {
                 native sign-in dialog on the public page. */}
             <a
               href="/overview"
-              className="hidden text-muted-foreground transition-colors hover:text-foreground sm:inline"
+              className="hidden text-muted-foreground hover:text-foreground sm:inline"
             >
               Admin
             </a>
@@ -187,146 +152,177 @@ export default function LandingPage() {
       </header>
 
       <main className="flex-1">
-        {/* Hero: full-width text, then code -> resulting state side by side */}
-        <section className="mx-auto max-w-screen-lg px-6 pt-10 md:pt-12">
-          <h1
-            className={`${jbMono.className} text-2xl font-bold leading-tight tracking-tight md:text-4xl`}
-          >
-            Social infrastructure for multiplayer games
+        <section className="mx-auto max-w-screen-lg px-6 pt-14 md:pt-20">
+          <h1 className="max-w-3xl font-condensed text-5xl font-semibold leading-[0.95] tracking-tight md:text-7xl">
+            Guilds, ranks and bans for multiplayer games
           </h1>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-            Guilds, clans, parties, ranks, permissions, friends, bans, invitations, and live events.
-            Native SDKs for TypeScript, React, Roblox, C++, and Unreal Engine.
+          <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
+            One API for groups, roles, permissions, moderation and a live stream of every change.
+            SDKs for TypeScript, React, Java, Roblox, C++ and Unreal Engine.
           </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-5 sm:gap-y-4">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4">
             <a
               href={DOCS_URL}
               {...EXT}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 sm:justify-start"
+              className="inline-flex items-center justify-center rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               Read the docs
-              <ArrowRight className="h-4 w-4" aria-hidden />
             </a>
             <a
               href={GITHUB_URL}
               {...EXT}
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-accent sm:justify-start"
+              className="inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm font-medium hover:bg-accent"
             >
               View on GitHub
             </a>
             <a
               href={NPM_URL}
               {...EXT}
-              className={`${jbMono.className} mt-1 text-sm text-muted-foreground transition-colors hover:text-foreground sm:mt-0`}
+              className={`${jbMono.className} mt-1 text-sm text-muted-foreground hover:text-foreground sm:ml-2 sm:mt-0`}
               title="View @junjo.io/sdk on npm"
             >
-              <span className="select-none text-primary">$ </span>
               npm install @junjo.io/sdk
             </a>
           </div>
         </section>
-        <section className="mx-auto max-w-screen-lg px-6 pb-12 pt-8 md:pb-14">
-          <div className="grid items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
-            <CodePanel />
-            <div className="flex justify-center text-primary" aria-hidden>
-              <ArrowRight className="hidden h-6 w-6 md:block" />
-              <ArrowDown className="h-6 w-6 md:hidden" />
-            </div>
-            <GuildCard />
+
+        <section className="mx-auto max-w-screen-lg px-6 pb-16 pt-12">
+          <div className="grid items-start gap-6 md:grid-cols-2">
+            <Code file="guild.ts">
+              <span className={KW}>const</span>
+              {" guild = "}
+              <span className={KW}>await</span>
+              {' junjo.groups.create({\n  kind: "guild",\n  name: "Crimson Dawn",\n});\n\n'}
+              <span className={KW}>await</span>
+              {' junjo.groups.inviteByUserId(guild.id, "steve");\n\n'}
+              <span className={KW}>const</span>
+              {" ok = "}
+              <span className={KW}>await</span>
+              {' junjo.can("steve", guild.id, "invite");'}
+            </Code>
+            <GuildState />
           </div>
         </section>
 
-        {/* API surface */}
-        <section className="border-t border-border bg-card/50">
-          <div className="mx-auto max-w-screen-lg px-6 py-12">
-            <h2 className="text-2xl font-semibold tracking-tight">The client surface</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Same shape in the HTTP API, the SDK, and the React hooks.
+        <section className="border-t border-border">
+          <div className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+            <div>
+              <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
+                Built for game servers
+              </h2>
+              <p className="mt-4 max-w-md text-muted-foreground">
+                The Java SDK runs inside a Minecraft or any JVM server. Ranks and bans live in
+                Junjo, so every server, your website and your bot agree.
+              </p>
+              <dl className="mt-8 flex flex-col gap-6">
+                {SERVER_FEATURES.map((f) => (
+                  <div key={f.title}>
+                    <dt className="font-semibold">{f.title}</dt>
+                    <dd className="mt-1 text-sm leading-6 text-muted-foreground">{f.body}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <Code file="BuildListener.java">
+              <span className={KW}>var</span>
+              {" checker = mirror.checker(\n    playerId, guildId, Context.of("}
+              {'"world"'}
+              {", world));\n\n"}
+              <span className={KW}>if</span>
+              {" (checker.can("}
+              {'"build.place"'}
+              {") != Answer.YES) {\n    event.setCancelled("}
+              <span className={KW}>true</span>
+              {");\n}\n\n"}
+              <span className="text-muted-foreground">
+                {"// a ban from the website reaches\n// every server through the stream"}
+              </span>
+              {"\n"}
+              <span className={KW}>if</span>
+              {" (mirror.isBanned(playerId) == Answer.YES) {\n    player.kick("}
+              {'"Banned"'}
+              {");\n}"}
+            </Code>
+          </div>
+        </section>
+
+        <section className="border-t border-border">
+          <div className="mx-auto max-w-screen-lg px-6 py-16">
+            <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
+              The whole surface
+            </h2>
+            <p className="mt-4 max-w-xl text-muted-foreground">
+              The same names in the HTTP API, every SDK and the React hooks.
             </p>
-            <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
-              {NAMESPACES.map((f) => (
-                <div key={f.ns} className="bg-card p-5">
-                  <h3 className={`${jbMono.className} text-sm font-medium`}>
-                    <span className="text-muted-foreground">junjo.</span>
-                    <span className="text-primary">{f.ns}</span>
-                  </h3>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{f.body}</p>
+            <dl className="mt-8 grid border-t border-border sm:grid-cols-2 sm:gap-x-12">
+              {SURFACE.map((f) => (
+                <div key={f.ns} className="flex gap-4 border-b border-border py-3.5">
+                  <dt className={`${jbMono.className} w-28 shrink-0 text-sm text-primary`}>
+                    {f.ns}
+                  </dt>
+                  <dd className="text-sm leading-6 text-muted-foreground">{f.body}</dd>
                 </div>
               ))}
-            </div>
-            <p className="mt-4 text-sm leading-6 text-muted-foreground">
-              Plus server-sent events for live roster updates.
-            </p>
+            </dl>
           </div>
         </section>
 
-        {/* Auth adapters */}
         <section className="border-t border-border">
-          <div className="mx-auto max-w-screen-lg px-6 py-12">
-            <div className="grid items-center gap-10 md:grid-cols-2">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-tight">
-                  Works with your existing auth
-                </h2>
-                <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
-                  Junjo never touches your login flow. It takes a user id from the auth you already
-                  run and manages the group data under it. Clerk, Supabase, and plain JWT adapters
-                  are built in.
-                </p>
-              </div>
-              <div className="min-w-0 rounded-lg border border-border bg-card p-4">
-                <pre className={`${jbMono.className} overflow-x-auto text-[13px] leading-6`}>
-                  <code>
-                    <span className="text-primary">{"import"}</span>
-                    {" { clerkAdapter } "}
-                    <span className="text-primary">{"from"}</span>
-                    {' "@junjo.io/sdk/adapters";\n\n'}
-                    <span className="text-primary">{"const"}</span>
-                    {" junjo = "}
-                    <span className="text-primary">{"new"}</span>
-                    {
-                      " Junjo({\n  apiKey: process.env.JUNJO_API_KEY,\n  authAdapter: clerkAdapter(clerk),\n});"
-                    }
-                  </code>
-                </pre>
-              </div>
+          <div className="mx-auto grid max-w-screen-lg items-center gap-10 px-6 py-16 md:grid-cols-2">
+            <div>
+              <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
+                Keeps your auth
+              </h2>
+              <p className="mt-4 max-w-md text-muted-foreground">
+                Junjo never touches your login. It takes the user id your auth already issues and
+                links ids across platforms when a player connects a second account. Clerk, Supabase
+                and plain JWT adapters are built in.
+              </p>
             </div>
+            <Code file="junjo.ts">
+              <span className={KW}>const</span>
+              {" junjo = "}
+              <span className={KW}>new</span>
+              {
+                " Junjo({\n  apiKey: process.env.JUNJO_API_KEY,\n  authAdapter: clerkAdapter(clerk),\n});"
+              }
+            </Code>
           </div>
         </section>
 
-        {/* Self-host / hosted beta */}
-        <section className="border-t border-border bg-card/50">
-          <div className="mx-auto max-w-screen-lg px-6 py-12">
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="rounded-lg border border-border bg-card p-6">
-                <h2 className="text-lg font-semibold tracking-tight">Self-host it</h2>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Source-available (ELv2), free to run for your own game. One Docker image, one
-                  Postgres, same API as hosted.
-                </p>
-                <a
-                  href={`${DOCS_URL}/self-host`}
-                  {...EXT}
-                  className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
-                >
-                  Self-hosting guide
-                  <ArrowRight className="h-4 w-4" aria-hidden />
-                </a>
-              </div>
-              <div className="rounded-lg border border-primary/40 bg-card p-6">
-                <h2 className="text-lg font-semibold tracking-tight">Or use the hosted beta</h2>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Dashboard and Postgres included. Free while in beta. Email me and I&apos;ll set
-                  you up.
-                </p>
-                <a
-                  href={CONTACT_MAILTO}
-                  className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-                >
-                  <Mail className="h-4 w-4" aria-hidden />
-                  Request access
-                </a>
-              </div>
+        <section className="border-t border-border">
+          <div className="mx-auto grid max-w-screen-lg gap-10 px-6 py-16 md:grid-cols-2 md:divide-x md:divide-border">
+            <div>
+              <h2 className="font-condensed text-3xl font-semibold leading-none tracking-tight">
+                Run it yourself
+              </h2>
+              <p className="mt-3 max-w-sm text-muted-foreground">
+                Source-available (ELv2) and free to run for your own game: one Docker image and one
+                Postgres, the same API as hosted.
+              </p>
+              <a
+                href={`${DOCS_URL}/self-host`}
+                {...EXT}
+                className="mt-5 inline-block text-sm font-medium text-primary hover:underline"
+              >
+                Self-hosting guide
+              </a>
+            </div>
+            <div className="md:pl-10">
+              <h2 className="font-condensed text-3xl font-semibold leading-none tracking-tight">
+                Or let me host it
+              </h2>
+              <p className="mt-3 max-w-sm text-muted-foreground">
+                Dashboard and database included, free during the beta. Email me and I will set up
+                your game.
+              </p>
+              <a
+                href={CONTACT_MAILTO}
+                className="mt-5 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                <Mail className="h-4 w-4" aria-hidden />
+                Request access
+              </a>
             </div>
           </div>
         </section>
@@ -334,24 +330,24 @@ export default function LandingPage() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-screen-lg flex-col gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <p>Junjo. MIT SDK, source-available server.</p>
-          <nav className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs sm:gap-5 sm:text-sm">
-            <a href={DOCS_URL} {...EXT} className="transition-colors hover:text-foreground">
+          <p>Junjo. MIT SDKs, source-available server.</p>
+          <nav className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <a href={DOCS_URL} {...EXT} className="hover:text-foreground">
               Docs
             </a>
-            <a href={GITHUB_URL} {...EXT} className="transition-colors hover:text-foreground">
+            <a href={GITHUB_URL} {...EXT} className="hover:text-foreground">
               GitHub
             </a>
-            <a href={NPM_URL} {...EXT} className="transition-colors hover:text-foreground">
+            <a href={NPM_URL} {...EXT} className="hover:text-foreground">
               npm
             </a>
-            <a href="/license" className="transition-colors hover:text-foreground">
+            <a href="/license" className="hover:text-foreground">
               License
             </a>
-            <a href="/privacy" className="transition-colors hover:text-foreground">
+            <a href="/privacy" className="hover:text-foreground">
               Privacy
             </a>
-            <a href={CONTACT_MAILTO} className="transition-colors hover:text-foreground">
+            <a href={CONTACT_MAILTO} className="hover:text-foreground">
               Contact
             </a>
           </nav>

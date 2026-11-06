@@ -1,10 +1,11 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { ArrowRight, Download, History } from "lucide-react";
+import { ChevronRight, Download } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 
+import { relativeTime } from "../../lib/activity";
 import {
   ADMIN_AUDIT_ACTIONS,
   ADMIN_GAME_AUDIT_ACTOR_ID_MAX_LENGTH,
@@ -13,33 +14,11 @@ import {
   ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH,
   type AdminAuditEntry,
   type AdminGameAuditPage,
+  adminAuditActionLabel,
 } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-
-const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
-
-const TIME_UNITS: Array<{ unit: Intl.RelativeTimeFormatUnit; ms: number }> = [
-  { unit: "year", ms: 365 * 24 * 60 * 60 * 1000 },
-  { unit: "month", ms: 30 * 24 * 60 * 60 * 1000 },
-  { unit: "day", ms: 24 * 60 * 60 * 1000 },
-  { unit: "hour", ms: 60 * 60 * 1000 },
-  { unit: "minute", ms: 60 * 1000 },
-  { unit: "second", ms: 1000 },
-];
-
-function relativeTime(iso: string, now = Date.now()): string {
-  const then = new Date(iso).getTime();
-  const deltaMs = then - now;
-  const absMs = Math.abs(deltaMs);
-  for (const { unit, ms } of TIME_UNITS) {
-    if (absMs >= ms || unit === "second") {
-      const value = Math.round(deltaMs / ms);
-      return RELATIVE_FORMATTER.format(value, unit);
-    }
-  }
-  return RELATIVE_FORMATTER.format(0, "second");
-}
+import { Notice } from "../ui/section";
+import { ActivitySentence } from "./activity-line";
 
 const absoluteFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
@@ -72,103 +51,156 @@ interface GameAuditFeedProps {
   gameName: string;
 }
 
-interface AuditRowProps {
-  entry: AdminAuditEntry;
+// Option groups for the action filter, keyed by the action's first
+// segment. Identity actions are game-scoped, so they sit with the game.
+const ACTION_GROUPS: ReadonlyArray<{ label: string; prefixes: readonly string[] }> = [
+  { label: "Groups", prefixes: ["group"] },
+  { label: "Members", prefixes: ["member"] },
+  { label: "Roles", prefixes: ["role"] },
+  { label: "Permissions", prefixes: ["permission"] },
+  { label: "Game", prefixes: ["game", "identity"] },
+];
+
+function actionsFor(prefixes: readonly string[]): string[] {
+  return ADMIN_AUDIT_ACTIONS.filter((action) => prefixes.includes(action.split(".")[0] ?? ""));
 }
 
-function AuditRow({ entry }: AuditRowProps) {
-  const hasPayload = Object.keys(entry.payload).length > 0;
+const GROUPED_PREFIXES = new Set(ACTION_GROUPS.flatMap((g) => g.prefixes));
+const UNGROUPED_ACTIONS = ADMIN_AUDIT_ACTIONS.filter(
+  (action) => !GROUPED_PREFIXES.has(action.split(".")[0] ?? ""),
+);
+
+const controlClass = cn(
+  "h-8 rounded-md border border-input bg-background px-2 text-sm",
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  "focus-visible:ring-offset-2 ring-offset-background",
+  "placeholder:text-muted-foreground",
+);
+
+const buttonClass = cn(
+  "inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm",
+  "transition-colors hover:bg-accent hover:text-accent-foreground",
+  "disabled:pointer-events-none disabled:opacity-50",
+);
+
+function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <li className="flex items-start gap-3 py-3">
-      <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
-        <ArrowRight className="h-3 w-3" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-mono text-sm font-medium">{entry.action}</span>
-          <span className="text-xs text-muted-foreground">in</span>
-          <span className="truncate text-sm">
-            <span
-              className={cn(
-                "font-medium",
-                entry.groupSoftDeleted ? "line-through text-muted-foreground" : undefined,
-              )}
-            >
-              {entry.groupName ?? "the game"}
-            </span>
-          </span>
-          {entry.groupSoftDeleted ? (
-            <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-              soft-deleted
-            </span>
-          ) : null}
-          <time
-            dateTime={entry.createdAt}
-            title={absoluteFormatter.format(new Date(entry.createdAt))}
-            className="ml-auto text-xs text-muted-foreground"
-          >
-            {relativeTime(entry.createdAt)}
-          </time>
-        </div>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          {entry.actorUserId ? (
-            <>
-              actor <span className="font-mono">{entry.actorUserId}</span>
-            </>
-          ) : (
-            <span>actor: system</span>
-          )}
-          {entry.apiKey ? (
-            <>
-              {" "}
-              via key <span className="font-mono">{entry.apiKey.name ?? entry.apiKey.prefix}</span>
-            </>
-          ) : null}
-          {entry.targetId ? (
-            <>
-              {" "}
-              - target <span className="font-mono">{entry.targetId}</span>
-            </>
-          ) : null}
-          {entry.groupId ? (
-            <>
-              {" "}
-              - group <span className="font-mono">{entry.groupId}</span>
-            </>
-          ) : null}
-        </p>
-        {hasPayload ? (
-          <details className="mt-1.5">
-            <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
-              payload
-            </summary>
-            <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-card/50 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-              {JSON.stringify(entry.payload, null, 2)}
-            </pre>
-          </details>
-        ) : null}
-      </div>
-    </li>
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-all">{children}</dd>
+    </>
   );
 }
 
-interface FeedShellProps {
-  total: number;
-  children: React.ReactNode;
-}
-
-function FeedShell({ total, children }: FeedShellProps) {
+function AuditRow({ entry }: { entry: AdminAuditEntry }) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const hasPayload = Object.keys(entry.payload).length > 0;
+  const via = entry.apiKey ? (entry.apiKey.name ?? entry.apiKey.prefix) : null;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Audit log</CardTitle>
-        <CardDescription>
-          State changes recorded for every group in this game, newest first. Soft-deleted groups
-          stay in the history. {total} {total === 1 ? "entry" : "entries"} on this page.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
+    <Fragment>
+      <tr
+        className={cn(
+          "border-b border-border/60 align-top hover:bg-accent/40",
+          open && "border-b-0",
+        )}
+      >
+        <td className="py-2 pr-4">
+          <p className="break-words text-muted-foreground">
+            <ActivitySentence entry={entry} />
+          </p>
+          <code className="mt-0.5 block font-mono text-xs text-muted-foreground">
+            {entry.action}
+          </code>
+        </td>
+        <td className="hidden py-2 pr-4 md:table-cell">
+          {entry.actorUserId ? (
+            <span className="break-all font-mono text-xs">{entry.actorUserId}</span>
+          ) : (
+            <span className="text-muted-foreground">System</span>
+          )}
+          {via ? <span className="block text-xs text-muted-foreground">via {via}</span> : null}
+        </td>
+        <td className="whitespace-nowrap py-2 pr-2 text-right">
+          <time
+            dateTime={entry.createdAt}
+            title={absoluteFormatter.format(new Date(entry.createdAt))}
+            className="text-xs tabular-nums text-muted-foreground"
+          >
+            {relativeTime(entry.createdAt)}
+          </time>
+        </td>
+        <td className="w-8 py-1.5 text-right">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-controls={detailsId}
+            aria-label={open ? "Hide details" : "Show details"}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ChevronRight
+              className={cn("h-4 w-4 transition-transform", open && "rotate-90")}
+              aria-hidden
+            />
+          </button>
+        </td>
+      </tr>
+      {open ? (
+        <tr id={detailsId} className="border-b border-border/60">
+          <td colSpan={4} className="pb-3 pr-2">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-1 text-xs">
+              <DetailItem label="Action">
+                <code className="font-mono">{entry.action}</code>
+              </DetailItem>
+              <DetailItem label="Target">
+                {entry.targetId ? (
+                  <code className="font-mono">{entry.targetId}</code>
+                ) : (
+                  <span className="text-muted-foreground">None</span>
+                )}
+              </DetailItem>
+              <DetailItem label="Group">
+                {entry.groupId ? (
+                  <>
+                    {entry.groupName ?? "Unnamed"}
+                    {entry.groupSoftDeleted ? (
+                      <span className="text-muted-foreground"> (deleted)</span>
+                    ) : null}{" "}
+                    <code className="font-mono text-muted-foreground">{entry.groupId}</code>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">Game-wide</span>
+                )}
+              </DetailItem>
+              <DetailItem label="Actor">
+                {entry.actorUserId ? (
+                  <code className="font-mono">{entry.actorUserId}</code>
+                ) : (
+                  <span className="text-muted-foreground">System</span>
+                )}
+              </DetailItem>
+              {entry.apiKey ? (
+                <DetailItem label="API key">
+                  {entry.apiKey.name ? `${entry.apiKey.name} ` : null}
+                  <code className="font-mono text-muted-foreground">{entry.apiKey.prefix}</code>
+                </DetailItem>
+              ) : null}
+              <DetailItem label="Time">
+                <span className="tabular-nums">
+                  {absoluteFormatter.format(new Date(entry.createdAt))}
+                </span>
+              </DetailItem>
+            </dl>
+            {hasPayload ? (
+              <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-card p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                {JSON.stringify(entry.payload, null, 2)}
+              </pre>
+            ) : null}
+          </td>
+        </tr>
+      ) : null}
+    </Fragment>
   );
 }
 
@@ -318,6 +350,12 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
   }, [targetValue, pushQuery, query.target]);
 
   const isFirstPage = query.cursor === undefined;
+  const filtered =
+    query.action.length > 0 ||
+    query.actor.length > 0 ||
+    query.target.length > 0 ||
+    query.since.length > 0 ||
+    query.endDate.length > 0;
   const csvFilenameSafeName = gameName.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 60);
   // CSV export is intentionally per-page (the operator sees what they
   // get on screen). Multi-page export would need to walk every page on
@@ -330,259 +368,212 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     downloadCsv(csv, `${csvFilenameSafeName || "game"}-audit-${stamp}.csv`);
   };
+  const count = page.items.length;
 
   return (
-    <FeedShell total={page.items.length}>
-      <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={actionSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Action
-            </label>
-            <select
-              id={actionSelectId}
-              value={query.action}
-              onChange={(e) => pushQuery({ action: e.target.value, cursor: undefined })}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            >
-              <option value="">All actions</option>
-              {ADMIN_AUDIT_ACTIONS.map((action) => (
-                <option key={action} value={action}>
-                  {action}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={actorInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Actor user id
-            </label>
-            <input
-              id={actorInputId}
-              type="text"
-              value={actorValue}
-              onChange={(e) => setActorValue(e.target.value)}
-              maxLength={ADMIN_GAME_AUDIT_ACTOR_ID_MAX_LENGTH}
-              placeholder="paste from a row"
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-                "placeholder:text-muted-foreground",
-              )}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={targetInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Target id
-            </label>
-            <input
-              id={targetInputId}
-              type="text"
-              value={targetValue}
-              onChange={(e) => setTargetValue(e.target.value)}
-              maxLength={ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH}
-              placeholder="paste from a row"
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-                "placeholder:text-muted-foreground",
-              )}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={pageSizeSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Rows per page
-            </label>
-            <select
-              id={pageSizeSelectId}
-              value={query.limit}
-              onChange={(e) => {
-                const nextLimit = Number(e.target.value);
-                pushQuery({ limit: nextLimit, cursor: undefined });
-              }}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            >
-              {ADMIN_GAME_AUDIT_PAGE_SIZE_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={sinceInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              From (inclusive)
-            </label>
-            <input
-              id={sinceInputId}
-              type="datetime-local"
-              value={query.since}
-              onChange={(e) => pushQuery({ since: e.target.value, cursor: undefined })}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={endInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              To (exclusive)
-            </label>
-            <input
-              id={endInputId}
-              type="datetime-local"
-              value={query.endDate}
-              onChange={(e) => pushQuery({ endDate: e.target.value, cursor: undefined })}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            />
-          </div>
-
-          <div className="flex items-end gap-2 lg:col-span-2 lg:justify-end">
-            {!isFirstPage ? (
-              <button
-                type="button"
-                onClick={() => pushQuery({ cursor: undefined })}
-                className={cn(
-                  "inline-flex h-10 items-center gap-1 rounded-md border border-input bg-background px-3 text-xs",
-                  "transition-colors hover:bg-accent hover:text-accent-foreground",
-                )}
-              >
-                <History className="h-3 w-3" aria-hidden />
-                Jump to newest
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onExport}
-              disabled={page.items.length === 0}
-              className={cn(
-                "inline-flex h-10 items-center gap-1 rounded-md border border-input bg-background px-3 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
-              title="Export the entries on this page as CSV"
-            >
-              <Download className="h-3 w-3" aria-hidden />
-              Export CSV
-            </button>
-          </div>
-        </div>
-
-        {page.items.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <p className="text-sm font-medium">
-              {query.action.length > 0 ||
-              query.actor.length > 0 ||
-              query.target.length > 0 ||
-              query.since.length > 0 ||
-              query.endDate.length > 0
-                ? "No entries match the current filters"
-                : isFirstPage
-                  ? "No audit entries yet"
-                  : "No more entries"}
-            </p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              {query.action.length > 0 ||
-              query.actor.length > 0 ||
-              query.target.length > 0 ||
-              query.since.length > 0 ||
-              query.endDate.length > 0
-                ? "Widen the filters or clear them to see other entries."
-                : isFirstPage
-                  ? "State changes in any group on this game will appear here as soon as they happen."
-                  : "You have reached the end of the audit history for the current filter."}
-            </p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {page.items.map((entry) => (
-              <AuditRow key={entry.id} entry={entry} />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor={actionSelectId} className="text-xs text-muted-foreground">
+            Action
+          </label>
+          <select
+            id={actionSelectId}
+            value={query.action}
+            onChange={(e) => pushQuery({ action: e.target.value, cursor: undefined })}
+            className={cn(controlClass, "w-56")}
+          >
+            <option value="">All actions</option>
+            {ACTION_GROUPS.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {actionsFor(group.prefixes).map((action) => (
+                  <option key={action} value={action}>
+                    {adminAuditActionLabel(action)}
+                  </option>
+                ))}
+              </optgroup>
             ))}
-          </ul>
-        )}
+            {UNGROUPED_ACTIONS.map((action) => (
+              <option key={action} value={action}>
+                {adminAuditActionLabel(action)}
+              </option>
+            ))}
+          </select>
+        </div>
 
-        <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>
-            {isFirstPage
-              ? "Showing the newest page that matches the filters"
-              : "Showing entries older than the cursor"}
-          </span>
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor={actorInputId} className="text-xs text-muted-foreground">
+            Actor
+          </label>
+          <input
+            id={actorInputId}
+            type="text"
+            value={actorValue}
+            onChange={(e) => setActorValue(e.target.value)}
+            maxLength={ADMIN_GAME_AUDIT_ACTOR_ID_MAX_LENGTH}
+            placeholder="User id"
+            spellCheck={false}
+            autoComplete="off"
+            className={cn(controlClass, "w-40 font-mono")}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor={targetInputId} className="text-xs text-muted-foreground">
+            Target
+          </label>
+          <input
+            id={targetInputId}
+            type="text"
+            value={targetValue}
+            onChange={(e) => setTargetValue(e.target.value)}
+            maxLength={ADMIN_GAME_AUDIT_TARGET_ID_MAX_LENGTH}
+            placeholder="Target id"
+            spellCheck={false}
+            autoComplete="off"
+            className={cn(controlClass, "w-40 font-mono")}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor={sinceInputId} className="text-xs text-muted-foreground">
+            From
+          </label>
+          <input
+            id={sinceInputId}
+            type="datetime-local"
+            value={query.since}
+            onChange={(e) => pushQuery({ since: e.target.value, cursor: undefined })}
+            className={controlClass}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor={endInputId} className="text-xs text-muted-foreground">
+            Before
+          </label>
+          <input
+            id={endInputId}
+            type="datetime-local"
+            value={query.endDate}
+            onChange={(e) => pushQuery({ endDate: e.target.value, cursor: undefined })}
+            className={controlClass}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
+            Rows
+          </label>
+          <select
+            id={pageSizeSelectId}
+            value={query.limit}
+            onChange={(e) => {
+              const nextLimit = Number(e.target.value);
+              pushQuery({ limit: nextLimit, cursor: undefined });
+            }}
+            className={controlClass}
+          >
+            {ADMIN_GAME_AUDIT_PAGE_SIZE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={count === 0}
+          className={cn(buttonClass, "sm:ml-auto")}
+          title="Download the entries on this page as CSV"
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden />
+          Export CSV
+        </button>
+      </div>
+
+      {count === 0 ? (
+        <Notice
+          title={
+            filtered
+              ? "No entries match these filters"
+              : isFirstPage
+                ? "No audit entries yet"
+                : "No older entries"
+          }
+          body={
+            filtered
+              ? "Widen the filters or clear them."
+              : isFirstPage
+                ? "Changes in this game show up here."
+                : "This is the end of the log."
+          }
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-muted-foreground">
+                <th className="py-2 pr-4 text-left font-medium">Event</th>
+                <th className="hidden py-2 pr-4 text-left font-medium md:table-cell">Actor</th>
+                <th className="py-2 pr-2 text-right font-medium">When</th>
+                <th className="w-8 py-2">
+                  <span className="sr-only">Details</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {page.items.map((entry) => (
+                <AuditRow key={entry.id} entry={entry} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+        <span className="tabular-nums">
+          {count} {count === 1 ? "entry" : "entries"}
+          {isFirstPage ? ", newest first" : ", older page"}
+        </span>
+        <div className="flex items-center gap-2">
+          {!isFirstPage ? (
             <button
               type="button"
-              // Browser back is the natural "previous page" gesture for
-              // cursor-based pagination - the server cannot run the
-              // inverse of `createdAt < before`, so the dashboard relies
-              // on the URL history that pushQuery has accumulated.
-              onClick={() => router.back()}
-              disabled={isFirstPage}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
+              onClick={() => pushQuery({ cursor: undefined })}
+              className={buttonClass}
             >
-              Previous
+              Jump to newest
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (page.nextCursor !== null) {
-                  pushQuery({ cursor: page.nextCursor });
-                }
-              }}
-              disabled={page.nextCursor === null}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
-            >
-              Next
-            </button>
-          </div>
+          ) : null}
+          <button
+            type="button"
+            // Browser back is the natural "previous page" gesture for
+            // cursor-based pagination - the server cannot run the
+            // inverse of `createdAt < before`, so the dashboard relies
+            // on the URL history that pushQuery has accumulated.
+            onClick={() => router.back()}
+            disabled={isFirstPage}
+            className={buttonClass}
+          >
+            Newer
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (page.nextCursor !== null) {
+                pushQuery({ cursor: page.nextCursor });
+              }
+            }}
+            disabled={page.nextCursor === null}
+            className={buttonClass}
+          >
+            Older
+          </button>
         </div>
       </div>
-    </FeedShell>
+    </div>
   );
 }

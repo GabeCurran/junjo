@@ -1,8 +1,6 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { ShieldCheck } from "lucide-react";
-
 import {
   type AdminRole,
   formatPermissionContext,
@@ -11,7 +9,8 @@ import {
   roleEntries,
 } from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { RoleChip } from "../ui/role-chip";
+import { Notice } from "../ui/section";
 import { CreateRoleDialog } from "./create-role-dialog";
 import { DeleteRoleDialog } from "./delete-role-dialog";
 import { EditRoleDialog } from "./edit-role-dialog";
@@ -24,93 +23,64 @@ interface RolesTableProps {
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 
-// Hand-rolled HTML table (no TanStack) because the role list is server-
-// sorted by priority desc + has no client-side filter / pagination /
-// column-toggle requirements. The members table needs TanStack for the
-// 350ms-debounced search + URL-state-driven pagination; the roles table
-// has neither, so the simpler primitive wins.
+// Hand-rolled HTML table (no TanStack): the role list arrives sorted by
+// priority and has no client-side filter, pagination or column toggles.
 
 export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
-  const names = new Map(roles.map((r) => [r.id, r.name]));
+  const byId = new Map(roles.map((r) => [r.id, r]));
   return (
-    <Card>
-      <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
-        <div className="space-y-1.5">
-          <CardTitle className="text-base">Roles</CardTitle>
-          <CardDescription>
-            Roles defined for this group, ordered by priority (highest first). Higher priority wins
-            tiebreaks when a member has multiple roles. Entries are the role's own grants and
-            denies; a role also inherits its parents' entries.{" "}
-            {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"} total.
-          </CardDescription>
-        </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"}, highest
+          priority first
+        </p>
         <CreateRoleDialog gameId={gameId} groupId={groupId} />
-      </CardHeader>
-      <CardContent>
-        {roles.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <ShieldCheck className="h-8 w-8 text-muted-foreground" aria-hidden />
-            <p className="mt-3 text-sm font-medium">No roles yet</p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              Add a role to start granting permissions. Roles assigned to members appear in their
-              row in the Members tab.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="py-2 pr-4 text-left font-medium">Name</th>
-                  <th className="py-2 pr-4 text-left font-medium">Priority</th>
-                  <th className="py-2 pr-4 text-left font-medium">Color</th>
-                  <th className="py-2 pr-4 text-left font-medium">Default</th>
-                  <th className="py-2 pr-4 text-left font-medium">Entries</th>
-                  <th className="py-2 pr-4 text-left font-medium">Inherits from</th>
-                  <th className="py-2 pr-4 text-right font-medium">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {roles.map((role) => (
-                  <tr key={role.id} className="border-b border-border last:border-0">
-                    <td className="py-3 pr-4">
-                      <div className="flex flex-col">
-                        <span className="text-sm font-medium">{role.name}</span>
+      </div>
+      {roles.length === 0 ? (
+        <Notice title="No roles yet" body="Create one to start granting permissions." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-muted-foreground">
+                <th className="py-2 pr-4 text-left font-medium">Role</th>
+                <th className="py-2 pr-4 text-right font-medium">Priority</th>
+                <th className="py-2 pr-4 text-left font-medium">Default</th>
+                <th className="py-2 pr-4 text-left font-medium">Entries</th>
+                <th className="py-2 pr-4 text-left font-medium">Inherits from</th>
+                <th className="py-2 text-right font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {roles.map((role) => {
+                const entries = roleEntries(role);
+                return (
+                  <tr key={role.id} className="border-b border-border/60 hover:bg-accent/40">
+                    <td className="py-2.5 pr-4 align-top">
+                      <div className="flex flex-col items-start gap-1">
+                        <RoleChip name={role.name} color={role.color} />
                         <span className="font-mono text-xs text-muted-foreground">{role.id}</span>
                       </div>
                     </td>
-                    <td className="py-3 pr-4 font-mono tabular-nums text-sm">
+                    <td className="py-2.5 pr-4 text-right align-top tabular-nums">
                       {numberFormatter.format(role.priority)}
                     </td>
-                    <td className="py-3 pr-4">
-                      {role.color ? (
-                        <span className="inline-flex items-center gap-2 text-xs">
-                          <span
-                            aria-hidden
-                            className="inline-block h-4 w-4 rounded border border-border"
-                            style={{ backgroundColor: role.color }}
-                          />
-                          <span className="font-mono text-muted-foreground">{role.color}</span>
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">no color</span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-4">
+                    <td className="py-2.5 pr-4 align-top">
                       {role.isDefault ? (
-                        <Badge variant="secondary">Default</Badge>
+                        "Default"
                       ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
-                    <td className="py-3 pr-4">
-                      {roleEntries(role).length === 0 ? (
-                        <span className="text-xs text-muted-foreground">no entries</span>
+                    <td className="py-2.5 pr-4 align-top">
+                      {entries.length === 0 ? (
+                        <span className="text-muted-foreground">-</span>
                       ) : (
                         <div className="flex max-w-md flex-wrap gap-1">
-                          {roleEntries(role).map((e) => {
+                          {entries.map((e) => {
                             const where = isContextual(e) ? formatPermissionContext(e.context) : "";
                             return e.value ? (
                               <Badge
@@ -137,32 +107,33 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
                         </div>
                       )}
                     </td>
-                    <td className="py-3 pr-4">
+                    <td className="py-2.5 pr-4 align-top">
                       {role.parents && role.parents.length > 0 ? (
                         <div className="flex max-w-xs flex-wrap gap-1">
-                          {role.parents.map((p) => (
-                            <Badge key={p} variant="outline" className="text-xs">
-                              {names.get(p) ?? p}
-                            </Badge>
-                          ))}
+                          {role.parents.map((p) => {
+                            const parent = byId.get(p);
+                            return (
+                              <RoleChip key={p} name={parent?.name ?? p} color={parent?.color} />
+                            );
+                          })}
                         </div>
                       ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
-                    <td className="py-3 pr-4">
+                    <td className="py-2.5 align-top">
                       <div className="flex items-center justify-end gap-1">
                         <EditRoleDialog gameId={gameId} groupId={groupId} role={role} />
                         <DeleteRoleDialog gameId={gameId} groupId={groupId} role={role} />
                       </div>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

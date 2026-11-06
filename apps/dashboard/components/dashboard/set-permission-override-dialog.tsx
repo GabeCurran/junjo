@@ -63,19 +63,16 @@ export function SetPermissionOverrideDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-          Override
+        <Button variant="ghost" size="icon" aria-label="Set override" title="Set override">
+          <ShieldCheck className="h-4 w-4" aria-hidden />
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Set permission override</DialogTitle>
           <DialogDescription>
-            Grant or revoke a single permission for{" "}
-            <span className="font-mono">{externalUserId}</span> in this group. Member-level
-            overrides beat role-derived defaults; revoke wins over a role-granted permission and
-            grant wins over a missing-from-role baseline.
+            Grant or revoke one permission for <span className="font-mono">{externalUserId}</span>{" "}
+            in this group. An override takes precedence over their roles.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -95,12 +92,12 @@ export function SetPermissionOverrideDialog({
               className="font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              1-{ADMIN_PERMISSION_KEY_MAX_LENGTH} characters. New keys auto-register into this
-              game's catalog on first use; clearing the override later preserves the catalog row.
+              Up to {ADMIN_PERMISSION_KEY_MAX_LENGTH} characters. A new key joins the game's
+              catalog.
             </p>
           </div>
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">Override action</legend>
+            <legend className="mb-2 text-sm font-medium">Override action</legend>
             <div className="grid gap-2">
               <label
                 htmlFor={grantId}
@@ -120,7 +117,7 @@ export function SetPermissionOverrideDialog({
                 <span className="flex flex-col gap-0.5">
                   <span className="text-sm font-medium">Grant</span>
                   <span className="text-xs text-muted-foreground">
-                    Allow this permission for this member, even if no role grants it.
+                    Allow it even if no role grants it.
                   </span>
                 </span>
               </label>
@@ -135,7 +132,7 @@ export function SetPermissionOverrideDialog({
                 <span className="flex flex-col gap-0.5">
                   <span className="text-sm font-medium">Revoke</span>
                   <span className="text-xs text-muted-foreground">
-                    Deny this permission for this member, even if a role would grant it.
+                    Deny it even if a role grants it.
                   </span>
                 </span>
               </label>

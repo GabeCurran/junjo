@@ -5,6 +5,8 @@ import {
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   AdminDisabledError,
   type AdminPermissionCheckResult,
+  type AdminPermissionContext,
+  fetchAdminGroupRoles,
   fetchAdminPermissionCheck,
 } from "../../../../../../lib/admin";
 
@@ -17,15 +19,41 @@ import {
 // initial empty state and lose context for re-testing.
 export type CheckPermissionResult =
   | { ok: false; error?: string; inputs?: CheckPermissionInputs }
-  | { ok: true; result: AdminPermissionCheckResult; inputs: CheckPermissionInputs };
+  | {
+      ok: true;
+      result: AdminPermissionCheckResult;
+      inputs: CheckPermissionInputs;
+      // The deciding role's name and color, when a role decided.
+      role?: { name: string; color: string | null };
+    };
 
 export interface CheckPermissionInputs {
   userId: string;
   groupId: string;
   permission: string;
+  // As typed: comma-separated key=value pairs.
+  context: string;
 }
 
 const INPUT_MAX_LENGTH = 1024;
+
+// "world=pvp, server=lobby" to a context; the server validates keys and
+// values and its message is shown as is.
+function parseContext(text: string): AdminPermissionContext | string {
+  const context: AdminPermissionContext = {};
+  for (const part of text.split(",")) {
+    const pair = part.trim();
+    if (pair.length === 0) continue;
+    const eq = pair.indexOf("=");
+    if (eq <= 0 || eq === pair.length - 1) {
+      return `Write each context as key=value; "${pair}" is not.`;
+    }
+    const key = pair.slice(0, eq).trim();
+    if (key in context) return `The context key "${key}" is given twice.`;
+    context[key] = pair.slice(eq + 1).trim();
+  }
+  return context;
+}
 
 function readField(formData: FormData, key: string): string {
   const raw = formData.get(key);
@@ -58,6 +86,7 @@ export async function checkPermissionAction(
     userId: readField(formData, "userId"),
     groupId: readField(formData, "groupId"),
     permission: readField(formData, "permission"),
+    context: readField(formData, "context"),
   };
 
   const validationError = validateInputs(inputs);
@@ -65,9 +94,25 @@ export async function checkPermissionAction(
     return { ok: false, error: validationError, inputs };
   }
 
+  const context = parseContext(inputs.context);
+  if (typeof context === "string") {
+    return { ok: false, error: context, inputs };
+  }
+
   try {
-    const result = await fetchAdminPermissionCheck(gameId, inputs);
-    return { ok: true, result, inputs };
+    const result = await fetchAdminPermissionCheck(gameId, {
+      userId: inputs.userId,
+      groupId: inputs.groupId,
+      permission: inputs.permission,
+      context,
+    });
+    let role: { name: string; color: string | null } | undefined;
+    if (result.viaRoleId) {
+      const roles = await fetchAdminGroupRoles(gameId, inputs.groupId).catch(() => []);
+      const found = roles.find((r) => r.id === result.viaRoleId);
+      if (found) role = { name: found.name, color: found.color };
+    }
+    return { ok: true, result, inputs, role };
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return {

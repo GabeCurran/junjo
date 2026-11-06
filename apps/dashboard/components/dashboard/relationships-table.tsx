@@ -15,9 +15,7 @@ import {
   ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH,
   type AdminGroupRelationship,
 } from "../../lib/admin-shared";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import {
   Dialog,
   DialogContent,
@@ -29,6 +27,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { Notice } from "../ui/section";
 
 interface RelationshipsTableProps {
   relationships: AdminGroupRelationship[];
@@ -74,7 +73,7 @@ interface SetRelationshipDialogProps {
 
 function SetRelationshipSubmitButton({ isEdit }: { isEdit: boolean }) {
   const { pending } = useFormStatus();
-  const label = isEdit ? "Save" : "Set relationship";
+  const label = isEdit ? "Save relationship" : "Set relationship";
   const pendingLabel = isEdit ? "Saving..." : "Setting...";
   return (
     <Button type="submit" disabled={pending}>
@@ -113,9 +112,7 @@ function SetRelationshipDialog({ gameId, groupId, existing, trigger }: SetRelati
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit relationship" : "Set relationship"}</DialogTitle>
           <DialogDescription>
-            Relationships are directed. The "type" field is dev-defined free text (e.g. "ally",
-            "rival", "vassal"); the server stamps a `group.relationship.changed` event so in-game
-            UIs can react. Toggle <em>mutual</em> to write both directions in one call.
+            A directed link from this group to another group in the same game.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -133,11 +130,11 @@ function SetRelationshipDialog({ gameId, groupId, existing, trigger }: SetRelati
               placeholder="grp_..."
               className="font-mono"
             />
-            <p className="text-xs text-muted-foreground">
-              {isEdit
-                ? "Locked while editing. To re-target the relationship, clear the existing row first."
-                : "The id of the other group. Must be in the same game; cross-game references return a 404 envelope."}
-            </p>
+            {isEdit ? (
+              <p className="text-xs text-muted-foreground">
+                To point at a different group, clear this relationship and set a new one.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-2">
             <Label htmlFor={typeInputId}>Type</Label>
@@ -151,8 +148,7 @@ function SetRelationshipDialog({ gameId, groupId, existing, trigger }: SetRelati
               placeholder="ally"
             />
             <p className="text-xs text-muted-foreground">
-              Up to {ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH} characters. Setting the same type as the
-              stored value is a no-op (no audit, no event, no `since` bump).
+              Up to {ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH} characters.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -164,7 +160,7 @@ function SetRelationshipDialog({ gameId, groupId, existing, trigger }: SetRelati
               className="h-4 w-4 rounded border border-input"
             />
             <Label htmlFor={mutualInputId} className="text-sm font-normal">
-              Mutual: also write the reverse direction
+              Also set it from the other group back to this one
             </Label>
           </div>
           {state.error ? (
@@ -222,7 +218,7 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
       if (result.ok) {
         setOpen(false);
       } else {
-        setError(result.error ?? "could not clear relationship");
+        setError(result.error ?? "The server gave no reason. Try again.");
       }
     });
   }
@@ -238,22 +234,12 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
         <DialogHeader>
           <DialogTitle>Clear relationship</DialogTitle>
           <DialogDescription>
-            This removes the directed link from this group to{" "}
-            <span className="font-mono">{relationship.groupBId}</span>. Audit history is preserved
-            (the server writes a <code>group.relationship.cleared</code> entry); the row itself is
-            removed.
+            Removes the {relationship.type} link from this group to{" "}
+            <span className="font-mono">{relationship.groupBId}</span>, set{" "}
+            {dateFormatter.format(new Date(relationship.since))}. The audit log keeps a record.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="rounded-md border border-border bg-card/50 p-3 text-sm">
-            <div className="flex items-center gap-2">
-              <Badge variant="muted" className="font-mono">
-                {relationship.type}
-              </Badge>
-              <span className="text-muted-foreground">since</span>
-              <span className="text-xs">{dateFormatter.format(new Date(relationship.since))}</span>
-            </div>
-          </div>
           <div className="flex items-center gap-2">
             <input
               id={mutualInputId}
@@ -263,11 +249,8 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
               className="h-4 w-4 rounded border border-input"
             />
             <Label htmlFor={mutualInputId} className="text-sm font-normal">
-              Also clear the reverse direction (
-              <span className="font-mono">
-                {relationship.groupBId} -&gt; {relationship.groupAId}
-              </span>
-              )
+              Also clear the link from <span className="font-mono">{relationship.groupBId}</span>{" "}
+              back to this group
             </Label>
           </div>
           {error ? (
@@ -283,11 +266,11 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
           <Button type="button" variant="destructive" onClick={onConfirm} disabled={pending}>
             {pending ? (
               <>
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                 Clearing...
               </>
             ) : (
-              "Clear"
+              "Clear relationship"
             )}
           </Button>
         </DialogFooter>
@@ -298,17 +281,12 @@ function ClearRelationshipDialog({ gameId, groupId, relationship }: ClearRelatio
 
 export function RelationshipsTable({ relationships, gameId, groupId }: RelationshipsTableProps) {
   return (
-    <Card>
-      <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4 sm:space-y-1.5">
-        <div className="space-y-1.5">
-          <CardTitle className="text-base">Relationships</CardTitle>
-          <CardDescription>
-            Outgoing directed links from this group. {numberFormatter.format(relationships.length)}{" "}
-            {relationships.length === 1 ? "relationship" : "relationships"} total. The server stores
-            each direction independently; "mutual" pairs render here as one row each from both
-            sides.
-          </CardDescription>
-        </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {numberFormatter.format(relationships.length)} outgoing{" "}
+          {relationships.length === 1 ? "relationship" : "relationships"}
+        </p>
         <SetRelationshipDialog
           gameId={gameId}
           groupId={groupId}
@@ -319,73 +297,63 @@ export function RelationshipsTable({ relationships, gameId, groupId }: Relations
             </Button>
           }
         />
-      </CardHeader>
-      <CardContent>
-        {relationships.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <Link2 className="h-8 w-8 text-muted-foreground" aria-hidden />
-            <p className="mt-3 text-sm font-medium">No relationships yet</p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              Add a relationship to this group's stance toward another group. Type strings are
-              dev-defined and surface in <code>group.relationship.changed</code> events.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="py-2 pr-4 text-left font-medium">Other group</th>
-                  <th className="py-2 pr-4 text-left font-medium">Type</th>
-                  <th className="py-2 pr-4 text-left font-medium">Since</th>
-                  <th className="py-2 pr-4 text-right font-medium">
-                    <span className="sr-only">Actions</span>
-                  </th>
+      </div>
+      {relationships.length === 0 ? (
+        <Notice
+          title="No relationships yet"
+          body="Add one to record this group's stance toward another group."
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-muted-foreground">
+                <th className="py-2 pr-4 text-left font-medium">Other group</th>
+                <th className="py-2 pr-4 text-left font-medium">Type</th>
+                <th className="py-2 pr-4 text-left font-medium">Since</th>
+                <th className="py-2 text-right font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {relationships.map((rel) => (
+                <tr
+                  key={`${rel.groupAId}::${rel.groupBId}`}
+                  className="border-b border-border/60 hover:bg-accent/40"
+                >
+                  <td className="py-2.5 pr-4">
+                    <span className="font-mono">{rel.groupBId}</span>
+                  </td>
+                  <td className="py-2.5 pr-4 font-medium">{rel.type}</td>
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-muted-foreground">
+                    <time dateTime={rel.since}>{dateFormatter.format(new Date(rel.since))}</time>
+                  </td>
+                  <td className="py-2.5">
+                    <div className="flex items-center justify-end gap-1">
+                      <SetRelationshipDialog
+                        gameId={gameId}
+                        groupId={groupId}
+                        existing={rel}
+                        trigger={
+                          <Button size="sm" variant="ghost" aria-label="Edit relationship">
+                            <Pencil className="h-3.5 w-3.5" aria-hidden />
+                          </Button>
+                        }
+                      />
+                      <ClearRelationshipDialog
+                        gameId={gameId}
+                        groupId={groupId}
+                        relationship={rel}
+                      />
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {relationships.map((rel) => (
-                  <tr
-                    key={`${rel.groupAId}::${rel.groupBId}`}
-                    className="border-b border-border last:border-0"
-                  >
-                    <td className="py-3 pr-4">
-                      <span className="font-mono text-sm">{rel.groupBId}</span>
-                    </td>
-                    <td className="py-3 pr-4">
-                      <Badge variant="muted" className="font-mono">
-                        {rel.type}
-                      </Badge>
-                    </td>
-                    <td className="py-3 pr-4 text-xs text-muted-foreground">
-                      <time dateTime={rel.since}>{dateFormatter.format(new Date(rel.since))}</time>
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="flex items-center justify-end gap-1">
-                        <SetRelationshipDialog
-                          gameId={gameId}
-                          groupId={groupId}
-                          existing={rel}
-                          trigger={
-                            <Button size="sm" variant="ghost" aria-label="Edit relationship">
-                              <Pencil className="h-3.5 w-3.5" aria-hidden />
-                            </Button>
-                          }
-                        />
-                        <ClearRelationshipDialog
-                          gameId={gameId}
-                          groupId={groupId}
-                          relationship={rel}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

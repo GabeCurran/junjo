@@ -68,24 +68,28 @@ export function KickMemberDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <UserMinus className="h-3.5 w-3.5" aria-hidden />
-          Kick
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Kick"
+          title="Kick"
+          className="hover:text-destructive"
+        >
+          <UserMinus className="h-4 w-4" aria-hidden />
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Kick member</DialogTitle>
           <DialogDescription>
-            Remove <span className="font-mono">{externalUserId}</span> from this group. Roles are
-            preserved on the row so the audit log retains the membership history; the member can
-            rejoin via a fresh invitation later.
+            Removes <span className="font-mono">{externalUserId}</span> from this group. Their roles
+            stay on record, and a new invitation lets them rejoin.
           </DialogDescription>
         </DialogHeader>
         {!isActive ? (
           <p className="text-sm text-muted-foreground">
-            This member is already <span className="font-medium">{status}</span>. The kick is
-            idempotent; clicking through will leave the row in its current state.
+            This member is already <span className="font-medium text-foreground">{status}</span>.
+            Kicking changes nothing.
           </p>
         ) : null}
         <form action={formAction} className="space-y-4">
@@ -97,13 +101,12 @@ export function KickMemberDialog({
             <Textarea
               id={reasonId}
               name="reason"
-              placeholder="Explain why this member is being kicked..."
+              placeholder="Why they are being kicked"
               maxLength={ADMIN_MEMBER_KICK_REASON_MAX_LENGTH}
               rows={3}
             />
             <p className="text-xs text-muted-foreground">
-              Up to {ADMIN_MEMBER_KICK_REASON_MAX_LENGTH} characters. Stored on the audit entry's
-              payload and visible to anyone with audit access.
+              Up to {ADMIN_MEMBER_KICK_REASON_MAX_LENGTH} characters. Saved in the audit log.
             </p>
           </div>
           {state.error ? (

@@ -8,7 +8,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown, Layers, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -22,8 +22,10 @@ import {
   type AdminGroupVisibility,
 } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Notice } from "../ui/section";
+import { visibilityLabel } from "./group-detail-header";
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -33,6 +35,9 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 const SEARCH_DEBOUNCE_MS = 350;
+
+const SELECT_CLASS =
+  "h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export interface GroupsQueryState {
   q: string;
@@ -108,33 +113,13 @@ function SortHeader({ label, field, query, onChange }: SortHeaderProps) {
         onChange(field, nextOrder);
       }}
       className={cn(
-        "inline-flex items-center gap-1 text-xs uppercase tracking-wide",
+        "inline-flex items-center gap-1 text-xs font-medium",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
       {label}
-      <Icon className="h-3 w-3" aria-hidden />
+      <Icon className={cn("h-3 w-3", !active && "opacity-50")} aria-hidden />
     </button>
-  );
-}
-
-interface BrowserShellProps {
-  total: number;
-  children: React.ReactNode;
-}
-
-function BrowserShell({ total, children }: BrowserShellProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">All groups</CardTitle>
-        <CardDescription>
-          Every active group in this game. {numberFormatter.format(total)}{" "}
-          {total === 1 ? "match" : "matches"} for the current filter.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
   );
 }
 
@@ -166,8 +151,9 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
     [pathname, query, router, searchParams],
   );
 
-  // Reset the local search box if the URL `q` changes from outside (e.g. the
-  // operator hits Back). Comparing string equality keeps this idempotent.
+  // Reset the local search box when the URL `q` changes from outside,
+  // through history navigation. Comparing string equality keeps this
+  // idempotent.
   useEffect(() => {
     setSearchValue(query.q);
   }, [query.q]);
@@ -203,11 +189,11 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
           />
         ),
         cell: ({ row }) => (
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
             <Link
               href={`/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(row.original.id)}`}
               onClick={(e) => e.stopPropagation()}
-              className="text-sm font-medium text-primary hover:underline"
+              className="font-medium hover:underline"
             >
               {row.original.name}
             </Link>
@@ -218,14 +204,14 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
       {
         accessorKey: "kind",
         header: "Kind",
-        cell: ({ row }) => (
-          <span className="font-mono text-xs text-muted-foreground">{row.original.kind}</span>
-        ),
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.kind}</span>,
       },
       {
         accessorKey: "visibility",
         header: "Visibility",
-        cell: ({ row }) => <span className="text-xs">{row.original.visibility}</span>,
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{visibilityLabel(row.original.visibility)}</span>
+        ),
       },
       {
         accessorKey: "memberCount",
@@ -238,9 +224,7 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
           />
         ),
         cell: ({ row }) => (
-          <span className="text-sm tabular-nums">
-            {numberFormatter.format(row.original.memberCount)}
-          </span>
+          <span className="tabular-nums">{numberFormatter.format(row.original.memberCount)}</span>
         ),
       },
       {
@@ -254,7 +238,7 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
           />
         ),
         cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">
+          <span className="whitespace-nowrap text-muted-foreground">
             {dateFormatter.format(new Date(row.original.createdAt))}
           </span>
         ),
@@ -290,176 +274,169 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
   );
 
   return (
-    <BrowserShell total={data.total}>
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-            <div className="relative">
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                id={searchInputId}
-                value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
-                placeholder="Search by name"
-                aria-label="Search groups by name"
-                className="w-64 pl-9"
-                maxLength={120}
-                autoComplete="off"
-              />
-            </div>
-            {kindOptions.length > 0 ? (
-              <div className="flex items-center gap-2">
-                <label htmlFor={kindSelectId} className="sr-only">
-                  Filter by kind
-                </label>
-                <select
-                  id={kindSelectId}
-                  value={query.kind}
-                  onChange={(e) => pushQuery({ kind: e.target.value, offset: 0 })}
-                  className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background"
-                >
-                  <option value="">All kinds</option>
-                  {kindOptions.map((kind) => (
-                    <option key={kind} value={kind}>
-                      {kind}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-            <div className="flex items-center gap-2">
-              <label htmlFor={visibilitySelectId} className="sr-only">
-                Filter by visibility
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              id={searchInputId}
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
+              placeholder="Search by name"
+              aria-label="Search groups by name"
+              className="w-full pl-9 sm:w-64"
+              maxLength={120}
+              autoComplete="off"
+            />
+          </div>
+          {kindOptions.length > 0 ? (
+            <>
+              <label htmlFor={kindSelectId} className="sr-only">
+                Filter by kind
               </label>
               <select
-                id={visibilitySelectId}
-                value={query.visibility}
-                onChange={(e) =>
-                  pushQuery({
-                    visibility: e.target.value as AdminGroupVisibility | "",
-                    offset: 0,
-                  })
-                }
-                className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background"
+                id={kindSelectId}
+                value={query.kind}
+                onChange={(e) => pushQuery({ kind: e.target.value, offset: 0 })}
+                className={SELECT_CLASS}
               >
-                {VISIBILITY_OPTIONS.map((opt) => (
-                  <option key={opt.value || "all"} value={opt.value}>
-                    {opt.label}
+                <option value="">All kinds</option>
+                {kindOptions.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {kind}
                   </option>
                 ))}
               </select>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor={pageSizeSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              Rows
-            </label>
-            <select
-              id={pageSizeSelectId}
-              value={query.limit}
-              onChange={(e) => {
-                const nextLimit = Number(e.target.value);
-                pushQuery({ limit: nextLimit, offset: 0 });
-              }}
-              className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background"
-            >
-              {ADMIN_GROUPS_PAGE_SIZE_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
-          </div>
+            </>
+          ) : null}
+          <label htmlFor={visibilitySelectId} className="sr-only">
+            Filter by visibility
+          </label>
+          <select
+            id={visibilitySelectId}
+            value={query.visibility}
+            onChange={(e) =>
+              pushQuery({
+                visibility: e.target.value as AdminGroupVisibility | "",
+                offset: 0,
+              })
+            }
+            className={SELECT_CLASS}
+          >
+            {VISIBILITY_OPTIONS.map((opt) => (
+              <option key={opt.value || "all"} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
-
-        {data.items.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <Layers className="h-8 w-8 text-muted-foreground" aria-hidden />
-            <p className="mt-3 text-sm font-medium">No groups match your filter</p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              Clear the search box or try a different kind / visibility to widen the result set.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                {table.getHeaderGroups().map((hg) => (
-                  <tr
-                    key={hg.id}
-                    className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground"
-                  >
-                    {hg.headers.map((header) => (
-                      <th key={header.id} className="py-2 pr-4 text-left font-medium">
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    onClick={() => handleRowNavigate(row)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleRowNavigate(row);
-                      }
-                    }}
-                    tabIndex={0}
-                    className="cursor-pointer border-b border-border outline-none last:border-0 hover:bg-accent/40 focus-visible:bg-accent/40"
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="py-3 pr-4">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>
-            {data.total === 0
-              ? "No results"
-              : `Showing ${numberFormatter.format(start)}-${numberFormatter.format(end)} of ${numberFormatter.format(data.total)}`}
-          </span>
-          <div className="flex items-center gap-2">
-            <span>
-              Page {numberFormatter.format(currentPage)} of {numberFormatter.format(totalPages)}
-            </span>
-            <button
-              type="button"
-              onClick={() => pushQuery({ offset: Math.max(0, query.offset - query.limit) })}
-              disabled={query.offset === 0}
-              className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              onClick={() => pushQuery({ offset: query.offset + query.limit })}
-              disabled={!data.hasMore}
-              className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
-            >
-              Next
-            </button>
-          </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor={pageSizeSelectId} className="text-sm text-muted-foreground">
+            Rows
+          </label>
+          <select
+            id={pageSizeSelectId}
+            value={query.limit}
+            onChange={(e) => {
+              const nextLimit = Number(e.target.value);
+              pushQuery({ limit: nextLimit, offset: 0 });
+            }}
+            className={SELECT_CLASS}
+          >
+            {ADMIN_GROUPS_PAGE_SIZE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
-    </BrowserShell>
+
+      {data.items.length === 0 ? (
+        query.q.length > 0 || query.kind.length > 0 || query.visibility.length > 0 ? (
+          <Notice
+            title="No groups match this filter"
+            body="Clear the search, kind and visibility filters to see every group."
+          />
+        ) : (
+          <Notice title="No groups yet" body="Groups your game creates show up here." />
+        )
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id} className="border-b border-border text-xs text-muted-foreground">
+                  {hg.headers.map((header) => (
+                    <th key={header.id} className="py-2 pr-4 text-left font-medium">
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  ))}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map((row) => (
+                <tr
+                  key={row.id}
+                  onClick={() => handleRowNavigate(row)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleRowNavigate(row);
+                    }
+                  }}
+                  tabIndex={0}
+                  className="cursor-pointer border-b border-border/60 outline-none hover:bg-accent/40 focus-visible:bg-accent/40"
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="py-2.5 pr-4">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-col items-start justify-between gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center">
+        <span className="tabular-nums">
+          {data.total === 0
+            ? "No results"
+            : `${numberFormatter.format(start)}-${numberFormatter.format(end)} of ${numberFormatter.format(data.total)}`}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="tabular-nums">
+            Page {numberFormatter.format(currentPage)} of {numberFormatter.format(totalPages)}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => pushQuery({ offset: Math.max(0, query.offset - query.limit) })}
+            disabled={query.offset === 0}
+          >
+            Previous
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => pushQuery({ offset: query.offset + query.limit })}
+            disabled={!data.hasMore}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
