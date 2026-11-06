@@ -250,9 +250,9 @@
 }
 
 @layer utilities {
-  /* Archivo's width axis: titles and names set narrow so they read as
-   * headings without needing a second family. */
+  /* Titles and names set slightly tighter so they read as headings
+   * without a second family. */
   .font-condensed {
-    font-stretch: 75%;
+    letter-spacing: -0.015em;
   }
 }
