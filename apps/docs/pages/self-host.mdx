@@ -163,6 +163,12 @@ Copy-Item .env.example .env    # then set DATABASE_URL inside it
 $env:DATABASE_URL = "postgres://..."
 ```
 
+If your npm skips install scripts (`--ignore-scripts`, or an npm version that blocks them by default), the server's `postinstall` never generates the Prisma client and the server fails to start with `@prisma/client did not initialize yet`. Generate it once by hand:
+
+```sh
+npm run prisma:generate -w @junjo/server
+```
+
 The root `.env` is gitignored and must exist: the `dev` script loads it (`tsx watch --env-file=../../.env`) and fails at startup when the file is missing. The exported `DATABASE_URL` covers the two Prisma commands; the `.env` copy covers the running server. Alternatively, `npm run dev` at the repo root bootstraps everything (Postgres container, `.env`, migrations, demo seed) without manual env setup.
 
 The `dev` script uses `tsx watch`, so source edits restart the process. For production-from-source, build first and run the compiled output:

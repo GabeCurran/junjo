@@ -78,6 +78,12 @@ Pre-flight: Docker Desktop must be running. On first run, the dev script:
 - Auto-generates `.env` (root) and `apps/dashboard/.env.local` with sane dev defaults if either is missing, including a freshly minted admin token and the demo game's API key.
 - Seeds a representative demo dataset that exercises every dashboard surface.
 
+If your npm skips install scripts (`--ignore-scripts`, or an npm version that blocks them by default), the server's `postinstall` never generates the Prisma client and the server fails to start with `@prisma/client did not initialize yet`. Generate it once by hand:
+
+```sh
+npm run prisma:generate -w @junjo/server
+```
+
 Once the dev servers are up:
 
 - **Dashboard**: http://localhost:3000 (basic-auth user `admin`, password `admin`)

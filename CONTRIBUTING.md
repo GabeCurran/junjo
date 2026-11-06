@@ -16,6 +16,12 @@ The first `npm run dev` boots a Postgres container, generates dev env
 files, seeds a demo dataset, and starts the server, dashboard, and docs
 site in parallel. See the root README for more.
 
+If your npm skips install scripts (`--ignore-scripts`, or an npm version that blocks them by default), the server's `postinstall` never generates the Prisma client and the server fails to start with `@prisma/client did not initialize yet`. Generate it once by hand:
+
+```sh
+npm run prisma:generate -w @junjo/server
+```
+
 ## Verify gate
 
 Before opening a PR, the same checks CI runs should pass locally:
