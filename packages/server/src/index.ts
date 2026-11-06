@@ -8,12 +8,14 @@ import { startEventLogSweeper } from "./eventLog.js";
 import { startIdleGroupSweeper } from "./groupKinds.js";
 import { startIdempotencySweeper } from "./idempotency.js";
 import { createLogger, logger, setLogger } from "./logger.js";
+import { permissionCache, startPermissionCacheSweeper } from "./permissionCache.js";
 import { startHardDeleteSweeper } from "./softDelete.js";
-import { startWebhookWorker } from "./webhookWorker.js";
+import { startWebhookDeliverySweeper, startWebhookWorker } from "./webhookWorker.js";
 
 const env = loadEnv();
 setLogger(createLogger({ level: env.LOG_LEVEL, nodeEnv: env.NODE_ENV }));
 setMaxPageSize(env.JUNJO_MAX_PAGE_SIZE);
+permissionCache.setMaxEntries(env.PERMISSION_CACHE_MAX_ENTRIES);
 
 // Workers must boot before `createApp` so the webhook worker's heartbeat
 // handle can be threaded into `/healthz`.
@@ -24,6 +26,10 @@ const eventLogSweeper = startEventLogSweeper(prisma, {
 const idempotencySweeper = startIdempotencySweeper(prisma);
 const idleGroupSweeper = startIdleGroupSweeper(prisma, eventHub);
 const webhookWorker = startWebhookWorker(prisma);
+const deliverySweeper = startWebhookDeliverySweeper(prisma, {
+  retentionDays: env.WEBHOOK_DELIVERY_RETENTION_DAYS,
+});
+const permissionCacheSweeper = startPermissionCacheSweeper(permissionCache);
 
 const app = createApp({
   adminToken: env.JUNJO_ADMIN_TOKEN,
@@ -44,6 +50,8 @@ const shutdown = async (signal: string) => {
   eventLogSweeper.stop();
   idempotencySweeper.stop();
   idleGroupSweeper.stop();
+  deliverySweeper.stop();
+  permissionCacheSweeper.stop();
   // Drains the in-flight webhook delivery (if any). Capped at
   // WEBHOOK_WORKER_DRAIN_MS (30s) to stay inside a typical orchestrator's
   // terminationGracePeriod.

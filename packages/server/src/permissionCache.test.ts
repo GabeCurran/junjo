@@ -189,3 +189,51 @@ describe("PermissionCache", () => {
     );
   });
 });
+
+describe("PermissionCache bounds", () => {
+  const yes = { allowed: true, source: "role" } as const;
+
+  it("evicts the least recently used entry past the cap", () => {
+    const cache = new PermissionCache({ maxEntries: 2 });
+    cache.set("g", "grp", "a", "p", yes);
+    cache.set("g", "grp", "b", "p", yes);
+    expect(cache.get("g", "grp", "a", "p")).not.toBeNull();
+    cache.set("g", "grp", "c", "p", yes);
+    expect(cache.size()).toBe(2);
+    expect(cache.get("g", "grp", "b", "p")).toBeNull();
+    expect(cache.get("g", "grp", "a", "p")).not.toBeNull();
+    expect(cache.get("g", "grp", "c", "p")).not.toBeNull();
+  });
+
+  it("keeps the group index consistent after an eviction", () => {
+    const cache = new PermissionCache({ maxEntries: 1 });
+    cache.set("g", "grp1", "a", "p", yes);
+    cache.set("g", "grp2", "a", "p", yes);
+    cache.invalidateGroup("grp1");
+    expect(cache.get("g", "grp2", "a", "p")).not.toBeNull();
+    cache.invalidateGroup("grp2");
+    expect(cache.size()).toBe(0);
+  });
+
+  it("shrinks to a lowered cap at once", () => {
+    const cache = new PermissionCache();
+    for (let i = 0; i < 10; i++) cache.set("g", "grp", `u${i}`, "p", yes);
+    cache.setMaxEntries(3);
+    expect(cache.size()).toBe(3);
+    expect(cache.get("g", "grp", "u9", "p")).not.toBeNull();
+  });
+
+  it("sweeps expired entries that are never read again", () => {
+    let now = 0;
+    const cache = new PermissionCache({ ttlMs: 10, now: () => now });
+    cache.set("g", "grp", "a", "p", yes);
+    now = 5;
+    cache.set("g", "grp", "b", "p", yes);
+    now = 10;
+    expect(cache.sweepExpired()).toBe(1);
+    expect(cache.size()).toBe(1);
+    now = 15;
+    expect(cache.sweepExpired()).toBe(1);
+    expect(cache.size()).toBe(0);
+  });
+});

@@ -4,6 +4,7 @@ import { parseApiKey, verifySecret } from "../apiKey.js";
 import { resolveGameConfig } from "../config/defaults.js";
 import { Errors } from "../errors.js";
 import { currentRequestContext } from "../requestContext.js";
+import { VerifiedKeyCache, secretDigest } from "./verifiedKeyCache.js";
 
 export interface ApiKeyRecord {
   gameId: string;
@@ -32,7 +33,18 @@ declare module "hono" {
   }
 }
 
-export function apiKeyMiddleware(store: ApiKeyStore): MiddlewareHandler {
+export interface ApiKeyMiddlewareOptions {
+  // Skips the slow hash check for a key already verified against the
+  // same stored hash. Null disables it. Defaults to a new cache per
+  // middleware instance.
+  verifiedCache?: VerifiedKeyCache | null;
+}
+
+export function apiKeyMiddleware(
+  store: ApiKeyStore,
+  opts: ApiKeyMiddlewareOptions = {},
+): MiddlewareHandler {
+  const verified = opts.verifiedCache === undefined ? new VerifiedKeyCache() : opts.verifiedCache;
   return async (c, next) => {
     const auth = c.req.header("authorization") ?? c.req.header("Authorization");
     if (!auth || !auth.startsWith("Bearer ")) {
@@ -46,8 +58,12 @@ export function apiKeyMiddleware(store: ApiKeyStore): MiddlewareHandler {
     if (!record) throw Errors.invalidApiKey("unknown API key");
     if (record.revokedAt) throw Errors.invalidApiKey("API key revoked");
 
-    const ok = await verifySecret(parsed.secret, record.hashedSecret);
-    if (!ok) throw Errors.invalidApiKey("invalid API key");
+    const digest = secretDigest(parsed.secret);
+    if (!verified?.matches(parsed.prefix, digest, record.hashedSecret)) {
+      const ok = await verifySecret(parsed.secret, record.hashedSecret);
+      if (!ok) throw Errors.invalidApiKey("invalid API key");
+      verified?.remember(parsed.prefix, digest, record.hashedSecret);
+    }
 
     c.set("gameId", record.gameId);
     c.set("apiKeyPrefix", parsed.prefix);
@@ -56,10 +72,9 @@ export function apiKeyMiddleware(store: ApiKeyStore): MiddlewareHandler {
       ctx.apiKeyId = record.id ?? null;
       ctx.preferredNamespaces = record.preferredNamespaces ?? [];
       if (record.gameConfig !== undefined) {
-        ctx.idFormats.set(
-          record.gameId,
-          resolveGameConfig(record.gameConfig as PartialGameConfig | null).identity.formats,
-        );
+        const config = resolveGameConfig(record.gameConfig as PartialGameConfig | null);
+        ctx.idFormats.set(record.gameId, config.identity.formats);
+        ctx.permissionConfigs.set(record.gameId, config.permissions);
       }
     }
     await next();

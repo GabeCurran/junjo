@@ -165,7 +165,8 @@ These are per-game config values, changeable at runtime via `PATCH /v1/admin/gam
 - Server heartbeat: a comment frame every 30 s (`SSE_HEARTBEAT_INTERVAL_MS`, hardcoded; overridable only programmatically via `createApp` for embedders).
 - The TypeScript and C++ SDKs abort a subscription whose buffered, unterminated frame exceeds 1 MiB (TypeScript: `MAX_SSE_BUFFER_CHARS`, measured in UTF-16 code units; C++: the `StreamOverflow` error code; the Unreal plugin inherits the same cap through its vendored core). The server imposes no frame-size limit of its own.
 - There is no server-side idle timeout: a stream stays open until one side closes it. If your streams die on a schedule, the timeout belongs to an intermediary proxy; see [Troubleshooting](/troubleshooting#sse-streams).
-- [Game streams](/api-reference/events#get-v1events): at most 10 open per API key and 200 per game, counted per server instance; beyond that, `429 too_many_streams`. Group streams have no such cap.
+- [Game streams](/api-reference/events#get-v1events): at most 10 open per API key and 200 per game, counted per server instance; beyond that, `429 too_many_streams`.
+- [Group streams](/api-reference/events#get-v1eventsgroupid): at most 500 open per API key and 2,000 per game, counted per server instance; beyond that, `429 too_many_streams`. A group stream whose client stops reading is closed once a frame has waited 30 s to be sent or 1,000 events are waiting; the client reconnects and misses the events in between.
 - A game stream whose client stops reading is closed once a frame has waited 30 s to be sent; the client resumes from its position.
 - The event log keeps events for `EVENT_LOG_RETENTION_HOURS` (default 24). Resuming a game stream from an older position answers `410 stream_position_expired`.
 - Other server instances' events reach a game stream within `EVENT_STREAM_POLL_MS` (default 1 s).

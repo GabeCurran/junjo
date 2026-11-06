@@ -7,56 +7,35 @@ import { type LoggedEvent, hasEventAfter, readEventLog, readStreamPosition } fro
 import { renderEvent } from "../eventRender.js";
 import { EVENT_LOG_PAGE, type GameFeed, type GameFeedOptions, GameFeeds } from "../gameFeed.js";
 import { currentPreferredNamespaces } from "../requestContext.js";
-import { SSE_HEARTBEAT_INTERVAL_MS, recheckStreamKey, renderTableFor } from "./events.js";
+import {
+  type GroupStreamOptions,
+  SSE_HEARTBEAT_INTERVAL_MS,
+  recheckStreamKey,
+  renderTableFor,
+} from "./events.js";
+import {
+  STREAM_WRITE_TIMEOUT_MS,
+  StreamSlots,
+  abandonResponse,
+  writeWithin,
+} from "./streamSlots.js";
 import { WEBHOOK_EVENT_TYPES } from "./webhooks.schema.js";
 
 export const STREAM_POSITION_HEADER = "Junjo-Stream-Position";
 export const MAX_GAME_STREAMS_PER_KEY = 10;
 export const MAX_GAME_STREAMS_PER_GAME = 200;
-// A frame that cannot be handed to the client within this long means the
-// client stopped reading; the stream is closed and the client resumes
-// from its position.
-export const STREAM_WRITE_TIMEOUT_MS = 30_000;
+// A game stream closed for a stalled client resumes from its position.
+export { STREAM_WRITE_TIMEOUT_MS };
 
 const MAX_POSITION = 9_223_372_036_854_775_807n;
 const POSITION_PATTERN = /^\d{1,19}$/;
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(WEBHOOK_EVENT_TYPES);
 
-export interface GameStreamOptions extends GameFeedOptions {
+export interface GameStreamOptions extends GameFeedOptions, GroupStreamOptions {
   hub?: EventHub;
   heartbeatIntervalMs?: number;
   maxStreamsPerKey?: number;
   writeTimeoutMs?: number;
-}
-
-// Open game streams in this process, per API key and per game.
-class StreamSlots {
-  private readonly perKey = new Map<string, number>();
-  private readonly perGame = new Map<string, number>();
-
-  constructor(
-    private readonly maxPerKey: number,
-    private readonly maxPerGame: number,
-  ) {}
-
-  tryAcquire(key: string, gameId: string): boolean {
-    if ((this.perKey.get(key) ?? 0) >= this.maxPerKey) return false;
-    if ((this.perGame.get(gameId) ?? 0) >= this.maxPerGame) return false;
-    this.perKey.set(key, (this.perKey.get(key) ?? 0) + 1);
-    this.perGame.set(gameId, (this.perGame.get(gameId) ?? 0) + 1);
-    return true;
-  }
-
-  release(key: string, gameId: string): void {
-    decrement(this.perKey, key);
-    decrement(this.perGame, gameId);
-  }
-}
-
-function decrement(map: Map<string, number>, key: string): void {
-  const next = (map.get(key) ?? 0) - 1;
-  if (next > 0) map.set(key, next);
-  else map.delete(key);
 }
 
 // `?types=` as a set of event types, or null for every type. Names are
@@ -111,13 +90,6 @@ export async function stampStreamPosition(
 ): Promise<void> {
   const position = await readStreamPosition(prisma, gameId);
   c.header(STREAM_POSITION_HEADER, position.toString());
-}
-
-// Destroys the underlying socket when the Node adapter exposes it; a
-// stalled client would otherwise hold the half-written response open.
-function abandonResponse(c: Context): void {
-  const outgoing = (c.env as { outgoing?: { destroy?: () => void } } | undefined)?.outgoing;
-  outgoing?.destroy?.();
 }
 
 export function gameEventsHandlers(
@@ -183,25 +155,11 @@ export function gameEventsHandlers(
       // Every frame goes through here, so frames never interleave and the
       // heartbeat's position is never ahead of a frame still being sent.
       const write = async (pending: Promise<unknown>): Promise<boolean> => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const deadline = new Promise<"timeout">((resolve) => {
-          timer = setTimeout(() => resolve("timeout"), writeTimeoutMs);
-        });
-        try {
-          const outcome = await Promise.race([
-            pending.then(
-              () => "ok" as const,
-              () => "error" as const,
-            ),
-            deadline,
-          ]);
-          if (outcome === "ok") return true;
-          if (outcome === "timeout") abandonResponse(c);
-          close();
-          return false;
-        } finally {
-          clearTimeout(timer);
-        }
+        const outcome = await writeWithin(pending, writeTimeoutMs);
+        if (outcome === "ok") return true;
+        if (outcome === "timeout") abandonResponse(c);
+        close();
+        return false;
       };
 
       const heartbeat = setInterval(() => {

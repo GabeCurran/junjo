@@ -6,6 +6,12 @@ import { Errors } from "../errors.js";
 import { type EventHub, eventHub as defaultHub } from "../eventHub.js";
 import { type RenderTable, loadRenderTable, renderEvent } from "../eventRender.js";
 import { currentPreferredNamespaces } from "../requestContext.js";
+import {
+  STREAM_WRITE_TIMEOUT_MS,
+  StreamSlots,
+  abandonResponse,
+  writeWithin,
+} from "./streamSlots.js";
 
 // Browsers and intermediaries idle-time-out SSE after a couple of
 // minutes; the heartbeat comment keeps the connection alive without
@@ -63,20 +69,48 @@ export function renderTableFor(prisma: PrismaClient, event: JunjoEvent): Promise
   return pending;
 }
 
-interface SubscribeEventsOptions {
+// Open group streams per API key and per game, counted per server
+// process. A connection covers one group, so the caps are far above the
+// game stream's.
+export const MAX_GROUP_STREAMS_PER_KEY = 500;
+export const MAX_GROUP_STREAMS_PER_GAME = 2_000;
+// Events waiting to be written to one group stream. A client that falls
+// this far behind has stopped reading, and the stream is closed rather
+// than buffering without bound.
+export const MAX_QUEUED_GROUP_EVENTS = 1_000;
+
+export interface GroupStreamOptions {
+  maxGroupStreamsPerKey?: number;
+  maxGroupStreamsPerGame?: number;
+  maxQueuedGroupEvents?: number;
+}
+
+interface SubscribeEventsOptions extends GroupStreamOptions {
   hub?: EventHub;
   heartbeatIntervalMs?: number;
+  writeTimeoutMs?: number;
 }
 
 // 404-collapses missing / cross-game / soft-deleted groups BEFORE
 // upgrading to a stream, so a bad request fails synchronously with the
 // usual JSON envelope rather than opening a stream that never delivers.
+// Too many open streams for the key or the game fails the same way.
+//
+// A frame that cannot be handed to the client within the write timeout,
+// or a queue that reaches its cap, means the client stopped reading; the
+// stream is closed.
 export function subscribeEventsHandler(
   prisma: PrismaClient,
   opts: SubscribeEventsOptions = {},
 ): Handler {
   const hub = opts.hub ?? defaultHub;
   const heartbeatMs = opts.heartbeatIntervalMs ?? SSE_HEARTBEAT_INTERVAL_MS;
+  const writeTimeoutMs = opts.writeTimeoutMs ?? STREAM_WRITE_TIMEOUT_MS;
+  const maxQueued = Math.max(1, opts.maxQueuedGroupEvents ?? MAX_QUEUED_GROUP_EVENTS);
+  const slots = new StreamSlots(
+    opts.maxGroupStreamsPerKey ?? MAX_GROUP_STREAMS_PER_KEY,
+    opts.maxGroupStreamsPerGame ?? MAX_GROUP_STREAMS_PER_GAME,
+  );
 
   return async (c) => {
     const groupId = c.req.param("groupId") ?? "";
@@ -88,79 +122,112 @@ export function subscribeEventsHandler(
     });
     if (!group) throw Errors.notFound("group");
     const subscribedGroupId = group.id as GroupId;
+    if (!slots.tryAcquire(apiKeyPrefix, gameId)) throw Errors.tooManyStreams();
     // Refreshed from the key row on every heartbeat, so a changed
     // preference reaches an open stream within one interval.
     let preferred: readonly string[] = currentPreferredNamespaces();
 
-    return streamSSE(c, async (stream) => {
-      const queue: JunjoEvent[] = [];
-      let wake: (() => void) | null = null;
-      let closed = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      slots.release(apiKeyPrefix, gameId);
+    };
 
-      const wakeup = () => {
-        if (wake) {
-          const w = wake;
-          wake = null;
-          w();
-        }
-      };
+    try {
+      return streamSSE(c, async (stream) => {
+        const queue: JunjoEvent[] = [];
+        let wake: (() => void) | null = null;
+        let closed = false;
+        let heartbeatDue = false;
 
-      const unsubscribe = hub.subscribe(subscribedGroupId, (event) => {
-        queue.push(event);
-        wakeup();
-      });
+        const wakeup = () => {
+          if (wake) {
+            const w = wake;
+            wake = null;
+            w();
+          }
+        };
 
-      stream.onAbort(() => {
-        closed = true;
-        unsubscribe();
-        wakeup();
-      });
-
-      const closeStream = () => {
-        closed = true;
-        unsubscribe();
-        wakeup();
-      };
-
-      const heartbeat = setInterval(() => {
-        if (closed) return;
-        void (async () => {
+        const unsubscribe = hub.subscribe(subscribedGroupId, (event) => {
           if (closed) return;
-          const key = await recheckStreamKey(prisma, apiKeyPrefix);
-          if (closed) return;
-          if (key.status === "revoked") {
+          if (queue.length >= maxQueued) {
             closeStream();
+            abandonResponse(c);
             return;
           }
-          if (key.status === "live") preferred = key.preferredNamespaces;
-          stream.write(":heartbeat\n\n").catch(closeStream);
-        })();
-      }, heartbeatMs);
-      // Never let the heartbeat keep the Node process alive on its own.
-      heartbeat.unref?.();
+          queue.push(event);
+          wakeup();
+        });
 
-      try {
-        while (!closed) {
-          while (queue.length > 0 && !closed) {
+        const closeStream = () => {
+          closed = true;
+          unsubscribe();
+          wakeup();
+        };
+        stream.onAbort(closeStream);
+
+        // Every frame goes through here, so frames never interleave.
+        const write = async (pending: Promise<unknown>): Promise<boolean> => {
+          const outcome = await writeWithin(pending, writeTimeoutMs);
+          if (outcome === "ok") return true;
+          if (outcome === "timeout") abandonResponse(c);
+          closeStream();
+          return false;
+        };
+
+        const heartbeat = setInterval(() => {
+          if (closed) return;
+          void (async () => {
+            const key = await recheckStreamKey(prisma, apiKeyPrefix);
+            if (closed) return;
+            if (key.status === "revoked") {
+              closeStream();
+              return;
+            }
+            if (key.status === "live") preferred = key.preferredNamespaces;
+            heartbeatDue = true;
+            wakeup();
+          })();
+        }, heartbeatMs);
+        // Never let the heartbeat keep the Node process alive on its own.
+        heartbeat.unref?.();
+
+        try {
+          while (!closed) {
+            if (heartbeatDue) {
+              heartbeatDue = false;
+              if (!(await write(stream.write(":heartbeat\n\n")))) break;
+            }
             const event = queue.shift();
-            if (!event) break;
-            const table = await renderTableFor(prisma, event);
-            if (closed) break;
-            await stream.writeSSE({
-              id: event.id,
-              event: event.type,
-              data: JSON.stringify(renderEvent(event, table, preferred)),
+            if (event) {
+              const table = await renderTableFor(prisma, event);
+              if (closed) break;
+              const sent = await write(
+                stream.writeSSE({
+                  id: event.id,
+                  event: event.type,
+                  data: JSON.stringify(renderEvent(event, table, preferred)),
+                }),
+              );
+              if (!sent) break;
+              continue;
+            }
+            if (closed || heartbeatDue) continue;
+            await new Promise<void>((resolve) => {
+              wake = resolve;
             });
           }
-          if (closed) break;
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
+        } finally {
+          closed = true;
+          clearInterval(heartbeat);
+          unsubscribe();
+          release();
         }
-      } finally {
-        clearInterval(heartbeat);
-        unsubscribe();
-      }
-    });
+      });
+    } catch (err) {
+      release();
+      throw err;
+    }
   };
 }

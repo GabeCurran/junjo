@@ -173,4 +173,32 @@ describe("loadEnv", () => {
       /JUNJO_MAX_PAGE_SIZE/,
     );
   });
+
+  it("defaults PERMISSION_CACHE_MAX_ENTRIES and WEBHOOK_DELIVERY_RETENTION_DAYS", () => {
+    const env = loadEnv({ DATABASE_URL: "postgres://x" });
+    expect(env.PERMISSION_CACHE_MAX_ENTRIES).toBe(100_000);
+    expect(env.WEBHOOK_DELIVERY_RETENTION_DAYS).toBe(30);
+  });
+
+  it("parses PERMISSION_CACHE_MAX_ENTRIES and WEBHOOK_DELIVERY_RETENTION_DAYS", () => {
+    const env = loadEnv({
+      DATABASE_URL: "postgres://x",
+      PERMISSION_CACHE_MAX_ENTRIES: "5000",
+      WEBHOOK_DELIVERY_RETENTION_DAYS: "7",
+    });
+    expect(env.PERMISSION_CACHE_MAX_ENTRIES).toBe(5000);
+    expect(env.WEBHOOK_DELIVERY_RETENTION_DAYS).toBe(7);
+  });
+
+  it("rejects out-of-range PERMISSION_CACHE_MAX_ENTRIES and WEBHOOK_DELIVERY_RETENTION_DAYS", () => {
+    expect(() =>
+      loadEnv({ DATABASE_URL: "postgres://x", PERMISSION_CACHE_MAX_ENTRIES: "0" }),
+    ).toThrow(/PERMISSION_CACHE_MAX_ENTRIES/);
+    expect(() =>
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_DELIVERY_RETENTION_DAYS: "0" }),
+    ).toThrow(/WEBHOOK_DELIVERY_RETENTION_DAYS/);
+    expect(() =>
+      loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_DELIVERY_RETENTION_DAYS: "1.5" }),
+    ).toThrow(/WEBHOOK_DELIVERY_RETENTION_DAYS/);
+  });
 });

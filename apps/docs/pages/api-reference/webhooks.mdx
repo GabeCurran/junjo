@@ -40,11 +40,11 @@ sequenceDiagram
   end
   Route-->>Route: respond to caller (HTTP 2xx)
 
-  Note over Route,Receiver: Drain phase (asynchronous, every 5s, single sequential worker)
+  Note over Route,Receiver: Drain phase (asynchronous, every 5s; a tick still running makes the next one skip)
   loop every 5 seconds (setInterval, unref)
-    Worker->>DB: SELECT id FROM WebhookDelivery<br/>WHERE status=pending AND nextAttemptAt is due<br/>ORDER BY nextAttemptAt ASC LIMIT 50
-    DB-->>Worker: due ids (batch up to 50)
-    loop each id, sequential
+    Worker->>DB: claim: lock due pending rows FOR UPDATE SKIP LOCKED<br/>ORDER BY nextAttemptAt ASC LIMIT 50<br/>and set nextAttemptAt = now + 15 min lease
+    DB-->>Worker: claimed ids with their endpoint (batch up to 50)
+    loop each endpoint (up to 8 at once), its deliveries one at a time in due order
       opt SIGTERM received (shouldStop)
         Worker->>Worker: break batch (stop scheduling new ticks)
       end
@@ -251,8 +251,9 @@ Hard-deletes the endpoint and cascades to any pending `WebhookDelivery` rows. Re
 
 The V1 worker is single-process, single-instance:
 
-- **No cross-process coordination.** Two server processes running the worker would both pick up the same due deliveries. The `WEBHOOK_BACKOFF_MS` interval and the `WebhookDelivery` row state are the only coordination. When this scales out, the right move is `pg_try_advisory_lock(webhookEndpointId)` keyed per-endpoint so the same endpoint cannot be hit by two workers concurrently. The function signatures in `webhookWorker.ts` are stable across that change.
+- **Claims, not locks, coordinate workers.** Each tick claims its rows with `FOR UPDATE SKIP LOCKED` and a 15 minute lease on `nextAttemptAt`, so two workers (in one process or several) never claim the same delivery while the lease holds. Within one worker an endpoint has at most one request in flight, and up to 8 endpoints are served at once. Two server processes can still each hold a claim on a different delivery for the same endpoint, so per-endpoint ordering holds within a process, not across processes.
+- **A failing endpoint is isolated.** After a retriable failure (network error, timeout, 5xx, 408, 429) the rest of that endpoint's claimed deliveries in the tick are released untried and picked up on the next tick. A dead or slow receiver costs at most one 10 second timeout per tick and does not delay deliveries to other endpoints.
 - **At-least-once delivery.** A worker crash between POST and row update can re-deliver an event. Receivers MUST be idempotent on `x-junjo-event-id`.
 - **No replay UI.** Manual replay of `failed` deliveries is not exposed through the API; replays require direct database access.
-- **No dead-letter queue.** Permanently failed deliveries stay in the `WebhookDelivery` table; they're not deleted automatically.
+- **No dead-letter queue.** Failed deliveries stay in the `WebhookDelivery` table until the hourly sweeper deletes delivered and failed rows older than `WEBHOOK_DELIVERY_RETENTION_DAYS` (default 30). Pending rows are never deleted.
 - **No body capture for debug.** The worker records the response status but does not capture the response body.

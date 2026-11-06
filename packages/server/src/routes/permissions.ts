@@ -25,6 +25,7 @@ import {
   candidateKeys,
   resolveMemberPermission,
 } from "../permissionResolve.js";
+import { currentRequestContext } from "../requestContext.js";
 import { assertUserIdsWellFormed } from "../userIdFormat.js";
 import { stampStreamPosition } from "./gameEvents.js";
 import { MAX_PARENT_DEPTH } from "./groups.schema.js";
@@ -38,14 +39,22 @@ import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.sc
 export class CheckContext {
   private readonly identities = new Map<string, string | null>();
   private configPromise: Promise<GameConfigPermissions> | null = null;
+  // Set by a batch: member reads shared by every check in the request.
+  loads: MemberLoads | null = null;
 
   constructor(
     private readonly prisma: Db,
     private readonly gameId: string,
   ) {}
 
+  // Prefers the config the API key middleware read with the key row.
   permissions(): Promise<GameConfigPermissions> {
-    this.configPromise ??= loadPermissionConfig(this.prisma, this.gameId);
+    if (!this.configPromise) {
+      const known = currentRequestContext()?.permissionConfigs.get(this.gameId);
+      this.configPromise = known
+        ? Promise.resolve(known)
+        : loadPermissionConfig(this.prisma, this.gameId);
+    }
     return this.configPromise;
   }
 
@@ -141,12 +150,133 @@ async function loadReachableRoles(
   );
 }
 
+interface MemberRow {
+  id: string;
+  status: string;
+}
+
+interface OverrideRow {
+  permissionKey: string;
+  grant: boolean;
+  context: Prisma.JsonValue;
+  contextKey: string;
+}
+
+interface RoleEntryRow {
+  roleId: string;
+  permissionKey: string;
+  value: boolean;
+  context: Prisma.JsonValue;
+  contextKey: string;
+}
+
+interface RoleData {
+  reachable: ReachableRoleRow[];
+  entryRows: RoleEntryRow[];
+  parentRows: { roleId: string; parentRoleId: string }[];
+}
+
+// The reads one member's resolution needs, each made at most once per
+// instance: the membership row, its overrides, and the roles reachable
+// from it with their entries and parent links. Entries and overrides are
+// read for `keys` only, and contextual ones only when `withContexts` is
+// set. Reading a superset of what one check needs leaves its answer
+// unchanged, because the resolver ignores keys that are not candidates
+// for the permission and ignores contextual entries when the check has
+// no context. A batch therefore shares one instance built from the
+// union of its checks' candidate keys, and a member that several
+// entries ask about is read once.
+export class MemberLoads {
+  private readonly members = new Map<string, Promise<MemberRow | null>>();
+  private readonly overrides = new Map<string, Promise<OverrideRow[]>>();
+  private readonly roles = new Map<string, Promise<RoleData>>();
+  private readonly keySet: ReadonlySet<string>;
+
+  constructor(
+    private readonly prisma: Db,
+    keys: Iterable<string>,
+    private readonly withContexts: boolean,
+  ) {
+    this.keySet = new Set(keys);
+  }
+
+  // True when this instance reads everything a check with these
+  // candidates and context needs.
+  covers(candidates: readonly string[], hasContext: boolean): boolean {
+    if (hasContext && !this.withContexts) return false;
+    return candidates.every((k) => this.keySet.has(k));
+  }
+
+  private filter() {
+    return {
+      permissionKey: { in: [...this.keySet] },
+      ...(this.withContexts ? {} : { contextKey: "" }),
+    };
+  }
+
+  member(groupId: string, junjoUserId: string): Promise<MemberRow | null> {
+    const k = `${groupId.length}:${groupId}|${junjoUserId}`;
+    let hit = this.members.get(k);
+    if (!hit) {
+      hit = this.prisma.groupMember.findUnique({
+        where: { groupId_junjoUserId: { groupId, junjoUserId } },
+        select: { id: true, status: true },
+      });
+      this.members.set(k, hit);
+    }
+    return hit;
+  }
+
+  memberOverrides(memberId: string): Promise<OverrideRow[]> {
+    let hit = this.overrides.get(memberId);
+    if (!hit) {
+      hit = this.prisma.memberPermissionOverride.findMany({
+        where: { groupMemberId: memberId, ...this.filter() },
+        select: { permissionKey: true, grant: true, context: true, contextKey: true },
+      });
+      this.overrides.set(memberId, hit);
+    }
+    return hit;
+  }
+
+  // `groupId` must be the member's own group.
+  memberRoles(groupId: string, memberId: string): Promise<RoleData> {
+    let hit = this.roles.get(memberId);
+    if (!hit) {
+      hit = this.loadRoles(groupId, memberId);
+      this.roles.set(memberId, hit);
+    }
+    return hit;
+  }
+
+  private async loadRoles(groupId: string, memberId: string): Promise<RoleData> {
+    const reachable = await loadReachableRoles(this.prisma, groupId, memberId);
+    if (reachable.length === 0) return { reachable, entryRows: [], parentRows: [] };
+    const roleIds = reachable.map((r) => r.id);
+    const inherits = reachable.some((r) => r.depth > 0);
+    const [entryRows, parentRows] = await Promise.all([
+      this.prisma.rolePermission.findMany({
+        where: { roleId: { in: roleIds }, ...this.filter() },
+        select: { roleId: true, permissionKey: true, value: true, context: true, contextKey: true },
+      }),
+      inherits
+        ? this.prisma.roleParent.findMany({
+            where: { roleId: { in: roleIds }, parentRoleId: { in: roleIds } },
+            select: { roleId: true, parentRoleId: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    return { reachable, entryRows, parentRows };
+  }
+}
+
 // Resolution for one group. Membership and status gate first: a missing
 // membership or a non-active status returns `none`. Otherwise the
 // layered resolver in `permissionResolve.ts` decides from the member's
 // overrides and the roles reachable from their direct roles, reading
-// only the entries whose keys could match the queried permission, and
-// only global entries when the check has no context.
+// only the entries whose keys could match the queried permission (or
+// the batch's shared superset of them), and only global entries when no
+// check needs contextual ones.
 //
 // Non-active members (`left` / `kicked` / `invited`) intentionally do
 // NOT exercise permissions, even though their role rows survive the
@@ -159,22 +289,21 @@ async function resolveForJunjoUser(
   junjoUserId: string,
   permission: string,
   context: PermissionContext,
+  shared: MemberLoads | null,
 ): Promise<PermissionCheckResult> {
   const { mode, contexts } = config;
-  const member = await prisma.groupMember.findUnique({
-    where: { groupId_junjoUserId: { groupId, junjoUserId } },
-    select: { id: true, status: true },
-  });
+  const candidates = candidateKeys(mode, permission);
+  const hasContext = Object.keys(context).length > 0;
+  const loads =
+    shared?.covers(candidates, hasContext) === true
+      ? shared
+      : new MemberLoads(prisma, candidates, hasContext);
+
+  const member = await loads.member(groupId, junjoUserId);
   if (!member) return { allowed: false, source: "none" };
   if (member.status !== "active") return { allowed: false, source: "none" };
 
-  const candidates = candidateKeys(mode, permission);
-  const globalOnly = Object.keys(context).length === 0;
-  const contextFilter = globalOnly ? { contextKey: "" } : {};
-  const overrideRows = await prisma.memberPermissionOverride.findMany({
-    where: { groupMemberId: member.id, permissionKey: { in: candidates }, ...contextFilter },
-    select: { permissionKey: true, grant: true, context: true, contextKey: true },
-  });
+  const overrideRows = await loads.memberOverrides(member.id);
   const overrides = new Map<string, boolean>();
   const contextOverrides: ResolverContextEntry[] = [];
   for (const o of overrideRows) {
@@ -196,23 +325,8 @@ async function resolveForJunjoUser(
     if (own.source === "override") return own;
   }
 
-  const reachable = await loadReachableRoles(prisma, groupId, member.id);
+  const { reachable, entryRows, parentRows } = await loads.memberRoles(groupId, member.id);
   if (reachable.length === 0) return { allowed: false, source: "default" };
-  const roleIds = reachable.map((r) => r.id);
-  const inherits = reachable.some((r) => r.depth > 0);
-
-  const [entryRows, parentRows] = await Promise.all([
-    prisma.rolePermission.findMany({
-      where: { roleId: { in: roleIds }, permissionKey: { in: candidates }, ...contextFilter },
-      select: { roleId: true, permissionKey: true, value: true, context: true, contextKey: true },
-    }),
-    inherits
-      ? prisma.roleParent.findMany({
-          where: { roleId: { in: roleIds }, parentRoleId: { in: roleIds } },
-          select: { roleId: true, parentRoleId: true },
-        })
-      : Promise.resolve([]),
-  ]);
 
   const entries = new Map<string, Map<string, boolean>>();
   const contextEntries = new Map<string, ResolverContextEntry[]>();
@@ -283,6 +397,7 @@ export async function resolvePermission(
     junjoUserId,
     permission,
     permissionContext,
+    ctx.loads,
   );
 }
 
@@ -516,6 +631,15 @@ export function checkPermissionBatchHandler(
       checks.map((check) => check.userId),
     );
     const context = new CheckContext(prisma, gameId);
+    // One set of member reads for the whole batch, covering every
+    // entry's candidate keys, so a member asked about several times is
+    // read once.
+    const mode = await context.mode();
+    context.loads = new MemberLoads(
+      prisma,
+      checks.flatMap((check) => candidateKeys(mode, check.permission)),
+      checks.some((check) => Object.keys(check.context ?? {}).length > 0),
+    );
     const levels = new LevelMemo();
     const results: PermissionCheckResult[] = [];
     for (const check of checks) {

@@ -272,6 +272,9 @@ Everything else is sent as emitted. In particular these are literal: `junjoUserI
 |------|--------|------|
 | `not_found` | 404 | Group does not exist in the calling game (missing, cross-game, and soft-deleted all collapse here). The error fires synchronously before any stream is opened, so the response carries the standard JSON error envelope, not an SSE frame. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+| `too_many_streams` | 429 | The key already has 500 open group streams, or the game has 2,000, on the server instance that answered. Close streams you no longer need; retrying in a loop will not help. |
+
+A client that stops reading has its stream closed once a frame has waited 30 seconds to be sent or 1,000 events are waiting for it. Group streams have no resume, so the events in between are missed; use the [game stream](#get-v1events) where that matters.
 
 ### Lifecycle
 

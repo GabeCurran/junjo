@@ -181,6 +181,55 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/group
     expect(first?.data[5]).toBe(1);
   });
 
+  it("matches a direct count of active members at every bucket for scattered data", async () => {
+    const game = await createGame("Alpha", prisma);
+    const from = Date.parse("2026-01-01T00:00:00Z");
+    const to = Date.parse("2026-01-08T00:00:00Z");
+    const groups = [];
+    for (let i = 0; i < 4; i++) groups.push(await seedGroup(game.id, `g${i}`));
+    // Deterministic spread of join and leave times around and inside the
+    // window, including exact bucket boundaries and millisecond offsets.
+    const rows: { groupId: string; joinedAt: number; leftAt: number | null }[] = [];
+    let seed = 7;
+    const next = () => {
+      seed = (seed * 48271) % 2147483647;
+      return seed;
+    };
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    for (let i = 0; i < 60; i++) {
+      const groupId = (groups[next() % groups.length] as { id: string }).id;
+      const joinedAt = from - 2 * SIX_HOURS + (next() % 40) * SIX_HOURS + ((next() % 3) - 1);
+      const leftAt =
+        next() % 3 === 0 ? null : joinedAt + (next() % 20) * SIX_HOURS + ((next() % 3) - 1);
+      rows.push({ groupId, joinedAt, leftAt });
+      await seedMember(
+        groupId,
+        new Date(joinedAt),
+        leftAt === null ? null : new Date(leftAt),
+        leftAt === null ? "active" : "left",
+      );
+    }
+
+    const res = await getGrowth(
+      game.id,
+      `from=${new Date(from).toISOString()}&to=${new Date(to).toISOString()}&topN=10`,
+    );
+    const body = (await res.json()) as WireGrowth;
+    const active = (groupId: string, t: number) =>
+      rows.filter(
+        (r) => r.groupId === groupId && r.joinedAt <= t && (r.leftAt === null || r.leftAt > t),
+      ).length;
+    const ranked = [...groups].sort((a, b) => {
+      const d = active(b.id, to) - active(a.id, to);
+      return d !== 0 ? d : a.id < b.id ? -1 : 1;
+    });
+    expect(body.series.map((s) => s.groupId)).toEqual(ranked.map((g) => g.id));
+    for (const series of body.series) {
+      const expected = body.buckets.map((b) => active(series.groupId as string, Date.parse(b)));
+      expect(series.data).toEqual(expected);
+    }
+  });
+
   it("does NOT consult member status (a kicked member with leftAt > T still counts at T)", async () => {
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");

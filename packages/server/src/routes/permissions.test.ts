@@ -904,6 +904,88 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/permissions/check", () => {
       expect(body.results.every((r) => r.allowed)).toBe(true);
     });
 
+    it("answers a mixed batch exactly like one single check per entry", async () => {
+      const group = await seedGroup();
+      const other = await prisma.group.create({
+        data: { gameId, kind: "guild", name: "Other", visibility: "public", metadata: {} },
+      });
+      const { member: alice } = await seedActiveMember(group.id, "user_alice");
+      const { member: bob } = await seedActiveMember(group.id, "user_bob");
+      const { member: aliceOther } = await seedActiveMemberIn(other.id, "user_alice");
+      const base = await seedRole(group.id, 10, "Base");
+      const officer = await seedRole(group.id, 20, "Officer");
+      const otherRole = await seedRole(other.id, 5, "OtherRole");
+      await prisma.roleParent.create({ data: { roleId: officer.id, parentRoleId: base.id } });
+      await prisma.rolePermission.createMany({
+        data: [
+          { roleId: base.id, permissionKey: "guild.chat" },
+          { roleId: base.id, permissionKey: "guild.kick", value: false },
+          { roleId: officer.id, permissionKey: "guild.kick" },
+          { roleId: officer.id, permissionKey: "guild.ban", value: false },
+          {
+            roleId: officer.id,
+            permissionKey: "guild.build",
+            context: { world: "nether" },
+            contextKey: '[["world","nether"]]',
+          },
+          { roleId: otherRole.id, permissionKey: "guild.ban" },
+        ],
+      });
+      await prisma.memberRole.createMany({
+        data: [
+          { groupMemberId: alice.id, roleId: officer.id },
+          { groupMemberId: bob.id, roleId: base.id },
+          { groupMemberId: aliceOther.id, roleId: otherRole.id },
+        ],
+      });
+      await prisma.memberPermissionOverride.createMany({
+        data: [
+          { groupMemberId: alice.id, permissionKey: "guild.chat", grant: false },
+          { groupMemberId: bob.id, permissionKey: "guild.ban", grant: true },
+        ],
+      });
+
+      const checks = [];
+      for (const userId of ["user_alice", "user_bob", "user_carol"]) {
+        for (const g of [group.id, other.id]) {
+          for (const permission of ["guild.chat", "guild.kick", "guild.ban", "guild.build"]) {
+            checks.push({ userId, groupId: g, permission });
+          }
+        }
+      }
+      checks.push({
+        userId: "user_alice",
+        groupId: group.id,
+        permission: "guild.build",
+        context: { world: "nether" },
+      } as (typeof checks)[number]);
+
+      const batch = await checkBatch({ checks });
+      expect(batch.status).toBe(200);
+      const { results } = (await batch.json()) as { results: unknown[] };
+
+      const expected = [];
+      for (const check of checks) {
+        permissionCache.clear();
+        const qs = new URLSearchParams({
+          userId: check.userId,
+          groupId: check.groupId,
+          permission: check.permission,
+        });
+        const ctx = (check as { context?: Record<string, string> }).context ?? {};
+        for (const [k, v] of Object.entries(ctx)) qs.set(`context.${k}`, v);
+        const res = await app.request(`/v1/permissions/check?${qs}`, {
+          headers: { authorization: authHeader },
+        });
+        expected.push(await res.json());
+      }
+      expect(results).toEqual(expected);
+      // The scenario reaches every resolution path.
+      const sources = new Set((results as Array<{ source: string }>).map((r) => r.source));
+      expect(sources).toEqual(new Set(["override", "role", "default", "none"]));
+      expect(results.at(-1)).toMatchObject({ allowed: true, context: { world: "nether" } });
+    });
+
     it("resolves repeated triples consistently", async () => {
       const group = await seedGroup();
       await seedActiveMember(group.id, "user_alice");

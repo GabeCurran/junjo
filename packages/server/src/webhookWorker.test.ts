@@ -11,12 +11,13 @@ import {
   WEBHOOK_WORKER_DRAIN_MS,
   type WebhookFetch,
   type WebhookFetchInit,
+  claimDueDeliveries,
   deliverOne,
-  pollDueDeliveries,
   runWorkerOnce,
   safeWebhookLookup,
   signWebhookBody,
   startWebhookWorker,
+  sweepWebhookDeliveries,
 } from "./webhookWorker.js";
 import { enqueueWebhookDeliveries } from "./webhooks.js";
 
@@ -408,7 +409,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
     });
   });
 
-  describe("pollDueDeliveries", () => {
+  describe("claimDueDeliveries", () => {
     it("returns pending rows whose nextAttemptAt is at or before now", async () => {
       const id1 = await enqueueDelivery();
       await prisma.webhookDelivery.update({
@@ -416,7 +417,9 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         data: { nextAttemptAt: new Date("2026-04-28T11:00:00.000Z") },
       });
 
-      const due = await pollDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 50);
+      const due = (await claimDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 50)).map(
+        (d) => d.id,
+      );
       expect(due).toEqual([id1]);
     });
 
@@ -427,7 +430,9 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         data: { nextAttemptAt: new Date("2026-04-28T13:00:00.000Z") },
       });
 
-      const due = await pollDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 50);
+      const due = (await claimDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 50)).map(
+        (d) => d.id,
+      );
       expect(due).toEqual([]);
     });
 
@@ -448,7 +453,9 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         });
       }
 
-      const due = await pollDueDeliveries(prisma, new Date("2026-04-28T13:00:00.000Z"), 50);
+      const due = (await claimDueDeliveries(prisma, new Date("2026-04-28T13:00:00.000Z"), 50)).map(
+        (d) => d.id,
+      );
       expect(due).toEqual([]);
     });
 
@@ -467,7 +474,9 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         data: { nextAttemptAt: new Date("2026-04-28T11:00:00.000Z") },
       });
 
-      const due = await pollDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 1);
+      const due = (await claimDueDeliveries(prisma, new Date("2026-04-28T12:00:00.000Z"), 1)).map(
+        (d) => d.id,
+      );
       expect(due).toEqual([id1]);
     });
   });
@@ -772,7 +781,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
       expect(row.consecutiveFailures).toBe(5);
     });
 
-    it("pollDueDeliveries skips pending rows whose endpoint is disabled", async () => {
+    it("claimDueDeliveries skips pending rows whose endpoint is disabled", async () => {
       const live = await makeEndpoint({ url: "https://live.test/" });
       const dead = await makeEndpoint({ url: "https://dead.test/", disabledAt: new Date() });
       const event = makeGroupUpdatedEvent(gameId, groupId);
@@ -797,7 +806,7 @@ describe.skipIf(!TEST_DATABASE_URL)("webhookWorker (DB-backed)", () => {
         },
       });
 
-      const due = await pollDueDeliveries(prisma, new Date());
+      const due = (await claimDueDeliveries(prisma, new Date())).map((d) => d.id);
       expect(due).toEqual([livePending.id]);
     });
 
@@ -875,6 +884,11 @@ describe("WEBHOOK_WORKER_DRAIN_MS constant", () => {
   });
 });
 
+// Claim rows as the claim statement returns them, all for one endpoint.
+function claimRows(ids: string[]) {
+  return ids.map((id, i) => ({ id, endpointId: "wh_1", dueAt: new Date(1_000 + i) }));
+}
+
 describe("runWorkerOnce shouldStop", () => {
   it("breaks the batch loop early when shouldStop returns true", async () => {
     const calls: string[] = [];
@@ -886,7 +900,7 @@ describe("runWorkerOnce shouldStop", () => {
     };
     const fakePrisma = {
       webhookDelivery: {
-        findMany: async () => [{ id: "del_1" }, { id: "del_2" }, { id: "del_3" }],
+        updateMany: async () => ({ count: 0 }),
         findUnique: async ({ where }: { where: { id: string } }) => ({
           id: where.id,
           status: "pending",
@@ -907,6 +921,7 @@ describe("runWorkerOnce shouldStop", () => {
         update: async () => ({}),
       },
       $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
+      $queryRaw: async () => claimRows(["del_1", "del_2", "del_3"]),
     } as unknown as PrismaClient;
 
     const result = await runWorkerOnce(fakePrisma, {
@@ -926,7 +941,7 @@ describe("runWorkerOnce shouldStop", () => {
     };
     const fakePrisma = {
       webhookDelivery: {
-        findMany: async () => [{ id: "del_1" }, { id: "del_2" }],
+        updateMany: async () => ({ count: 0 }),
         findUnique: async ({ where }: { where: { id: string } }) => ({
           id: where.id,
           status: "pending",
@@ -947,6 +962,7 @@ describe("runWorkerOnce shouldStop", () => {
         update: async () => ({}),
       },
       $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
+      $queryRaw: async () => claimRows(["del_1", "del_2"]),
     } as unknown as PrismaClient;
 
     const result = await runWorkerOnce(fakePrisma, { fetch: fetcher });
@@ -955,11 +971,9 @@ describe("runWorkerOnce shouldStop", () => {
   });
 });
 
-// Ticks overlap by design (setInterval does not serialize them), and
-// stop() drains every in-flight tick. A very short interval piles up
-// ticks faster than a loaded database answers them, so the drain alone
-// could outlast the default 5 s test budget. These tests assert ordering,
-// not speed: a moderate tick and a wider budget keep them deterministic.
+// A timer firing while a tick runs is skipped, and stop() drains the one
+// running tick. These tests assert ordering, not speed: a moderate tick
+// and a wider budget keep them deterministic on a loaded runner.
 const DRAIN_TEST_TICK_MS = 25;
 
 describe.skipIf(!TEST_DATABASE_URL)(
@@ -1143,6 +1157,148 @@ describe.skipIf(!TEST_DATABASE_URL)(
       const handle = startWebhookWorker(prisma, { intervalMs: 1_000_000 });
       await handle.stop();
       await expect(handle.stop()).resolves.toBeUndefined();
+    });
+
+    it("skips a timer tick while the previous tick is still running", async () => {
+      await makeDueEndpoint("https://example.test/hang");
+      const [id] = await enqueueDueDelivery();
+
+      let calls = 0;
+      let release: (() => void) | undefined;
+      let resolveStarted: (() => void) | undefined;
+      const started = new Promise<void>((r) => {
+        resolveStarted = r;
+      });
+      const fetcher: WebhookFetch = async () => {
+        calls++;
+        resolveStarted?.();
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return { ok: true, status: 200 };
+      };
+
+      const handle = startWebhookWorker(prisma, { fetch: fetcher, intervalMs: DRAIN_TEST_TICK_MS });
+      try {
+        await started;
+        // Many timer periods pass while the first tick's request hangs.
+        await new Promise((r) => setTimeout(r, DRAIN_TEST_TICK_MS * 10));
+        expect(calls).toBe(1);
+        release?.();
+        await handle.stop({ drainMs: 5_000 });
+      } finally {
+        release?.();
+        await handle.stop({ drainMs: 5_000 });
+      }
+      expect(calls).toBe(1);
+      const row = await prisma.webhookDelivery.findUniqueOrThrow({ where: { id: id as string } });
+      expect(row.status).toBe("delivered");
+      expect(row.attemptCount).toBe(1);
+    });
+
+    it("two workers running at once never send the same delivery", async () => {
+      for (const n of [1, 2, 3]) await makeDueEndpoint(`https://example.test/e${n}`);
+      for (let i = 0; i < 4; i++) await enqueueDueDelivery();
+
+      const sent: string[] = [];
+      const fetcher: WebhookFetch = async (_url, init) => {
+        sent.push(init.headers["x-junjo-delivery-id"] as string);
+        await new Promise((r) => setTimeout(r, 5));
+        return { ok: true, status: 200 };
+      };
+      const [a, b] = await Promise.all([
+        runWorkerOnce(prisma, { fetch: fetcher, batchSize: 7 }),
+        runWorkerOnce(prisma, { fetch: fetcher, batchSize: 7 }),
+      ]);
+
+      expect(new Set(sent).size).toBe(sent.length);
+      expect(sent).toHaveLength(12);
+      expect(a.delivered + b.delivered).toBe(12);
+      const rows = await prisma.webhookDelivery.findMany({});
+      expect(rows.every((r) => r.status === "delivered" && r.attemptCount === 1)).toBe(true);
+    });
+
+    it("keeps at most one request in flight per endpoint", async () => {
+      await makeDueEndpoint("https://example.test/one");
+      for (let i = 0; i < 5; i++) await enqueueDueDelivery();
+
+      let inFlight = 0;
+      let peak = 0;
+      const fetcher: WebhookFetch = async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return { ok: true, status: 200 };
+      };
+      const result = await runWorkerOnce(prisma, { fetch: fetcher, concurrency: 8 });
+      expect(result.delivered).toBe(5);
+      expect(peak).toBe(1);
+    });
+
+    it("a dead endpoint costs one attempt per tick and does not hold up the others", async () => {
+      await makeDueEndpoint("https://example.test/dead");
+      await makeDueEndpoint("https://example.test/live");
+      for (let i = 0; i < 3; i++) await enqueueDueDelivery();
+      const dead = await prisma.webhookEndpoint.findFirstOrThrow({
+        where: { url: "https://example.test/dead" },
+      });
+
+      const order: string[] = [];
+      const fetcher: WebhookFetch = async (url) => {
+        if (url.endsWith("/dead")) {
+          await new Promise((r) => setTimeout(r, 300));
+          order.push("dead");
+          return { ok: false, status: 503 };
+        }
+        order.push("live");
+        return { ok: true, status: 200 };
+      };
+      const tickAt = new Date();
+      const result = await runWorkerOnce(prisma, { fetch: fetcher, now: () => tickAt });
+
+      expect(result).toEqual({ delivered: 3, pending: 1, failed: 0 });
+      expect(order).toEqual(["live", "live", "live", "dead"]);
+      const deadRows = await prisma.webhookDelivery.findMany({
+        where: { webhookEndpointId: dead.id },
+        orderBy: { attemptCount: "desc" },
+      });
+      expect(deadRows.map((r) => r.attemptCount)).toEqual([1, 0, 0]);
+      // The untried claims are released, so the next tick can take them.
+      for (const row of deadRows.slice(1)) {
+        expect(row.status).toBe("pending");
+        expect(row.nextAttemptAt?.getTime()).toBeLessThanOrEqual(tickAt.getTime());
+      }
+    });
+
+    it("leaves a claimed delivery reserved until its lease ends", async () => {
+      await makeDueEndpoint("https://example.test/lease");
+      await enqueueDueDelivery();
+      const at = new Date();
+      const first = await claimDueDeliveries(prisma, at, 50, 60_000);
+      expect(first).toHaveLength(1);
+      expect(await claimDueDeliveries(prisma, new Date(at.getTime() + 59_000), 50)).toEqual([]);
+      const again = await claimDueDeliveries(prisma, new Date(at.getTime() + 60_000), 50);
+      expect(again.map((d) => d.id)).toEqual(first.map((d) => d.id));
+    });
+
+    it("sweeps old delivered and failed deliveries and keeps pending ones", async () => {
+      await makeDueEndpoint("https://example.test/sweep");
+      for (let i = 0; i < 4; i++) await enqueueDueDelivery();
+      const rows = await prisma.webhookDelivery.findMany({ orderBy: { id: "asc" } });
+      const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+      const statuses = ["delivered", "failed", "pending", "delivered"] as const;
+      for (const [i, row] of rows.entries()) {
+        await prisma.webhookDelivery.update({
+          where: { id: row.id },
+          data: { status: statuses[i], createdAt: i < 3 ? old : new Date() },
+        });
+      }
+
+      const removed = await sweepWebhookDeliveries(prisma, { retentionDays: 30 });
+      expect(removed).toBe(2);
+      const left = await prisma.webhookDelivery.findMany({ orderBy: { id: "asc" } });
+      expect(left.map((r) => r.status)).toEqual(["pending", "delivered"]);
     });
   },
 );

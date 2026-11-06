@@ -305,4 +305,74 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/events/:groupId", () => {
     const res = await app.request(`/v1/events/${group.id}`, { method: "GET" });
     expect(res.status).toBe(401);
   });
+
+  it("refuses a stream past the per-key cap and frees the slot on disconnect", async () => {
+    const capped = createApp({ prisma, events: { hub, maxGroupStreamsPerKey: 1 } });
+    const group = await createGroup();
+    const open = () =>
+      capped.request(`/v1/events/${group.id}`, { headers: { authorization: authHeader } });
+
+    const first = await open();
+    expect(first.status).toBe(200);
+    await waitForSubscriber(hub, group.id as GroupId);
+    const second = await open();
+    expect(second.status).toBe(429);
+    expect(((await second.json()) as { code: string }).code).toBe("too_many_streams");
+
+    await first.body?.cancel();
+    await waitForUnsubscribe(hub, group.id as GroupId);
+    let third: Response | null = null;
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      third = await open();
+      if (third.status === 200) break;
+      await third.body?.cancel();
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(third?.status).toBe(200);
+    await third?.body?.cancel();
+  });
+
+  it("refuses a stream past the per-game cap", async () => {
+    const capped = createApp({ prisma, events: { hub, maxGroupStreamsPerGame: 1 } });
+    const group = await createGroup();
+    const second = await createApiKey(gameId, prisma);
+    const first = await capped.request(`/v1/events/${group.id}`, {
+      headers: { authorization: authHeader },
+    });
+    expect(first.status).toBe(200);
+    const other = await capped.request(`/v1/events/${group.id}`, {
+      headers: { authorization: `Bearer ${second.raw.full}` },
+    });
+    expect(other.status).toBe(429);
+    await first.body?.cancel();
+  });
+
+  it("closes a stream whose client stops reading once its queue is full", async () => {
+    const capped = createApp({ prisma, events: { hub, maxQueuedGroupEvents: 3 } });
+    const group = await createGroup();
+    const res = await capped.request(`/v1/events/${group.id}`, {
+      headers: { authorization: authHeader },
+    });
+    await waitForSubscriber(hub, group.id as GroupId);
+    // The body is never read, so frames stop leaving and events pile up.
+    for (let i = 0; i < 10; i++) hub.publish(memberJoinedEvent(group.id, gameId, `evt_${i}`));
+    await waitForUnsubscribe(hub, group.id as GroupId);
+    expect(hub.subscriberCount(group.id as GroupId)).toBe(0);
+    await res.body?.cancel().catch(() => undefined);
+  });
+
+  it("closes a stream whose frame waits past the write timeout", async () => {
+    const capped = createApp({ prisma, events: { hub, writeTimeoutMs: 50 } });
+    const group = await createGroup();
+    const res = await capped.request(`/v1/events/${group.id}`, {
+      headers: { authorization: authHeader },
+    });
+    await waitForSubscriber(hub, group.id as GroupId);
+    hub.publish(memberJoinedEvent(group.id, gameId, "evt_a"));
+    hub.publish(memberJoinedEvent(group.id, gameId, "evt_b"));
+    await waitForUnsubscribe(hub, group.id as GroupId, 2000);
+    expect(hub.subscriberCount(group.id as GroupId)).toBe(0);
+    await res.body?.cancel().catch(() => undefined);
+  });
 });

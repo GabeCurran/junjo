@@ -287,6 +287,35 @@ describe.skipIf(!TEST_DATABASE_URL)(
       ]);
     });
 
+    it("answers for a game with more roles than one statement can bind", async () => {
+      const game = await createGame("Huge", prisma);
+      const group = await seedGroup(game.id, "Hub");
+      // 33,000 roles, past the 32,767 bind-parameter ceiling of a single
+      // statement, inserted in one statement to keep the test fast.
+      await prisma.$executeRaw`
+        INSERT INTO "Role" (id, "groupId", name, priority, "updatedAt")
+        SELECT 'bulk_' || n, ${group.id}, 'Bulk ' || n, n, now()
+        FROM generate_series(1, 33000) AS n
+      `;
+      const officer = await prisma.role.create({
+        data: { groupId: group.id, name: "Officer", priority: 50_000 },
+      });
+      await seedActiveMemberWithRoles(game.id, group.id, "user_a", [officer.id, "bulk_7"]);
+      await seedActiveMemberWithRoles(game.id, group.id, "user_b", [officer.id]);
+
+      const res = await getDistribution(game.id);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        totalAssignments: 3,
+        uniqueRoleNames: 2,
+        topRoles: [
+          { name: "Officer", count: 2 },
+          { name: "Bulk 7", count: 1 },
+        ],
+        otherCount: 0,
+      });
+    });
+
     it("returns 404 when the game does not exist", async () => {
       const res = await getDistribution("game_does_not_exist");
       expect(res.status).toBe(404);

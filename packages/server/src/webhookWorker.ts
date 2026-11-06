@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { type LookupAddress, lookup as dnsLookup } from "node:dns";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { Agent, type RequestInit as UndiciRequestInit, fetch as undiciFetch } from "undici";
 import { formatJunjoEventForDiscord } from "./discordFormatter.js";
 import { isPublicUnicastAddress } from "./ipGuard.js";
@@ -24,6 +24,14 @@ export const WEBHOOK_MAX_ATTEMPTS = 6;
 export const WEBHOOK_REQUEST_TIMEOUT_MS = 10_000;
 export const WEBHOOK_WORKER_INTERVAL_MS = 5_000;
 export const WEBHOOK_WORKER_BATCH_SIZE = 50;
+// Endpoints served at once within one tick. Each endpoint still has at
+// most one request in flight.
+export const WEBHOOK_WORKER_CONCURRENCY = 8;
+// How long a claimed delivery stays reserved for the worker that claimed
+// it. It must exceed the longest a tick can hold a claim: one endpoint's
+// share of a batch sent back to back, each request capped at
+// WEBHOOK_REQUEST_TIMEOUT_MS.
+export const WEBHOOK_CLAIM_LEASE_MS = 15 * 60_000;
 export const WEBHOOK_SIGNATURE_SCHEME = "v1";
 // After this many consecutive failed delivery attempts (network error,
 // timeout, 5xx, or retriable 4xx) with no successful delivery in
@@ -78,6 +86,12 @@ export interface WorkerOptions {
   // batch. Checked at the top of each iteration; a currently-executing
   // `deliverOne` always finishes (Promises cannot be cancelled).
   shouldStop?: () => boolean;
+  // Endpoints served at once within one tick.
+  concurrency?: number;
+  // How long a claim reserves a delivery; see WEBHOOK_CLAIM_LEASE_MS.
+  leaseMs?: number;
+  // Called after every finished delivery attempt.
+  onDelivery?: () => void;
 }
 
 export type DeliveryOutcome =
@@ -341,26 +355,59 @@ export async function deliverOne(
   return { status: "failed", httpStatus };
 }
 
-// Capped at `batchSize` so a single tick cannot starve other server work.
-// Skips deliveries whose endpoint is disabled -- both the auto-disable
-// path and operator-driven disables stop firing immediately even for
-// rows that had already been queued before the disable landed.
-export async function pollDueDeliveries(
+// A claimed delivery: its row and the endpoint it goes to.
+export interface ClaimedDelivery {
+  id: string;
+  endpointId: string;
+}
+
+// Claims up to `batchSize` due deliveries for this worker and returns
+// them oldest due first. The claim moves each row's `nextAttemptAt`
+// forward by `leaseMs` in the same statement that selects it, and rows
+// another worker holds locked are skipped, so two workers (or two ticks)
+// never claim the same row while its lease runs. If the worker dies
+// mid-delivery, the row becomes due again once the lease ends.
+// Deliveries whose endpoint is disabled are not claimed, so a disable
+// stops firing immediately even for rows queued before it landed.
+export async function claimDueDeliveries(
   prisma: PrismaClient,
   now: Date,
   batchSize: number = WEBHOOK_WORKER_BATCH_SIZE,
-): Promise<string[]> {
-  const rows = await prisma.webhookDelivery.findMany({
-    where: {
-      status: "pending",
-      nextAttemptAt: { lte: now },
-      endpoint: { disabledAt: null },
-    },
-    orderBy: { nextAttemptAt: "asc" },
-    take: batchSize,
-    select: { id: true },
+  leaseMs: number = WEBHOOK_CLAIM_LEASE_MS,
+): Promise<ClaimedDelivery[]> {
+  const leaseUntil = new Date(now.getTime() + leaseMs);
+  const rows = await prisma.$queryRaw<{ id: string; endpointId: string; dueAt: Date }[]>(
+    Prisma.sql`
+      WITH due AS (
+        SELECT d.id, d."nextAttemptAt"
+        FROM "WebhookDelivery" d
+        JOIN "WebhookEndpoint" e ON e.id = d."webhookEndpointId"
+        WHERE d.status = 'pending'
+          AND d."nextAttemptAt" <= ${now}
+          AND e."disabledAt" IS NULL
+        ORDER BY d."nextAttemptAt" ASC, d.id ASC
+        LIMIT ${batchSize}
+        FOR UPDATE OF d SKIP LOCKED
+      )
+      UPDATE "WebhookDelivery" w
+      SET "nextAttemptAt" = ${leaseUntil}
+      FROM due
+      WHERE w.id = due.id
+      RETURNING w.id, w."webhookEndpointId" AS "endpointId", due."nextAttemptAt" AS "dueAt"
+    `,
+  );
+  rows.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime() || (a.id < b.id ? -1 : 1));
+  return rows.map((r) => ({ id: r.id, endpointId: r.endpointId }));
+}
+
+// Ends the lease on claimed deliveries this worker will not attempt, so
+// the next tick can pick them up without waiting for the lease to run out.
+async function releaseClaims(prisma: PrismaClient, ids: readonly string[], at: Date) {
+  if (ids.length === 0) return;
+  await prisma.webhookDelivery.updateMany({
+    where: { id: { in: [...ids] }, status: "pending" },
+    data: { nextAttemptAt: at },
   });
-  return rows.map((r) => r.id);
 }
 
 export interface WorkerTickResult {
@@ -369,10 +416,13 @@ export interface WorkerTickResult {
   failed: number;
 }
 
-// Sequential processing is deliberate: a single worker process gives us
-// per-endpoint ordering for free without holding a Postgres advisory
-// lock across a slow HTTP call. Multi-process scale-out should switch to
-// `pg_try_advisory_lock` keyed on `webhookEndpointId`.
+// Deliveries are grouped by endpoint. Each endpoint's deliveries are sent
+// one at a time in due order, so an endpoint never has more than one
+// request in flight and keeps its delivery order; up to `concurrency`
+// endpoints are served at once. After a retriable failure the rest of
+// that endpoint's claims in this tick are released untried, so a dead or
+// slow receiver costs at most one request timeout per tick and never
+// holds up deliveries to other endpoints.
 export async function runWorkerOnce(
   prisma: PrismaClient,
   opts: WorkerOptions = {},
@@ -380,15 +430,53 @@ export async function runWorkerOnce(
   const fetcher = opts.fetch ?? defaultWebhookFetch;
   const now = opts.now ?? (() => new Date());
   const batchSize = opts.batchSize ?? WEBHOOK_WORKER_BATCH_SIZE;
+  const concurrency = Math.max(1, opts.concurrency ?? WEBHOOK_WORKER_CONCURRENCY);
 
-  const ids = await pollDueDeliveries(prisma, now(), batchSize);
+  const claimed = await claimDueDeliveries(prisma, now(), batchSize, opts.leaseMs);
+  const lanes = new Map<string, string[]>();
+  for (const row of claimed) {
+    const lane = lanes.get(row.endpointId);
+    if (lane) lane.push(row.id);
+    else lanes.set(row.endpointId, [row.id]);
+  }
+
   const result: WorkerTickResult = { delivered: 0, pending: 0, failed: 0 };
-  for (const id of ids) {
-    if (opts.shouldStop?.()) break;
-    const outcome = await deliverOne(prisma, id, fetcher, now);
-    if (outcome.status === "delivered") result.delivered++;
-    else if (outcome.status === "failed") result.failed++;
-    else if (outcome.status === "pending") result.pending++;
+  const unattempted: string[] = [];
+  const queue = [...lanes.values()];
+
+  const runLane = async (ids: string[]) => {
+    for (let i = 0; i < ids.length; i++) {
+      if (opts.shouldStop?.()) {
+        unattempted.push(...ids.slice(i));
+        return;
+      }
+      const outcome = await deliverOne(prisma, ids[i] as string, fetcher, now);
+      opts.onDelivery?.();
+      if (outcome.status === "delivered") result.delivered++;
+      else if (outcome.status === "failed") result.failed++;
+      else if (outcome.status === "pending") {
+        result.pending++;
+        unattempted.push(...ids.slice(i + 1));
+        return;
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (let lane = queue.shift(); lane !== undefined; lane = queue.shift()) {
+      if (opts.shouldStop?.()) {
+        unattempted.push(...lane);
+        continue;
+      }
+      await runLane(lane);
+    }
+  });
+  try {
+    await Promise.all(workers);
+  } finally {
+    await releaseClaims(prisma, unattempted, now()).catch((err) =>
+      logger.error({ err }, "failed to release webhook delivery claims"),
+    );
   }
   return result;
 }
@@ -400,60 +488,118 @@ export interface WorkerHandle {
   // Initialized to `now()` at construction so a freshly started worker
   // reports healthy until the stale threshold elapses; a worker stuck on
   // its first tick goes stale just like one that stopped firing later.
+  // Refreshed after every finished tick and every finished delivery.
   getLastHeartbeat(): Date;
 }
 
 // Timer is `unref`'d so the worker never keeps the process alive on its
 // own; tests skip `startWebhookWorker` and call `runWorkerOnce` directly
-// with a fixed `now`.
+// with a fixed `now`. A timer firing while a tick is still running is
+// skipped, so ticks never overlap.
 export function startWebhookWorker(prisma: PrismaClient, opts: WorkerOptions = {}): WorkerHandle {
   const intervalMs = opts.intervalMs ?? WEBHOOK_WORKER_INTERVAL_MS;
   const now = opts.now ?? (() => new Date());
   let lastHeartbeat = now();
   let stopping = false;
-  // `setInterval` does not serialize callbacks, so a slow tick can overlap
-  // the next one. Tracking every in-flight tick lets `stop()` drain all of
-  // them rather than only the most recent.
-  const inFlight = new Set<Promise<void>>();
+  let running: Promise<void> | null = null;
 
-  const tick = (): Promise<void> => {
-    if (stopping) return Promise.resolve();
-    const p = (async () => {
+  const tick = (): void => {
+    if (stopping || running) return;
+    running = (async () => {
       try {
-        await runWorkerOnce(prisma, { ...opts, shouldStop: () => stopping });
+        await runWorkerOnce(prisma, {
+          ...opts,
+          shouldStop: () => stopping,
+          onDelivery: () => {
+            lastHeartbeat = now();
+            opts.onDelivery?.();
+          },
+        });
       } catch (err) {
         logger.error({ err }, "webhook worker tick failed");
       } finally {
         lastHeartbeat = now();
+        running = null;
       }
     })();
-    inFlight.add(p);
-    p.finally(() => {
-      inFlight.delete(p);
-    }).catch(() => {});
-    return p;
   };
 
-  const handle = setInterval(() => void tick(), intervalMs);
+  const handle = setInterval(tick, intervalMs);
   if (typeof handle.unref === "function") handle.unref();
 
   return {
     stop: async ({ drainMs = WEBHOOK_WORKER_DRAIN_MS }: { drainMs?: number } = {}) => {
       stopping = true;
       clearInterval(handle);
-      if (inFlight.size === 0) return;
-      const drained = Promise.allSettled(inFlight).then(() => {});
+      const current = running;
+      if (!current) return;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const ceiling = new Promise<void>((resolve) => {
         timer = setTimeout(() => resolve(), drainMs);
         if (typeof timer.unref === "function") timer.unref();
       });
       try {
-        await Promise.race([drained, ceiling]);
+        await Promise.race([current, ceiling]);
       } finally {
         if (timer) clearTimeout(timer);
       }
     },
     getLastHeartbeat: () => lastHeartbeat,
   };
+}
+
+// =====================================================================
+// Delivery retention
+// =====================================================================
+
+export const WEBHOOK_DELIVERY_RETENTION_DAYS = 30;
+export const WEBHOOK_DELIVERY_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const DELIVERY_SWEEP_BATCH = 5_000;
+
+// Deletes delivered and failed deliveries created more than
+// `retentionDays` ago, in bounded batches. Pending deliveries are kept
+// whatever their age. Returns the number of rows removed.
+export async function sweepWebhookDeliveries(
+  prisma: PrismaClient,
+  opts: { retentionDays?: number; now?: Date } = {},
+): Promise<number> {
+  const days = opts.retentionDays ?? WEBHOOK_DELIVERY_RETENTION_DAYS;
+  const cutoff = new Date((opts.now ?? new Date()).getTime() - days * 24 * 60 * 60 * 1000);
+  let total = 0;
+  for (;;) {
+    const removed = await prisma.$executeRaw`
+      DELETE FROM "WebhookDelivery" WHERE ctid IN (
+        SELECT ctid FROM "WebhookDelivery"
+        WHERE status IN ('delivered', 'failed') AND "createdAt" < ${cutoff}
+        LIMIT ${DELIVERY_SWEEP_BATCH}
+      )
+    `;
+    total += removed;
+    if (removed < DELIVERY_SWEEP_BATCH) return total;
+  }
+}
+
+export function startWebhookDeliverySweeper(
+  prisma: PrismaClient,
+  opts: { intervalMs?: number; retentionDays?: number } = {},
+): { stop(): void } {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const removed = await sweepWebhookDeliveries(prisma, { retentionDays: opts.retentionDays });
+      if (removed > 0) logger.info({ removed }, "removed expired webhook deliveries");
+    } catch (err) {
+      logger.error({ err }, "webhook delivery sweep failed");
+    } finally {
+      running = false;
+    }
+  };
+  const handle = setInterval(
+    () => void tick(),
+    opts.intervalMs ?? WEBHOOK_DELIVERY_SWEEP_INTERVAL_MS,
+  );
+  if (typeof handle.unref === "function") handle.unref();
+  return { stop: () => clearInterval(handle) };
 }
