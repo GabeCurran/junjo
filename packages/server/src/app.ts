@@ -61,6 +61,7 @@ import {
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
 } from "./routes/admin.js";
+import { listAdminPlayersHandler } from "./routes/admin.players.js";
 import type { GameStreamOptions } from "./routes/gameEvents.js";
 import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
 import { getInvitationByCodeHandler } from "./routes/invitations.js";
@@ -222,6 +223,11 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/groups",
     adminAuthMiddleware(opts.adminToken),
     listAdminGroupsForGameHandler(prisma),
+  );
+  v1.get(
+    "/admin/games/:gameId/players",
+    adminAuthMiddleware(opts.adminToken),
+    listAdminPlayersHandler(prisma),
   );
   v1.get(
     "/admin/games/:gameId/groups/:groupId",

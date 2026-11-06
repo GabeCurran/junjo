@@ -3,7 +3,7 @@
 // Schemas for the admin-token-gated endpoints in `routes/admin.ts`.
 
 import { z } from "zod";
-import { preferredNamespacesSchema } from "../config/schema.js";
+import { preferredNamespacesSchema, userIdNamespaceSchema } from "../config/schema.js";
 import { permissionContextSchema } from "../permissionContext.js";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
 import { pageLimit } from "./page.schema.js";
@@ -43,6 +43,25 @@ export const listAdminGroupsQuery = z.object({
   sort: z.enum(ADMIN_GROUP_SORT_FIELDS).default("createdAt"),
   order: z.enum(ADMIN_GROUP_SORT_ORDERS).default("desc"),
 });
+
+// GET /v1/admin/games/:gameId/players. `q` is bounded by the longest
+// stored external id.
+export const ADMIN_PLAYER_SEARCH_MAX_LENGTH = 255;
+export const ADMIN_PLAYER_STANDINGS = ["banned", "sanctioned"] as const;
+export const ADMIN_PLAYER_SORT_FIELDS = ["firstSeen", "lastActivity", "name"] as const;
+
+export const listAdminPlayersQuery = z.object({
+  limit: pageLimit(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  q: z.string().min(1).max(ADMIN_PLAYER_SEARCH_MAX_LENGTH).optional(),
+  namespace: userIdNamespaceSchema.optional(),
+  standing: z.enum(ADMIN_PLAYER_STANDINGS).optional(),
+  sort: z.enum(ADMIN_PLAYER_SORT_FIELDS).default("firstSeen"),
+  order: z.enum(ADMIN_GROUP_SORT_ORDERS).default("desc"),
+});
+
+export type ListAdminPlayersQuery = z.infer<typeof listAdminPlayersQuery>;
+export type AdminPlayerSortField = (typeof ADMIN_PLAYER_SORT_FIELDS)[number];
 
 export const ADMIN_MEMBER_STATUSES = [
   "active",

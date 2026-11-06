@@ -591,6 +591,9 @@ model AuditEntry {
   @@index([groupId, createdAt(sort: Desc)])
   @@index([gameId, createdAt(sort: Desc)])
   @@index([actorUserId, createdAt(sort: Desc)])
+  // Backs the latest-entry-per-target lookup of the admin player list
+  // (`WHERE gameId AND targetId = ? ORDER BY createdAt DESC`).
+  @@index([gameId, targetId, createdAt(sort: Desc)])
 }
 
 // =====================================================================
