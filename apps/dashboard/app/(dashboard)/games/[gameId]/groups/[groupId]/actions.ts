@@ -11,6 +11,7 @@ import {
   ADMIN_MEMBER_NOTES_MAX_LENGTH,
   ADMIN_PERMISSION_KEY_MAX_LENGTH,
   ADMIN_RELATIONSHIP_TYPE_MAX_LENGTH,
+  ADMIN_ROLE_AFFIX_MAX_LENGTH,
   ADMIN_ROLE_COLOR_PATTERN,
   ADMIN_ROLE_NAME_MAX_LENGTH,
   AdminDisabledError,
@@ -20,6 +21,7 @@ import {
   type AdminInvitation,
   type AdminMemberPermissionOverride,
   type AdminRole,
+  ROLE_AFFIX_KEYS,
   clearAdminGroupRelationship,
   clearAdminMemberPermissionOverride,
   createAdminGroupInvitation,
@@ -275,7 +277,7 @@ export async function clearMemberPermissionOverrideAction(
 // endpoint takes the same body shape regardless. The only mode-specific
 // behavior is whether `targetUserId` is required (mode = "userId") and
 // whether the result includes a constructed `inviteUrl` (mode = "link").
-export const INVITE_MODES = ["userId", "code", "link"] as const;
+const INVITE_MODES = ["userId", "code", "link"] as const;
 export type InviteMode = (typeof INVITE_MODES)[number];
 
 export interface InviteMemberResult {
@@ -412,6 +414,44 @@ function readColorField(formData: FormData): { value?: string | null; error?: st
   return { value: trimmed };
 }
 
+// The prefix and suffix fields, merged into `base` (the role's other
+// metadata). An empty field removes its key.
+function readAffixMetadata(
+  formData: FormData,
+  base: Record<string, unknown>,
+): { value: Record<string, unknown>; error?: string } {
+  const out: Record<string, unknown> = { ...base };
+  for (const key of ROLE_AFFIX_KEYS) {
+    const raw = formData.get(key);
+    if (raw === null) continue;
+    if (typeof raw !== "string") return { value: out, error: `${key} must be text` };
+    if (raw.length > ADMIN_ROLE_AFFIX_MAX_LENGTH) {
+      return {
+        value: out,
+        error: `${key} must be ${ADMIN_ROLE_AFFIX_MAX_LENGTH} characters or fewer`,
+      };
+    }
+    if (raw.length === 0) delete out[key];
+    else out[key] = raw;
+  }
+  return { value: out };
+}
+
+// The role's metadata other than the prefix and suffix, as the dialog
+// last saw it.
+function readBaseMetadata(formData: FormData): Record<string, unknown> {
+  const raw = formData.get("baseMetadata");
+  if (typeof raw !== "string" || raw.length === 0) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 export interface CreateRoleResult {
   ok: boolean;
   error?: string;
@@ -443,12 +483,16 @@ export async function createRoleAction(
 
   const isDefault = readBoolField(formData, "isDefault") ?? false;
 
+  const metadata = readAffixMetadata(formData, {});
+  if (metadata.error) return { ok: false, error: metadata.error };
+
   try {
     const role = await createAdminGroupRole(gameId, groupId, {
       name: name.value,
       priority: priority.value,
       color: colorForCreate,
       isDefault,
+      ...(Object.keys(metadata.value).length > 0 ? { metadata: metadata.value } : {}),
     });
     refreshGroup(gameId, groupId);
     return { ok: true, role };
@@ -488,8 +532,11 @@ export async function updateRoleAction(
 
   const isDefault = readBoolField(formData, "isDefault") ?? false;
 
+  const metadata = readAffixMetadata(formData, readBaseMetadata(formData));
+  if (metadata.error) return { ok: false, error: metadata.error };
+
   try {
-    // Always send all four fields; the server compares against the stored
+    // Always send every field; the server compares against the stored
     // row and writes audit entries only for changed fields. Sending fields
     // that match the stored value is a no-op there. Simpler than
     // computing the diff client-side and matches the per-game route's
@@ -502,6 +549,7 @@ export async function updateRoleAction(
       // string or `null` from the form.
       color: color.value ?? null,
       isDefault,
+      metadata: metadata.value,
     });
     refreshGroup(gameId, groupId);
     return { ok: true, role };

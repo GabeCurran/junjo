@@ -9,7 +9,12 @@ import {
   type UpdateRoleResult,
   updateRoleAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import { ADMIN_ROLE_NAME_MAX_LENGTH, type AdminRole } from "../../lib/admin-shared";
+import {
+  ADMIN_ROLE_AFFIX_MAX_LENGTH,
+  ADMIN_ROLE_NAME_MAX_LENGTH,
+  type AdminRole,
+  roleAffix,
+} from "../../lib/admin-shared";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -47,6 +52,10 @@ export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
   const priorityId = useId();
   const colorId = useId();
   const isDefaultId = useId();
+  const prefixId = useId();
+  const suffixId = useId();
+  // The metadata the prefix and suffix fields are merged back into.
+  const { prefix: _prefix, suffix: _suffix, ...baseMetadata } = role.metadata ?? {};
 
   useEffect(() => {
     if (state.ok && state.role) {
@@ -74,6 +83,7 @@ export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
           <input type="hidden" name="gameId" value={gameId} />
           <input type="hidden" name="groupId" value={groupId} />
           <input type="hidden" name="roleId" value={role.id} />
+          <input type="hidden" name="baseMetadata" value={JSON.stringify(baseMetadata)} />
           <div className="space-y-2">
             <Label htmlFor={nameId}>Name</Label>
             <Input
@@ -109,6 +119,35 @@ export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
             />
             <p className="text-xs text-muted-foreground">
               A six-digit hex color. Clear it to remove the color.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor={prefixId}>Prefix</Label>
+              <Input
+                id={prefixId}
+                name="prefix"
+                defaultValue={roleAffix(role, "prefix")}
+                maxLength={ADMIN_ROLE_AFFIX_MAX_LENGTH}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={suffixId}>Suffix</Label>
+              <Input
+                id={suffixId}
+                name="suffix"
+                defaultValue={roleAffix(role, "suffix")}
+                maxLength={ADMIN_ROLE_AFFIX_MAX_LENGTH}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+            </div>
+            <p className="col-span-2 text-xs text-muted-foreground">
+              Shown around member names by your game. Stored as written, formatting codes included.
             </p>
           </div>
           <div className="flex items-center gap-2">

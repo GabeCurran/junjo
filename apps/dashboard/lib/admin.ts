@@ -476,6 +476,7 @@ export function createAdminGroupRole(
   };
   if (input.color !== undefined) body.color = input.color;
   if (input.isDefault !== undefined) body.isDefault = input.isDefault;
+  if (input.metadata !== undefined) body.metadata = input.metadata;
   return adminMutate<Record<string, unknown>, AdminRole>(
     "POST",
     `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/roles`,
@@ -496,6 +497,7 @@ export function updateAdminRole(
   if (input.priority !== undefined) body.priority = input.priority;
   if (Object.hasOwn(input, "color")) body.color = input.color;
   if (input.isDefault !== undefined) body.isDefault = input.isDefault;
+  if (input.metadata !== undefined) body.metadata = input.metadata;
   return adminMutate<Record<string, unknown>, AdminRole>(
     "PATCH",
     `/v1/admin/games/${encodeURIComponent(gameId)}/roles/${encodeURIComponent(roleId)}`,

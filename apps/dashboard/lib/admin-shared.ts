@@ -332,6 +332,7 @@ export interface CreateAdminRoleInput {
   priority: number;
   color?: string;
   isDefault?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface UpdateAdminRoleInput {
@@ -339,6 +340,19 @@ export interface UpdateAdminRoleInput {
   priority?: number;
   color?: string | null;
   isDefault?: boolean;
+  // Replaces the stored metadata as a whole.
+  metadata?: Record<string, unknown>;
+}
+
+// Role metadata keys for display text a game shows around a member's
+// name, stored verbatim as strings.
+export const ROLE_AFFIX_KEYS = ["prefix", "suffix"] as const;
+export type RoleAffixKey = (typeof ROLE_AFFIX_KEYS)[number];
+export const ADMIN_ROLE_AFFIX_MAX_LENGTH = 256;
+
+export function roleAffix(role: Pick<AdminRole, "metadata">, key: RoleAffixKey): string {
+  const value = role.metadata?.[key];
+  return typeof value === "string" ? value : "";
 }
 
 export interface AdminAuditApiKey {
