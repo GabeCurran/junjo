@@ -14,6 +14,10 @@ import type { PermissionCheckResult } from "@junjo.io/shared";
 // `dependsOn`. A grant change at any ancestor then drops it.
 
 export const PERMISSION_CACHE_TTL_MS = 60 * 1000;
+// Entry cap. Past it the least recently used entry is evicted. The
+// process sets it from PERMISSION_CACHE_MAX_ENTRIES at boot.
+export const PERMISSION_CACHE_MAX_ENTRIES = 100_000;
+export const PERMISSION_CACHE_SWEEP_INTERVAL_MS = 60 * 1000;
 
 interface CacheEntry {
   result: PermissionCheckResult;
@@ -26,6 +30,7 @@ interface CacheEntry {
 
 export interface PermissionCacheOptions {
   ttlMs?: number;
+  maxEntries?: number;
   now?: () => number;
 }
 
@@ -47,11 +52,30 @@ export class PermissionCache {
   private readonly entries = new Map<string, CacheEntry>();
   private readonly groupIndex = new Map<string, Set<string>>();
   private readonly ttlMs: number;
+  private maxEntries: number;
   private readonly now: () => number;
 
   constructor(opts: PermissionCacheOptions = {}) {
     this.ttlMs = opts.ttlMs ?? PERMISSION_CACHE_TTL_MS;
+    this.maxEntries = Math.max(1, opts.maxEntries ?? PERMISSION_CACHE_MAX_ENTRIES);
     this.now = opts.now ?? Date.now;
+  }
+
+  setMaxEntries(maxEntries: number): void {
+    this.maxEntries = Math.max(1, maxEntries);
+    this.evictOverflow();
+  }
+
+  // Map iteration order is insertion order and a hit re-inserts its key,
+  // so the first key is the least recently used one.
+  private evictOverflow(): void {
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) return;
+      const entry = this.entries.get(oldest);
+      if (entry) this.evict(oldest, entry);
+      else this.entries.delete(oldest);
+    }
   }
 
   // Length-prefixed rather than delimiter-joined. `userId` and
@@ -96,6 +120,8 @@ export class PermissionCache {
       this.evict(k, entry);
       return null;
     }
+    this.entries.delete(k);
+    this.entries.set(k, entry);
     return entry.result;
   }
 
@@ -122,6 +148,20 @@ export class PermissionCache {
       }
       idx.add(k);
     }
+    this.evictOverflow();
+  }
+
+  // Drops every expired entry. Returns the number removed.
+  sweepExpired(): number {
+    const at = this.now();
+    let removed = 0;
+    for (const [k, entry] of this.entries) {
+      if (entry.expiresAt <= at) {
+        this.evict(k, entry);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   invalidateGroup(groupId: string): void {
@@ -145,3 +185,15 @@ export class PermissionCache {
 }
 
 export const permissionCache = new PermissionCache();
+
+export function startPermissionCacheSweeper(
+  cache: PermissionCache = permissionCache,
+  opts: { intervalMs?: number } = {},
+): { stop(): void } {
+  const handle = setInterval(
+    () => cache.sweepExpired(),
+    opts.intervalMs ?? PERMISSION_CACHE_SWEEP_INTERVAL_MS,
+  );
+  if (typeof handle.unref === "function") handle.unref();
+  return { stop: () => clearInterval(handle) };
+}

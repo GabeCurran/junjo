@@ -594,6 +594,11 @@ model AuditEntry {
   // Backs the latest-entry-per-target lookup of the admin player list
   // (`WHERE gameId AND targetId = ? ORDER BY createdAt DESC`).
   @@index([gameId, targetId, createdAt(sort: Desc)])
+  // Backs the cross-game recent-activity feed and the 24 hour count
+  // (`ORDER BY createdAt DESC, id DESC`, `WHERE createdAt >= ?`).
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
+  // Backs the per-game audit feed filtered by action.
+  @@index([gameId, action, createdAt(sort: Desc)])
 }
 
 // =====================================================================
@@ -650,6 +655,8 @@ model WebhookDelivery {
 
   @@index([status, nextAttemptAt])
   @@index([webhookEndpointId, createdAt])
+  // Backs the retention sweep of delivered and failed rows.
+  @@index([status, createdAt])
 }
 
 // =====================================================================
@@ -726,6 +733,8 @@ model BanHistory {
   @@index([gameId, junjoUserId, eventAt(sort: Desc)])
   // "show me every ban event in this game in time order"
   @@index([gameId, eventAt(sort: Desc)])
+  // Backs the cascade delete when a group is hard-deleted.
+  @@index([groupId])
 }
 
 // Per-(game, person) moderation counter. Rises by exactly one in the

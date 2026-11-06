@@ -4,6 +4,7 @@ import { type RawApiKey, generateApiKey } from "../apiKey";
 import { JunjoError } from "../errors";
 import { type ApiKeyStore, apiKeyMiddleware } from "./apiKey";
 import { errorHandler } from "./error";
+import { VerifiedKeyCache, secretDigest } from "./verifiedKeyCache";
 
 interface SeededKey {
   raw: RawApiKey;
@@ -127,5 +128,99 @@ describe("apiKeyMiddleware", () => {
       headers: { authorization: `Bearer ${valid.raw.full}` },
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("apiKeyMiddleware verified-key cache", () => {
+  interface MutableKey {
+    raw: RawApiKey;
+    hashedSecret: string;
+    revokedAt: Date | null;
+  }
+
+  function mutableStore(key: MutableKey): ApiKeyStore {
+    return {
+      findByPrefix: async (prefix) =>
+        prefix === key.raw.prefix
+          ? { gameId: "game_gamma", hashedSecret: key.hashedSecret, revokedAt: key.revokedAt }
+          : null,
+    };
+  }
+
+  function appWith(store: ApiKeyStore, cache: VerifiedKeyCache) {
+    const app = new Hono();
+    app.onError(errorHandler);
+    app.use("/protected/*", apiKeyMiddleware(store, { verifiedCache: cache }));
+    app.get("/protected/whoami", (c) => c.json({ gameId: c.var.gameId }));
+    return app;
+  }
+
+  async function call(app: Hono, token: string) {
+    return app.request("/protected/whoami", { headers: { authorization: `Bearer ${token}` } });
+  }
+
+  it("remembers a verified key and still answers on the next request", async () => {
+    const raw = await generateApiKey();
+    const key: MutableKey = { raw, hashedSecret: raw.hashedSecret, revokedAt: null };
+    const cache = new VerifiedKeyCache();
+    const app = appWith(mutableStore(key), cache);
+    expect((await call(app, raw.full)).status).toBe(200);
+    expect(cache.size()).toBe(1);
+    expect((await call(app, raw.full)).status).toBe(200);
+  });
+
+  it("refuses a revoked key at once even after it was verified", async () => {
+    const raw = await generateApiKey();
+    const key: MutableKey = { raw, hashedSecret: raw.hashedSecret, revokedAt: null };
+    const app = appWith(mutableStore(key), new VerifiedKeyCache());
+    expect((await call(app, raw.full)).status).toBe(200);
+    key.revokedAt = new Date();
+    const res = await call(app, raw.full);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { code: string }).code).toBe("invalid_api_key");
+  });
+
+  it("refuses a wrong secret for a prefix whose real secret is cached", async () => {
+    const raw = await generateApiKey();
+    const key: MutableKey = { raw, hashedSecret: raw.hashedSecret, revokedAt: null };
+    const app = appWith(mutableStore(key), new VerifiedKeyCache());
+    expect((await call(app, raw.full)).status).toBe(200);
+    expect((await call(app, `${raw.prefix}.not-the-secret`)).status).toBe(401);
+    expect((await call(app, raw.full)).status).toBe(200);
+  });
+
+  it("stops accepting the old secret once the stored hash changes", async () => {
+    const raw = await generateApiKey();
+    const key: MutableKey = { raw, hashedSecret: raw.hashedSecret, revokedAt: null };
+    const app = appWith(mutableStore(key), new VerifiedKeyCache());
+    expect((await call(app, raw.full)).status).toBe(200);
+    const replacement = await generateApiKey();
+    key.hashedSecret = replacement.hashedSecret;
+    expect((await call(app, raw.full)).status).toBe(401);
+    expect((await call(app, `${raw.prefix}.${replacement.secret}`)).status).toBe(200);
+  });
+
+  it("re-verifies after the entry expires", async () => {
+    let now = 1_000;
+    const cache = new VerifiedKeyCache({ ttlMs: 100, now: () => now });
+    const digest = secretDigest("s");
+    cache.remember("p", digest, "h");
+    expect(cache.matches("p", digest, "h")).toBe(true);
+    now += 100;
+    expect(cache.matches("p", digest, "h")).toBe(false);
+    expect(cache.size()).toBe(0);
+  });
+
+  it("evicts the least recently used entry past the cap", () => {
+    const cache = new VerifiedKeyCache({ maxEntries: 2 });
+    const d = secretDigest("s");
+    cache.remember("a", d, "h");
+    cache.remember("b", d, "h");
+    expect(cache.matches("a", d, "h")).toBe(true);
+    cache.remember("c", d, "h");
+    expect(cache.size()).toBe(2);
+    expect(cache.matches("b", d, "h")).toBe(false);
+    expect(cache.matches("a", d, "h")).toBe(true);
+    expect(cache.matches("c", d, "h")).toBe(true);
   });
 });

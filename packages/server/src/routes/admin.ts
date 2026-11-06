@@ -405,13 +405,15 @@ export function listAdminGamesHandler(prisma: PrismaClient): Handler {
         where: { gameId: { in: gameIds }, softDeletedAt: null },
         _count: { _all: true },
       }),
-      prisma.groupMember.findMany({
-        where: {
-          status: "active",
-          group: { gameId: { in: gameIds }, softDeletedAt: null },
-        },
-        select: { group: { select: { gameId: true } } },
-      }),
+      prisma.$queryRaw<{ gameId: string; count: number }[]>(Prisma.sql`
+        SELECT g."gameId", count(*)::int AS count
+        FROM "GroupMember" gm
+        JOIN "Group" g ON g.id = gm."groupId"
+        WHERE gm.status = 'active'
+          AND g."gameId" IN (${Prisma.join(gameIds)})
+          AND g."softDeletedAt" IS NULL
+        GROUP BY g."gameId"
+      `),
       prisma.apiKey.groupBy({
         by: ["gameId"],
         where: { gameId: { in: gameIds }, revokedAt: null },
@@ -425,11 +427,7 @@ export function listAdminGamesHandler(prisma: PrismaClient): Handler {
     const apiKeyCounts = new Map<string, number>();
     for (const row of apiKeyRows) apiKeyCounts.set(row.gameId, row._count._all);
 
-    const memberCounts = new Map<string, number>();
-    for (const row of memberRows) {
-      const id = row.group.gameId;
-      memberCounts.set(id, (memberCounts.get(id) ?? 0) + 1);
-    }
+    const memberCounts = new Map(memberRows.map((row) => [row.gameId, row.count]));
 
     return c.json<WireAdminGameList>({
       items: games.map((g) =>
@@ -2262,9 +2260,6 @@ export function checkAdminPermissionHandler(
 // departure counts; a year-old group with a today departure does not.
 // This answers "how does churn look for the cohort of groups born in
 // this window?".
-//
-// Tenure (`leftAt - joinedAt`) is computed in JS rather than SQL so bin
-// boundaries stay readable.
 export interface WireAdminGroupChurnBin {
   label: string;
   minMs: number | null;
@@ -2280,20 +2275,23 @@ export interface WireAdminGroupChurn {
   bins: WireAdminGroupChurnBin[];
 }
 
-function pickChurnBin(tenureMs: number): number {
-  // Negative tenures (clock skew between joinedAt and leftAt) clamp to
-  // bin 0 so the histogram never silently drops a row.
-  if (!Number.isFinite(tenureMs) || tenureMs < 0) return 0;
-  for (let i = 0; i < ANALYTICS_GROUP_CHURN_BINS.length; i += 1) {
-    const bin = ANALYTICS_GROUP_CHURN_BINS[i];
-    if (!bin) continue;
-    const { minMs, maxMs } = bin;
-    if (minMs !== null && tenureMs < minMs) continue;
-    if (maxMs !== null && tenureMs >= maxMs) continue;
-    return i;
-  }
-  // Unreachable: the last bin's `maxMs: null` always matches.
-  return ANALYTICS_GROUP_CHURN_BINS.length - 1;
+// The histogram bin of a departure as a SQL expression over its tenure
+// (`leftAt - joinedAt`) in milliseconds, built from
+// `ANALYTICS_GROUP_CHURN_BINS` so the boundaries live in one place. A
+// negative tenure (clock skew between the two stamps) falls in bin 0 so
+// the histogram never silently drops a row.
+function churnBinSql(tenureMs: Prisma.Sql): Prisma.Sql {
+  const branches = ANALYTICS_GROUP_CHURN_BINS.map((bin, i) => {
+    const conditions: Prisma.Sql[] = [];
+    if (bin.minMs !== null)
+      conditions.push(Prisma.sql`${tenureMs} >= ${Prisma.raw(String(bin.minMs))}`);
+    if (bin.maxMs !== null)
+      conditions.push(Prisma.sql`${tenureMs} < ${Prisma.raw(String(bin.maxMs))}`);
+    const test = conditions.length > 0 ? Prisma.join(conditions, " AND ") : Prisma.sql`true`;
+    return Prisma.sql`WHEN ${test} THEN ${i}::int`;
+  });
+  const last = ANALYTICS_GROUP_CHURN_BINS.length - 1;
+  return Prisma.sql`CASE WHEN ${tenureMs} < 0 THEN 0 ${Prisma.join(branches, " ")} ELSE ${last}::int END`;
 }
 
 export function getGroupChurnHandler(prisma: PrismaClient): Handler {
@@ -2319,47 +2317,43 @@ export function getGroupChurnHandler(prisma: PrismaClient): Handler {
     });
     if (!game) throw Errors.notFound("game");
 
-    const createdAtFilter: Prisma.DateTimeFilter = {};
-    if (from) createdAtFilter.gte = new Date(from);
-    if (to) createdAtFilter.lt = new Date(to);
+    const createdFrom = from ? Prisma.sql`AND g."createdAt" >= ${new Date(from)}` : Prisma.empty;
+    const createdTo = to ? Prisma.sql`AND g."createdAt" < ${new Date(to)}` : Prisma.empty;
+    const groupFilter = Prisma.sql`
+      g."gameId" = ${gameId} AND g."softDeletedAt" IS NULL ${createdFrom} ${createdTo}
+    `;
+    const tenureMs = Prisma.sql`(EXTRACT(EPOCH FROM (gm."leftAt" - gm."joinedAt")) * 1000)`;
 
-    const groups = await prisma.group.findMany({
-      where: {
-        gameId,
-        softDeletedAt: null,
-        ...(from || to ? { createdAt: createdAtFilter } : {}),
-      },
-      select: { id: true },
-    });
+    const [groupRows, binRows] = await Promise.all([
+      prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
+        SELECT count(*)::int AS count FROM "Group" g WHERE ${groupFilter}
+      `),
+      prisma.$queryRaw<{ bin: number; count: number }[]>(Prisma.sql`
+        SELECT ${churnBinSql(tenureMs)} AS bin, count(*)::int AS count
+        FROM "GroupMember" gm
+        JOIN "Group" g ON g.id = gm."groupId"
+        WHERE ${groupFilter}
+          AND gm.status IN ('left', 'kicked')
+          AND gm."leftAt" IS NOT NULL
+        GROUP BY 1
+      `),
+    ]);
+    const totalGroups = Number(groupRows[0]?.count ?? 0);
 
     const counts = ANALYTICS_GROUP_CHURN_BINS.map(() => 0);
     let totalDepartures = 0;
-
-    if (groups.length > 0) {
-      const departures = await prisma.groupMember.findMany({
-        where: {
-          groupId: { in: groups.map((g) => g.id) },
-          status: { in: ["left", "kicked"] },
-          leftAt: { not: null },
-        },
-        select: { joinedAt: true, leftAt: true },
-      });
-
-      for (const d of departures) {
-        if (d.leftAt === null) continue;
-        const tenureMs = d.leftAt.getTime() - d.joinedAt.getTime();
-        const idx = pickChurnBin(tenureMs);
-        const cur = counts[idx];
-        if (cur === undefined) continue;
-        counts[idx] = cur + 1;
-        totalDepartures += 1;
-      }
+    for (const row of binRows) {
+      const idx = Number(row.bin);
+      const cur = counts[idx];
+      if (cur === undefined) continue;
+      counts[idx] = cur + Number(row.count);
+      totalDepartures += Number(row.count);
     }
 
     return c.json<WireAdminGroupChurn>({
       from: from ?? null,
       to: to ?? null,
-      totalGroupsInWindow: groups.length,
+      totalGroupsInWindow: totalGroups,
       totalDeparturesInWindow: totalDepartures,
       bins: ANALYTICS_GROUP_CHURN_BINS.map((bin, i) => ({
         label: bin.label,
@@ -2408,22 +2402,6 @@ function pickGrowthBucketSizeMs(windowMs: number): number {
   if (windowMs <= GROWTH_ONE_MONTH_MS) return GROWTH_ONE_DAY_MS;
   if (windowMs <= 90 * GROWTH_ONE_DAY_MS) return 3 * GROWTH_ONE_DAY_MS;
   return GROWTH_ONE_WEEK_MS;
-}
-
-interface GrowthMemberRow {
-  groupId: string;
-  joinedAt: Date;
-  leftAt: Date | null;
-}
-
-function countActiveAtForGroup(rows: GrowthMemberRow[], tMs: number): number {
-  let count = 0;
-  for (const row of rows) {
-    if (row.joinedAt.getTime() > tMs) continue;
-    if (row.leftAt !== null && row.leftAt.getTime() <= tMs) continue;
-    count += 1;
-  }
-  return count;
 }
 
 export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
@@ -2486,37 +2464,78 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
       });
     }
 
-    // Every member whose active interval overlaps the window. Status is
-    // NOT filtered (see the resolver-vs-historical note above the type).
-    const members = await prisma.groupMember.findMany({
-      where: {
-        groupId: { in: groups.map((g) => g.id) },
-        joinedAt: { lte: new Date(toMs) },
-        OR: [{ leftAt: null }, { leftAt: { gt: new Date(fromMs) } }],
-      },
-      select: { groupId: true, joinedAt: true, leftAt: true },
-    });
+    // Active members per group at every bucket boundary and at `to`. A
+    // member is active at T when `joinedAt <= T` and (`leftAt IS NULL` or
+    // `leftAt > T`). Status is NOT filtered (see the resolver-vs-historical
+    // note above the type). With the instants in ascending order, a member
+    // counts from the first instant at or after `joinedAt` and stops
+    // counting from the first instant at or after the later of `joinedAt`
+    // and `leftAt`. The database returns, per group, how many members
+    // start and stop at each instant, and the counts are their running
+    // difference, so the work in the database is one pass over the
+    // members. `width_bucket` counts the instants at or before its operand;
+    // stepping the operand back one microsecond makes that "before", which
+    // is exact because both sides carry millisecond precision. Instants
+    // travel as UTC ISO strings; casting to `timestamp` drops the zone
+    // designator, which matches how the columns store UTC. The array is
+    // cast once in its own CTE rather than once per member row. The window
+    // prefilter only drops members inactive across the whole window.
+    const instants = [...bucketTimestamps, toMs];
+    const instantStrings = instants.map((t) => new Date(t).toISOString());
+    const stepRows = await prisma.$queryRaw<
+      { groupId: string; kind: number; idx: number; count: number }[]
+    >(
+      Prisma.sql`
+        WITH b AS MATERIALIZED (SELECT ${instantStrings}::timestamp[] AS t),
+        m AS (
+          SELECT gm."groupId",
+            width_bucket(gm."joinedAt" - interval '1 microsecond', b.t) AS starts,
+            CASE WHEN gm."leftAt" IS NULL THEN NULL ELSE width_bucket(
+              GREATEST(gm."joinedAt", gm."leftAt") - interval '1 microsecond', b.t
+            ) END AS stops
+          FROM "GroupMember" gm
+          JOIN "Group" g ON g.id = gm."groupId"
+          CROSS JOIN b
+          WHERE g."gameId" = ${gameId}
+            AND g."softDeletedAt" IS NULL
+            AND gm."joinedAt" <= ${new Date(toMs)}
+            AND (gm."leftAt" IS NULL OR gm."leftAt" > ${new Date(fromMs)})
+        )
+        SELECT "groupId", 0 AS kind, starts AS idx, count(*)::int AS count
+        FROM m GROUP BY 1, 3
+        UNION ALL
+        SELECT "groupId", 1 AS kind, stops AS idx, count(*)::int AS count
+        FROM m WHERE stops IS NOT NULL GROUP BY 1, 3
+      `,
+    );
 
-    const rowsByGroup = new Map<string, GrowthMemberRow[]>();
-    for (const g of groups) {
-      rowsByGroup.set(g.id, []);
-    }
-    for (const m of members) {
-      const bucket = rowsByGroup.get(m.groupId);
-      if (!bucket) continue;
-      bucket.push({ groupId: m.groupId, joinedAt: m.joinedAt, leftAt: m.leftAt });
+    // Per group, the net change in active members at each instant.
+    const deltas = new Map<string, number[]>();
+    for (const g of groups)
+      deltas.set(
+        g.id,
+        instants.map(() => 0),
+      );
+    for (const row of stepRows) {
+      const delta = deltas.get(row.groupId);
+      const idx = Number(row.idx);
+      // Index `instants.length` means the change falls after every instant.
+      if (!delta || idx < 0 || idx >= instants.length) continue;
+      delta[idx] = (delta[idx] ?? 0) + (Number(row.kind) === 0 ? 1 : -1) * Number(row.count);
     }
 
     const perGroupCounts = new Map<string, number[]>();
     const endCounts = new Map<string, number>();
     for (const g of groups) {
-      const rows = rowsByGroup.get(g.id) ?? [];
-      const counts: number[] = [];
-      for (const t of bucketTimestamps) {
-        counts.push(countActiveAtForGroup(rows, t));
+      const delta = deltas.get(g.id) ?? [];
+      const active: number[] = [];
+      let running = 0;
+      for (let i = 0; i < instants.length; i += 1) {
+        running += delta[i] ?? 0;
+        active.push(running);
       }
-      perGroupCounts.set(g.id, counts);
-      endCounts.set(g.id, countActiveAtForGroup(rows, toMs));
+      perGroupCounts.set(g.id, active.slice(0, bucketTimestamps.length));
+      endCounts.set(g.id, active[instants.length - 1] ?? 0);
     }
 
     const ranked = [...groups].sort((a, b) => {
@@ -2572,7 +2591,10 @@ export function getGroupGrowthHandler(prisma: PrismaClient): Handler {
 //
 // Aggregation runs in Postgres via `$queryRaw` so the response is bounded
 // at 168 rows regardless of source-data size. Pulling every audit row
-// over the wire would scale poorly with audit volume.
+// over the wire would scale poorly with audit volume. Only group-scoped
+// entries count; they are matched on the denormalized `gameId`, which
+// always equals their group's game, so the (gameId, createdAt) index
+// serves the window.
 export interface WireAdminMemberActivity {
   from: string | null;
   to: string | null;
@@ -2623,8 +2645,8 @@ export function getMemberActivityHandler(prisma: PrismaClient): Handler {
         EXTRACT(HOUR FROM ae."createdAt")::int AS hour,
         COUNT(*)::int AS count
       FROM "AuditEntry" ae
-      INNER JOIN "Group" g ON g."id" = ae."groupId"
-      WHERE g."gameId" = ${gameId}
+      WHERE ae."gameId" = ${gameId}
+        AND ae."groupId" IS NOT NULL
       ${fromCondition}
       ${toCondition}
       GROUP BY 1, 2
@@ -2682,43 +2704,22 @@ export function getRoleDistributionHandler(prisma: PrismaClient): Handler {
     });
     if (!game) throw Errors.notFound("game");
 
-    const roles = await prisma.role.findMany({
-      where: { group: { gameId, softDeletedAt: null } },
-      select: { id: true, name: true },
-    });
+    // One aggregate in the database, so the work and the statement size
+    // do not grow with the number of roles in the game.
+    const rows = await prisma.$queryRaw<{ name: string; count: number }[]>(Prisma.sql`
+      SELECT r.name, count(*)::int AS count
+      FROM "MemberRole" mr
+      JOIN "Role" r ON r.id = mr."roleId"
+      JOIN "Group" g ON g.id = r."groupId"
+      JOIN "GroupMember" gm ON gm.id = mr."groupMemberId"
+      WHERE g."gameId" = ${gameId}
+        AND g."softDeletedAt" IS NULL
+        AND gm.status = 'active'
+      GROUP BY r.name
+    `);
 
-    if (roles.length === 0) {
-      return c.json<WireAdminRoleDistribution>({
-        totalAssignments: 0,
-        uniqueRoleNames: 0,
-        topRoles: [],
-        otherCount: 0,
-      });
-    }
-
-    const counts = await prisma.memberRole.groupBy({
-      by: ["roleId"],
-      where: {
-        roleId: { in: roles.map((r) => r.id) },
-        groupMember: { status: "active" },
-      },
-      _count: { _all: true },
-    });
-
-    const countByRoleId = new Map<string, number>();
-    for (const row of counts) {
-      countByRoleId.set(row.roleId, row._count._all);
-    }
-
-    const countByName = new Map<string, number>();
-    for (const role of roles) {
-      const c = countByRoleId.get(role.id) ?? 0;
-      if (c === 0) continue;
-      countByName.set(role.name, (countByName.get(role.name) ?? 0) + c);
-    }
-
-    const sorted = Array.from(countByName.entries())
-      .map(([name, count]) => ({ name, count }))
+    const sorted = rows
+      .map((row) => ({ name: row.name, count: Number(row.count) }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
     const top = sorted.slice(0, ADMIN_ROLE_DISTRIBUTION_TOP_N);

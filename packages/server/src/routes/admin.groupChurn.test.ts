@@ -162,6 +162,29 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/analytics/group
     expect(body.bins.map((b) => b.count)).toEqual([0, 1, 1, 1, 1]);
   });
 
+  it("counts a negative tenure (clock skew) in the first bin", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await seedGroup(game.id, "g1");
+    await seedDeparture(group.id, -5_000);
+    await seedDeparture(group.id, -1);
+    const res = await getChurn(game.id);
+    const body = (await res.json()) as WireAdminGroupChurn;
+    expect(body.totalDeparturesInWindow).toBe(2);
+    expect(body.bins.map((b) => b.count)).toEqual([2, 0, 0, 0, 0]);
+  });
+
+  it("places tenures one millisecond either side of every boundary", async () => {
+    const game = await createGame("Alpha", prisma);
+    const group = await seedGroup(game.id, "g1");
+    for (const edge of [ONE_HOUR_MS, ONE_DAY_MS, ONE_WEEK_MS, ONE_MONTH_MS]) {
+      await seedDeparture(group.id, edge - 1);
+      await seedDeparture(group.id, edge);
+    }
+    const res = await getChurn(game.id);
+    const body = (await res.json()) as WireAdminGroupChurn;
+    expect(body.bins.map((b) => b.count)).toEqual([1, 2, 2, 2, 1]);
+  });
+
   it("excludes active and invited members (only left + kicked count)", async () => {
     const game = await createGame("Alpha", prisma);
     const group = await seedGroup(game.id, "g1");

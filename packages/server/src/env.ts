@@ -84,6 +84,31 @@ const EnvSchema = z.object({
         .int("EVENT_STREAM_POLL_MS must be a non-negative integer")
         .nonnegative("EVENT_STREAM_POLL_MS must be a non-negative integer"),
     ),
+  // Upper bound on the number of answers the per-process permission
+  // check cache holds. Past it the least recently used answer is evicted.
+  PERMISSION_CACHE_MAX_ENTRIES: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 100_000 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("PERMISSION_CACHE_MAX_ENTRIES must be a positive integer")
+        .positive("PERMISSION_CACHE_MAX_ENTRIES must be a positive integer"),
+    ),
+  // How long delivered and failed webhook deliveries are kept before the
+  // delivery sweeper removes them. Pending deliveries are never removed.
+  WEBHOOK_DELIVERY_RETENTION_DAYS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 30 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("WEBHOOK_DELIVERY_RETENTION_DAYS must be an integer from 1 to 3650")
+        .min(1, "WEBHOOK_DELIVERY_RETENTION_DAYS must be an integer from 1 to 3650")
+        .max(3650, "WEBHOOK_DELIVERY_RETENTION_DAYS must be an integer from 1 to 3650"),
+    ),
   // Whether a trusted proxy fronts the server and APPENDS the client
   // address to x-forwarded-for (Railway, nginx, any standard LB). When
   // true, rate limiting keys keyless traffic on the rightmost
