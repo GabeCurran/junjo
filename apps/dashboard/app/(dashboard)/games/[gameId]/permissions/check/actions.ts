@@ -6,6 +6,7 @@ import {
   AdminDisabledError,
   type AdminPermissionCheckResult,
   type AdminPermissionContext,
+  fetchAdminGroupRoles,
   fetchAdminPermissionCheck,
 } from "../../../../../../lib/admin";
 
@@ -18,7 +19,13 @@ import {
 // initial empty state and lose context for re-testing.
 export type CheckPermissionResult =
   | { ok: false; error?: string; inputs?: CheckPermissionInputs }
-  | { ok: true; result: AdminPermissionCheckResult; inputs: CheckPermissionInputs };
+  | {
+      ok: true;
+      result: AdminPermissionCheckResult;
+      inputs: CheckPermissionInputs;
+      // The deciding role's name and color, when a role decided.
+      role?: { name: string; color: string | null };
+    };
 
 export interface CheckPermissionInputs {
   userId: string;
@@ -99,7 +106,13 @@ export async function checkPermissionAction(
       permission: inputs.permission,
       context,
     });
-    return { ok: true, result, inputs };
+    let role: { name: string; color: string | null } | undefined;
+    if (result.viaRoleId) {
+      const roles = await fetchAdminGroupRoles(gameId, inputs.groupId).catch(() => []);
+      const found = roles.find((r) => r.id === result.viaRoleId);
+      if (found) role = { name: found.name, color: found.color };
+    }
+    return { ok: true, result, inputs, role };
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return {

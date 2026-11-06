@@ -16,6 +16,7 @@ import {
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RoleChip } from "../ui/role-chip";
 
 interface PermissionCheckTesterProps {
   gameId: string;
@@ -113,7 +114,9 @@ export function PermissionCheckTester({ gameId }: PermissionCheckTesterProps) {
         ) : null}
       </form>
       <div aria-live="polite">
-        {state.ok ? <ResultPanel result={state.result} inputs={state.inputs} /> : null}
+        {state.ok ? (
+          <ResultPanel result={state.result} inputs={state.inputs} role={state.role} />
+        ) : null}
       </div>
     </div>
   );
@@ -122,9 +125,10 @@ export function PermissionCheckTester({ gameId }: PermissionCheckTesterProps) {
 interface ResultPanelProps {
   result: AdminPermissionCheckResult;
   inputs: CheckPermissionInputs;
+  role?: { name: string; color: string | null };
 }
 
-function ResultPanel({ result, inputs }: ResultPanelProps) {
+function ResultPanel({ result, inputs, role }: ResultPanelProps) {
   return (
     <section className="flex flex-col gap-3">
       <p
@@ -142,7 +146,13 @@ function ResultPanel({ result, inputs }: ResultPanelProps) {
         {result.viaRoleId ? (
           <>
             <dt className="text-muted-foreground">Role</dt>
-            <dd className="break-all font-mono text-xs leading-5">{result.viaRoleId}</dd>
+            <dd>
+              {role ? (
+                <RoleChip name={role.name} color={role.color} title={result.viaRoleId} />
+              ) : (
+                <span className="break-all font-mono text-xs leading-5">{result.viaRoleId}</span>
+              )}
+            </dd>
           </>
         ) : null}
         <dt className="text-muted-foreground">User</dt>

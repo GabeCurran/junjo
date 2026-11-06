@@ -5,12 +5,15 @@
 
 export type ActivityPart =
   | { kind: "text"; text: string }
-  | { kind: "who"; text: string }
+  // `playerId` is set when the part names a player the dashboard can open.
+  | { kind: "who"; text: string; playerId?: string }
   | { kind: "place"; text: string; struck?: boolean }
   | { kind: "code"; text: string };
 
 export interface ActivityInput {
   action: string;
+  // Present when player names should link to the game's player pages.
+  gameId?: string;
   targetId: string | null;
   groupName?: string | null;
   groupSoftDeleted?: boolean;
@@ -29,7 +32,9 @@ function str(payload: Record<string, unknown>, key: string): string | null {
 // the place. Unknown actions fall back to the raw action name.
 export function describeActivity(entry: ActivityInput): ActivityPart[] {
   const p = entry.payload;
-  const who: ActivityPart = { kind: "who", text: entry.targetId ?? "someone" };
+  const who: ActivityPart = entry.targetId
+    ? { kind: "who", text: entry.targetId, playerId: entry.targetId }
+    : { kind: "who", text: "someone" };
   const group: ActivityPart = {
     kind: "place",
     text: entry.groupName ?? "a group",

@@ -30,6 +30,8 @@ function buildGameNavItems(gameId: string): readonly NavItem[] {
   const base = `/games/${encodeURIComponent(gameId)}`;
   return [
     { href: base, label: "Game overview", exact: true },
+    { href: `${base}/players`, label: "Players" },
+    { href: `${base}/moderation`, label: "Moderation" },
     { href: `${base}/groups`, label: "Groups" },
     { href: `${base}/audit`, label: "Audit log" },
     { href: `${base}/permissions/check`, label: "Permission check" },

@@ -1,4 +1,6 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
+import Link from "next/link";
+
 import {
   type ActivityInput,
   type ActivityPart,
@@ -9,10 +11,19 @@ import {
 } from "../../lib/activity";
 import { cn } from "../../lib/utils";
 
-function Part({ part }: { part: ActivityPart }) {
+function Part({ part, gameId }: { part: ActivityPart; gameId?: string }) {
   switch (part.kind) {
     case "who":
-      return <span className="font-medium text-foreground">{part.text}</span>;
+      return gameId && part.playerId ? (
+        <Link
+          href={`/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(part.playerId)}`}
+          className="font-medium text-foreground hover:underline"
+        >
+          {part.text}
+        </Link>
+      ) : (
+        <span className="font-medium text-foreground">{part.text}</span>
+      );
     case "place":
       return (
         <span className={cn("font-medium text-foreground", part.struck && "line-through")}>
@@ -34,7 +45,7 @@ export function ActivitySentence({ entry }: { entry: ActivityInput }) {
     <>
       {describeActivity(entry).map((part, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional and never reorder.
-        <Part key={i} part={part} />
+        <Part key={i} part={part} gameId={entry.gameId} />
       ))}
       {reason ? <span>: {reason}</span> : null}
     </>
