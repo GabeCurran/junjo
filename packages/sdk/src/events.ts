@@ -6,6 +6,7 @@ import type {
   MemberChangeField,
   MemberLeftEvent,
   PermissionKey,
+  PermissionMode,
   RoleChangeField,
   RoleId,
   UserId,
@@ -20,6 +21,7 @@ import {
   deserializeInvitation,
 } from "./groups.js";
 import { type WireMember, deserializeMember } from "./members.js";
+import { type WireContextInheritance, deserializeContextInheritance } from "./permissions.js";
 import { type WireRole, deserializeRole } from "./roles.js";
 import { parseWireDate } from "./wire.js";
 
@@ -234,6 +236,12 @@ interface WireIdentityUnlinkedEvent extends WireEventBase {
   identities: string[];
 }
 
+interface WirePermissionsConfigUpdatedEvent extends WireEventBase {
+  type: "permissions.config.updated";
+  mode: PermissionMode;
+  contexts: WireContextInheritance;
+}
+
 export type WireJunjoEvent =
   | WireMemberJoinedEvent
   | WireMemberLeftEvent
@@ -263,7 +271,8 @@ export type WireJunjoEvent =
   | WireGameUserUnsanctionedEvent
   | WireIdentityLinkedEvent
   | WireIdentityUnlinkedEvent
-  | WireIdentityUpdatedEvent;
+  | WireIdentityUpdatedEvent
+  | WirePermissionsConfigUpdatedEvent;
 
 /**
  * Thrown (with this code) when the server sends an event type this SDK
@@ -516,6 +525,13 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         userId: w.userId as UserId,
         unlinkedUserId: w.unlinkedUserId as UserId,
         identities: w.identities.map((id) => id as UserId),
+      };
+    case "permissions.config.updated":
+      return {
+        ...base,
+        type: "permissions.config.updated",
+        mode: w.mode,
+        contexts: deserializeContextInheritance(w.contexts),
       };
     default: {
       // `w` is `never` here for compile-time-known wire events; at

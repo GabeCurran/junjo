@@ -38,7 +38,11 @@ import {
   deleteInvitationByCodeHandler,
 } from "./routes/invitations.js";
 import { getMemberByIdHandler, listMembersForUserHandler } from "./routes/members.js";
-import { checkPermissionBatchHandler, checkPermissionHandler } from "./routes/permissions.js";
+import {
+  checkPermissionBatchHandler,
+  checkPermissionHandler,
+  getPermissionConfigHandler,
+} from "./routes/permissions.js";
 import {
   deleteRoleByIdHandler,
   getRoleByIdHandler,
@@ -141,6 +145,7 @@ export function registerGameRoutes(router: Hono, routes: GameRoutes, mount: Game
   router.put("/roles/:id/entries", replaceRoleEntriesHandler(prisma, hub));
   router.put("/roles/:id/parents", setRoleParentsHandler(prisma, hub));
   router.get("/permissions/check", checkPermissionHandler(prisma));
+  router.get("/permissions/config", getPermissionConfigHandler(prisma));
   router.post("/permissions/check-batch", checkPermissionBatchHandler(prisma));
   router.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));
   router.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));

@@ -203,6 +203,28 @@ These examples come from a PermissionsEx server's data:
 
 Within one role, PermissionsEx takes the first matching line in file order; Junjo instead ranks by context and then by key specificity, so the answer does not depend on the order entries were written.
 
+## `GET /v1/permissions/config`
+
+The game's permission settings, read with the game's own key: its [permission mode](#permission-modes) and its [context inheritance](#inheritance-between-values), resolved against the defaults. Read-only; the admin config route changes them.
+
+```json
+{
+  "mode": "nodes",
+  "contexts": {
+    "world": { "inherit": { "pvpworld": ["world"], "world_nether": ["world"] } }
+  }
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `mode` | `"exact"` \| `"nodes"` | `"exact"` for a game that never set one. |
+| `contexts` | object | Context key to `{ inherit }`, values folded to lowercase. `{}` when the game declares no inheritance. |
+
+The response carries the `Junjo-Stream-Position` header, read before the config (see [Snapshots and the stream](/api-reference/events#snapshots-and-the-stream)). Every change arrives on the [game stream](/api-reference/events#get-v1events) and on webhooks as [`permissions.config.updated`](/api-reference/events#events-with-no-group) with the new values. The [role graph](/api-reference/roles#get-v1groupsidrole-graph) carries the same two fields.
+
+Requires a per-game key; the admin token reaches it at `GET /v1/admin/games/:gameId/as-game/permissions/config`.
+
 ## `GET /v1/permissions/check`
 
 Returns the canonical `PermissionCheckResult`. Read-through cache.

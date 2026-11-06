@@ -340,9 +340,17 @@ export interface UpdateRoleInput {
 export interface RoleGraph {
   groupId: GroupId;
   mode: PermissionMode;
+  // The game's context value inheritance (see `PermissionConfig`).
+  // Game-wide, so every group's graph carries the same value.
+  contexts: Record<string, GameConfigPermissionContext>;
   defaultRoleId: RoleId | null;
   roles: Role[];
 }
+
+// A game's permission settings as its own API key reads them: the
+// matching mode and the context value inheritance. `contexts` is empty
+// when the game declares no inheritance.
+export type PermissionConfig = GameConfigPermissions;
 
 // One member's direct roles and overrides in a group, read in one call.
 export interface MemberAccess {
@@ -656,8 +664,8 @@ interface GroupEventBase extends EventBase {
 }
 
 // Events with no group context (friends, blocks, game bans, identity
-// links). Delivered by webhooks and the game stream, never by a group
-// stream.
+// links, game settings). Delivered by webhooks and the game stream,
+// never by a group stream.
 type UserEventBase = EventBase;
 
 export interface MemberJoinedEvent extends GroupEventBase {
@@ -957,6 +965,15 @@ export interface IdentityUnlinkedEvent extends UserEventBase {
   identities: UserId[];
 }
 
+// The game's permission settings changed. Carries the new values in
+// full. Emitted only when the mode or the context inheritance changes.
+// No groupId, so no group stream carries it.
+export interface PermissionsConfigUpdatedEvent extends UserEventBase {
+  type: "permissions.config.updated";
+  mode: PermissionMode;
+  contexts: Record<string, GameConfigPermissionContext>;
+}
+
 export type JunjoEvent =
   | MemberJoinedEvent
   | MemberLeftEvent
@@ -986,7 +1003,8 @@ export type JunjoEvent =
   | GameUserUnsanctionedEvent
   | IdentityLinkedEvent
   | IdentityUnlinkedEvent
-  | IdentityUpdatedEvent;
+  | IdentityUpdatedEvent
+  | PermissionsConfigUpdatedEvent;
 
 export type JunjoEventType = JunjoEvent["type"];
 

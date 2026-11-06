@@ -161,6 +161,23 @@ interface MemberUpdatedEvent {
 
 It arrives on the game stream and on [`groups.subscribe`](/sdk/groups#subscribegroupid-handler-opts) streams, so a group handler that switches over every event type needs a case for it.
 
+## `permissions.config.updated`
+
+`permissions.config.updated` reports that the game's permission mode or context inheritance changed, and carries the new values in full. It has no `groupId`, so only the game stream (and webhooks) deliver it.
+
+```ts
+interface PermissionsConfigUpdatedEvent {
+  type: "permissions.config.updated";
+  id: string;
+  gameId: GameId;
+  occurredAt: Date;
+  mode: "exact" | "nodes";
+  contexts: Record<string, { inherit: Record<string, string[]> }>;
+}
+```
+
+It is the same shape [`permissions.config`](/sdk/permissions#permissionsconfig) returns. A mode change also changes how stored keys match, so a local resolver reloads its role graphs.
+
 ## Versions on events
 
 Member, game ban and sanction events carry the version their write produced:

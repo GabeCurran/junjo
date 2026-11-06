@@ -197,6 +197,31 @@ Two things the cache does not do: it is not shared across `Junjo` instances, and
 
 Self-hosting note: the rate limit itself is configurable (`RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST`), which a self-hoster has no dashboard to discover. See [Limits](/limits#rate-limits).
 
+## `permissions.config()`
+
+Reads the game's permission settings with the client's own key (`GET /v1/permissions/config`). Returns a `PermissionConfig`: `{ mode, contexts }`.
+
+```ts
+const config = await junjo.permissions.config();
+config.mode;     // "exact" or "nodes"
+config.contexts; // { world: { inherit: { pvpworld: ["world"] } } }, or {}
+```
+
+`mode` is the game's [permission mode](/api-reference/permissions#permission-modes) and `contexts` its [context inheritance](/api-reference/admin#permission-contexts), values folded to lowercase. Both are changed through the admin config route; the game key only reads them. Each change arrives on the [game stream](/sdk/events) as `permissions.config.updated`, carrying the new values in the same shape:
+
+```ts
+junjo.events.subscribe(
+  (event) => {
+    if (event.type === "permissions.config.updated") {
+      applyConfig({ mode: event.mode, contexts: event.contexts });
+    }
+  },
+  { types: ["permissions.config.updated"] },
+);
+```
+
+[`roles.getGraph`](/sdk/roles#getgraphgroupid) carries the same two fields with every group's roles.
+
 ## See also
 
 - [`GET /v1/permissions/check`](/api-reference/permissions) - the underlying HTTP route, including the batch route and inheritance semantics.

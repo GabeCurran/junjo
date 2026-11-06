@@ -127,6 +127,7 @@ The `Junjo` instance exposes typed namespaces for each resource. See the per-nam
 | [`junjo.sanctions`](/sdk/sanctions) | Game-defined restrictions such as mutes: `add`, `remove`, `list`, `listAll`, `forUser`, `history`, `historyAll`. |
 | [`junjo.identities`](/sdk/identities) | Identity linking (`list`, `requestLinkCode`, `redeemLinkCode`, `unlink`) and display names (`setDisplayName`, `findByName`). |
 | [`junjo.events`](/sdk/events) | The game stream: `subscribe` (resumable SSE with reconnect), `position`. |
+| [`junjo.permissions`](/sdk/permissions#permissionsconfig) | The game's permission settings: `config` (mode and context inheritance). Checks themselves are top-level `can` / `check` / `checkBatch`. |
 
 ## Top-level methods
 

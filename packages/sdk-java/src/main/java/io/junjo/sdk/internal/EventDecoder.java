@@ -114,6 +114,8 @@ public final class EventDecoder {
                     m, str(o, "userId"), str(o, "linkedUserId"), strList(o, "identities"));
             case IDENTITY_UNLINKED -> new JunjoEvent.IdentityUnlinked(
                     m, str(o, "userId"), str(o, "unlinkedUserId"), strList(o, "identities"));
+            case PERMISSIONS_CONFIG_UPDATED -> new JunjoEvent.PermissionsConfigUpdated(
+                    m, Wire.mode(o), Wire.contexts(o));
         };
     }
 

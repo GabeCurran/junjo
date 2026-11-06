@@ -38,6 +38,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "identity.linked",
   "identity.unlinked",
   "identity.updated",
+  "permissions.config.updated",
 ] as const;
 
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];

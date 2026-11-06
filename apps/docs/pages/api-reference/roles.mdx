@@ -463,12 +463,15 @@ One `role.parents.set` audit entry per non-noop write, with `payload: { roleId, 
 
 ## `GET /v1/groups/:id/role-graph`
 
-Everything needed to resolve checks for the group locally, in one read: the game's permission mode, the group's default role, and every role with its entries, parents and metadata. Roles are ordered by priority descending, then id descending.
+Everything needed to resolve checks for the group locally, in one read: the game's permission mode and context inheritance, the group's default role, and every role with its entries, parents and metadata. Roles are ordered by priority descending, then id descending.
 
 ```json
 {
   "groupId": "grp_network",
   "mode": "nodes",
+  "contexts": {
+    "world": { "inherit": { "pvpworld": ["world"] } }
+  },
   "defaultRoleId": "role_default",
   "roles": [
     {
@@ -488,7 +491,15 @@ Everything needed to resolve checks for the group locally, in one read: the game
 }
 ```
 
-Each element of `roles` is a full [`Role`](#wire-format).
+| Field | Type | Notes |
+|-------|------|-------|
+| `groupId` | string | The group. |
+| `mode` | `"exact"` \| `"nodes"` | The game's [permission mode](/api-reference/permissions#permission-modes). |
+| `contexts` | object | The game's [context inheritance](/api-reference/admin#permission-contexts), with folded values; `{}` when the game declares none. Game-wide, so every group's graph carries the same value. Servers that predate the field omit it; read it as `{}`. |
+| `defaultRoleId` | string \| null | The group's default role. |
+| `roles` | `Role[]` | Each element is a full [`Role`](#wire-format). |
+
+The response carries the `Junjo-Stream-Position` header (see [Snapshots and the stream](/api-reference/events#snapshots-and-the-stream)). A change to `mode` or `contexts` arrives on the game stream as `permissions.config.updated`; the game's own key can also read both alone with [`GET /v1/permissions/config`](/api-reference/permissions#get-v1permissionsconfig).
 
 Returns `404 not_found` for a missing, cross-game or soft-deleted group.
 

@@ -128,7 +128,9 @@ r.context();   // the deciding entry's context, or Context.GLOBAL
 
 `setEntries`, `clearPermissionOverride`, import rows, `checkBatch` and `QueuedWrite.overridePermission` / `clearPermissionOverride` take contexts too.
 
-The game's context inheritance (`permissions.contexts` in its config) is set with the admin API and is not readable with a game key, so give the mirror the same table:
+The game's context inheritance (`permissions.contexts` in its config) is set with the admin API and readable with the game's key: `permissions().config()` returns a `PermissionConfig(mode, contexts)`, and every `RoleGraph` carries the same `contexts()`. The mirror takes it from the server on its own: from the newest role graph it loaded, then live from `permissions.config.updated` events (which also reload the held graphs when the permission mode changes), and keeps it in the snapshot file. `contextInheritance()` is what checks resolve with, `serverContextInheritance()` what the server last sent.
+
+Only with a server whose role graphs do not carry the inheritance yet, give the mirror the same table as the game's config. It is an explicit override that wins over the server's value; `setContextInheritance(null)` removes it:
 
 ```java
 ContextInheritance worlds = ContextInheritance.builder()
@@ -219,7 +221,7 @@ A person may hold several linked ids. The mirror records each person's ids, so i
 
 `retainUntracked(Duration.ofHours(24))` keeps an untracked member's last loaded access, in memory and in the snapshot file, for that window after they were last tracked (`lastConnectedAt`). A player who returns within it, even after a restart while Junjo is unreachable, is answered from the retained access as soon as `track` is applied, and the access is reloaded as usual. Retained members are not tracked: they answer `UNKNOWN`, are not in `trackedMembers`, and stream events never reload them. One is dropped when it outlives the window, when a member event carries a newer version, when an identity event names the person, and on a full reload. Off by default.
 
-`checker.excludingRoles(Set.of("role_mod", "role_admin"))` returns a checker that answers as if the member did not hold those roles; overrides and the checker's context apply as before. Exclusion removes held roles only: an excluded role that is a parent of a role still held keeps applying through it, so exclude the child roles too.
+`checker.excludingRoles(Set.of("role_mod", "role_admin"))` returns a checker that answers as if the member did not hold those roles; overrides and the checker's context apply as before. Exclusion removes held roles only: an excluded role that is a parent of a role still held keeps applying through it, so exclude the child roles too. `checker.excludingOverrides()` answers as if the member had no personal overrides, with role entries, context, inheritance and the status gate unchanged; the two compose in either order.
 
 See the docs page for change kinds, the default-role option for non-members, `checker(userId, groupId)` and the stream health reads.
 

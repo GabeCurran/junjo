@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.junjo.sdk.JunjoException;
 import io.junjo.sdk.events.EventType;
 import io.junjo.sdk.events.JunjoEvent;
+import io.junjo.sdk.model.PermissionMode;
+import io.junjo.sdk.permissions.ContextInheritance;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -112,6 +114,23 @@ class SseAndDecoderTest {
                         "userId":"ns:u","changedUserId":"web:u","displayName":"Steve","changed":["displayName"]""")));
         assertEquals("web:u", i.changedUserId());
         assertEquals(List.of("displayName"), i.changed());
+    }
+
+    @Test
+    void decodesThePermissionConfigEvent() {
+        JunjoEvent.PermissionsConfigUpdated c = assertInstanceOf(JunjoEvent.PermissionsConfigUpdated.class,
+                EventDecoder.decode(event("permissions.config.updated", """
+                        "mode":"nodes","contexts":{"world":{"inherit":{"PvPWorld":["world"]}}}""")));
+        assertEquals(EventType.PERMISSIONS_CONFIG_UPDATED, c.type());
+        assertEquals(PermissionMode.NODES, c.mode());
+        assertEquals(ContextInheritance.builder().inherit("world", "pvpworld", "world").build(), c.contexts());
+        assertEquals("gm", c.meta().gameId());
+        JunjoEvent.PermissionsConfigUpdated none = assertInstanceOf(JunjoEvent.PermissionsConfigUpdated.class,
+                EventDecoder.decode(event("permissions.config.updated", "\"mode\":\"exact\",\"contexts\":{}")));
+        assertEquals(PermissionMode.EXACT, none.mode());
+        assertEquals(ContextInheritance.NONE, none.contexts());
+        assertEquals(JunjoException.INVALID_WIRE_DATA, assertThrows(JunjoException.class, () ->
+                EventDecoder.decode(event("permissions.config.updated", "\"contexts\":{}"))).code());
     }
 
     @Test

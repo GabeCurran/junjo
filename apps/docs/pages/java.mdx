@@ -184,7 +184,28 @@ junjo.permissions().checkBatch(List.of(
 
 ### Inheritance in the mirror
 
-A game can declare that one value inherits another's entries, in its config's [`permissions.contexts`](/api-reference/admin#permission-contexts). That config is set through the admin API and is **not readable with a game key**, so the mirror and the resolver take the same table from you:
+A game can declare that one value inherits another's entries, in its config's [`permissions.contexts`](/api-reference/admin#permission-contexts). The config is set through the admin API and is readable with the game's own key:
+
+```java
+PermissionConfig config = junjo.permissions().config().join();
+config.mode();       // PermissionMode.EXACT or NODES
+config.contexts();   // the ContextInheritance, values folded
+
+RoleGraph graph = junjo.roles().getGraph("grp_main").join().value();
+graph.contexts();    // the same inheritance, carried by every role graph
+PermissionResolver.compile(graph, graph.contexts()).check(access, "warp.spawn", Context.of("world", "pvpworld"));
+```
+
+The mirror needs no table from you. It takes the inheritance from the server: every role graph it loads carries it, so the newest load sets it, and a `permissions.config.updated` event on the game stream replaces it live. When that event also changes the permission mode, the mirror reloads the role graphs it holds. Each change of the inheritance checks resolve with is reported to `onChange` as a `ROLE_GRAPH` change with null ids, and checkers taken before it follow it. The snapshot file keeps the server's value, so a mirror restarted while the server is unreachable still answers with the right inheritance.
+
+```java
+GameMirror mirror = GameMirror.builder(junjo).group("grp_main").build();
+mirror.can(player, "grp_main", "warp.spawn", Context.of("world", "pvpworld"));
+mirror.contextInheritance();         // what checks resolve with
+mirror.serverContextInheritance();   // what the server last sent
+```
+
+With a server whose role graphs do not carry the inheritance yet, the mirror reads none, and you can give it the same table as the game's config. Such a table is an explicit override: it wins over whatever the server sends, so keep it identical to the game's config, or contextual answers can differ from `permissions().check`.
 
 ```java
 ContextInheritance worlds = ContextInheritance.builder()
@@ -193,13 +214,11 @@ ContextInheritance worlds = ContextInheritance.builder()
         .inherit("world", "cave_world_nether", "world_nether")
         .build();   // refuses a cycle, a chain over 16 steps and the other limits the server refuses
 
-GameMirror mirror = GameMirror.builder(junjo).group("grp_main").contextInheritance(worlds).build();
-mirror.can(player, "grp_main", "warp.spawn", Context.of("world", "pvpworld"));
-
-PermissionResolver.compile(graph, worlds).check(access, "warp.spawn", Context.of("world", "pvpworld"));
+GameMirror legacy = GameMirror.builder(junjo).group("grp_main").contextInheritance(worlds).build();
+legacy.setContextInheritance(next);   // replace the override; null follows the server again
 ```
 
-Keep it identical to the game's config, or contextual answers can differ from `permissions().check`. After the config changes, `mirror.setContextInheritance(next)` recompiles the loaded role graphs; the table is not saved in the snapshot file, so pass it to the builder on every start. `ContextInheritance.of(map)` reads the config's `{ key: { value: [parents] } }` shape.
+`ContextInheritance.of(map)` reads the config's `{ key: { value: [parents] } }` shape.
 
 ### Per-world checks on a Paper server
 
@@ -350,6 +369,7 @@ How it stays current, all on one applier thread in stream order:
 | `game.user.sanctioned`, `game.user.unsanctioned` | Update the sanction map, unless the event's `moderationVersion` is not newer than the known one. Ban and sanction versions are tracked apart, because their snapshots are read at different moments. |
 | `identity.linked`, `identity.unlinked` | Record the person's ids, and reload the bans, sanctions and tracked memberships of every id involved. |
 | `identity.updated` | Reload the tracked memberships of the person, which carry its display name. |
+| `permissions.config.updated` | Apply the event's context inheritance to every held role graph, and reload the graphs when the event changes the permission mode. |
 | `410` on reconnect | Reload everything at the new position. |
 
 What else to know:
@@ -358,13 +378,14 @@ What else to know:
 - **Answers.** `UNKNOWN` (or an empty `Optional`) means the state needed is not loaded yet. Sanction and ban expiry is judged against the mirror's clock, because the server emits nothing when one lapses.
 - **Changes.** `onChange` receives a `MirrorChange(kind, userId, groupId)` after each change is readable: `ACCESS`, `BAN`, `SANCTION`, `ROLE_GRAPH` or `DISPLAY_NAME`. A full load reports one change per kind with null ids. It runs on the applier thread and must not block; a throwing listener is logged and ignored.
 - **Outages.** A failed load keeps the previous state, reports to `onError` and retries with backoff. That includes `start()`: its future completes once the mirror is ready and never fails because the server is down.
-- **Snapshot file.** With `snapshotFile`, the mirror saves its state (position, role graphs, bans, sanctions, tracked members, resolved ids) at most every `snapshotInterval` (30 s) and on `close()`, using a temporary file, `fsync`, an atomic move and a CRC32 checksum. At start it loads the file and answers from it at once, then resumes the game stream from the saved position. **Data loaded from the file may be stale until the stream catches up.** When the saved position has expired, the mirror reloads everything from the server; an unreadable file is ignored and reported.
+- **Snapshot file.** With `snapshotFile`, the mirror saves its state (position, role graphs, bans, sanctions, tracked members, resolved ids, the server's context inheritance) at most every `snapshotInterval` (30 s) and on `close()`, using a temporary file, `fsync`, an atomic move and a CRC32 checksum. At start it loads the file and answers from it at once, then resumes the game stream from the saved position. **Data loaded from the file may be stale until the stream catches up.** When the saved position has expired, the mirror reloads everything from the server; an unreadable file is ignored and reported.
 - **Batched member loads.** `track` calls issued close together are loaded with one `getAccessMany` request per group (up to 100 ids). Member loads have their own timeout, `memberLoadTimeout` (5 s), separate from `loadTimeout` (60 s) for the bulk loads.
 - **Non-members.** A user with no membership in a group answers `source=none`, as `permissions().check` does. `defaultRoleForNonMembers(true)` checks such users against the group's default role instead; that is off by default because it then differs from the server's answer.
 - **Retained members.** `retainUntracked(window)` keeps an untracked member's last loaded access, in memory and in the snapshot file, for that window after they were last tracked; each entry records `lastConnectedAt`. Tracking the member again within the window answers from the retained access at once, even when the server is unreachable, and the access is reloaded as for any track; when the reload succeeds the fresh access replaces it and is reported as an `ACCESS` change. The `track` future completes once that reload has succeeded or failed (a failure goes to `onError` and is retried). A retained member is not tracked: its reads answer `UNKNOWN`, it is not in `trackedMembers`, and stream events never reload it. An entry is dropped when it outlives the window (pruned at start and periodically), when a member event carries a newer `memberVersion` or none, when an identity event names one of the person's ids, when its group is deleted, and on a full reload after an expired position. Off by default; snapshot files written without retained members still load.
 - **Repeated checks.** `mirror.checker(userId, groupId)` returns a `MemberChecker` that gives the same answers as `check` but reuses the member's compiled overrides; `grantedKeys()` lists the keys that resolve to allowed. `mirror.checker(userId, groupId, context)` binds the checker to a [context](#contexts).
 - **Ignoring roles.** `checker.excludingRoles(roleIds)` returns a checker for the same member and context that answers as if the member did not hold those roles, for example to stop staff roles counting while Junjo has been unreachable for a long time. Exclusion removes the roles from the member's held roles and nothing else, so the answer is what `permissions().check` would give with those roles unassigned: overrides and contexts apply as before, and an excluded role that is a parent of a role still held keeps applying through that role. Exclude the child roles too to cut it off. Exclusions accumulate when chained; `excludedRoles()` lists them.
-- **Contexts.** `check`, `can` and `checker` take an optional `Context`; without one only global entries apply. Contextual entries and overrides reload with their role graph and member access, on `role.updated` and `member.updated`. The inheritance comes from `contextInheritance(...)` (see [Inheritance in the mirror](#inheritance-in-the-mirror)).
+- **Ignoring overrides.** `checker.excludingOverrides()` returns a checker for the same member and context that answers as if the member had no personal overrides, global or contextual. Role entries, role parents, the context and its inheritance apply as before, and so does the status gate: a member who is not active still answers `source=none`. It composes with `excludingRoles` in either order, the checker it came from is unchanged, and `grantedKeys()` leaves out the keys only the overrides named; `excludesOverrides()` tells whether a checker ignores them.
+- **Contexts.** `check`, `can` and `checker` take an optional `Context`; without one only global entries apply. Contextual entries and overrides reload with their role graph and member access, on `role.updated` and `member.updated`. The inheritance comes from the server, unless `contextInheritance(...)` overrides it (see [Inheritance in the mirror](#inheritance-in-the-mirror)).
 - **Reads.** `bans()`, `sanctions(userId)`, `sanctionsAll()`, `trackedMembers(groupId)`, `access(userId, groupId)` (metadata included), and stream health: `streamState()`, `isLive()`, `lastEventAt()`, `position()`.
 
 ## WriteQueue

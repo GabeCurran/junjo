@@ -57,6 +57,7 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 | Inherited check (`inherit`, walks parents) | Full | Full, hook (`useCan(..., { inherit: true })`) | Full | Full (`CheckOptions::inherit`) | Full (`bInherit`) |
 | Batched check (one round-trip) | Full (`checkBatch`, auto-splits past 100) | Full, hook (`useCanMany`) | Full (`checkBatch`) | Full (`check_batch`, +`_async`) | Full (`CheckPermissionBatch`) |
 | Client-side answer cache | Full (5s TTL, opt-out, stale-on-429) | Full (provider-scoped, manual invalidation) | No | No | No |
+| Permission config read (mode + context inheritance) | Full (`permissions.config`) | Full, client | No | No | No |
 
 ## Invitations
 

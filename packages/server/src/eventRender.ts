@@ -40,6 +40,7 @@ const USER_ID_PATHS: Record<JunjoEventType, readonly (readonly string[])[]> = {
   "identity.linked": [["userId"]],
   "identity.unlinked": [["userId"]],
   "identity.updated": [["userId"]],
+  "permissions.config.updated": [],
 };
 
 // Emitted id -> every id of the same person in the event's game,

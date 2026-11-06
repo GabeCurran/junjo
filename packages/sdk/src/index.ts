@@ -23,6 +23,7 @@ import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
 import { PermissionCache, type PermissionCacheOptions } from "./permissionCache.js";
 import { appendContextParams, hasContext, wireContext } from "./permissionContext.js";
+import { PermissionsApi } from "./permissions.js";
 import { RolesApi } from "./roles.js";
 import { SanctionsApi } from "./sanctions.js";
 import { WebhooksApi } from "./webhooks.js";
@@ -205,8 +206,8 @@ export const CHECK_BATCH_MAX_ENTRIES = 100;
  * Top-level Junjo API client. Construct one per game with a per-game
  * API key (or `proxy: true` in browser apps) and reach every surface
  * through its namespaces: `groups`, `roles`, `members`, `invitations`,
- * `audit`, `webhooks`, `friends`, `bans`, `sanctions`, `identities`, and
- * `events`.
+ * `audit`, `webhooks`, `friends`, `bans`, `sanctions`, `identities`,
+ * `events`, and `permissions`.
  */
 export class Junjo {
   readonly groups: GroupsApi;
@@ -220,6 +221,7 @@ export class Junjo {
   readonly sanctions: SanctionsApi;
   readonly identities: IdentitiesApi;
   readonly events: GameEventsApi;
+  readonly permissions: PermissionsApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
   private readonly permissionCache: PermissionCache;
@@ -272,6 +274,7 @@ export class Junjo {
     this.sanctions = new SanctionsApi(this.http);
     this.identities = new IdentitiesApi(this.http);
     this.events = new GameEventsApi(this.http);
+    this.permissions = new PermissionsApi(this.http);
     this.authAdapter = config.authAdapter;
     this.permissionCache = new PermissionCache(config.permissionCache);
   }
@@ -557,6 +560,7 @@ export {
 } from "./permissionCache.js";
 export type { PermissionCacheOptions } from "./permissionCache.js";
 export { permissionContextKey } from "./permissionContext.js";
+export { PermissionsApi } from "./permissions.js";
 export { RolesApi } from "./roles.js";
 export type { RoleList } from "./roles.js";
 export { SanctionsApi } from "./sanctions.js";
@@ -593,6 +597,7 @@ export type {
   Ban,
   DisplayNameMatch,
   GameUserSanctionedEvent,
+  GameConfigPermissionContext,
   GameUserUnsanctionedEvent,
   Group,
   GroupId,
@@ -620,11 +625,15 @@ export type {
   PermissionCheckBatchResult,
   PermissionCheckRequest,
   PermissionCheckResult,
+  PermissionConfig,
   PermissionContext,
   PermissionEntry,
   PermissionKey,
+  PermissionMode,
   PermissionSource,
+  PermissionsConfigUpdatedEvent,
   Role,
+  RoleGraph,
   Sanction,
   SanctionHistoryEntry,
   UserId,

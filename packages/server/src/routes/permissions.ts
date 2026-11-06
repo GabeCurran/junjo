@@ -2,6 +2,7 @@ import type {
   GameConfigPermissions,
   GroupId,
   PermissionCheckResult,
+  PermissionConfig,
   PermissionContext,
   PermissionMode,
 } from "@junjo.io/shared";
@@ -25,6 +26,7 @@ import {
   resolveMemberPermission,
 } from "../permissionResolve.js";
 import { assertUserIdsWellFormed } from "../userIdFormat.js";
+import { stampStreamPosition } from "./gameEvents.js";
 import { MAX_PARENT_DEPTH } from "./groups.schema.js";
 import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.schema.js";
 
@@ -562,5 +564,18 @@ export function checkPermissionBatchHandler(
     }
 
     return c.json({ results });
+  };
+}
+
+// GET /v1/permissions/config. The game's permission mode and context
+// inheritance, resolved against the defaults. The stream position
+// header is read before the config, so a follower that resumes the
+// game stream from it sees every later change.
+export function getPermissionConfigHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
+    const { mode, contexts } = await loadPermissionConfig(prisma, gameId);
+    return c.json<PermissionConfig>({ mode, contexts });
   };
 }

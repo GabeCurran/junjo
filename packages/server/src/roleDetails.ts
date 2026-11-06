@@ -1,6 +1,10 @@
-import type { PermissionEntry, PermissionMode } from "@junjo.io/shared";
+import type {
+  GameConfigPermissionContext,
+  PermissionEntry,
+  PermissionMode,
+} from "@junjo.io/shared";
 import type { Group, Role } from "@prisma/client";
-import { loadPermissionMode } from "./config/loadGameConfig.js";
+import { loadPermissionConfig } from "./config/loadGameConfig.js";
 import type { Db } from "./db.js";
 import { rowContextField } from "./permissionContext.js";
 
@@ -90,21 +94,23 @@ export function serializeRole(role: Role, detail: RoleDetail = EMPTY_ROLE_DETAIL
 export interface WireRoleGraph {
   groupId: string;
   mode: PermissionMode;
+  contexts: Record<string, GameConfigPermissionContext>;
   defaultRoleId: string | null;
   roles: WireRole[];
 }
 
 // Every role in a group with its entries, parents and metadata, plus
 // what a local resolver needs alongside them: the game's permission
-// mode and the group's default role. Roles are ordered by priority
-// descending, then id descending, like the role list.
+// mode and context inheritance, and the group's default role. Roles are
+// ordered by priority descending, then id descending, like the role
+// list.
 export async function loadRoleGraph(
   client: Db,
   gameId: string,
   group: Pick<Group, "id" | "defaultRoleId">,
 ): Promise<WireRoleGraph> {
-  const [mode, roles] = await Promise.all([
-    loadPermissionMode(client, gameId),
+  const [{ mode, contexts }, roles] = await Promise.all([
+    loadPermissionConfig(client, gameId),
     client.role.findMany({
       where: { groupId: group.id },
       orderBy: [{ priority: "desc" }, { id: "desc" }],
@@ -117,6 +123,7 @@ export async function loadRoleGraph(
   return {
     groupId: group.id,
     mode,
+    contexts,
     defaultRoleId: group.defaultRoleId,
     roles: roles.map((role) => serializeRole(role, details.get(role.id))),
   };

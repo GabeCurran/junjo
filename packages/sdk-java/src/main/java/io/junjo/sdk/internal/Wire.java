@@ -33,6 +33,7 @@ import io.junjo.sdk.model.MemberPermissionOverride;
 import io.junjo.sdk.model.MemberStatus;
 import io.junjo.sdk.model.Moderation;
 import io.junjo.sdk.model.Page;
+import io.junjo.sdk.model.PermissionConfig;
 import io.junjo.sdk.model.PermissionCheckResult;
 import io.junjo.sdk.model.PermissionEntry;
 import io.junjo.sdk.model.PermissionMode;
@@ -41,6 +42,7 @@ import io.junjo.sdk.model.Role;
 import io.junjo.sdk.model.RoleGraph;
 import io.junjo.sdk.model.Sanction;
 import io.junjo.sdk.model.SanctionHistoryEntry;
+import io.junjo.sdk.permissions.ContextInheritance;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -139,16 +141,66 @@ public final class Wire {
                 instant(o, "createdAt"));
     }
 
-    /** Decodes a role graph. */
+    /**
+     * Decodes a role graph. An absent {@code contexts} field, as older servers send, reads as
+     * {@link ContextInheritance#NONE}.
+     */
     public static RoleGraph roleGraph(JsonObject o) {
-        PermissionMode mode;
+        return new RoleGraph(str(o, "groupId"), mode(o), optStr(o, "defaultRoleId"),
+                list(arr(o, "roles"), "roles", Wire::role), contexts(o));
+    }
+
+    /** Decodes a game's permission config. */
+    public static PermissionConfig permissionConfig(JsonObject o) {
+        return new PermissionConfig(mode(o), contexts(o));
+    }
+
+    /** Decodes the required {@code mode} field. */
+    public static PermissionMode mode(JsonObject o) {
         try {
-            mode = PermissionMode.fromWire(str(o, "mode"));
+            return PermissionMode.fromWire(str(o, "mode"));
         } catch (IllegalArgumentException e) {
             throw Json.wire("unknown permission mode '" + optStr(o, "mode") + "'");
         }
-        return new RoleGraph(
-                str(o, "groupId"), mode, optStr(o, "defaultRoleId"), list(arr(o, "roles"), "roles", Wire::role));
+    }
+
+    /**
+     * Decodes an optional {@code contexts} field: context key to {@code { inherit: { value:
+     * [parents] } }}. Absent, null or empty is {@link ContextInheritance#NONE}; a key without an
+     * {@code inherit} map declares nothing. Fields beside {@code inherit} are ignored. A table the
+     * server's config rules refuse is malformed wire data.
+     */
+    public static ContextInheritance contexts(JsonObject o) {
+        JsonObject c = optObj(o, "contexts");
+        if (c == null || c.isEmpty()) return ContextInheritance.NONE;
+        Map<String, Map<String, List<String>>> table = new LinkedHashMap<>();
+        for (String key : c.keySet()) {
+            JsonObject entry = optObj(c, key);
+            JsonObject inherit = entry == null ? null : optObj(entry, "inherit");
+            Map<String, List<String>> values = new LinkedHashMap<>();
+            if (inherit != null) {
+                for (String value : inherit.keySet()) values.put(value, strList(inherit, value));
+            }
+            if (!values.isEmpty()) table.put(key, values);
+        }
+        try {
+            return ContextInheritance.of(table);
+        } catch (IllegalArgumentException e) {
+            throw Json.wire("invalid context inheritance: " + e.getMessage());
+        }
+    }
+
+    /** Encodes an inheritance in the wire shape {@link #contexts(JsonObject)} reads. */
+    public static JsonObject contextsJson(ContextInheritance inheritance) {
+        JsonObject out = new JsonObject();
+        inheritance.inherit().forEach((key, values) -> {
+            JsonObject inherit = new JsonObject();
+            values.forEach((value, parents) -> inherit.add(value, Json.stringArray(parents)));
+            JsonObject entry = new JsonObject();
+            entry.add("inherit", inherit);
+            out.add(key, entry);
+        });
+        return out;
     }
 
     /** Decodes a permission check result. */
