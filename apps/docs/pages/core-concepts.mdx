@@ -24,6 +24,17 @@ Internally, each external id maps through an **ExternalIdentity** row (unique pe
 
 Because identity is per-game unique but anchored on a shared JunjoUser, the same person can be linked across your games; the [friends network scope](#friends) is built on that.
 
+## Identity: linked ids and namespaces
+
+A JunjoUser is a **person**. A person can hold several external ids in one game, for example a game client id and a website login, so that every one of them resolves to the same memberships, roles, friends and bans. Ids are joined with a short **link code**: one id requests the code, the person enters it on the other surface, and that surface's backend redeems it. An id can later be unlinked, leaving everything with the remaining ids.
+
+An id's **namespace** is the text before its first `:` (`game:6f1c...` is in `game`, `web:user_42` in `web`). Namespaces matter in two places only:
+
+- **Rendering.** API keys and webhook endpoints can list preferred namespaces. Wherever Junjo names a person, it shows the earliest-linked id in the first preferred namespace the person has an id in, otherwise the person's earliest-linked id in any namespace. Routes therefore do not echo the id a request used, and a caller must handle ids outside its own namespaces.
+- **Canonical formats.** A game can declare that every id in a namespace is, say, a lowercase hyphenated UUID; ids that break the format are rejected everywhere, so one account cannot be spelled two ways.
+
+People with a single id (everyone until a link) see no change. See the [identity reference](/api-reference/identity).
+
 ## Groups
 
 A **Group** is the container: guild, party, faction, clan, whatever your game calls it.
@@ -94,7 +105,7 @@ Non-members, and members whose status is not `active`, resolve to denied with `s
 An **Invitation** is a single-use code (16 hex chars) into one group, in two flavors:
 
 - **Open** (`targetUserId` null): anyone holding the code may redeem it. This backs shareable links (`inviteByLink` / `inviteByCode`).
-- **Direct** (`targetUserId` set): pinned to one user; anyone else redeeming it gets `permission_denied`.
+- **Direct** (`targetUserId` set): pinned to one person; any of that person's linked ids may redeem it, anyone else gets `permission_denied`.
 
 Invitations never expire unless you pass `expiresIn` (`"30m"`, `"7d"`). Accepting consumes the code atomically (a concurrent double-accept loses with `410 invitation_used`); declining also burns it. Ban checks run before redemption, so a banned user cannot enter through an invitation. The preview route (`GET /v1/invitations/:code`) is deliberately unauthenticated so your invite landing page needs no key. Bulk invite accepts up to 1000 rows per request; see [Limits](/limits#bulk-invite).
 
@@ -125,7 +136,7 @@ Every set and lift, at either scope, appends a **BanHistory** row (`scope`, `kin
 
 ## Audit log
 
-Every mutating action writes an **AuditEntry**: `action` (a closed list of 32 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
+Every mutating action writes an **AuditEntry**: `action` (a closed list of 34 values like `group.created`, `member.kicked`, `permission.override.set`), the actor's user id where known, the API key whose request wrote it, a `targetId`, and a JSON `payload` with the action-specific details. Entries are append-only and group-scoped where applicable (game-wide ban and identity actions have no `groupId`). The log is queryable per group with a `before` cursor that accepts either an entry id or a timestamp; see [Pagination](/pagination).
 
 ## Events: SSE and webhooks
 

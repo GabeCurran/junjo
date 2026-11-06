@@ -72,7 +72,7 @@ The [browser guide](/browser) shows both in a working proxy.
 
 ## Key rotation
 
-A game can hold many `jk_` keys at once, so rotation is overlap, not downtime: mint a new key (`POST /v1/admin/games/:gameId/api-keys`, admin token required; also available in the dashboard), deploy it, then revoke the old one (`POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`). Revocation is immediate; revoked keys answer `401 invalid_api_key`. The secret half of a key is scrypt-hashed at rest and returned exactly once at mint time; if a key leaks, rotate, do not try to recover it.
+A game can hold many `jk_` keys at once, so rotation is overlap, not downtime: mint a new key (`POST /v1/admin/games/:gameId/api-keys`, admin token required; also available in the dashboard), deploy it, then revoke the old one (`POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`). Revocation is immediate; revoked keys answer `401 invalid_api_key`. A key's `name` and `preferredNamespaces` belong to that key, so give the replacement the same values (both are body fields on mint), or its responses will name linked users differently. The secret half of a key is scrypt-hashed at rest and returned exactly once at mint time; if a key leaks, rotate, do not try to recover it.
 
 ## Webhook secrets
 

@@ -1,0 +1,126 @@
+# useIdentities
+
+Returns every id held by the person a user id belongs to, earliest-linked first. Fetch-on-mount and refetch-driven (no SSE subscription); `identity.linked` / `identity.unlinked` fire as [webhooks](/api-reference/webhooks) only. See [`junjo.identities`](/sdk/identities) for what linking does.
+
+```tsx
+import { useIdentities, useJunjo } from "@junjo.io/react";
+import type { UserId } from "@junjo.io/sdk";
+
+function LinkedAccounts({ userId }: { userId: UserId }) {
+  const junjo = useJunjo();
+  const { identities, loading, error, refetch } = useIdentities(userId);
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  return (
+    <ul>
+      {identities.map((i) => (
+        <li key={i.userId}>
+          {i.namespace ?? "(no namespace)"}: {i.userId}, linked {i.linkedAt.toLocaleDateString()}
+          {identities.length > 1 ? (
+            <button
+              type="button"
+              onClick={async () => {
+                await junjo.identities.unlink(i.userId);
+                await refetch();
+              }}
+            >
+              Unlink
+            </button>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Signature
+
+```ts
+function useIdentities(userId: UserId): UseIdentitiesResult;
+
+interface UseIdentitiesResult {
+  identities: LinkedIdentity[];
+  loading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+
+interface LinkedIdentity {
+  userId: UserId;
+  namespace: string | null;
+  linkedAt: Date;
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `identities` | The person's ids, earliest-linked first. `[]` until the first response lands, and `[]` for an id the game has never seen. |
+| `loading` | `true` from mount until the first response (success or error), and again while a `refetch` is in flight. |
+| `error` | The most recent fetch error (for example `invalid_user_id` when the id does not match its namespace's declared format). Cleared when the next fetch starts. |
+| `refetch` | Re-runs the fetch. |
+
+Changing `userId` refetches. The shared fetch engine (argument-change refetches, unstable `refetch` identity, overlapping-refetch behavior) is documented under [shared fetch semantics](/react/use-friends#shared-fetch-semantics).
+
+## Mutations
+
+`junjo.identities.requestLinkCode(userId)`, `junjo.identities.redeemLinkCode({ code, userId })`, and `junjo.identities.unlink(userId)` are the write surface; call `refetch` after a link or unlink. Pair them with [`useMutation`](/react/use-mutation) for pending and error state:
+
+```tsx
+import { useIdentities, useJunjo, useMutation } from "@junjo.io/react";
+import { JunjoError } from "@junjo.io/sdk";
+import type { UserId } from "@junjo.io/sdk";
+import { useState } from "react";
+
+function RedeemCode({ userId }: { userId: UserId }) {
+  const junjo = useJunjo();
+  const { identities, refetch } = useIdentities(userId);
+  const [code, setCode] = useState("");
+  const redeem = useMutation({
+    mutationFn: (typed: string) => junjo.identities.redeemLinkCode({ code: typed, userId }),
+    onSuccess: () => refetch(),
+  });
+  const expired = redeem.error instanceof JunjoError && redeem.error.code === "link_code_invalid";
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        redeem.mutate(code);
+      }}
+    >
+      <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="ABCD-EFGH" />
+      <button type="submit">Link</button>
+      {expired ? <p>That code is invalid or expired. Request a new one in game.</p> : null}
+      <p>{identities.length} linked ids</p>
+    </form>
+  );
+}
+```
+
+A link can move either id into the other side's person (the side that holds state survives), and an unlink leaves the departing id with an empty person. Screens that render data keyed by either id, such as [`useFriends`](/react/use-friends) or [`useMembers`](/react/use-members), should refetch too.
+
+## Errors
+
+The hook never throws; errors land in `result.error`. Called outside a `<JunjoProvider>`, it throws synchronously with the same descriptive message as `useJunjo`.
+
+## Testing
+
+Stub `junjo.identities.list` directly on the instance:
+
+```tsx
+import { Junjo } from "@junjo.io/sdk";
+import { vi } from "vitest";
+
+const client = new Junjo({
+  apiKey: "test_prefix.test_secret",
+  fetch: vi.fn() as unknown as typeof fetch,
+});
+Object.assign(client.identities, {
+  list: vi.fn().mockResolvedValue([]),
+});
+```
+
+### See also
+
+- [`junjo.identities`](/sdk/identities): the underlying SDK namespace.
+- [Identity API reference](/api-reference/identity): the rendering rule and merge rules.

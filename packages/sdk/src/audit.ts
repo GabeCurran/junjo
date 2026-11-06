@@ -14,6 +14,8 @@ export interface WireAuditEntry {
   id: string;
   groupId: string;
   actorUserId: string | null;
+  // Absent from servers that predate API key attribution.
+  apiKey?: { id: string; name: string | null; prefix: string } | null;
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;
@@ -25,6 +27,7 @@ export function deserializeAuditEntry(w: WireAuditEntry): AuditEntry {
     id: w.id as AuditEntryId,
     groupId: w.groupId as GroupId,
     actorUserId: w.actorUserId === null ? null : (w.actorUserId as UserId),
+    apiKey: w.apiKey ? { id: w.apiKey.id, name: w.apiKey.name, prefix: w.apiKey.prefix } : null,
     action: w.action as AuditAction,
     targetId: w.targetId,
     payload: w.payload,

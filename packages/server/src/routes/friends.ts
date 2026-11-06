@@ -36,7 +36,7 @@ import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { findJunjoUserId, findOrCreateJunjoUser, renderUserIds } from "../identity.js";
 import { isUniqueViolation, retryOnSerializationFailure } from "../prismaErrors.js";
 import {
   addBlockBody,
@@ -45,7 +45,6 @@ import {
   listFriendsQuery,
   sendFriendRequestBody,
 } from "./friends.schema.js";
-import { batchLoadExternalUserIds } from "./members.js";
 import { canViewFriendsList } from "./visibility.js";
 
 // =====================================================================
@@ -138,7 +137,23 @@ async function externalsForRows(
     ids.add(r.targetJunjoUserId);
   }
   if (ids.size === 0) return new Map();
-  return batchLoadExternalUserIds(prisma, gameId, [...ids]);
+  return renderUserIds(prisma, gameId, [...ids]);
+}
+
+// Rendered ids for parties a handler just resolved, falling back to the
+// requested id for anyone who no longer has an id in the game.
+async function renderParties(
+  prisma: PrismaClient,
+  gameId: string,
+  parties: [junjoUserId: string, requestedId: string][],
+): Promise<Map<string, string>> {
+  const shown = await renderUserIds(
+    prisma,
+    gameId,
+    parties.map(([jid]) => jid),
+  );
+  for (const [jid, requested] of parties) if (!shown.has(jid)) shown.set(jid, requested);
+  return shown;
 }
 
 // Scope-aware lookups: under scope="network" the friend / pending /
@@ -238,6 +253,10 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
     // / leave / ban / kick auto-vivify on first reference.
     const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
     const targetJid = await findOrCreateJunjoUser(prisma, gameId, targetJunjoUserId);
+    // Two different ids can name one person once ids are linked.
+    if (actorJid === targetJid) {
+      throw Errors.badRequest("cannot send a friend request to yourself");
+    }
 
     // Block guard, scope-aware. A block in any sibling game in the
     // network silently rejects the request (404).
@@ -312,7 +331,7 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
           throw err;
         });
       publishStagedEvents(hub, event);
-      const externals = new Map<string, string>([
+      const externals = await renderParties(prisma, gameId, [
         [actorJid, userId],
         [targetJid, targetJunjoUserId],
       ]);
@@ -379,7 +398,7 @@ export function sendFriendRequestHandler(prisma: PrismaClient, hub: EventHub): H
         throw err;
       });
     publishStagedEvents(hub, event);
-    const externals = new Map<string, string>([
+    const externals = await renderParties(prisma, gameId, [
       [actorJid, userId],
       [targetJid, targetJunjoUserId],
     ]);
@@ -518,7 +537,7 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
         // ids for the wire response and the staged event. Looks up
         // mappings in the request's originating game (not necessarily the
         // calling game; matters under scope=network).
-        const loadedExternals = await batchLoadExternalUserIds(tx, request.gameId, [
+        const loadedExternals = await renderUserIds(tx, request.gameId, [
           request.actorJunjoUserId,
           request.targetJunjoUserId,
         ]);
@@ -590,7 +609,7 @@ export function declineFriendRequestHandler(prisma: PrismaClient, hub: EventHub)
 
     const event = await prisma.$transaction(async (tx) => {
       const request = await deletePendingRequest(tx, visibleGameIds, id);
-      const externals = await batchLoadExternalUserIds(tx, request.gameId, [
+      const externals = await renderUserIds(tx, request.gameId, [
         request.actorJunjoUserId,
         request.targetJunjoUserId,
       ]);
@@ -621,7 +640,7 @@ export function cancelFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
 
     const event = await prisma.$transaction(async (tx) => {
       const request = await deletePendingRequest(tx, visibleGameIds, id);
-      const externals = await batchLoadExternalUserIds(tx, request.gameId, [
+      const externals = await renderUserIds(tx, request.gameId, [
         request.actorJunjoUserId,
         request.targetJunjoUserId,
       ]);
@@ -955,7 +974,9 @@ export function addBlockHandler(prisma: PrismaClient, hub: EventHub): Handler {
 
     const actorJid = await findOrCreateJunjoUser(prisma, gameId, userId);
     const targetJid = await findOrCreateJunjoUser(prisma, gameId, targetJunjoUserId);
-    const externals = new Map<string, string>([
+    // Two different ids can name one person once ids are linked.
+    if (actorJid === targetJid) throw Errors.badRequest("cannot block yourself");
+    const externals = await renderParties(prisma, gameId, [
       [actorJid, userId],
       [targetJid, targetJunjoUserId],
     ]);

@@ -8,6 +8,7 @@ export default {
   "use-invitations": "useInvitations",
   "use-roles": "useRoles",
   "use-bans": "useBans",
+  "use-identities": "useIdentities",
   "use-audit-log": "useAuditLog",
   "use-friends": "useFriends",
   "use-friend-requests": "useFriendRequests",

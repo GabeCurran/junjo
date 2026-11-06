@@ -21,8 +21,7 @@ import type { Handler } from "hono";
 import { z } from "zod";
 import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
-import { findJunjoUserId } from "../identity.js";
-import { batchLoadExternalUserIds } from "./members.js";
+import { findJunjoUserId, renderUserIds } from "../identity.js";
 
 // =====================================================================
 // Wire shape
@@ -139,7 +138,7 @@ export function listFriendSuggestionsHandler(prisma: PrismaClient): Handler {
       for (const m of r.sample_mutual_ids ?? []) allJids.add(m);
     }
     const externals =
-      allJids.size > 0 ? await batchLoadExternalUserIds(prisma, gameId, [...allJids]) : new Map();
+      allJids.size > 0 ? await renderUserIds(prisma, gameId, [...allJids]) : new Map();
     const ext = (j: string): string => externals.get(j) ?? j;
 
     const items: WireFriendSuggestion[] = rows.map((r) => ({

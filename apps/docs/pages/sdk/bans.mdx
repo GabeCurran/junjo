@@ -52,7 +52,10 @@ existing row. Replacing an expired ban with a fresh one writes a new
 row with the supplied fields.
 
 Fires `game.user.banned` (webhook only; no `groupId`, not delivered
-over SSE).
+over SSE). The event carries `userId`, the banned person's external id
+(rendered for each endpoint's [preferred namespaces](/sdk/webhooks#preferrednamespaces)),
+alongside the internal `junjoUserId`. `game.user.unbanned` carries the
+same two fields.
 
 ## `remove(userId, opts?)`
 

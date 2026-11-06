@@ -97,6 +97,16 @@ Column notes: **React** wraps the TypeScript client, so "Full, client" means the
 |---|---|---|---|---|---|
 | Group audit list (`before` boundary, action filter) | Full | Full, hook (`useAuditLog`, `fetchMore`) | Full | Full | Native-only |
 
+## Identity
+
+| Operation | TS | React | Roblox | C++ | UE BP |
+|---|---|---|---|---|---|
+| List a person's linked ids | Full | Full, hook (`useIdentities`, refetch-driven) | No | No | No |
+| Request / redeem link code | Full | Full, client | No | No | No |
+| Unlink | Full | Full, client | No | No | No |
+
+Identity linking ships in the TypeScript SDK and React first (`useIdentities` for the read, mutations through the client); C++, Unreal and Roblox bindings follow later, and until then the [HTTP routes](/api-reference/identity) are the way in from those platforms. Namespace preferences are applied by the server (set on the API key), so every SDK already receives rendered ids.
+
 ## Webhooks
 
 | Operation | TS | React | Roblox | C++ | UE BP |

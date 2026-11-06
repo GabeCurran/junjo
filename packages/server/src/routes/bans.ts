@@ -1,10 +1,10 @@
-import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent } from "@junjo.io/shared";
+import type { GameId, GameUserBannedEvent, GameUserUnbannedEvent, UserId } from "@junjo.io/shared";
 import type { BanHistory, GameBan, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import { findJunjoUserId, findOrCreateJunjoUser, renderUserIds } from "../identity.js";
 import { retryOnUniqueViolation } from "../prismaErrors.js";
 import {
   createGameBanBody,
@@ -12,7 +12,6 @@ import {
   listBanHistoryQuery,
   listGameBansQuery,
 } from "./bans.schema.js";
-import { batchLoadExternalUserIds } from "./members.js";
 
 export interface WireGameBan {
   id: string;
@@ -179,6 +178,7 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
           type: "game.user.banned",
           gameId: gameId as GameId,
           junjoUserId,
+          userId: userId as UserId,
           reason: reasonValue,
           expiresAt: expiresAtValue,
         });
@@ -187,7 +187,19 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     );
 
     publishStagedEvents(hub, ban.event);
-    return c.json(serializeGameBan(ban.ban, userId, actorExternalId), 201);
+    const shown = await renderUserIds(
+      prisma,
+      gameId,
+      actorJunjoUserId ? [junjoUserId, actorJunjoUserId] : [junjoUserId],
+    );
+    return c.json(
+      serializeGameBan(
+        ban.ban,
+        shown.get(junjoUserId) ?? userId,
+        actorJunjoUserId ? (shown.get(actorJunjoUserId) ?? actorExternalId) : null,
+      ),
+      201,
+    );
   });
 
   // DELETE /v1/bans/:userId
@@ -254,6 +266,7 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
         type: "game.user.unbanned",
         gameId: gameId as GameId,
         junjoUserId,
+        userId: userId as UserId,
       });
     });
 
@@ -327,7 +340,7 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
       junjoUserIds.add(row.junjoUserId);
       if (row.bannedByUserId) junjoUserIds.add(row.bannedByUserId);
     }
-    const externalMap = await batchLoadExternalUserIds(prisma, gameId, [...junjoUserIds]);
+    const externalMap = await renderUserIds(prisma, gameId, [...junjoUserIds]);
 
     return c.json({
       items: sliced.map((row) => {
@@ -364,12 +377,13 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!ban) throw Errors.notFound("ban");
     const isActive = ban.expiresAt === null || ban.expiresAt > new Date();
     if (!isActive) throw Errors.notFound("ban");
-    let actorExt: string | null = null;
-    if (ban.bannedByUserId) {
-      const map = await batchLoadExternalUserIds(prisma, gameId, [ban.bannedByUserId]);
-      actorExt = map.get(ban.bannedByUserId) ?? null;
-    }
-    return c.json(serializeGameBan(ban, userId, actorExt));
+    const shown = await renderUserIds(
+      prisma,
+      gameId,
+      ban.bannedByUserId ? [junjoUserId, ban.bannedByUserId] : [junjoUserId],
+    );
+    const actorExt = ban.bannedByUserId ? (shown.get(ban.bannedByUserId) ?? null) : null;
+    return c.json(serializeGameBan(ban, shown.get(junjoUserId) ?? userId, actorExt));
   });
 
   // GET /v1/bans/:userId/history
@@ -445,15 +459,13 @@ export function bansRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     // Resolve actor junjoUserIds to external ids (only when populated).
     const actorIds = sliced.map((r) => r.actorJunjoUserId).filter((v): v is string => v !== null);
-    const actorMap =
-      actorIds.length > 0
-        ? await batchLoadExternalUserIds(prisma, gameId, actorIds)
-        : new Map<string, string>();
+    const shown = await renderUserIds(prisma, gameId, [junjoUserId, ...actorIds]);
+    const targetExt = shown.get(junjoUserId) ?? userId;
 
     return c.json({
       items: sliced.map((row) => {
-        const actorExt = row.actorJunjoUserId ? (actorMap.get(row.actorJunjoUserId) ?? null) : null;
-        return serializeBanHistoryEntry(row, userId, actorExt);
+        const actorExt = row.actorJunjoUserId ? (shown.get(row.actorJunjoUserId) ?? null) : null;
+        return serializeBanHistoryEntry(row, targetExt, actorExt);
       }),
       nextCursor,
     });

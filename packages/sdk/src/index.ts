@@ -15,6 +15,7 @@ import { JunjoError } from "./errors.js";
 import { FriendsApi } from "./friends.js";
 import { GroupsApi } from "./groups.js";
 import { HttpClient } from "./http.js";
+import { IdentitiesApi } from "./identities.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
 import { PermissionCache, type PermissionCacheOptions } from "./permissionCache.js";
@@ -173,7 +174,7 @@ export const CHECK_BATCH_MAX_ENTRIES = 100;
  * Top-level Junjo API client. Construct one per game with a per-game
  * API key (or `proxy: true` in browser apps) and reach every surface
  * through its namespaces: `groups`, `roles`, `members`, `invitations`,
- * `audit`, `webhooks`, `friends`, and `bans`.
+ * `audit`, `webhooks`, `friends`, `bans`, and `identities`.
  */
 export class Junjo {
   readonly groups: GroupsApi;
@@ -184,6 +185,7 @@ export class Junjo {
   readonly webhooks: WebhooksApi;
   readonly friends: FriendsApi;
   readonly bans: BansApi;
+  readonly identities: IdentitiesApi;
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
   private readonly permissionCache: PermissionCache;
@@ -233,6 +235,7 @@ export class Junjo {
     this.webhooks = new WebhooksApi(this.http);
     this.friends = new FriendsApi(this.http);
     this.bans = new BansApi(this.http);
+    this.identities = new IdentitiesApi(this.http);
     this.authAdapter = config.authAdapter;
     this.permissionCache = new PermissionCache(config.permissionCache);
   }
@@ -459,6 +462,8 @@ export type {
 } from "./friends.js";
 export { GroupsApi } from "./groups.js";
 export type { SubscribeOptions, Subscription } from "./groups.js";
+export { IdentitiesApi } from "./identities.js";
+export type { RedeemLinkCodeInput } from "./identities.js";
 export { InvitationsApi } from "./invitations.js";
 export type { ListInvitationsOptions } from "./invitations.js";
 export { MembersApi } from "./members.js";
@@ -484,27 +489,37 @@ export {
   verifyWebhookWithMeta,
 } from "./webhooks.js";
 export type {
+  CreateWebhookEndpointInput,
   ExpressLikeMiddleware,
   ExpressLikeRequest,
   ExpressLikeResponse,
   UnknownVerifiedWebhook,
+  UpdateWebhookEndpointInput,
   VerifiedWebhook,
   VerifyOptions,
   VerifyWithMetaOptions,
+  WebhookEndpoint,
+  WebhookEndpointWithSecret,
   WebhookHeaders,
 } from "./webhooks.js";
 
 export type {
   AuditAction,
+  AuditApiKey,
   AuditEntry,
   AuthAdapter,
   Ban,
-  CreateWebhookEndpointInput,
   Group,
   GroupId,
+  IdentityLinkResult,
+  IdentityLinkedEvent,
+  IdentityUnlinkResult,
+  IdentityUnlinkedEvent,
   Invitation,
   JunjoEvent,
   JunjoEventType,
+  LinkCode,
+  LinkedIdentity,
   ListAuditOptions,
   Member,
   PermissionCheckBatchResult,
@@ -513,11 +528,8 @@ export type {
   PermissionKey,
   PermissionSource,
   Role,
-  UpdateWebhookEndpointInput,
   UserId,
-  WebhookEndpoint,
   WebhookEndpointFormat,
   WebhookEndpointId,
-  WebhookEndpointWithSecret,
   WebhookSignatureHeaders,
 } from "@junjo.io/shared";

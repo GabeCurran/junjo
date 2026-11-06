@@ -28,7 +28,7 @@ interface WireEventBase {
 }
 
 // Group-scoped events carry the routing groupId; user-scoped events
-// (friends, game-wide bans) have no group context and omit it, matching
+// (friends, game-wide bans, identity changes) have no group context and omit it, matching
 // `GroupEventBase` / `UserEventBase` in @junjo.io/shared.
 interface WireGroupEventBase extends WireEventBase {
   groupId: string;
@@ -168,6 +168,7 @@ interface WireFriendUnblockedEvent extends WireEventBase {
 interface WireGameUserBannedEvent extends WireEventBase {
   type: "game.user.banned";
   junjoUserId: string;
+  userId: string;
   reason: string | null;
   expiresAt: string | null;
 }
@@ -175,6 +176,21 @@ interface WireGameUserBannedEvent extends WireEventBase {
 interface WireGameUserUnbannedEvent extends WireEventBase {
   type: "game.user.unbanned";
   junjoUserId: string;
+  userId: string;
+}
+
+interface WireIdentityLinkedEvent extends WireEventBase {
+  type: "identity.linked";
+  userId: string;
+  linkedUserId: string;
+  identities: string[];
+}
+
+interface WireIdentityUnlinkedEvent extends WireEventBase {
+  type: "identity.unlinked";
+  userId: string;
+  unlinkedUserId: string;
+  identities: string[];
 }
 
 export type WireJunjoEvent =
@@ -200,7 +216,9 @@ export type WireJunjoEvent =
   | WireFriendBlockedEvent
   | WireFriendUnblockedEvent
   | WireGameUserBannedEvent
-  | WireGameUserUnbannedEvent;
+  | WireGameUserUnbannedEvent
+  | WireIdentityLinkedEvent
+  | WireIdentityUnlinkedEvent;
 
 /**
  * Thrown (with this code) when the server sends an event type this SDK
@@ -384,6 +402,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         ...base,
         type: "game.user.banned",
         junjoUserId: w.junjoUserId,
+        userId: w.userId as UserId,
         reason: w.reason,
         expiresAt: w.expiresAt === null ? null : parseWireDate(w.expiresAt, "expiresAt"),
       };
@@ -392,6 +411,23 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         ...base,
         type: "game.user.unbanned",
         junjoUserId: w.junjoUserId,
+        userId: w.userId as UserId,
+      };
+    case "identity.linked":
+      return {
+        ...base,
+        type: "identity.linked",
+        userId: w.userId as UserId,
+        linkedUserId: w.linkedUserId as UserId,
+        identities: w.identities.map((id) => id as UserId),
+      };
+    case "identity.unlinked":
+      return {
+        ...base,
+        type: "identity.unlinked",
+        userId: w.userId as UserId,
+        unlinkedUserId: w.unlinkedUserId as UserId,
+        identities: w.identities.map((id) => id as UserId),
       };
     default: {
       // `w` is `never` here for compile-time-known wire events; at

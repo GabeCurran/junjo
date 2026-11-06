@@ -1,0 +1,373 @@
+# Identity
+
+Junjo does not host accounts. Every `userId` on the wire is your own external id, an opaque string. This page covers what happens when one person reaches your game through more than one account: a game client id, a website login, a chat platform id. Those ids can be **linked** so they name one person, with one set of memberships, roles, friends and bans.
+
+The TypeScript SDK wraps these routes as [`junjo.identities`](/sdk/identities).
+
+Everything here is opt-in. A game that never links ids and never declares a format behaves exactly as before: each id is its own person and every response names it by the id you sent.
+
+## Concepts
+
+### Person and linked ids
+
+A **person** is one internal `JunjoUser`. Each external id maps to exactly one person per game through an `ExternalIdentity` row (see [Core concepts](/core-concepts#users-junjouser-and-externalidentity)). Until a link, every person holds a single id. After a link, one person holds several ids in the same game, and any of them can be used on any route: they all resolve to the same memberships, roles, overrides, friends, blocks and bans.
+
+Each of a person's ids carries a `linkedAt` timestamp: when the id joined the person (for an id that was never linked, when it was first seen). A person's ids are always ordered by `linkedAt`, ties broken by row id. The first id in that order is the person's **earliest-linked** id.
+
+### Namespaces
+
+An id's **namespace** is the text before its first `:`. `game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f` is in namespace `game`; `web:user_42` is in `web`. An id with no `:`, or one that starts with `:`, has no namespace.
+
+Namespaces carry meaning in exactly two places: a caller's [preferred namespaces](#preferred-namespaces), and a game's [declared formats](#canonical-formats). Anywhere else an id containing `:` is an ordinary opaque string, as it always was.
+
+Namespaces that can be preferred or declared must match `^[a-z0-9_-]{1,32}$` (lowercase letters, digits, `_` and `-`, 1 to 32 characters). An id whose prefix does not match that pattern (`Game:abc`) is still accepted everywhere; no preference or format can name its namespace.
+
+### Preferred namespaces
+
+A caller can state an ordered list of namespaces it prefers to see ids in. Two places hold a preference:
+
+| Holder | Applies to | Set via |
+|--------|------------|---------|
+| API key | Every response and every SSE stream read with that key | `preferredNamespaces` on [`POST`](/api-reference/admin#post-v1admingamesgameidapi-keys) or [`PATCH /v1/admin/games/:gameId/api-keys/:keyId`](/api-reference/admin#patch-v1admingamesgameidapi-keyskeyid) |
+| Webhook endpoint | Every payload delivered to that endpoint | `preferredNamespaces` on [`POST /v1/webhooks`](/api-reference/webhooks#post-v1webhooks) or [`PATCH /v1/webhooks/:id`](/api-reference/webhooks#patch-v1webhooksid) |
+
+A preference lists at most 8 namespaces, each matching the namespace pattern, with no repeats. An empty list (the default) means no preference. A webhook endpoint uses its own preference, never the preference of the key that created it. Admin routes (dashboard token) have no preference.
+
+A changed key preference applies to the next request made with the key. An SSE stream that is already open picks it up on its next heartbeat, within 30 seconds.
+
+### The rendering rule
+
+Whenever a response, an SSE event or a webhook payload names a person, Junjo picks which of the person's ids to show:
+
+1. The earliest-linked id in the **first listed** preferred namespace the person has an id in.
+2. Otherwise, the person's earliest-linked id overall, **in whatever namespace it is**.
+
+Without a preference, rule 2 always applies. Routes do not echo the id the request used: a call made with `web:user_42` can answer with `game:6f1c...` when the caller prefers `game` and the person holds a `game` id. For a person with a single id (every person until a link) the rendered id is that id, so nothing changes.
+
+**Callers must handle ids outside their namespaces.** A preference is a preference, not a filter. A game server whose key prefers `game` still receives `web:user_42` for a person who only holds a website id (a friend who never launched the game, a moderator who acts from the website). Do not assume every id you receive parses in your own format.
+
+### Literal ids
+
+A few fields record an id exactly as it was written and are never rewritten by the rendering rule:
+
+| Field | Notes |
+|-------|-------|
+| Invitation `targetUserId` | The id the invitation was issued for. A direct invitation can be accepted (or declined) by any id of the invited person, not only that one. |
+| Audit `targetId` and audit `payload` values | Recorded as written at the time of the action. See [Audit](/api-reference/audit). |
+| `linkedUserId`, `unlinkedUserId` and `identities` on identity responses and events | They name specific ids on purpose. |
+| `GET /v1/users/:userId/identities` items | The full list of the person's ids. |
+
+### Canonical formats
+
+A game can declare a canonical **format** for a namespace, so the same account can never be spelled two ways (and so never mint two people). Formats are declared in the game config under `identity.formats`, a map from namespace to format:
+
+```json
+{ "config": { "identity": { "formats": { "game": "uuid" } } } }
+```
+
+| Format | Matches |
+|--------|---------|
+| `uuid` | Lowercase, hyphenated 8-4-4-4-12 hex: `6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f`. Uppercase and unhyphenated spellings are rejected. |
+
+The format applies to the text after the namespace: with the declaration above, `game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f` is accepted and `game:6F1C2A9E3B4D4C5E8F701A2B3C4D5E6F` is not. Ids outside declared namespaces are unaffected.
+
+Once declared, an id in that namespace that does not match is rejected with `400 invalid_user_id` on **every** path that accepts a user id: path parameters, query parameters and body fields, on reads as well as writes, admin routes included. [Bulk invite](/api-reference/groups) reports such rows as per-row errors instead of failing the request. Normalize ids on your side before sending them.
+
+Declaring is set through [`PATCH /v1/admin/games/:gameId/config`](/api-reference/admin#patch-v1admingamesgameidconfig) and is independent of `permissions.mode`. The `formats` map is replaced as a whole on every PATCH that includes it; send `{}` to undeclare every namespace. At most 16 namespaces can declare a format. Declaring or changing a format is refused with `409 identity_format_conflict` while stored ids in that namespace do not match; the message lists up to 5 of them. Fix or unlink those ids, then retry. Removing a declaration is never refused.
+
+## `GET /v1/users/:userId/identities`
+
+Lists every id of the person that `:userId` belongs to, in the calling game, earliest-linked first.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | string | Any of the person's ids. URL-encode it (`:` is safe in a path segment, but other characters may not be). |
+
+### Response
+
+`200 OK`:
+
+```json
+{
+  "items": [
+    {
+      "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+      "namespace": "game",
+      "linkedAt": "2026-11-01T09:00:00.000Z"
+    },
+    {
+      "userId": "web:user_42",
+      "namespace": "web",
+      "linkedAt": "2026-11-05T18:30:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `items[].userId` | string | One of the person's ids, literal. |
+| `items[].namespace` | string \| null | Text before the first `:`, or `null` when the id has none. |
+| `items[].linkedAt` | ISO 8601 | When the id joined the person. |
+
+An id that has never been seen in the game returns `{ "items": [] }` rather than `404`, matching the other per-user listings.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_user_id` | 400 | `:userId` is in a namespace with a declared format and does not match it. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/users/:userId/link-codes`
+
+Issues a short, single-use **link code** for `:userId`. Show the code to the person on the surface where they are signed in with that id; they enter it on the other surface, whose backend redeems it with [`POST /v1/link-codes/redeem`](#post-v1link-codesredeem). The id that requests the code is the **requester**.
+
+No body. The id is created in the game if it has never been seen. Issuing a new code cancels any earlier code for the same id, so each id has at most one live code.
+
+### Response
+
+`201 Created`:
+
+```json
+{ "code": "7KQ2-M9XD", "expiresAt": "2026-11-05T18:35:00.000Z" }
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `code` | string | 8 characters from the Crockford base32 alphabet (`0-9` and `A-Z` without `I`, `L`, `O`, `U`), shown as two groups of four. |
+| `expiresAt` | ISO 8601 | 5 minutes after issue. |
+
+The server stores only a hash of the code. It cannot be read back later; issue a new one instead.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_user_id` | 400 | `:userId` breaks its namespace's declared format. |
+| `banned` | 403 | The person is under an active game-wide ban or an active ban in any group of the game. |
+| `rate_limit_exceeded` | 429 | The id's code budget is spent (see [Rate limits](#rate-limits)). Carries `Retry-After`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/link-codes/redeem`
+
+Redeems a link code for a second id, the **redeemer**, linking the two ids into one person.
+
+### Body
+
+```json
+{ "code": "7kq2 m9xd", "userId": "web:user_42" }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `code` | string | yes | The code as the person typed it. Case-insensitive; hyphens and whitespace are ignored; `O` reads as `0`, `I` and `L` read as `1`. |
+| `userId` | string | yes | The redeeming id, 1 to 255 characters. Created in the game if never seen. |
+
+Unknown keys are rejected with `400 bad_request`.
+
+### Response
+
+`200 OK`:
+
+```json
+{
+  "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+  "linkedUserId": "web:user_42",
+  "identities": [
+    {
+      "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+      "namespace": "game",
+      "linkedAt": "2026-11-01T09:00:00.000Z"
+    },
+    {
+      "userId": "web:user_42",
+      "namespace": "web",
+      "linkedAt": "2026-11-05T18:31:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | string | The person after the link, named by the [rendering rule](#the-rendering-rule) for the calling key. |
+| `linkedUserId` | string | The id that joined the person (literal). Either the redeemer or the requester, depending on [who keeps their person](#who-keeps-their-person). |
+| `identities` | `LinkedIdentity[]` | Every id the person now holds in the game, earliest-linked first. Same item shape as `GET /v1/users/:userId/identities`. |
+
+A code is single use. Redeeming a code for an id that already belongs to the requester's person returns `200` with no change (the code is spent, no event or audit entry is written).
+
+### Who keeps their person
+
+The two ids belong to two people until the link. One person **survives** and the other id **joins** it. The rule depends on whether each side **holds something**:
+
+| Requester holds something | Redeemer holds something | Outcome |
+|---------------------------|--------------------------|---------|
+| no | no | The requester's person survives; the redeeming id joins it. |
+| yes | no | The requester's person survives; the redeeming id joins it. |
+| no | yes | The redeemer's person survives; the requesting id joins it. |
+| yes | yes | Refused with `409 link_refused`. Merging two people who both have state is a manual operation. |
+
+A person **holds something** when it has any of:
+
+- a role other than its group's default role, in any group of the game (any `kind`, soft-deleted groups included)
+- a member permission override, member metadata, or member notes
+- friends, pending friend requests (in either direction), blocks, friend tags, or a friends-list visibility setting
+- any ban history, including an expired ban row
+- a second id in this game, or any id in another game
+
+These do **not** count: active memberships that carry only the group's default role (or no role); `left`, `kicked` and `invited` membership rows; and audit entries the person acted on.
+
+Because a person with a second id holds something, the joining side is always a single id with nothing attached beyond plain memberships.
+
+**Merge.** When an id joins, its memberships move to the surviving person (a membership in a group the survivor is already in is dropped, and the survivor's row stands), references to it as an audit actor, ban actor or invitation creator or redeemer are repointed to the survivor, and its now-empty person is deleted. The joining id's `linkedAt` is set to the time of the link, so it sorts after the survivor's existing ids: without a preference, the person keeps being named by the survivor's earliest-linked id.
+
+**Bans.** If either side is banned (an active game-wide ban, or an active ban in any group of the game), the link is refused with `403 banned`.
+
+A refused attempt (`banned`, `link_refused`) does not spend the code; it stays redeemable until it expires.
+
+Server-side permission answers are cached by external id, so a successful link (or unlink) clears the server's permission cache. Client-side caches, such as the TypeScript SDK's short-TTL permission cache, can serve an old answer until their entries expire.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Body missing a field, an unknown key, or malformed JSON. Also when the code is redeemed by the id that requested it. |
+| `invalid_user_id` | 400 | `userId` breaks its namespace's declared format. |
+| `link_code_invalid` | 400 | The code is unknown, expired, already used, or cannot be a code at all. One answer for every case, so a guesser cannot tell them apart. |
+| `banned` | 403 | Either side is banned in the game. |
+| `link_refused` | 409 | Both sides hold something. |
+| `rate_limit_exceeded` | 429 | The redeeming id's budget is spent, or the calling key's failed-redeem budget is spent (see [Rate limits](#rate-limits)). Carries `Retry-After`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## `POST /v1/users/:userId/unlink`
+
+Detaches `:userId` from its person. The id becomes a fresh, empty person of its own; everything else (memberships, roles, overrides, friends, bans, history) stays with the person's remaining ids. Any live link code for the detached id is cancelled, and its `linkedAt` is reset to the time of the unlink.
+
+No body.
+
+### Response
+
+`200 OK`:
+
+```json
+{
+  "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+  "unlinkedUserId": "web:user_42",
+  "identities": [
+    {
+      "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+      "namespace": "game",
+      "linkedAt": "2026-11-01T09:00:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `userId` | string | The person the id left, named by the rendering rule among its remaining ids. |
+| `unlinkedUserId` | string | The id that left (literal). It now names a new, empty person. |
+| `identities` | `LinkedIdentity[]` | The ids the person still holds, earliest-linked first. |
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | `:userId` is the person's only id in the game. |
+| `invalid_user_id` | 400 | `:userId` breaks its namespace's declared format. |
+| `banned` | 403 | The person is under an active game-wide ban or an active ban in any group of the game. |
+| `not_found` | 404 | `:userId` has never been seen in the game. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+Any API key of the game can link and unlink any of its ids. As with every other route, your backend decides which player may trigger the call; see the [security model](/security-model).
+
+## Walkthrough: linking a game id to a website id
+
+A player is signed in to the game client as `game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f` and to your website as `web:user_42`. The game server's key prefers `["game"]`; the website backend's key prefers `["web"]`.
+
+**1. The game server requests a code** and shows it to the player in game.
+
+```bash
+curl -X POST -H "Authorization: Bearer $GAME_SERVER_KEY" \
+  "https://your-junjo-server/v1/users/game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f/link-codes"
+# 201 { "code": "7KQ2-M9XD", "expiresAt": "2026-11-05T18:35:00.000Z" }
+```
+
+**2. The player types the code on the website**, and the website backend redeems it for the signed-in website id.
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBSITE_KEY" \
+  -H "content-type: application/json" \
+  -d '{ "code": "7kq2m9xd", "userId": "web:user_42" }' \
+  https://your-junjo-server/v1/link-codes/redeem
+# 200 { "userId": "web:user_42", "linkedUserId": "web:user_42", "identities": [ ... ] }
+```
+
+The game id holds the player's guild roles and friends; the website id is new and holds nothing, so the game id's person survives and `web:user_42` joins it. The response names the person `web:user_42` because the website key prefers `web`.
+
+**3. Both surfaces now see one person.** The website can read the player's memberships with its own id:
+
+```bash
+curl -H "Authorization: Bearer $WEBSITE_KEY" \
+  https://your-junjo-server/v1/users/web:user_42/members
+```
+
+Member rows in that response carry `"userId": "web:user_42"`. The same call made by the game server with either id answers with `"userId": "game:6f1c..."`. A webhook endpoint with no preference receives an `identity.linked` event whose `userId` is the game id (the earliest-linked id) and whose `linkedUserId` is `web:user_42`.
+
+**4. To undo it**, either side calls unlink with the website id:
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBSITE_KEY" \
+  https://your-junjo-server/v1/users/web:user_42/unlink
+```
+
+`web:user_42` becomes an empty person again; the roles and friends stay with the game id.
+
+## Rate limits
+
+Link codes have their own token buckets on top of the [global limits](/limits#rate-limits). Like the global limiter, they are in-process and per server instance.
+
+| Bucket | Keyed on | Burst | Refill |
+|--------|----------|-------|--------|
+| Code requests | Requesting id | 5 | 1 per minute |
+| Redeems | Redeeming id | 5 | 1 per minute |
+| Failed redeems | Calling API key | 60 | 30 per minute |
+
+The failed-redeem bucket is charged only by `link_code_invalid` answers, so a backend redeeming for many players is not slowed by successful redeems. While it is empty, every redeem through that key is refused with `429`, valid codes included. All three return `429 rate_limit_exceeded` with a `Retry-After` header.
+
+## Events
+
+Linking and unlinking emit game-scoped events. They have no `groupId`, so they are delivered over [webhooks](/api-reference/webhooks) only, not SSE.
+
+```json
+{
+  "id": "7b3e0d8c4a9f1d2e5b6c8a0f",
+  "type": "identity.linked",
+  "gameId": "game_xyz",
+  "occurredAt": "2026-11-05T18:31:00.000Z",
+  "userId": "game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+  "linkedUserId": "web:user_42",
+  "identities": ["game:6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f", "web:user_42"]
+}
+```
+
+| Event | Fields | Notes |
+|-------|--------|-------|
+| `identity.linked` | `userId`, `linkedUserId`, `identities` | `userId` names the person and is rendered per endpoint. `linkedUserId` (the id that joined) and `identities` (every id the person holds after the link, earliest-linked first) are literal. |
+| `identity.unlinked` | `userId`, `unlinkedUserId`, `identities` | `userId` names the person the id left, rendered per endpoint among its remaining ids. `unlinkedUserId` and `identities` (the remaining ids) are literal. |
+
+A link that changes nothing (the ids already belong to one person) emits no event. The full list of which event fields are rendered is on the [Events](/api-reference/events#user-ids-in-events) page.
+
+## Audit
+
+Each successful link and unlink writes one game-scoped audit entry (`groupId: null`), so it appears in the admin game audit feed rather than any group's audit log:
+
+| Action | `targetId` | `payload` |
+|--------|------------|-----------|
+| `identity.linked` | The id that joined | `{ issuerUserId, redeemerUserId, survivor: "issuer" \| "redeemer", identities }` |
+| `identity.unlinked` | The id that left | `{ identities }` (the remaining ids) |
+
+`issuerUserId` is the requester, `redeemerUserId` the redeemer. Like every audit entry, the ids are recorded as written, and `apiKey` names the key that made the call. See [Audit](/api-reference/audit).

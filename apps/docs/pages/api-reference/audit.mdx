@@ -34,7 +34,8 @@ The `actions` strings must match the [`AuditAction`](../sdk) union in `@junjo.io
     {
       "id": "audit_2",
       "groupId": "grp_xyz",
-      "actorUserId": "user_alice",
+      "actorUserId": "cm3k9x2b40000qz8h1f7d2a5e",
+      "apiKey": { "id": "key_1", "name": "game-server", "prefix": "jk_AbCdEfGhIjKlMn" },
       "action": "member.invited",
       "targetId": "user_bob",
       "payload": { "invitationId": "inv_1", "code": "abc123" },
@@ -44,6 +45,7 @@ The `actions` strings must match the [`AuditAction`](../sdk) union in `@junjo.io
       "id": "audit_1",
       "groupId": "grp_xyz",
       "actorUserId": null,
+      "apiKey": { "id": "key_1", "name": "game-server", "prefix": "jk_AbCdEfGhIjKlMn" },
       "action": "group.created",
       "targetId": "grp_xyz",
       "payload": { "kind": "guild", "name": "Crimson Wolves" },
@@ -62,10 +64,11 @@ The `actions` strings must match the [`AuditAction`](../sdk) union in `@junjo.io
 |-------|------|-------|
 | `id` | string | Stable cuid for the entry. |
 | `groupId` | string | The group the entry belongs to. |
-| `actorUserId` | string \| null | The Junjo user id that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired for most mutations). |
+| `actorUserId` | string \| null | The internal Junjo user id (a `JunjoUser` id, not one of your external ids) that performed the action, when known. `null` for system-driven actions and for actions taken via the API key (no auth-adapter actor wired for most mutations). |
+| `apiKey` | object \| null | `{ id, name, prefix }` of the API key whose request wrote the entry. `name` is the key's current label (`null` when unnamed). `null` for writes made through the admin token (dashboard) and for system writes. |
 | `action` | [`AuditAction`](../sdk) | One of the strings in the union. |
-| `targetId` | string \| null | Free-form pointer to whatever the action targeted: a user id, role id, permission key, group id. Type depends on action. |
-| `payload` | object | Action-specific details. The `before` / `after` fields on update actions only contain the keys that actually changed. |
+| `targetId` | string \| null | Free-form pointer to whatever the action targeted: a user id, role id, permission key, group id. Type depends on action. User ids are recorded as written and are never re-rendered, so a person with [linked ids](./identity) can appear under different ids across entries. |
+| `payload` | object | Action-specific details. The `before` / `after` fields on update actions only contain the keys that actually changed. Ids inside it are recorded as written, like `targetId`. |
 | `createdAt` | ISO 8601 timestamp | When the entry was written. |
 
 ### Errors
@@ -85,3 +88,14 @@ To walk all entries:
 3. Repeat until `nextCursor` is null.
 
 Feeding an id back as `before` gives exact keyset pagination on the `(createdAt, id)` sort order, so page boundaries are immune to entries sharing a millisecond. The timestamp form of `before` remains strictly exclusive on `createdAt`: entries sharing the exact boundary timestamp can be skipped, so prefer the id cursor the server hands back.
+
+## Game-scoped actions
+
+A few actions have no group and are written with `groupId: null`: `game.user.banned`, `game.user.unbanned`, `game.permissions.mode.set`, and the two identity actions below. They never appear in `GET /v1/groups/:id/audit`; read them through the admin [game audit feed](./admin#get-v1admingamesgameidaudit).
+
+| Action | `targetId` | `payload` |
+|--------|------------|-----------|
+| `identity.linked` | The id that joined the person | `{ issuerUserId, redeemerUserId, survivor: "issuer" \| "redeemer", identities }`: the id that requested the link code, the id that redeemed it, which side's person survived, and every id the person holds after the link. |
+| `identity.unlinked` | The id that left the person | `{ identities }`: the ids the person still holds. |
+
+See [Identity](./identity) for when these are written.

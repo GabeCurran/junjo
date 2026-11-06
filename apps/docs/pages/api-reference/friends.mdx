@@ -21,8 +21,11 @@ unseen users are auto-vivified on first reference.
 The wire field names keep their historical `*JunjoUserId` form for
 backwards compatibility, but the values you send and receive are
 external ids. A friend request you send with `targetJunjoUserId:
-"clerk_user_abc"` returns `request.targetJunjoUserId: "clerk_user_abc"`
-verbatim.
+"clerk_user_abc"` returns `request.targetJunjoUserId: "clerk_user_abc"`.
+For a person with [linked ids](/api-reference/identity), responses and
+events name them by the
+[rendering rule](/api-reference/identity#the-rendering-rule) instead,
+which can be a different id than the one you sent.
 
 ## Configuration
 
@@ -97,7 +100,8 @@ Send a friend request from `:userId` to a target.
 - 404 when `friends.enabled = false`, or when either party has blocked
   the other (silent, for both blocker and blockee).
 - 400 when already friends, when a request is pending in either
-  direction, or when caps are exceeded.
+  direction, when caps are exceeded, or when both ids belong to the
+  same person (two linked ids cannot befriend or block each other).
 - When `friends.requestsRequired = true` (default): creates a `request`
   row and fires `friend.request.sent` to the target. Response shape:
   `{ status: "pending", request: WireFriendRequest }`.

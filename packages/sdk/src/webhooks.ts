@@ -17,6 +17,13 @@ import type { HttpClient } from "./http.js";
 import { paginate } from "./pagination.js";
 import { parseWireDate } from "./wire.js";
 
+export type {
+  CreateWebhookEndpointInput,
+  UpdateWebhookEndpointInput,
+  WebhookEndpoint,
+  WebhookEndpointWithSecret,
+};
+
 /**
  * Signature scheme version prefixed onto every signature. Must stay in
  * sync with the signing layout in the server's `webhookWorker.ts`;
@@ -319,6 +326,8 @@ interface WireWebhookEndpoint {
   url: string;
   events: string[];
   format: string;
+  // Absent from servers that predate namespace preferences.
+  preferredNamespaces?: string[];
   createdAt: string;
   disabledAt: string | null;
 }
@@ -334,6 +343,7 @@ function deserializeEndpoint(w: WireWebhookEndpoint): WebhookEndpoint {
     url: w.url,
     events: w.events as JunjoEventType[],
     format: w.format as WebhookEndpointFormat,
+    preferredNamespaces: w.preferredNamespaces ?? [],
     createdAt: parseWireDate(w.createdAt, "createdAt"),
     disabledAt: w.disabledAt === null ? null : parseWireDate(w.disabledAt, "disabledAt"),
   };
@@ -361,6 +371,9 @@ export class WebhookEndpointsApi {
     if (input.events !== undefined) body.events = input.events;
     if (input.secret !== undefined) body.secret = input.secret;
     if (input.format !== undefined) body.format = input.format;
+    if (input.preferredNamespaces !== undefined) {
+      body.preferredNamespaces = input.preferredNamespaces;
+    }
     const wire = await this.http.post<WireWebhookEndpointWithSecret>("/v1/webhooks", body, {
       signal: opts?.signal,
       timeoutMs: opts?.timeoutMs,
@@ -420,6 +433,9 @@ export class WebhookEndpointsApi {
     if (input.events !== undefined) body.events = input.events;
     if (input.disabled !== undefined) body.disabled = input.disabled;
     if (input.format !== undefined) body.format = input.format;
+    if (input.preferredNamespaces !== undefined) {
+      body.preferredNamespaces = input.preferredNamespaces;
+    }
     const wire = await this.http.patch<WireWebhookEndpoint>(
       `/v1/webhooks/${encodeURIComponent(id)}`,
       body,

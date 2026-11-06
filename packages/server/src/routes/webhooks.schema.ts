@@ -1,5 +1,6 @@
 import type { JunjoEventType } from "@junjo.io/shared";
 import { z } from "zod";
+import { preferredNamespacesSchema } from "../config/schema.js";
 import { pageLimit } from "./page.schema.js";
 
 // Mirrors the `JunjoEventType` union in `@junjo.io/shared`. Every published
@@ -31,6 +32,8 @@ export const WEBHOOK_EVENT_TYPES = [
   "friend.unblocked",
   "game.user.banned",
   "game.user.unbanned",
+  "identity.linked",
+  "identity.unlinked",
 ] as const;
 
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -92,6 +95,7 @@ export const createWebhookEndpointBody = z.object({
   events: eventsSchema.optional(),
   secret: secretSchema.optional(),
   format: formatSchema.optional(),
+  preferredNamespaces: preferredNamespacesSchema.optional(),
 });
 
 export const updateWebhookEndpointBody = z
@@ -100,13 +104,15 @@ export const updateWebhookEndpointBody = z
     events: eventsSchema.optional(),
     disabled: z.boolean().optional(),
     format: formatSchema.optional(),
+    preferredNamespaces: preferredNamespacesSchema.optional(),
   })
   .refine(
     (data) =>
       data.url !== undefined ||
       data.events !== undefined ||
       data.disabled !== undefined ||
-      data.format !== undefined,
+      data.format !== undefined ||
+      data.preferredNamespaces !== undefined,
     { message: "at least one field is required" },
   );
 

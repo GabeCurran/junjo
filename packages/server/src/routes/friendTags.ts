@@ -20,14 +20,18 @@ import type { FriendTag, PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { loadGameConfig } from "../config/loadGameConfig.js";
 import { Errors } from "../errors.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import {
+  findJunjoUserId,
+  findOrCreateJunjoUser,
+  renderResolved,
+  renderUserIds,
+} from "../identity.js";
 import { retryOnUniqueViolation } from "../prismaErrors.js";
 import {
   createFriendTagBody,
   setFriendTagsBody,
   updateFriendTagBody,
 } from "./friendTags.schema.js";
-import { batchLoadExternalUserIds } from "./members.js";
 
 // =====================================================================
 // Wire shapes
@@ -104,7 +108,8 @@ export function listFriendTagsHandler(prisma: PrismaClient): Handler {
       where: { gameId, junjoUserId: actorJid },
       orderBy: [{ name: "asc" }],
     });
-    return c.json<WireFriendTagList>({ items: tags.map((t) => toWire(t, userId)) });
+    const ownerId = await renderResolved(prisma, gameId, actorJid, userId);
+    return c.json<WireFriendTagList>({ items: tags.map((t) => toWire(t, ownerId)) });
   };
 }
 
@@ -150,7 +155,10 @@ export function createFriendTagHandler(prisma: PrismaClient): Handler {
           color: parsed.data.color ?? null,
         },
       });
-      return c.json<WireFriendTag>(toWire(tag, userId), 201);
+      return c.json<WireFriendTag>(
+        toWire(tag, await renderResolved(prisma, gameId, actorJid, userId)),
+        201,
+      );
     } catch (err) {
       if (
         err &&
@@ -198,7 +206,7 @@ export function updateFriendTagHandler(prisma: PrismaClient): Handler {
       // Translate the owner's internal id back to the external form so
       // the response matches what the caller would have sent to create
       // / list this tag.
-      const externals = await batchLoadExternalUserIds(prisma, gameId, [updated.junjoUserId]);
+      const externals = await renderUserIds(prisma, gameId, [updated.junjoUserId]);
       const ownerExternalId = externals.get(updated.junjoUserId) ?? updated.junjoUserId;
       return c.json<WireFriendTag>(toWire(updated, ownerExternalId));
     } catch (err) {
@@ -295,7 +303,7 @@ export function setFriendTagsHandler(prisma: PrismaClient): Handler {
     );
 
     return c.json<WireFriendTagAssignment>({
-      friendJunjoUserId: otherUserId,
+      friendJunjoUserId: await renderResolved(prisma, gameId, otherJid, otherUserId),
       tagIds: requestedTagIds,
     });
   };

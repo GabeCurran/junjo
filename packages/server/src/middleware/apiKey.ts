@@ -1,12 +1,25 @@
+import type { PartialGameConfig } from "@junjo.io/shared";
 import type { MiddlewareHandler } from "hono";
 import { parseApiKey, verifySecret } from "../apiKey.js";
+import { resolveGameConfig } from "../config/defaults.js";
 import { Errors } from "../errors.js";
+import { currentRequestContext } from "../requestContext.js";
+
+export interface ApiKeyRecord {
+  gameId: string;
+  hashedSecret: string;
+  revokedAt: Date | null;
+  // Optional so in-memory test stores can omit them; absent means no
+  // attribution, no namespace preference and no declared formats.
+  id?: string;
+  preferredNamespaces?: string[];
+  // The owning game's stored config, read in the same lookup.
+  gameConfig?: unknown;
+}
 
 // Tests pass an in-memory fake; routes get the real Prisma client.
 export interface ApiKeyStore {
-  findByPrefix(
-    prefix: string,
-  ): Promise<{ gameId: string; hashedSecret: string; revokedAt: Date | null } | null>;
+  findByPrefix(prefix: string): Promise<ApiKeyRecord | null>;
 }
 
 declare module "hono" {
@@ -38,6 +51,17 @@ export function apiKeyMiddleware(store: ApiKeyStore): MiddlewareHandler {
 
     c.set("gameId", record.gameId);
     c.set("apiKeyPrefix", parsed.prefix);
+    const ctx = currentRequestContext();
+    if (ctx) {
+      ctx.apiKeyId = record.id ?? null;
+      ctx.preferredNamespaces = record.preferredNamespaces ?? [];
+      if (record.gameConfig !== undefined) {
+        ctx.idFormats.set(
+          record.gameId,
+          resolveGameConfig(record.gameConfig as PartialGameConfig | null).identity.formats,
+        );
+      }
+    }
     await next();
   };
 }

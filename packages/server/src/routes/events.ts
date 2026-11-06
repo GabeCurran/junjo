@@ -4,11 +4,35 @@ import type { Handler } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Errors } from "../errors.js";
 import { type EventHub, eventHub as defaultHub } from "../eventHub.js";
+import { type RenderTable, loadRenderTable, renderEvent } from "../eventRender.js";
+import { currentPreferredNamespaces } from "../requestContext.js";
 
 // Browsers and intermediaries idle-time-out SSE after a couple of
 // minutes; the heartbeat comment keeps the connection alive without
 // showing up as a real event to the consumer.
 export const SSE_HEARTBEAT_INTERVAL_MS = 30_000;
+
+// Every subscriber of a group receives the same event, so the identity
+// lookup behind rendering runs once per event rather than once per
+// stream. Holds raw id lists, not rendered ids, so it is valid for every
+// namespace preference. Bounded; the oldest entries go first.
+const RENDER_TABLE_MEMO_MAX = 512;
+const renderTables = new Map<string, Promise<RenderTable>>();
+
+function renderTableFor(prisma: PrismaClient, event: JunjoEvent): Promise<RenderTable> {
+  const hit = renderTables.get(event.id);
+  if (hit) return hit;
+  const pending = loadRenderTable(prisma, event.gameId, [event]).catch(
+    // A failed lookup delivers the event as emitted rather than dropping it.
+    () => new Map() as RenderTable,
+  );
+  renderTables.set(event.id, pending);
+  if (renderTables.size > RENDER_TABLE_MEMO_MAX) {
+    const oldest = renderTables.keys().next().value;
+    if (oldest !== undefined) renderTables.delete(oldest);
+  }
+  return pending;
+}
 
 interface SubscribeEventsOptions {
   hub?: EventHub;
@@ -35,6 +59,9 @@ export function subscribeEventsHandler(
     });
     if (!group) throw Errors.notFound("group");
     const subscribedGroupId = group.id as GroupId;
+    // Refreshed from the key row on every heartbeat, so a changed
+    // preference reaches an open stream within one interval.
+    let preferred: readonly string[] = currentPreferredNamespaces();
 
     return streamSSE(c, async (stream) => {
       const queue: JunjoEvent[] = [];
@@ -75,11 +102,11 @@ export function subscribeEventsHandler(
         // post-revocation window to at most one heartbeat interval.
         void (async () => {
           if (closed) return;
-          let key: { revokedAt: Date | null } | null | undefined;
+          let key: { revokedAt: Date | null; preferredNamespaces: string[] } | null | undefined;
           try {
             key = await prisma.apiKey.findUnique({
               where: { prefix: apiKeyPrefix },
-              select: { revokedAt: true },
+              select: { revokedAt: true, preferredNamespaces: true },
             });
           } catch {
             // Transient lookup failure: leave the stream up and re-check
@@ -92,6 +119,7 @@ export function subscribeEventsHandler(
             closeStream();
             return;
           }
+          if (key) preferred = key.preferredNamespaces;
           stream.write(":heartbeat\n\n").catch(closeStream);
         })();
       }, heartbeatMs);
@@ -103,10 +131,12 @@ export function subscribeEventsHandler(
           while (queue.length > 0 && !closed) {
             const event = queue.shift();
             if (!event) break;
+            const table = await renderTableFor(prisma, event);
+            if (closed) break;
             await stream.writeSSE({
               id: event.id,
               event: event.type,
-              data: JSON.stringify(event),
+              data: JSON.stringify(renderEvent(event, table, preferred)),
             });
           }
           if (closed) break;

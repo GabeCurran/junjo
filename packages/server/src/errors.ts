@@ -39,6 +39,14 @@ export const Errors = {
   permissionModeConflict: (
     msg = "stored permission keys would change meaning under the new mode",
   ) => new JunjoError("permission_mode_conflict", 409, msg),
+  invalidUserId: (msg = "user id does not match the format declared for its namespace") =>
+    new JunjoError("invalid_user_id", 400, msg),
+  identityFormatConflict: (msg = "stored user ids do not match the declared format") =>
+    new JunjoError("identity_format_conflict", 409, msg),
+  linkCodeInvalid: (msg = "link code is invalid, expired or already used") =>
+    new JunjoError("link_code_invalid", 400, msg),
+  linkRefused: (msg = "these ids cannot be linked automatically") =>
+    new JunjoError("link_refused", 409, msg),
   rateLimitExceeded: (msg = "rate limit exceeded") =>
     new JunjoError("rate_limit_exceeded", 429, msg),
   banned: (msg = "user is banned") => new JunjoError("banned", 403, msg),

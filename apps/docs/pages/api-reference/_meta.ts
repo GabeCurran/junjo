@@ -4,6 +4,7 @@ export default {
   groups: "Groups",
   invitations: "Invitations",
   members: "Members",
+  identity: "Identity",
   roles: "Roles",
   permissions: "Permissions",
   friends: "Friends",

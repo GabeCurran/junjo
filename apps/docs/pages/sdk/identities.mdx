@@ -1,0 +1,155 @@
+# `junjo.identities`
+
+Identity linking. One person can hold several external ids in one game, for example a game client id and a website account id. A code requested for one id and redeemed for another joins the two ids into one person, so roles, memberships, friends, and bans follow the person rather than a single id. `unlink` splits an id back out.
+
+```ts
+import { Junjo } from "@junjo.io/sdk";
+import type { UserId } from "@junjo.io/sdk";
+
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY! });
+
+// In the game: show the player a short code.
+const { code, expiresAt } = await junjo.identities.requestLinkCode("game:7f3c" as UserId);
+
+// On the website: the signed-in user types the code.
+const result = await junjo.identities.redeemLinkCode({
+  code: "7kq2 m9xd",
+  userId: "web:user_42" as UserId,
+});
+result.identities.map((i) => i.userId); // ["game:7f3c", "web:user_42"]
+```
+
+The namespace of an id is the text before its first `:` (`game:7f3c` is in `game`). Once a person holds more than one id, every response names them by the rendering rule: the earliest-linked id in the first [preferred namespace](/api-reference/identity#preferred-namespaces) they have an id in, otherwise their earliest-linked id overall. Your code must handle ids outside its own namespaces. The full rules, including which fields are never rewritten, live in the [Identity API reference](/api-reference/identity).
+
+## `list(userId, opts?)`
+
+Every id held by the person `userId` belongs to, earliest-linked first. An id the game has never seen returns `[]`, not an error.
+
+```ts
+list(userId: UserId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<LinkedIdentity[]>;
+
+interface LinkedIdentity {
+  userId: UserId;
+  namespace: string | null; // null when the id has no ":"
+  linkedAt: Date; // when the id joined the person
+}
+```
+
+```ts
+const ids = await junjo.identities.list("web:user_42" as UserId);
+const gameId = ids.find((i) => i.namespace === "game")?.userId;
+```
+
+## `requestLinkCode(userId, opts?)`
+
+Issues a single-use code for `userId`, creating the person if the id is new. A new code cancels that id's earlier codes. Codes are 8 characters shown as two groups of four (`ABCD-EFGH`) and expire after 5 minutes.
+
+```ts
+requestLinkCode(userId: UserId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<LinkCode>;
+
+interface LinkCode {
+  code: string;
+  expiresAt: Date;
+}
+```
+
+| Code | Status | When |
+|------|--------|------|
+| `invalid_user_id` | 400 | The id is in a namespace whose declared format it does not match. |
+| `banned` | 403 | The id is banned. |
+| `rate_limit_exceeded` | 429 | The id requested codes too quickly. `error.retryAfterSeconds` says when to retry. |
+
+## `redeemLinkCode(input, opts?)`
+
+Redeems a code for `input.userId`, joining that id and the code requester's id into one person. `code` is matched case-insensitively with hyphens and spaces ignored, and `O` reads as `0`, `I` and `L` as `1`, so pass what the user typed. Redeeming for an id already in the same person succeeds without change.
+
+```ts
+redeemLinkCode(
+  input: { code: string; userId: UserId },
+  opts?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<IdentityLinkResult>;
+
+interface IdentityLinkResult {
+  userId: UserId; // the person after the link, named by the rendering rule
+  linkedUserId: UserId; // the id that joined the person
+  identities: LinkedIdentity[];
+}
+```
+
+Which side keeps its person: when neither id holds anything beyond plain memberships, the code requester's person survives. When exactly one side holds state (roles, friends, metadata, ban history, other linked ids, and so on), that side survives and the other id joins it. When both do, the link is refused. The [Identity API reference](/api-reference/identity#who-keeps-their-person) has the full list.
+
+```ts
+import { JunjoError } from "@junjo.io/sdk";
+
+try {
+  await junjo.identities.redeemLinkCode({ code, userId: "web:user_42" as UserId });
+} catch (err) {
+  if (err instanceof JunjoError && err.code === "link_code_invalid") {
+    // Unknown, expired, or already used: ask the player for a fresh code.
+  }
+  throw err;
+}
+```
+
+| Code | Status | When |
+|------|--------|------|
+| `link_code_invalid` | 400 | The code is unknown, expired, or already used (one answer for all three). |
+| `bad_request` | 400 | The id that requested the code is redeeming it. |
+| `invalid_user_id` | 400 | `userId` does not match its namespace's declared format. |
+| `banned` | 403 | Either side is banned in the game or in any of its groups. |
+| `link_refused` | 409 | Both sides already hold state. A refused attempt does not consume the code. |
+| `rate_limit_exceeded` | 429 | Too many redeems for this id, or too many failed redeems for this API key. |
+
+Fires `identity.linked` ([webhook only](/sdk/webhooks)).
+
+## `unlink(userId, opts?)`
+
+Splits `userId` out of its person. The id becomes a fresh, empty person; roles, memberships, friends, bans, and history stay with the remaining ids. The result's `userId` names the remaining person.
+
+```ts
+unlink(userId: UserId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<IdentityUnlinkResult>;
+
+interface IdentityUnlinkResult {
+  userId: UserId; // the person the id left
+  unlinkedUserId: UserId; // the id that left
+  identities: LinkedIdentity[]; // the ids the person still holds
+}
+```
+
+```ts
+const { identities } = await junjo.identities.unlink("web:user_42" as UserId);
+```
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The game has never seen this id. |
+| `bad_request` | 400 | The id is the person's only id in the game. |
+| `banned` | 403 | The person has an active game or group ban. |
+
+Fires `identity.unlinked` (webhook only).
+
+## Events
+
+`identity.linked` and `identity.unlinked` are game-scoped (no `groupId`) and arrive only through [webhooks](/sdk/webhooks). `userId` is rendered for each endpoint's preference; `linkedUserId`, `unlinkedUserId`, and `identities` are literal ids.
+
+```ts
+switch (event.type) {
+  case "identity.linked":
+    // event.userId, event.linkedUserId, event.identities: UserId[]
+    break;
+  case "identity.unlinked":
+    // event.userId, event.unlinkedUserId, event.identities: UserId[]
+    break;
+}
+```
+
+## Preferred namespaces
+
+Each API key and each webhook endpoint can carry an ordered `preferredNamespaces` list that decides which of a person's ids the server uses when it names them. Set it on webhook endpoints with [`endpoints.create` / `endpoints.update`](/sdk/webhooks#endpointscreateinput); API key preferences are set by an operator through the [admin API](/api-reference/admin).
+
+---
+
+## See also
+
+- [Identity API reference](/api-reference/identity): HTTP routes, the rendering rule, merge rules, rate limits.
+- [`useIdentities`](/react/use-identities): the React hook over `list`.

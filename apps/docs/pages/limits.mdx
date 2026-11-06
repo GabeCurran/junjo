@@ -44,16 +44,32 @@ Validation is zod on every write route; violations are `400 bad_request` with a 
 | Friend tag `name` | 1 to 64 chars | no |
 | Invitation `expiresIn` | `^\d+[smhd]$`, must be positive; no upper bound | no |
 | Bulk-invite `userId` (per CSV row) | 255 chars | no |
+| Link-code redeem `userId` | 1 to 255 chars | no |
+| API key `name` | 1 to 64 chars after trimming, nullable | no (`API_KEY_NAME_MAX_LENGTH`) |
 
 Two deliberate non-limits worth knowing about:
 
-- `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows and admin invitation bodies. External ids are opaque to Junjo; keep them sane on your side.
+- `userId` has no length cap on normal routes (any non-empty string). The 255-char cap applies only to bulk-invite rows, admin invitation bodies and the link-code redeem body. A game can still constrain ids in a namespace by declaring a [canonical format](/api-reference/identity#canonical-formats). External ids are opaque to Junjo; keep them sane on your side.
 - Member `metadata` has no size cap of its own (group `metadata` is capped above). The server applies a global 1 MB request-body limit across `/v1`, and a body over it is rejected with `413`. If you self-host behind a reverse proxy, whichever limit is lower is the effective one; keep metadata small regardless, it is returned inline on every read.
 
 ## Bulk invite
 
 - 1000 rows per request (`BULK_INVITE_MAX_ROWS`, hardcoded). The count includes malformed rows: a CSV with 990 valid and 20 broken rows is rejected outright.
 - Individual over-long or malformed rows inside an accepted request do not fail the request; they come back as per-row errors in the response.
+
+## Identity
+
+| Limit | Value | Configurable |
+|-------|-------|--------------|
+| Namespace pattern (declared formats and preferences) | `^[a-z0-9_-]{1,32}$` (`USER_ID_NAMESPACE_PATTERN`) | no |
+| Declared formats per game (`identity.formats`) | 16 namespaces (`MAX_DECLARED_ID_FORMATS`) | no |
+| Supported formats | `uuid` (lowercase, hyphenated 8-4-4-4-12 hex) | no |
+| Preferred namespaces per API key or webhook endpoint | 8, ordered, no repeats (`MAX_PREFERRED_NAMESPACES`) | per key / per endpoint, within the cap |
+| Link code | 8 Crockford base32 characters (40 bits), shown as `XXXX-XXXX` | no |
+| Link code lifetime | 5 minutes, single use; a new code for the same id cancels the previous one | no |
+| `identity_format_conflict` message | lists at most 5 offending ids | no |
+
+See [Identity](/api-reference/identity) for the rules behind these numbers.
 
 ## Webhooks
 
@@ -79,6 +95,9 @@ The server runs an in-memory token-bucket limiter per process, applied to the wh
 | Per source IP | 20x the key bucket: 12,000/min, burst 2,000 at defaults | | same env vars; the 20x scale (`SOURCE_BUCKET_SCALE`) is hardcoded |
 | Passcode join, per `(groupId, userId)` | 5/min | 5 | no |
 | Passcode join, per group | 30/min | 30 | no |
+| Link-code requests, per requesting id | 1/min | 5 | no |
+| Link-code redeems, per redeeming id | 1/min | 5 | no |
+| Failed link-code redeems, per API key | 30/min | 60 | no; charged only by `link_code_invalid` answers |
 
 Every request drains the source-IP bucket; requests with a parseable API key also drain the key bucket. Whichever denies first returns `429` with a `Retry-After` header (floored at 1 s). Behind a reverse proxy, set `TRUST_PROXY=true` so the source bucket keys on the rightmost `x-forwarded-for` hop instead of the proxy's own address.
 

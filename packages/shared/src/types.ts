@@ -373,19 +373,69 @@ export type AuditAction =
   | "permission.granted"
   | "permission.revoked"
   | "permission.override.set"
-  | "permission.override.cleared";
+  | "permission.override.cleared"
+  | "identity.linked"
+  | "identity.unlinked";
 
 export interface AuditEntry {
   id: AuditEntryId;
-  groupId: GroupId;
+  // Null for game-scoped actions (game bans, identity links), which no
+  // group audit listing returns.
+  groupId: GroupId | null;
   // null when an action is taken by the system (e.g. invitation expiry).
   actorUserId: UserId | null;
+  // The API key whose request wrote the entry; null for dashboard and
+  // system writes.
+  apiKey: AuditApiKey | null;
   action: AuditAction;
   // Free-form pointer to whatever the action targeted: a user id, role
-  // id, permission key. Type depends on action.
+  // id, permission key. Type depends on action. Ids are recorded as
+  // written and are not re-rendered.
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: Date;
+}
+
+export interface AuditApiKey {
+  id: string;
+  name: string | null;
+  prefix: string;
+}
+
+// =====================================================================
+// Identity linking
+// =====================================================================
+
+// One of a person's ids in a game.
+export interface LinkedIdentity {
+  userId: UserId;
+  // Text before the id's first ":", or null when it has none.
+  namespace: string | null;
+  // When the id joined the person; orders a person's ids.
+  linkedAt: Date;
+}
+
+// A single-use code that links the redeeming id to the requesting id's
+// person. Shown as two groups of four characters.
+export interface LinkCode {
+  code: string;
+  expiresAt: Date;
+}
+
+export interface IdentityLinkResult {
+  // The person after the link, named by the rendering rule.
+  userId: UserId;
+  // The id that joined the person.
+  linkedUserId: UserId;
+  identities: LinkedIdentity[];
+}
+
+export interface IdentityUnlinkResult {
+  // The person the id left, named by one of their remaining ids.
+  userId: UserId;
+  // The id that left; it now names a new, empty person.
+  unlinkedUserId: UserId;
+  identities: LinkedIdentity[];
 }
 
 export interface ListAuditOptions {
@@ -622,14 +672,42 @@ export interface MemberUnbannedEvent extends GroupEventBase {
 // only (SSE is per-group; same precedent as friend events).
 export interface GameUserBannedEvent extends UserEventBase {
   type: "game.user.banned";
+  // The internal JunjoUser id, kept for existing consumers.
   junjoUserId: string;
+  // The banned person's external id, rendered per subscriber.
+  userId: UserId;
   reason: string | null;
   expiresAt: Date | null;
 }
 
 export interface GameUserUnbannedEvent extends UserEventBase {
   type: "game.user.unbanned";
+  // The internal JunjoUser id, kept for existing consumers.
   junjoUserId: string;
+  // The unbanned person's external id, rendered per subscriber.
+  userId: UserId;
+}
+
+// Game-scoped identity events. No groupId; webhook delivery only.
+// `userId` names the person and is rendered per subscriber like every
+// other user id; the remaining id fields are literal and never rewritten.
+export interface IdentityLinkedEvent extends UserEventBase {
+  type: "identity.linked";
+  userId: UserId;
+  // The id that joined the person.
+  linkedUserId: UserId;
+  // Every id the person holds in the game after the link, earliest-linked first.
+  identities: UserId[];
+}
+
+export interface IdentityUnlinkedEvent extends UserEventBase {
+  type: "identity.unlinked";
+  // The person the id left, named by one of their remaining ids.
+  userId: UserId;
+  // The id that left; it now names a new, empty person.
+  unlinkedUserId: UserId;
+  // The ids the person still holds, earliest-linked first.
+  identities: UserId[];
 }
 
 export type JunjoEvent =
@@ -655,7 +733,9 @@ export type JunjoEvent =
   | FriendBlockedEvent
   | FriendUnblockedEvent
   | GameUserBannedEvent
-  | GameUserUnbannedEvent;
+  | GameUserUnbannedEvent
+  | IdentityLinkedEvent
+  | IdentityUnlinkedEvent;
 
 export type JunjoEventType = JunjoEvent["type"];
 
@@ -701,6 +781,9 @@ export interface WebhookEndpoint {
   // Empty array = match every event type (the friendly default).
   events: JunjoEventType[];
   format: WebhookEndpointFormat;
+  // Ordered namespace preference applied to the user ids in this
+  // endpoint's payloads. Empty means no preference.
+  preferredNamespaces: string[];
   createdAt: Date;
   // When set, the endpoint is muted: matching events do not enqueue
   // deliveries.
@@ -722,6 +805,8 @@ export interface CreateWebhookEndpointInput {
   secret?: string;
   // Defaults to "junjo".
   format?: WebhookEndpointFormat;
+  // At most MAX_PREFERRED_NAMESPACES entries, no repeats. Defaults to none.
+  preferredNamespaces?: string[];
 }
 
 export interface UpdateWebhookEndpointInput {
@@ -730,6 +815,8 @@ export interface UpdateWebhookEndpointInput {
   // true sets `disabledAt = now()`; false clears it.
   disabled?: boolean;
   format?: WebhookEndpointFormat;
+  // Replaces the stored preference; an empty list clears it.
+  preferredNamespaces?: string[];
 }
 
 // =====================================================================
@@ -887,10 +974,31 @@ export interface GameConfigPermissions {
   mode: PermissionMode;
 }
 
+// A canonical id format a game can declare for one namespace. "uuid" is
+// the lowercase, hyphenated 8-4-4-4-12 hex form.
+export type UserIdFormat = "uuid";
+
+export const USER_ID_FORMATS = ["uuid"] as const satisfies readonly UserIdFormat[];
+
+// A user id's namespace is the text before its first ":". It is only
+// consulted when a caller states a preference or the game declares a
+// format for it; ids without a ":" have no namespace.
+export const USER_ID_NAMESPACE_PATTERN = "^[a-z0-9_-]{1,32}$";
+export const MAX_DECLARED_ID_FORMATS = 16;
+export const MAX_PREFERRED_NAMESPACES = 8;
+
+export interface GameConfigIdentity {
+  // Namespace to the format every id in it must match. Ids in a declared
+  // namespace that do not match are rejected on every path that accepts
+  // a user id.
+  formats: Record<string, UserIdFormat>;
+}
+
 export interface GameConfig {
   friends: GameConfigFriends;
   blocks: GameConfigBlocks;
   permissions: GameConfigPermissions;
+  identity: GameConfigIdentity;
 }
 
 // Deeply-partial shape for PATCH payloads. Every nested branch is
@@ -904,6 +1012,8 @@ export type PartialGameConfig = {
   };
   blocks?: Partial<GameConfigBlocks>;
   permissions?: Partial<GameConfigPermissions>;
+  // `formats` replaces the stored map as a whole.
+  identity?: Partial<GameConfigIdentity>;
 };
 
 // =====================================================================
@@ -941,6 +1051,10 @@ export const JUNJO_ERROR_CODES = [
   "role_group_mismatch",
   "parent_cycle",
   "permission_mode_conflict",
+  "invalid_user_id",
+  "identity_format_conflict",
+  "link_code_invalid",
+  "link_refused",
   "banned",
   "passcode_required",
   "passcode_invalid",

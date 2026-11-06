@@ -3,6 +3,7 @@
 // Schemas for the admin-token-gated endpoints in `routes/admin.ts`.
 
 import { z } from "zod";
+import { preferredNamespacesSchema } from "../config/schema.js";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
 import { pageLimit } from "./page.schema.js";
 
@@ -334,3 +335,26 @@ export const ANALYTICS_MEMBER_ACTIVITY_HOURS = 24;
 
 export const ADMIN_ROLE_DISTRIBUTION_TOP_N = 10;
 export const ADMIN_PERMISSION_USAGE_TOP_N = 15;
+
+export const API_KEY_NAME_MAX_LENGTH = 64;
+const apiKeyNameSchema = z.string().trim().min(1).max(API_KEY_NAME_MAX_LENGTH);
+
+// POST /v1/admin/games/:gameId/api-keys. The body is optional.
+export const adminCreateApiKeyBody = z
+  .object({
+    name: apiKeyNameSchema.optional(),
+    preferredNamespaces: preferredNamespacesSchema.optional(),
+  })
+  .strict();
+
+// PATCH /v1/admin/games/:gameId/api-keys/:keyId. `name: null` clears it.
+export const adminUpdateApiKeyBody = z
+  .object({
+    name: z.union([apiKeyNameSchema, z.null()]).optional(),
+    preferredNamespaces: preferredNamespacesSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (body) => body.name !== undefined || body.preferredNamespaces !== undefined,
+    "body must include `name` or `preferredNamespaces`",
+  );

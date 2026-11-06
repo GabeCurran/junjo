@@ -21,6 +21,9 @@ export interface WireWebhookEndpoint {
   url: string;
   events: string[];
   format: string;
+  // Ordered namespace preference applied to user ids in this endpoint's
+  // payloads; empty means none.
+  preferredNamespaces: string[];
   createdAt: string;
   disabledAt: string | null;
 }
@@ -36,6 +39,7 @@ export function serializeWebhookEndpoint(endpoint: WebhookEndpoint): WireWebhook
     url: endpoint.url,
     events: endpoint.events,
     format: endpoint.format,
+    preferredNamespaces: endpoint.preferredNamespaces,
     createdAt: endpoint.createdAt.toISOString(),
     disabledAt: endpoint.disabledAt ? endpoint.disabledAt.toISOString() : null,
   };
@@ -66,7 +70,7 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
         .join("; ");
       throw Errors.badRequest(issues || "invalid body");
     }
-    const { url, events, secret, format } = parsed.data;
+    const { url, events, secret, format, preferredNamespaces } = parsed.data;
     assertSafeWebhookUrl(url, guardOpts);
     const finalSecret = secret ?? generateWebhookSecret();
 
@@ -76,6 +80,7 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
         url,
         secret: finalSecret,
         events: events ?? [],
+        preferredNamespaces: preferredNamespaces ?? [],
         ...(format !== undefined ? { format } : {}),
       },
     });
@@ -155,13 +160,14 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
         .join("; ");
       throw Errors.badRequest(issues || "invalid body");
     }
-    const { url, events, disabled, format } = parsed.data;
+    const { url, events, disabled, format, preferredNamespaces } = parsed.data;
 
     const data: {
       url?: string;
       events?: string[];
       disabledAt?: Date | null;
       format?: string;
+      preferredNamespaces?: string[];
     } = {};
     if (url !== undefined && url !== existing.url) {
       assertSafeWebhookUrl(url, guardOpts);
@@ -179,6 +185,14 @@ export function webhooksRouter(prisma: PrismaClient, opts: WebhooksRouterOptions
     }
     if (format !== undefined && format !== existing.format) {
       data.format = format;
+    }
+    // Order is significant, so compare element by element as given.
+    if (
+      preferredNamespaces !== undefined &&
+      (preferredNamespaces.length !== existing.preferredNamespaces.length ||
+        preferredNamespaces.some((ns, i) => ns !== existing.preferredNamespaces[i]))
+    ) {
+      data.preferredNamespaces = preferredNamespaces;
     }
 
     if (Object.keys(data).length === 0) {

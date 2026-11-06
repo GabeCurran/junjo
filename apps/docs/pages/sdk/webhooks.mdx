@@ -226,6 +226,7 @@ interface CreateWebhookEndpointInput {
   events?: JunjoEventType[];
   secret?: string;
   format?: WebhookEndpointFormat;
+  preferredNamespaces?: string[];
 }
 
 interface UpdateWebhookEndpointInput {
@@ -233,6 +234,18 @@ interface UpdateWebhookEndpointInput {
   events?: JunjoEventType[];
   disabled?: boolean;
   format?: WebhookEndpointFormat;
+  preferredNamespaces?: string[];
+}
+
+interface WebhookEndpoint {
+  id: WebhookEndpointId;
+  gameId: GameId;
+  url: string;
+  events: JunjoEventType[];
+  format: WebhookEndpointFormat;
+  preferredNamespaces: string[];
+  createdAt: Date;
+  disabledAt: Date | null;
 }
 
 type WebhookEndpointFormat = "junjo" | "discord" | "slack";
@@ -272,6 +285,20 @@ await junjo.webhooks.endpoints.create({
 });
 ```
 
+#### `preferredNamespaces`
+
+When a person holds several [linked ids](/sdk/identities), the server names them in each payload by this endpoint's ordered `preferredNamespaces`: the earliest-linked id in the first listed namespace the person has an id in, otherwise their earliest-linked id overall. The list defaults to `[]` (no preference), holds at most 8 entries, takes no repeats, and each entry is 1 to 32 of `a-z`, `0-9`, `_`, `-`. A person with a single id is named by that id regardless.
+
+```ts
+// A website backend that wants web ids where the person has one
+await junjo.webhooks.endpoints.create({
+  url: "https://dev.example.com/webhooks/junjo",
+  preferredNamespaces: ["web"],
+});
+```
+
+Even with a preference set, a payload can name a person by an id outside your namespaces (when they have no id in any listed namespace), so receivers must handle that. The SDK returns `preferredNamespaces: []` when an older server omits the field.
+
 ### `endpoints.list(opts?)`
 
 Returns one page of the calling game's endpoints, newest first, in the standard `Page<WebhookEndpoint>` shape (`{ items, nextCursor }`). The wire format omits `secret`. `limit` defaults to 50 (max 100); `nextCursor` is the id of the last item, fed back as `cursor` for the next page, and `null` on the final page.
@@ -295,7 +322,7 @@ for await (const e of junjo.webhooks.endpoints.listAll()) {
 
 ### `endpoints.update(id, input)`
 
-Partial update. Pass at least one of `url`, `events`, or `disabled`; an empty body is rejected.
+Partial update. Pass at least one of `url`, `events`, `disabled`, `format`, or `preferredNamespaces`; an empty body is rejected.
 
 ```ts
 // Disable an endpoint without deleting it (e.g. while debugging a 5xx loop)
@@ -310,7 +337,14 @@ await junjo.webhooks.endpoints.update(endpoint.id, {
 await junjo.webhooks.endpoints.update(endpoint.id, { disabled: false });
 ```
 
-`events` replaces wholesale; pass `[]` to clear the filter back to match-all. The post-state `WebhookEndpoint` is returned (without `secret`). A PATCH whose values match the stored row is idempotent (no DB write).
+```ts
+// Prefer discord ids, then game ids, in this endpoint's payloads
+await junjo.webhooks.endpoints.update(endpoint.id, {
+  preferredNamespaces: ["discord", "game"],
+});
+```
+
+`events` replaces wholesale; pass `[]` to clear the filter back to match-all. `preferredNamespaces` replaces wholesale too; pass `[]` to clear the preference. The post-state `WebhookEndpoint` is returned (without `secret`). A PATCH whose values match the stored row is idempotent (no DB write).
 
 ### `endpoints.delete(id)`
 

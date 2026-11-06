@@ -20,7 +20,7 @@ The Roblox SDK applies the same constructor checks (`init.lua` raises `invalid_c
 
 | Code | Meaning | Fix |
 |------|---------|-----|
-| `permission_denied` | The acting user lacks the permission, the group requires an invitation to join, or a direct invitation was redeemed with the wrong `userId` | Check with `junjo.check(userId, groupId, permission)` for the full resolution trace; for direct invitations, the accepting `userId` must equal the invitation's `targetUserId` |
+| `permission_denied` | The acting user lacks the permission, the group requires an invitation to join, or a direct invitation was redeemed with the wrong `userId` | Check with `junjo.check(userId, groupId, permission)` for the full resolution trace; for direct invitations, the accepting `userId` must be the invitation's `targetUserId` or an id linked to it |
 | `banned` | The user has an active per-group or game-wide ban; checked on join and on invitation accept, before any state changes | `junjo.bans.get` / ban history shows scope and expiry. Bans expire lazily: an expired ban stops blocking on the next check without a background job |
 | `passcode_required` / `passcode_invalid` | The group has a join passcode and the join body omitted it or got it wrong. Applies to `join` only; invitation accept never asks for a passcode (the invitation is the credential) | Send `passcode` in the join body. Note that repeated wrong passcodes hit a dedicated limiter (5/min per user per group, 30/min per group) which returns 429, not 403 |
 
@@ -29,6 +29,16 @@ Secret groups return `404 not_found` to non-members instead of a 403, deliberate
 ## 409 already_member
 
 Races, mostly. `already_member` fires when a join or invitation-accept lands on a user who already has an `active` membership row, including the concurrent case where two joins (or a join racing an accept) hit at once: the loser gets the 409 and the transaction rolls back cleanly (an invitation involved in the losing accept is un-consumed). Treat it as success-shaped in join flows: the user is in the group. Users with a `left` or `kicked` row are reactivated, not 409'd.
+
+## Identity linking
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `400 invalid_user_id` on a call that used to work | The game declared a [canonical format](/api-reference/identity#canonical-formats) for the id's namespace, and the id is spelled differently (uppercase, unhyphenated) | Normalize ids before sending them. The check runs on reads too |
+| A response names a user by a different id than the request used | The person has linked ids; responses follow the [rendering rule](/api-reference/identity#the-rendering-rule), not the request | Set `preferredNamespaces` on the API key (or webhook endpoint) to the namespaces you want to see, and handle ids outside them |
+| `400 link_code_invalid` for a code the person just read | Expired (5 minutes), already used, replaced by a newer code for the same id, or mistyped | Request a new code. `O`, `I` and `L` are read as `0`, `1`, `1`; `U` never appears in a code |
+| `409 link_refused` | Both ids belong to people with roles, relationships, history or other ids | Not retryable. Decide which side to keep and clear the other first |
+| `429` on redeem with a valid code | The calling key's failed-redeem budget (60 burst, 30/min) is spent, or the redeeming id's budget (5 burst, 1/min) | Wait for `Retry-After`; look for a client retrying bad codes in a loop |
 
 ## 410: gone
 

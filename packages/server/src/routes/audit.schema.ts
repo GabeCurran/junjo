@@ -40,6 +40,8 @@ export const AUDIT_ACTIONS = [
   "permission.revoked",
   "permission.override.set",
   "permission.override.cleared",
+  "identity.linked",
+  "identity.unlinked",
 ] as const;
 
 export type AuditActionString = (typeof AUDIT_ACTIONS)[number];

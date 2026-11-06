@@ -12,6 +12,12 @@ import { adminUpdateGameConfigBody } from "../config/schema.js";
 import { Errors } from "../errors.js";
 import { permissionCache } from "../permissionCache.js";
 import { applyPermissionModeSwitch } from "../permissionModeSwitch.js";
+import { type DeclaredFormats, findFormatConflicts } from "../userIdFormat.js";
+
+function sameFormats(a: DeclaredFormats, b: DeclaredFormats): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
 
 export interface WireAdminGameConfig {
   gameId: string;
@@ -66,7 +72,7 @@ export function updateAdminGameConfigHandler(prisma: PrismaClient): Handler {
     // The Game row is locked FOR UPDATE so a permission mode switch
     // cannot interleave with key writes, which read the mode under a
     // share lock on the same row.
-    const { updated, modeChanged } = await prisma.$transaction(
+    const { updated, cacheStale } = await prisma.$transaction(
       async (tx) => {
         const rows = await tx.$queryRaw<
           { id: string; config: unknown; networkId: string | null }[]
@@ -78,6 +84,19 @@ export function updateAdminGameConfigHandler(prisma: PrismaClient): Handler {
         const merged: PartialGameConfig =
           body.config !== undefined ? mergeGameConfig(stored, body.config) : (stored ?? {});
         const nextNetworkId = body.networkId === undefined ? existing.networkId : body.networkId;
+
+        // Declaring or changing a namespace's format is refused while any
+        // stored id in it would stop matching. The row lock above holds
+        // off first-time identity creates, which share-lock this row.
+        const formatsBefore = resolveGameConfig(stored).identity.formats;
+        const formatsAfter = resolveGameConfig(merged).identity.formats;
+        const conflicts = await findFormatConflicts(tx, gameId, formatsBefore, formatsAfter);
+        if (conflicts.length > 0) {
+          throw Errors.identityFormatConflict(
+            `stored user ids do not match the declared format: ${conflicts.join(", ")}`,
+          );
+        }
+        const formatsChanged = !sameFormats(formatsBefore, formatsAfter);
 
         const before = resolveGameConfig(stored).permissions.mode;
         const after = resolveGameConfig(merged).permissions.mode;
@@ -105,12 +124,13 @@ export function updateAdminGameConfigHandler(prisma: PrismaClient): Handler {
           },
           select: { id: true, config: true, networkId: true },
         });
-        return { updated: row, modeChanged: before !== after };
+        return { updated: row, cacheStale: before !== after || formatsChanged };
       },
       { timeout: 60_000 },
     );
-    // Every cached answer for this game was computed under the old mode.
-    if (modeChanged) permissionCache.clear();
+    // Every cached answer for this game was computed under the old mode,
+    // or for id spellings that a newly declared format now rejects.
+    if (cacheStale) permissionCache.clear();
 
     return c.json<WireAdminGameConfig>(toWire(updated.id, updated.config, updated.networkId));
   };

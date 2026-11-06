@@ -41,19 +41,28 @@ model Game {
   gameBans           GameBan[]
   banHistory         BanHistory[]
   auditEntries       AuditEntry[]
+  linkCodes          LinkCode[]
 
   @@index([networkId])
 }
 
 model ApiKey {
-  id           String    @id @default(cuid())
-  gameId       String
-  game         Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(cuid())
+  gameId              String
+  game                Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
   // Display prefix shown to the dev. The full key is `prefix.secret`.
-  prefix       String    @unique
-  hashedSecret String
-  createdAt    DateTime  @default(now())
-  revokedAt    DateTime?
+  prefix              String    @unique
+  hashedSecret        String
+  // Optional operator-facing label; shown on audit entries the key wrote.
+  name                String?
+  // Ordered namespace preference for rendering user ids in responses and
+  // SSE events read through this key. Empty means no preference.
+  preferredNamespaces String[]  @default([])
+  createdAt           DateTime  @default(now())
+  revokedAt           DateTime?
+
+  auditEntries AuditEntry[]
+  linkCodes    LinkCode[]
 
   @@index([gameId])
 }
@@ -87,6 +96,11 @@ model ExternalIdentity {
   junjoUser      JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
   externalUserId String
   createdAt      DateTime  @default(now())
+  // When this id joined its current JunjoUser: creation time, reset on
+  // link and unlink. Orders a person's ids for deterministic rendering.
+  linkedAt       DateTime  @default(now())
+
+  linkCodes LinkCode[]
 
   @@unique([gameId, externalUserId])
   @@index([junjoUserId])
@@ -94,6 +108,27 @@ model ExternalIdentity {
   // the members list endpoints (`WHERE gameId AND junjoUserId IN (...)`),
   // and the gameId-scoped existence checks in `findJunjoUserId`.
   @@index([gameId, junjoUserId])
+}
+
+// Single-use code that links the redeeming id to the issuing id's
+// person. Only the SHA-256 of the normalized code is stored; codes are
+// short-lived and looked up by hash, so a slow hash buys nothing.
+model LinkCode {
+  id                 String           @id @default(cuid())
+  gameId             String
+  game               Game             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  codeHash           String
+  externalIdentityId String
+  externalIdentity   ExternalIdentity @relation(fields: [externalIdentityId], references: [id], onDelete: Cascade)
+  apiKeyId           String?
+  apiKey             ApiKey?          @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  createdAt          DateTime         @default(now())
+  expiresAt          DateTime
+  usedAt             DateTime?
+
+  @@unique([gameId, codeHash])
+  @@index([externalIdentityId])
+  @@index([expiresAt])
 }
 
 // =====================================================================
@@ -459,6 +494,10 @@ model AuditEntry {
   action      String
   targetId    String?
   payload     Json       @default("{}")
+  // The API key whose request wrote this entry; null for dashboard and
+  // system writes. Stamped centrally by the audit attribution extension.
+  apiKeyId    String?
+  apiKey      ApiKey?    @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   createdAt   DateTime   @default(now())
 
   @@index([groupId, createdAt(sort: Desc)])
@@ -486,6 +525,9 @@ model WebhookEndpoint {
   // payload and skips the HMAC (Discord webhooks authenticate via URL).
   // Slack and other targets land here in later phases.
   format              String    @default("junjo")
+  // Ordered namespace preference for rendering user ids in payloads
+  // delivered to this endpoint. Empty means no preference.
+  preferredNamespaces String[]  @default([])
   createdAt           DateTime  @default(now())
   disabledAt          DateTime?
   // Rolling counter of consecutive failed delivery attempts (network

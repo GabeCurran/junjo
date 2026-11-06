@@ -28,6 +28,8 @@ export { useBans } from "./useBans.js";
 export type { UseBansOptions, UseBansResult } from "./useBans.js";
 export { useGroups } from "./useGroups.js";
 export type { UseGroupsOptions, UseGroupsResult } from "./useGroups.js";
+export { useIdentities } from "./useIdentities.js";
+export type { UseIdentitiesResult } from "./useIdentities.js";
 export { useAuditLog } from "./useAuditLog.js";
 export type { UseAuditLogOptions, UseAuditLogResult } from "./useAuditLog.js";
 export { useMutation } from "./useMutation.js";

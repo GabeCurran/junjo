@@ -179,6 +179,48 @@ describe("audit.list", () => {
     expect(page.items[0]?.payload).toEqual({});
   });
 
+  it("maps the writing API key onto apiKey, and null or absent apiKey onto null", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        items: [
+          {
+            ...wireEntry,
+            id: "audit_key",
+            apiKey: { id: "key_1", name: "backend", prefix: "jk_abc123" },
+          },
+          { ...wireEntry, id: "audit_dashboard", apiKey: null },
+          { ...wireEntry, id: "audit_older_server" },
+        ],
+        nextCursor: null,
+      }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const page = await junjo.audit.list("grp_1" as GroupId);
+    expect(page.items[0]?.apiKey).toEqual({ id: "key_1", name: "backend", prefix: "jk_abc123" });
+    expect(page.items[1]?.apiKey).toBeNull();
+    expect(page.items[2]?.apiKey).toBeNull();
+  });
+
+  it("preserves a null key name on apiKey", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        items: [{ ...wireEntry, apiKey: { id: "key_2", name: null, prefix: "jk_def456" } }],
+        nextCursor: null,
+      }),
+    );
+    const junjo = new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const page = await junjo.audit.list("grp_1" as GroupId);
+    expect(page.items[0]?.apiKey).toEqual({ id: "key_2", name: null, prefix: "jk_def456" });
+  });
+
   it("URL-encodes the group id (slashes, spaces)", async () => {
     const fetchMock = makeFetch(async (req) => {
       expect(new URL(req.url).pathname).toBe("/v1/groups/grp%2Fwith%20spaces/audit");

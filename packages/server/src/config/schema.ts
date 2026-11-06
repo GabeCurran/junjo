@@ -1,4 +1,11 @@
-import { FRIENDS_LIST_VISIBILITY_VALUES, PERMISSION_MODES } from "@junjo.io/shared";
+import {
+  FRIENDS_LIST_VISIBILITY_VALUES,
+  MAX_DECLARED_ID_FORMATS,
+  MAX_PREFERRED_NAMESPACES,
+  PERMISSION_MODES,
+  USER_ID_FORMATS,
+  USER_ID_NAMESPACE_PATTERN,
+} from "@junjo.io/shared";
 import { z } from "zod";
 
 // Validates a PATCH /v1/admin/games/:gameId/config payload. Every leaf
@@ -63,11 +70,51 @@ const permissionsPatchSchema = z
   })
   .strict();
 
+export const userIdNamespaceSchema = z
+  .string()
+  .regex(new RegExp(USER_ID_NAMESPACE_PATTERN), "namespace must be 1-32 of a-z, 0-9, _ or -");
+
+// An ordered namespace preference, as stored on API keys and webhook
+// endpoints. Empty means no preference.
+export const preferredNamespacesSchema = z
+  .array(userIdNamespaceSchema)
+  .max(MAX_PREFERRED_NAMESPACES)
+  .refine((list) => new Set(list).size === list.length, "namespaces must not repeat");
+
+// Declaring a format is refused while stored ids in that namespace do
+// not match it; that check needs the database, so the route runs it.
+const identityPatchSchema = z
+  .object({
+    formats: z
+      .record(z.string(), z.enum(USER_ID_FORMATS))
+      .superRefine((formats, ctx) => {
+        const keys = Object.keys(formats);
+        if (keys.length > MAX_DECLARED_ID_FORMATS) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `at most ${MAX_DECLARED_ID_FORMATS} namespaces may declare a format`,
+          });
+        }
+        for (const key of keys) {
+          if (!userIdNamespaceSchema.safeParse(key).success) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message: "namespace must be 1-32 of a-z, 0-9, _ or -",
+            });
+          }
+        }
+      })
+      .optional(),
+  })
+  .strict();
+
 export const gameConfigPatchSchema = z
   .object({
     friends: friendsPatchSchema.optional(),
     blocks: blocksPatchSchema.optional(),
     permissions: permissionsPatchSchema.optional(),
+    identity: identityPatchSchema.optional(),
   })
   .strict();
 

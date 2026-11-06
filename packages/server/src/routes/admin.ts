@@ -17,7 +17,6 @@ import type {
 import { Prisma } from "@prisma/client";
 import type {
   ApiKey,
-  AuditEntry,
   Game,
   Group,
   GroupMember,
@@ -38,7 +37,13 @@ import {
   toPublicGroupRelationship,
   toPublicInvitation,
 } from "../events.js";
-import { findJunjoUserId } from "../identity.js";
+import {
+  IDENTITY_ORDER,
+  findJunjoUserId,
+  pickRenderedId,
+  renderResolved,
+  renderUserIds,
+} from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import {
   EMPTY_ROLE_DETAIL,
@@ -60,6 +65,7 @@ import {
   updateRole,
   upsertRoleEntry,
 } from "../roleWrites.js";
+import { assertUserIdsWellFormed } from "../userIdFormat.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS,
@@ -72,6 +78,7 @@ import {
   ANALYTICS_MEMBER_ACTIVITY_HOURS,
   adminCheckPermissionQuery,
   adminClearRelationshipQuery,
+  adminCreateApiKeyBody,
   adminCreateInvitationBody,
   adminCreateRoleBody,
   adminGrantPermissionBody,
@@ -79,6 +86,7 @@ import {
   adminOverridePermissionBody,
   adminSetParentBody,
   adminSetRelationshipBody,
+  adminUpdateApiKeyBody,
   adminUpdateMemberBody,
   adminUpdateRoleBody,
   createGameBody,
@@ -92,7 +100,14 @@ import {
   memberActivityQuery,
   updateAdminGroupBody,
 } from "./admin.schema.js";
-import { auditBeforeFilter, serializeAuditEntry } from "./audit.js";
+import {
+  AUDIT_API_KEY_INCLUDE,
+  type AuditRowWithKey,
+  type WireAuditApiKey,
+  auditBeforeFilter,
+  serializeAuditApiKey,
+  serializeAuditEntry,
+} from "./audit.js";
 import type { WireAuditEntry } from "./audit.js";
 import { listAuditQuery } from "./audit.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
@@ -128,7 +143,7 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
     const identities = await prisma.externalIdentity.findMany({
       where: { junjoUserId },
       select: { gameId: true, externalUserId: true },
-      orderBy: { gameId: "asc" },
+      orderBy: [{ gameId: "asc" }, ...IDENTITY_ORDER],
     });
 
     if (identities.length === 0) {
@@ -151,10 +166,18 @@ export function listUserGamesHandler(prisma: PrismaClient): Handler {
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
 
-    const games: WireUserGameRow[] = identities.map((identity) => ({
-      gameId: identity.gameId,
-      externalUserId: identity.externalUserId,
-      joinedGroupCount: counts.get(identity.gameId) ?? 0,
+    // One row per game. A person with several ids in a game is named by
+    // the rendering rule with no namespace preference.
+    const idsByGame = new Map<string, string[]>();
+    for (const identity of identities) {
+      const list = idsByGame.get(identity.gameId);
+      if (list) list.push(identity.externalUserId);
+      else idsByGame.set(identity.gameId, [identity.externalUserId]);
+    }
+    const games: WireUserGameRow[] = [...idsByGame].map(([gameId, ordered]) => ({
+      gameId,
+      externalUserId: pickRenderedId(ordered, []),
+      joinedGroupCount: counts.get(gameId) ?? 0,
     }));
 
     return c.json<WireUserGames>({ junjoUserId, games });
@@ -208,6 +231,7 @@ export interface WireAdminAuditEntry {
   groupName: string | null;
   groupSoftDeleted: boolean;
   actorUserId: string | null;
+  apiKey: WireAuditApiKey | null;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -221,7 +245,7 @@ export interface WireAdminAuditPage {
 // parameter and the call site stays honest about requested fields.
 // `group` is optional because game-scoped events have a null groupId
 // and the relation walk returns null in that case.
-type AdminAuditRow = AuditEntry & {
+type AdminAuditRow = AuditRowWithKey & {
   game: Pick<Game, "name">;
   group: Pick<Group, "name" | "softDeletedAt"> | null;
 };
@@ -236,6 +260,7 @@ export function serializeAdminAuditEntry(row: AdminAuditRow): WireAdminAuditEntr
     groupName: row.group?.name ?? null,
     groupSoftDeleted: row.group?.softDeletedAt != null,
     actorUserId: row.actorUserId,
+    apiKey: serializeAuditApiKey(row),
     targetId: row.targetId,
     payload: (row.payload ?? {}) as Record<string, unknown>,
     createdAt: row.createdAt.toISOString(),
@@ -264,6 +289,7 @@ export function listRecentAuditHandler(prisma: PrismaClient): Handler {
       include: {
         game: { select: { name: true } },
         group: { select: { name: true, softDeletedAt: true } },
+        ...AUDIT_API_KEY_INCLUDE,
       },
     });
 
@@ -291,6 +317,8 @@ export interface WireAdminApiKey {
   id: string;
   gameId: string;
   prefix: string;
+  name: string | null;
+  preferredNamespaces: string[];
   createdAt: string;
   revokedAt: string | null;
 }
@@ -327,6 +355,8 @@ function toWireApiKey(row: ApiKey): WireAdminApiKey {
     id: row.id,
     gameId: row.gameId,
     prefix: row.prefix,
+    name: row.name,
+    preferredNamespaces: row.preferredNamespaces,
     createdAt: row.createdAt.toISOString(),
     revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
   };
@@ -481,9 +511,28 @@ export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
     });
     if (!game) throw Errors.notFound("game");
 
+    // The body is optional; an empty or absent body mints an unnamed key
+    // with no namespace preference.
+    const text = await c.req.text().catch(() => "");
+    let json: unknown = {};
+    if (text.trim().length > 0) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw Errors.badRequest("malformed JSON");
+      }
+    }
+    const body = parseBody(adminCreateApiKeyBody, json);
+
     const raw = await generateApiKey();
     const apiKey = await prisma.apiKey.create({
-      data: { gameId, prefix: raw.prefix, hashedSecret: raw.hashedSecret },
+      data: {
+        gameId,
+        prefix: raw.prefix,
+        hashedSecret: raw.hashedSecret,
+        name: body.name ?? null,
+        preferredNamespaces: body.preferredNamespaces ?? [],
+      },
     });
 
     return c.json<WireAdminApiKeyCreated>({ ...toWireApiKey(apiKey), key: raw.full }, 201);
@@ -637,6 +686,35 @@ export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
 // (operators care about when the revoke happened, not when they retried).
 // Rows are never hard-deleted so the historic prefix resolves in audit
 // lookups.
+// Renames a key or changes its namespace preference without rotating
+// its secret. Allowed on revoked keys so their audit label can still be
+// corrected.
+export function updateAdminApiKeyHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.req.param("gameId");
+    const keyId = c.req.param("keyId");
+    if (!gameId) throw Errors.badRequest("gameId is required");
+    if (!keyId) throw Errors.badRequest("keyId is required");
+
+    const json = await c.req.json().catch(() => null);
+    if (json === null) throw Errors.badRequest("malformed JSON");
+    const body = parseBody(adminUpdateApiKeyBody, json);
+
+    const existing = await prisma.apiKey.findUnique({ where: { id: keyId } });
+    if (!existing || existing.gameId !== gameId) throw Errors.notFound("api key");
+    const updated = await prisma.apiKey.update({
+      where: { id: keyId },
+      data: {
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.preferredNamespaces !== undefined
+          ? { preferredNamespaces: body.preferredNamespaces }
+          : {}),
+      },
+    });
+    return c.json<WireAdminApiKey>(toWireApiKey(updated));
+  };
+}
+
 export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -818,10 +896,7 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
         where: { groupMemberId: { in: memberIds } },
         select: { groupMemberId: true, roleId: true },
       }),
-      prisma.externalIdentity.findMany({
-        where: { gameId, junjoUserId: { in: junjoUserIds } },
-        select: { junjoUserId: true, externalUserId: true },
-      }),
+      renderUserIds(prisma, gameId, junjoUserIds),
     ]);
 
     const roleIdsByMember = new Map<string, string[]>();
@@ -841,7 +916,7 @@ export function listAdminGroupMembersHandler(prisma: PrismaClient): Handler {
           });
     const rolesById = new Map(roles.map((r) => [r.id, r]));
 
-    const identityById = new Map(identities.map((i) => [i.junjoUserId, i.externalUserId]));
+    const identityById = identities;
 
     const items = members.map((m) => {
       const externalUserId = identityById.get(m.junjoUserId) ?? "";
@@ -895,6 +970,8 @@ interface AdminMemberContext {
   member: GroupMember;
   junjoUserId: string;
   externalUserId: string;
+  // The id responses name the member by (see `renderUserIds`).
+  shownId: string;
 }
 
 // Collapses every "doesn't exist" cause (cross-game group, soft-delete,
@@ -919,7 +996,8 @@ async function loadAdminMemberContext(
   });
   if (!member) throw Errors.notFound("member");
 
-  return { group, member, junjoUserId, externalUserId };
+  const shownId = await renderResolved(prisma, gameId, junjoUserId, externalUserId);
+  return { group, member, junjoUserId, externalUserId, shownId };
 }
 
 // Same role-sort as the list endpoint (priority desc, name asc).
@@ -947,10 +1025,8 @@ async function loadAdminGroupMemberAfterMutation(
     if (a.priority !== b.priority) return b.priority - a.priority;
     return a.name.localeCompare(b.name);
   });
-  // Marks the identity lookup as scoped; the externalUserId is round-
-  // tripped from the path so we skip re-querying.
-  void gameId;
-  return toWireAdminGroupMember(member, externalUserId, roles);
+  const shownId = await renderResolved(prisma, gameId, member.junjoUserId, externalUserId);
+  return toWireAdminGroupMember(member, shownId, roles);
 }
 
 // Only transitions an active member to "kicked"; non-active rows return
@@ -1141,7 +1217,12 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
     }
     const { grant } = parsed.data;
 
-    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+    const { group, member, shownId } = await loadAdminMemberContext(
+      prisma,
+      gameId,
+      groupId,
+      userId,
+    );
 
     const result = await setMemberOverride(prisma, {
       gameId,
@@ -1153,7 +1234,7 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
     });
 
     return c.json<WireAdminMemberPermissionOverride>(
-      toWireAdminMemberPermissionOverride(result, group.id, userId),
+      toWireAdminMemberPermissionOverride(result, group.id, shownId),
     );
   };
 }
@@ -1194,7 +1275,12 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
     if (!groupId) throw Errors.badRequest("groupId is required");
     if (!userId) throw Errors.badRequest("userId is required");
 
-    const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
+    const { group, member, shownId } = await loadAdminMemberContext(
+      prisma,
+      gameId,
+      groupId,
+      userId,
+    );
 
     const overrides = await prisma.memberPermissionOverride.findMany({
       where: { groupMemberId: member.id },
@@ -1202,7 +1288,7 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
     });
 
     return c.json<WireAdminMemberPermissionOverride[]>(
-      overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, userId)),
+      overrides.map((o) => toWireAdminMemberPermissionOverride(o, group.id, shownId)),
     );
   };
 }
@@ -1244,6 +1330,7 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
     if (group.softDeletedAt !== null) throw Errors.notFound("group");
 
     const targetUserId = body.targetUserId ?? null;
+    if (targetUserId !== null) await assertUserIdsWellFormed(prisma, gameId, [targetUserId]);
     const roleId = body.roleId ?? null;
 
     const { invitation, event } = await prisma.$transaction(
@@ -1537,6 +1624,7 @@ export function listAdminGroupAuditHandler(prisma: PrismaClient): Handler {
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
+      include: AUDIT_API_KEY_INCLUDE,
     });
     const hasMore = entries.length > limit;
     const sliced = hasMore ? entries.slice(0, limit) : entries;
@@ -1613,6 +1701,7 @@ export function listAdminGameAuditHandler(prisma: PrismaClient): Handler {
       include: {
         game: { select: { name: true } },
         group: { select: { name: true, softDeletedAt: true } },
+        ...AUDIT_API_KEY_INCLUDE,
       },
     });
     const hasMore = rows.length > limit;
@@ -2104,6 +2193,7 @@ export function checkAdminPermissionHandler(
     });
     if (!group) throw Errors.notFound("group");
 
+    await assertUserIdsWellFormed(prisma, gameId, [userId]);
     const cached = cache.get(gameId, group.id, userId, permission);
     if (cached) return c.json(cached);
 

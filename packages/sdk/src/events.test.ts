@@ -209,14 +209,30 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
   "game.user.banned": {
     ...userBase,
     type: "game.user.banned",
-    junjoUserId: "user_alice",
+    junjoUserId: "jusr_alice",
+    userId: "game:alice",
     reason: "cheating",
     expiresAt: null,
   } as WireJunjoEvent,
   "game.user.unbanned": {
     ...userBase,
     type: "game.user.unbanned",
-    junjoUserId: "user_alice",
+    junjoUserId: "jusr_alice",
+    userId: "game:alice",
+  } as WireJunjoEvent,
+  "identity.linked": {
+    ...userBase,
+    type: "identity.linked",
+    userId: "game:alice",
+    linkedUserId: "web:alice",
+    identities: ["game:alice", "web:alice"],
+  } as WireJunjoEvent,
+  "identity.unlinked": {
+    ...userBase,
+    type: "identity.unlinked",
+    userId: "game:alice",
+    unlinkedUserId: "web:alice",
+    identities: ["game:alice"],
   } as WireJunjoEvent,
 };
 
@@ -236,7 +252,7 @@ describe("deserializeEvent completeness", () => {
     for (const type of allTypes) {
       expect(deserializeEvent(WIRE_FIXTURES[type])).toBeDefined();
     }
-    expect(allTypes).toHaveLength(23);
+    expect(allTypes).toHaveLength(25);
   });
 
   it("throws JunjoError(unknown_event_type) on a type this SDK predates", () => {
@@ -291,6 +307,36 @@ describe("deserializeEvent completeness", () => {
     expect(event.respondedAt).toBeInstanceOf(Date);
     expect(event.actorJunjoUserId).toBe("user_alice");
     expect(event.targetJunjoUserId).toBe("user_bob");
+  });
+
+  it("carries the external userId alongside junjoUserId on game.user.banned and unbanned", () => {
+    const banned = deserializeEvent(WIRE_FIXTURES["game.user.banned"]);
+    if (banned.type !== "game.user.banned") throw new Error("wrong type");
+    expect(banned.userId).toBe("game:alice");
+    expect(banned.junjoUserId).toBe("jusr_alice");
+    expect(banned.expiresAt).toBeNull();
+    const unbanned = deserializeEvent(WIRE_FIXTURES["game.user.unbanned"]);
+    if (unbanned.type !== "game.user.unbanned") throw new Error("wrong type");
+    expect(unbanned.userId).toBe("game:alice");
+    expect(unbanned.junjoUserId).toBe("jusr_alice");
+  });
+
+  it("deserializes identity.linked with the person, the joining id, and every id", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["identity.linked"]);
+    if (event.type !== "identity.linked") throw new Error("wrong type");
+    expect(event.userId).toBe("game:alice");
+    expect(event.linkedUserId).toBe("web:alice");
+    expect(event.identities).toEqual(["game:alice", "web:alice"]);
+    expect("groupId" in event).toBe(false);
+  });
+
+  it("deserializes identity.unlinked with the remaining person and the leaving id", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["identity.unlinked"]);
+    if (event.type !== "identity.unlinked") throw new Error("wrong type");
+    expect(event.userId).toBe("game:alice");
+    expect(event.unlinkedUserId).toBe("web:alice");
+    expect(event.identities).toEqual(["game:alice"]);
+    expect("groupId" in event).toBe(false);
   });
 
   it("user-scoped events carry no groupId", () => {

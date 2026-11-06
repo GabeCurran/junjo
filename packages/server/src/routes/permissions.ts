@@ -11,6 +11,7 @@ import {
   candidateKeys,
   resolveMemberPermission,
 } from "../permissionResolve.js";
+import { assertUserIdsWellFormed } from "../userIdFormat.js";
 import { MAX_PARENT_DEPTH } from "./groups.schema.js";
 import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.schema.js";
 
@@ -356,6 +357,9 @@ export function checkPermissionHandler(
     });
     if (!group) throw Errors.notFound("group");
 
+    // Checked before the cache so a malformed id rejects even when an
+    // answer for that spelling was cached before its format was declared.
+    await assertUserIdsWellFormed(prisma, gameId, [userId]);
     const cached = cache.get(gameId, group.id, userId, permission, { inherit });
     if (cached) return c.json(cached);
 
@@ -415,6 +419,11 @@ export function checkPermissionBatchHandler(
     const missingIndex = checks.findIndex((check) => !known.has(check.groupId));
     if (missingIndex !== -1) throw Errors.notFound(`group for checks[${missingIndex}]`);
 
+    await assertUserIdsWellFormed(
+      prisma,
+      gameId,
+      checks.map((check) => check.userId),
+    );
     const context = new CheckContext(prisma, gameId);
     const levels = new LevelMemo();
     const results: PermissionCheckResult[] = [];

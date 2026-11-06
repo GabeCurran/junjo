@@ -29,13 +29,19 @@ import {
   toPublicInvitation,
   toPublicMember,
 } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
+import {
+  findJunjoUserId,
+  findOrCreateJunjoUser,
+  renderResolved,
+  renderUserIds,
+} from "../identity.js";
 import { RateLimiter } from "../middleware/rateLimit.js";
 import { permissionCache } from "../permissionCache.js";
 import { isUniqueViolation, retryOnUniqueViolation } from "../prismaErrors.js";
 import { loadRoleDetails, loadRoleGraph } from "../roleDetails.js";
 import { clearMemberOverride, createRole, setMemberOverride } from "../roleWrites.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
+import { assertUserIdsWellFormed, idFormatsFor, isUserIdWellFormed } from "../userIdFormat.js";
 import { listAuditForGroup } from "./audit.js";
 import { serializeBanHistoryEntry } from "./bans.js";
 import { listGroupBanHistoryQuery } from "./bans.schema.js";
@@ -60,7 +66,6 @@ import {
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
 import {
-  batchLoadExternalUserIds,
   batchLoadMemberRoleIds,
   loadMemberRoleIds,
   serializeMember,
@@ -714,6 +719,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!group) throw Errors.notFound("group");
 
     const targetUserId = body.targetUserId ?? null;
+    if (targetUserId !== null) await assertUserIdsWellFormed(prisma, gameId, [targetUserId]);
     const roleId = body.roleId ?? null;
 
     const { invitation, event } = await prisma.$transaction(async (tx) => {
@@ -882,7 +888,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const hasMore = members.length > limit;
     const sliced = hasMore ? members.slice(0, limit) : members;
 
-    const idMap = await batchLoadExternalUserIds(
+    const idMap = await renderUserIds(
       prisma,
       gameId,
       sliced.map((m) => m.junjoUserId),
@@ -926,7 +932,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!member) throw Errors.notFound("member");
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(serializeMember(member, userId, roleIds));
+    return c.json(
+      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // Idempotent on already-left / already-kicked (no audit, no event).
@@ -1080,7 +1088,11 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (outcome.roleAdded) permissionCache.invalidateGroup(group.id);
     publishStagedEvents(hub, ...outcome.staged);
     return c.json(
-      serializeMember(outcome.member, userId, outcome.roleIds),
+      serializeMember(
+        outcome.member,
+        await renderResolved(prisma, gameId, junjoUserId, userId),
+        outcome.roleIds,
+      ),
       outcome.wasActive ? 200 : 201,
     );
   });
@@ -1195,7 +1207,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
 
     publishStagedEvents(hub, event);
-    return c.json(serializeMember(member, userId, []), 201);
+    return c.json(
+      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), []),
+      201,
+    );
   });
 
   r.post("/:id/leave", async (c) => {
@@ -1225,7 +1240,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (member.status !== "active") {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(serializeMember(member, userId, roleIds));
+      return c.json(
+        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+      );
     }
 
     const { row: updated, event } = await prisma.$transaction(async (tx) => {
@@ -1258,7 +1275,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
     publishStagedEvents(hub, event);
-    return c.json(serializeMember(updated, userId, roleIds));
+    return c.json(
+      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // Idempotent on already-kicked / already-left. `actorUserId` is null
@@ -1292,7 +1311,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (member.status !== "active") {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(serializeMember(member, userId, roleIds));
+      return c.json(
+        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+      );
     }
 
     const { row: updated, event } = await prisma.$transaction(async (tx) => {
@@ -1325,7 +1346,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
     publishStagedEvents(hub, event);
-    return c.json(serializeMember(updated, userId, roleIds));
+    return c.json(
+      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // Per-group ban. Distinct from kick: kicked members can rejoin via
@@ -1431,7 +1454,13 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, result.member.id);
     publishStagedEvents(hub, result.event);
-    return c.json(serializeMember(result.member, userId, roleIds));
+    return c.json(
+      serializeMember(
+        result.member,
+        await renderResolved(prisma, gameId, junjoUserId, userId),
+        roleIds,
+      ),
+    );
   });
 
   // Reverse a per-group ban. Flips the row to `status="left"` so the
@@ -1508,7 +1537,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
     publishStagedEvents(hub, event);
-    return c.json(serializeMember(updated, userId, roleIds));
+    return c.json(
+      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // GET /v1/groups/:id/bans/history
@@ -1581,7 +1612,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     }
     const externalMap =
       junjoUserIds.size > 0
-        ? await batchLoadExternalUserIds(prisma, gameId, [...junjoUserIds])
+        ? await renderUserIds(prisma, gameId, [...junjoUserIds])
         : new Map<string, string>();
 
     return c.json({
@@ -1648,7 +1679,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (Object.keys(data).length === 0) {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(serializeMember(member, userId, roleIds));
+      return c.json(
+        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+      );
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1690,7 +1723,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    return c.json(serializeMember(updated, userId, roleIds));
+    return c.json(
+      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // Existence checks (already-active, already-pending) batch in one
@@ -1714,9 +1749,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (Buffer.byteLength(text, "utf8") > BULK_INVITE_MAX_BODY_BYTES) {
       throw Errors.badRequest(`bulk-invite body exceeds ${BULK_INVITE_MAX_BODY_BYTES} bytes`);
     }
-    const { rows, errors } = parseBulkInviteBody(text);
+    const { rows: parsedRows, errors } = parseBulkInviteBody(text);
 
-    if (rows.length + errors.length > BULK_INVITE_MAX_ROWS) {
+    if (parsedRows.length + errors.length > BULK_INVITE_MAX_ROWS) {
       throw Errors.badRequest(`bulk-invite is limited to ${BULK_INVITE_MAX_ROWS} rows per request`);
     }
 
@@ -1726,6 +1761,18 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!group) throw Errors.notFound("group");
 
     const errorList: BulkInviteError[] = [...errors];
+
+    // Ids that break their namespace's declared format are row errors,
+    // like any other malformed row, rather than failing the whole batch.
+    const formats = await idFormatsFor(prisma, gameId);
+    const rows = parsedRows.filter((row) => {
+      if (isUserIdWellFormed(formats, row.userId)) return true;
+      errorList.push({
+        row: row.row,
+        reason: "userId does not match its namespace's declared format",
+      });
+      return false;
+    });
 
     if (rows.length === 0) {
       return c.json({ invited: 0, skipped: 0, errors: errorList });
@@ -1918,7 +1965,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (existing) {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(serializeMember(member, userId, roleIds));
+      return c.json(
+        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+      );
     }
 
     const actorJunjoUserId = actorExternalId
@@ -1967,7 +2016,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     }
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(serializeMember(member, userId, roleIds));
+    return c.json(
+      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // Idempotent on not-assigned, regardless of whether the role exists
@@ -2005,7 +2056,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!existing) {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(serializeMember(member, userId, roleIds));
+      return c.json(
+        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+      );
     }
 
     const actorJunjoUserId = actorExternalId
@@ -2044,7 +2097,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     publishStagedEvents(hub, event);
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(serializeMember(member, userId, roleIds));
+    return c.json(
+      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
+    );
   });
 
   // An override (in either direction) wins over any role-derived grant.
@@ -2092,7 +2147,13 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       grant,
     });
 
-    return c.json(serializeMemberPermissionOverride(result, group.id, userId));
+    return c.json(
+      serializeMemberPermissionOverride(
+        result,
+        group.id,
+        await renderResolved(prisma, gameId, junjoUserId, userId),
+      ),
+    );
   });
 
   // Idempotent on missing override. PermissionDef is preserved (catalog
@@ -2148,19 +2209,20 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member) throw Errors.notFound("member");
 
-    const [roleIds, overrides] = await Promise.all([
+    const [roleIds, overrides, shownId] = await Promise.all([
       loadMemberRoleIds(prisma, member.id),
       prisma.memberPermissionOverride.findMany({
         where: { groupMemberId: member.id },
         orderBy: { permissionKey: "asc" },
       }),
+      renderResolved(prisma, gameId, junjoUserId, userId),
     ]);
     return c.json({
       groupId: group.id,
-      userId,
+      userId: shownId,
       status: member.status,
       roleIds,
-      overrides: overrides.map((o) => serializeMemberPermissionOverride(o, group.id, userId)),
+      overrides: overrides.map((o) => serializeMemberPermissionOverride(o, group.id, shownId)),
     });
   });
 
@@ -2185,8 +2247,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { groupMemberId: member.id },
       orderBy: { permissionKey: "asc" },
     });
+    const shownId = await renderResolved(prisma, gameId, junjoUserId, userId);
 
-    return c.json(overrides.map((o) => serializeMemberPermissionOverride(o, group.id, userId)));
+    return c.json(overrides.map((o) => serializeMemberPermissionOverride(o, group.id, shownId)));
   });
 
   // `isDefault` is a per-role tag; multiple roles can carry it. The

@@ -63,6 +63,16 @@ interface UseAuditLogResult {
 | `refetch` | Resets state and re-runs the first page, discarding the cursor. Returns a `Promise` that resolves when the new page lands. |
 | `fetchMore` | Loads the next page using the stored cursor and appends new entries. No-op when `hasMore` is `false` or another `fetchMore` is already in flight. |
 
+Entries are the SDK's [`AuditEntry`](/sdk/audit#entry-shape) values unchanged, including `apiKey: { id, name, prefix } | null`, the API key whose request wrote the entry (`null` for dashboard and system writes):
+
+```tsx
+{entries.map((e) => (
+  <li key={e.id}>
+    {e.action} by {e.apiKey ? (e.apiKey.name ?? e.apiKey.prefix) : "dashboard"}
+  </li>
+))}
+```
+
 ## Filters
 
 The `actions` option restricts the page to entries whose `action` field is in the supplied list. The hook forwards the array verbatim to `junjo.audit.list(groupId, { actions })`. An empty array (`actions: []`) is treated as "no filter" (the SDK and the server both agree on this) and is omitted from the wire call.

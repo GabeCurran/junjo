@@ -1,7 +1,7 @@
 import type { GroupMember, MemberPermissionOverride, Prisma, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
-import { findJunjoUserId } from "../identity.js";
+import { renderUserId, resolveUser } from "../identity.js";
 import { listMembersForUserQuery } from "./members.schema.js";
 
 type MembersClient = PrismaClient | Prisma.TransactionClient;
@@ -42,21 +42,6 @@ export async function batchLoadMemberRoleIds(
   return map;
 }
 
-// Maps a page of GroupMember rows back to dev-supplied user ids without
-// an N+1 ExternalIdentity query.
-export async function batchLoadExternalUserIds(
-  client: MembersClient,
-  gameId: string,
-  junjoUserIds: string[],
-): Promise<Map<string, string>> {
-  if (junjoUserIds.length === 0) return new Map();
-  const rows = await client.externalIdentity.findMany({
-    where: { gameId, junjoUserId: { in: junjoUserIds } },
-    select: { junjoUserId: true, externalUserId: true },
-  });
-  return new Map(rows.map((r) => [r.junjoUserId, r.externalUserId]));
-}
-
 export interface WireMember {
   id: string;
   groupId: string;
@@ -70,8 +55,8 @@ export interface WireMember {
   bannedUntil: string | null;
 }
 
-// Wire `userId` is the dev's external id; the caller looks it up via
-// ExternalIdentity (or threads it through from the request when on hand).
+// Wire `userId` is the rendered external id (see `renderUserIds`), never
+// the id the request happened to name the person by.
 export function serializeMember(
   member: GroupMember,
   externalUserId: string,
@@ -134,14 +119,11 @@ export function getMemberByIdHandler(prisma: PrismaClient): Handler {
     if (member.group.gameId !== gameId) throw Errors.notFound("member");
     if (member.group.softDeletedAt) throw Errors.notFound("member");
 
-    const identity = await prisma.externalIdentity.findFirst({
-      where: { gameId, junjoUserId: member.junjoUserId },
-      select: { externalUserId: true },
-    });
-    if (!identity) throw Errors.notFound("member");
+    const userId = await renderUserId(prisma, gameId, member.junjoUserId);
+    if (!userId) throw Errors.notFound("member");
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(serializeMember(member, identity.externalUserId, roleIds));
+    return c.json(serializeMember(member, userId, roleIds));
   };
 }
 
@@ -167,8 +149,9 @@ export function listMembersForUserHandler(prisma: PrismaClient): Handler {
       throw Errors.badRequest("gameId must match the calling game");
     }
 
-    const junjoUserId = await findJunjoUserId(prisma, gameId, externalUserId);
-    if (!junjoUserId) return c.json([] as WireMember[]);
+    const resolved = await resolveUser(prisma, gameId, externalUserId);
+    if (!resolved) return c.json([] as WireMember[]);
+    const { junjoUserId, renderedId } = resolved;
 
     const members = await prisma.groupMember.findMany({
       where: {
@@ -185,6 +168,6 @@ export function listMembersForUserHandler(prisma: PrismaClient): Handler {
       members.map((m) => m.id),
     );
 
-    return c.json(members.map((m) => serializeMember(m, externalUserId, roleMap.get(m.id) ?? [])));
+    return c.json(members.map((m) => serializeMember(m, renderedId, roleMap.get(m.id) ?? [])));
   };
 }

@@ -98,8 +98,29 @@ SSE is per-group. User-scoped events (no `groupId`) are delivered over [webhooks
 
 - `friend.request.sent`, `friend.request.accepted`, `friend.request.declined`, `friend.request.cancelled`, `friend.removed`, `friend.blocked`, `friend.unblocked`
 - `game.user.banned`, `game.user.unbanned`
+- `identity.linked`, `identity.unlinked` (see [Identity](/api-reference/identity#events))
 
 Subscribe to these via webhook endpoints rather than `/v1/events/:groupId`.
+
+`game.user.banned` and `game.user.unbanned` carry `userId`, the banned person's external id, alongside `junjoUserId`. `junjoUserId` is still the internal `JunjoUser` id, kept for existing consumers; prefer `userId`.
+
+### User ids in events
+
+Fields that name a person are rendered with the [identity rendering rule](/api-reference/identity#the-rendering-rule) for each subscriber: an SSE stream uses the preferred namespaces of the API key it was opened with (a changed preference reaches an open stream on its next heartbeat), and a webhook endpoint uses its own `preferredNamespaces`. For a person with a single id the rendered id is that id.
+
+| Event type | Rendered fields |
+|------------|-----------------|
+| `member.joined` | `userId`, `member.userId` |
+| `member.left` | `userId`, `kickedBy` |
+| `member.banned`, `member.unbanned` | `userId` |
+| `role.changed` | `userId`, `actorUserId` |
+| `friend.request.sent`, `.accepted`, `.declined`, `.cancelled` | `actorJunjoUserId`, `targetJunjoUserId` |
+| `friend.removed` | `removedByJunjoUserId`, `otherJunjoUserId` |
+| `friend.blocked`, `friend.unblocked` | `byJunjoUserId`, `otherJunjoUserId` |
+| `game.user.banned`, `game.user.unbanned` | `userId` |
+| `identity.linked`, `identity.unlinked` | `userId` |
+
+Everything else is sent as emitted. In particular these are literal: `junjoUserId` on the game ban events (an internal id), the invitation inside `member.invited` (its `targetUserId` is the id the invitation was issued for), and `linkedUserId`, `unlinkedUserId` and `identities` on the identity events. The friend fields keep their historical `*JunjoUserId` names but hold external ids. Subscribers must handle ids outside their preferred namespaces.
 
 ### Errors
 

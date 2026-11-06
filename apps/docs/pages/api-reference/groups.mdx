@@ -1030,6 +1030,7 @@ user_carol
 - Each non-empty line is treated as a single CSV field; commas are not parsed as separators.
 - Both `\n` and `\r\n` line endings are accepted.
 - Userids longer than 255 characters are reported in `errors` (the row is not invited, not skipped).
+- Userids that break a [declared id format](/api-reference/identity#canonical-formats) are reported in `errors` the same way, instead of failing the request with `400 invalid_user_id`.
 - The total row count (errored + valid) is capped at 1000 per request; exceeding returns `400 bad_request`.
 
 ### Response

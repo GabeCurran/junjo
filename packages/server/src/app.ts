@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { withAuditAttribution } from "./auditAttribution.js";
 import { prisma as defaultPrisma } from "./db.js";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
@@ -8,6 +9,7 @@ import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { type RateLimiter, buildRateLimiter, rateLimitMiddleware } from "./middleware/rateLimit.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
+import { newRequestContext, runWithRequestContext } from "./requestContext.js";
 import { getAdminGameConfigHandler, updateAdminGameConfigHandler } from "./routes/admin.config.js";
 import {
   checkAdminPermissionHandler,
@@ -50,6 +52,7 @@ import {
   setAdminGroupRelationshipHandler,
   setAdminMemberPermissionOverrideHandler,
   setAdminRoleParentsHandler,
+  updateAdminApiKeyHandler,
   updateAdminGroupHandler,
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
@@ -78,6 +81,7 @@ import {
 } from "./routes/friends.js";
 import { groupsRouter } from "./routes/groups.js";
 import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
+import { identityLinkHandlers, listLinkedIdentitiesHandler } from "./routes/identities.js";
 import {
   acceptInvitationByCodeHandler,
   declineInvitationByCodeHandler,
@@ -122,6 +126,8 @@ export interface CreateAppOptions {
     workerStaleMs?: number;
     dbTimeoutMs?: number;
   };
+  // Clock for link-code expiry and its rate limits; tests freeze it.
+  identityLinks?: { now?: () => number };
   webhooks?: {
     // Production cloud must leave this false. Self-host development sets it
     // when receivers run on the same machine; index.ts derives it from the
@@ -133,14 +139,24 @@ export interface CreateAppOptions {
 // One Hono app per call so tests can boot one server per file without
 // globals bleeding across cases.
 export function createApp(opts: CreateAppOptions = {}): Hono {
-  const prisma = opts.prisma ?? defaultPrisma;
+  // Every audit row written through this app records the acting key.
+  const prisma = withAuditAttribution(opts.prisma ?? defaultPrisma);
   const hub = opts.events?.hub ?? defaultHub;
   const store: ApiKeyStore = opts.apiKeyStore ?? {
     findByPrefix: async (prefix) =>
-      prisma.apiKey.findUnique({
-        where: { prefix },
-        select: { gameId: true, hashedSecret: true, revokedAt: true },
-      }),
+      prisma.apiKey
+        .findUnique({
+          where: { prefix },
+          select: {
+            id: true,
+            gameId: true,
+            hashedSecret: true,
+            revokedAt: true,
+            preferredNamespaces: true,
+            game: { select: { config: true } },
+          },
+        })
+        .then((row) => (row ? { ...row, gameConfig: row.game.config } : null)),
   };
   const limiter: RateLimiter | null =
     opts.rateLimit instanceof Object && "consume" in opts.rateLimit
@@ -149,6 +165,9 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
 
   const app = new Hono();
   app.use("*", requestIdMiddleware());
+  // Opens the per-request context the identity, rendering and audit
+  // helpers read; the API key middleware fills in the key's part.
+  app.use("*", (_c, next) => runWithRequestContext(newRequestContext(), next));
   app.onError(errorHandler);
 
   app.get("/", (c) => c.json({ name: "junjo-server", version: "0.0.0" }));
@@ -211,6 +230,11 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     "/admin/games/:gameId/api-keys",
     adminAuthMiddleware(opts.adminToken),
     createAdminApiKeyHandler(prisma),
+  );
+  v1.patch(
+    "/admin/games/:gameId/api-keys/:keyId",
+    adminAuthMiddleware(opts.adminToken),
+    updateAdminApiKeyHandler(prisma),
   );
   v1.post(
     "/admin/games/:gameId/api-keys/:keyId/revoke",
@@ -401,6 +425,11 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
   v1.get("/members/:id", getMemberByIdHandler(prisma));
   v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
+  v1.get("/users/:userId/identities", listLinkedIdentitiesHandler(prisma));
+  const identityLinks = identityLinkHandlers(prisma, { hub, now: opts.identityLinks?.now });
+  v1.post("/users/:userId/link-codes", identityLinks.issue);
+  v1.post("/link-codes/redeem", identityLinks.redeem);
+  v1.post("/users/:userId/unlink", identityLinks.unlink);
   v1.get("/roles/:id", getRoleByIdHandler(prisma));
   v1.patch("/roles/:id", updateRoleByIdHandler(prisma, hub));
   v1.delete("/roles/:id", deleteRoleByIdHandler(prisma, hub));

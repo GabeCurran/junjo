@@ -61,9 +61,9 @@ Used by the dashboard to render a "this player is in N games on the platform" vi
 | Field | Type | Notes |
 |-------|------|-------|
 | `junjoUserId` | string | Echoed from the path. |
-| `games` | array | Each entry is one game the user has an `ExternalIdentity` in, sorted by `gameId` ascending. |
+| `games` | array | One entry per game the user has an `ExternalIdentity` in, sorted by `gameId` ascending. A person with several [linked ids](./identity) in one game still gets a single row. |
 | `games[].gameId` | string | The game's id. |
-| `games[].externalUserId` | string | The dev-supplied external id this user has within that game (e.g., the Clerk `sub`, the Supabase user UUID, the Roblox `UserId` rendered as a string). The same Junjo user can appear under different external ids across games. |
+| `games[].externalUserId` | string | The dev-supplied external id this user has within that game (e.g., the Clerk `sub`, the Supabase user UUID, the Roblox `UserId` rendered as a string). The same Junjo user can appear under different external ids across games. When the person holds several ids in that game, this is their earliest-linked id (the [rendering rule](./identity#the-rendering-rule) with no namespace preference); `GET /v1/users/:userId/identities` lists them all. |
 | `games[].joinedGroupCount` | number | Active group memberships in this game. Excludes `left`, `kicked`, `invited` members; excludes soft-deleted groups. |
 
 ### Behavior
@@ -154,6 +154,7 @@ Returns the most recent audit entries across every game on the deployment, with 
       "groupName": "Vanguard",
       "groupSoftDeleted": false,
       "actorUserId": "user_clxxx...",
+      "apiKey": { "id": "key_clxxx...", "name": "game-server", "prefix": "jk_AbCdEfGhIjKlMn" },
       "targetId": "user_xyz",
       "payload": { "memberId": "...", "invitationId": "..." },
       "createdAt": "2026-04-28T22:14:51.000Z"
@@ -172,6 +173,7 @@ Returns the most recent audit entries across every game on the deployment, with 
 | `items[].groupName` | string | The parent group's name, pivoted in for the dashboard. |
 | `items[].groupSoftDeleted` | boolean | `true` when the parent group's `softDeletedAt` is set. The audit log preserves history regardless; the flag lets the dashboard mark the row visually. |
 | `items[].actorUserId` | string \| null | `JunjoUser.id` of the actor, or `null` for system actions. |
+| `items[].apiKey` | object \| null | `{ id, name, prefix }` of the API key whose request wrote the entry; `null` for dashboard (admin token) and system writes. See [Audit](./audit#audit-entry-shape). |
 | `items[].targetId` | string \| null | The dev-supplied external user id of the target, or `null` if the action does not target a user. |
 | `items[].payload` | object | Action-specific JSON payload. Shape varies per action. |
 | `items[].createdAt` | string | ISO 8601 timestamp. |
@@ -318,7 +320,8 @@ settings page.
   "config": {
     "friends": { "enabled": true, "scope": "per-game", "requestsRequired": true, "maxFriends": 1000, "...": "..." },
     "blocks": { "enabled": true },
-    "permissions": { "mode": "exact" }
+    "permissions": { "mode": "exact" },
+    "identity": { "formats": {} }
   },
   "networkId": null
 }
@@ -327,7 +330,7 @@ settings page.
 | Field | Type | Notes |
 |-------|------|-------|
 | `gameId` | string | Echoed from the path. |
-| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the friends and blocks schema, and [Permission modes](/api-reference/permissions#permission-modes) for `permissions.mode` (`"exact"` or `"nodes"`). A `PATCH` that changes `permissions.mode` runs the mode-switch checks and returns `409 permission_mode_conflict` when they fail. |
+| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the friends and blocks schema, and [Permission modes](/api-reference/permissions#permission-modes) for `permissions.mode` (`"exact"` or `"nodes"`). A `PATCH` that changes `permissions.mode` runs the mode-switch checks and returns `409 permission_mode_conflict` when they fail. `identity.formats` maps namespaces to declared [canonical id formats](./identity#canonical-formats) (default `{}`). |
 | `networkId` | string \| null | The network the game belongs to, when `friends.scope = "network"`. Null for standalone games. |
 
 ### Errors
@@ -361,6 +364,8 @@ value branch-by-branch, so a body of
 | `config` | PartialGameConfig | at least one of `config` / `networkId` | Any subset of the fully-resolved `GameConfig` shape. Deep-merged. Pass `null` for a branch to clear back to default. |
 | `networkId` | string \| null | at least one of `config` / `networkId` | Sets or clears the network membership. |
 
+`config.identity.formats` is the one branch that is not deep-merged: when present it replaces the stored map as a whole, so `{ "identity": { "formats": {} } }` undeclares every namespace. Keys must match `^[a-z0-9_-]{1,32}$`, values are `"uuid"`, and at most 16 namespaces can be declared. Declaring a namespace, or changing its format, first scans the game's stored ids in that namespace and refuses the whole PATCH with `409 identity_format_conflict` if any do not match; the message lists up to 5. Once declared, every route rejects non-matching ids in that namespace with `400 invalid_user_id`. See [Canonical formats](./identity#canonical-formats).
+
 ### Response
 
 `200 OK` with the same `WireAdminGameConfig` shape as the GET above,
@@ -370,8 +375,10 @@ reflecting the post-merge state.
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Malformed JSON; body missing both `config` and `networkId`; validation failure on the merged config (e.g. `friends.maxFriends < 0`). |
+| `bad_request` | 400 | Malformed JSON; body missing both `config` and `networkId`; validation failure on the merged config (e.g. `friends.maxFriends < 0`, an `identity.formats` key that breaks the namespace pattern, more than 16 declared formats, an unknown format). |
 | `not_found` | 404 | No game with the supplied id exists. |
+| `permission_mode_conflict` | 409 | A `permissions.mode` switch would change the meaning of stored keys or role names. |
+| `identity_format_conflict` | 409 | Stored user ids in a newly declared (or changed) namespace do not match its format. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 ## `GET /v1/admin/games/:gameId/api-keys`
@@ -389,6 +396,8 @@ Lists every API key for a game, active and revoked. The dashboard renders revoke
       "id": "key_clxxx...",
       "gameId": "game_clxxx...",
       "prefix": "jk_AbCdEfGhIjKlMn",
+      "name": "game-server",
+      "preferredNamespaces": ["game"],
       "createdAt": "2026-04-29T10:14:51.000Z",
       "revokedAt": null
     }
@@ -401,6 +410,8 @@ Lists every API key for a game, active and revoked. The dashboard renders revoke
 | `items[].id` | string | The `ApiKey.id`. |
 | `items[].gameId` | string | The owning game's id. |
 | `items[].prefix` | string | The display prefix shown to the dev. The full key is `prefix.secret`; the secret is never on this endpoint. |
+| `items[].name` | string \| null | Operator label, 1 to 64 characters, or `null` when unnamed. Shown on audit entries the key writes. |
+| `items[].preferredNamespaces` | string[] | Ordered namespace preference applied to responses and SSE streams read with this key. `[]` means no preference. See [Preferred namespaces](./identity#preferred-namespaces). |
 | `items[].createdAt` | string | ISO 8601 timestamp. |
 | `items[].revokedAt` | string \| null | ISO 8601 timestamp set when the key was revoked, or `null` if still active. |
 
@@ -423,7 +434,18 @@ Issues a fresh API key for a game. The returned `key` field carries the dev-faci
 
 ### Request body
 
-No body required.
+Optional. An absent or empty body mints an unnamed key with no namespace preference.
+
+```json
+{ "name": "game-server", "preferredNamespaces": ["game"] }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | no | Operator label, trimmed, 1 to 64 characters. |
+| `preferredNamespaces` | string[] | no | Ordered, at most 8 entries, each matching `^[a-z0-9_-]{1,32}$`, no repeats. Defaults to `[]`. |
+
+Unknown keys are rejected with `400 bad_request`.
 
 ### Response
 
@@ -434,6 +456,8 @@ No body required.
   "id": "key_clxxx...",
   "gameId": "game_clxxx...",
   "prefix": "jk_AbCdEfGhIjKlMn",
+  "name": "game-server",
+  "preferredNamespaces": ["game"],
   "createdAt": "2026-04-29T10:14:51.000Z",
   "revokedAt": null,
   "key": "jk_AbCdEfGhIjKlMn.RAW_SECRET_PORTION"
@@ -442,7 +466,7 @@ No body required.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `id` / `gameId` / `prefix` / `createdAt` / `revokedAt` | various | Same shape as the list endpoint. |
+| `id` / `gameId` / `prefix` / `name` / `preferredNamespaces` / `createdAt` / `revokedAt` | various | Same shape as the list endpoint. |
 | `key` | string | The full `prefix.secret` form. Returned **once**. The secret portion is unrecoverable after this response. Surface this to the operator and treat it as sensitive. |
 
 ### Behavior
@@ -454,7 +478,48 @@ No body required.
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | Malformed JSON, an unknown key, an empty or over-long `name`, or an invalid `preferredNamespaces` list. |
 | `not_found` | 404 | No game with the supplied id exists. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+## `PATCH /v1/admin/games/:gameId/api-keys/:keyId`
+
+Renames a key or changes its namespace preference without rotating its secret.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` that owns the key. Cross-game scope is enforced. |
+| `keyId` | string | The `ApiKey.id` to update. |
+
+### Request body
+
+```json
+{ "name": "website-backend", "preferredNamespaces": ["web", "game"] }
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string \| null | at least one of the two | Trimmed, 1 to 64 characters. `null` clears the name. |
+| `preferredNamespaces` | string[] | at least one of the two | Replaces the stored list. Same rules as on create; `[]` clears the preference. |
+
+### Response
+
+`200 OK` with the post-state `WireAdminApiKey` (no `key` field).
+
+### Behavior
+
+- Works on revoked keys, so the label shown on their past audit entries can still be corrected.
+- A new preference applies to the next request made with the key. SSE streams already open with the key pick it up on their next heartbeat (within 30 seconds).
+- Webhook endpoints are unaffected: each endpoint carries its own `preferredNamespaces`.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed JSON, neither field supplied, an unknown key, or an invalid value. |
+| `not_found` | 404 | No key with the supplied id exists, or the key belongs to a different game. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 ## `POST /v1/admin/games/:gameId/api-keys/:keyId/revoke`
@@ -617,7 +682,7 @@ interface WireAdminMemberRole {
 interface WireAdminGroupMember {
   id: string;                    // GroupMember.id
   groupId: string;
-  externalUserId: string;        // The dev-supplied user id (ExternalIdentity.externalUserId)
+  externalUserId: string;        // The dev-supplied user id; for a person with linked ids, the earliest-linked one
   junjoUserId: string;           // The internal cross-game user id (JunjoUser.id)
   status: "active" | "left" | "kicked" | "invited";
   metadata: Record<string, unknown>;
@@ -835,7 +900,7 @@ Body (required, JSON):
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `targetUserId` | string \| omitted | `null` | When set, the invitation is **direct** (only that user can accept). When omitted, the invitation is **open-code** (anyone with the code can accept). 1-255 chars. |
+| `targetUserId` | string \| omitted | `null` | When set, the invitation is **direct** (only that person can accept, by this id or any id linked to it). Rejected with `400 invalid_user_id` when it breaks a declared format. When omitted, the invitation is **open-code** (anyone with the code can accept). 1-255 chars. |
 | `roleId` | string \| omitted | `null` | Optional role to assign on accept; forwarded verbatim and not validated against `Role` (matches the per-game route; an invalid roleId surfaces at accept time). 1-255 chars. |
 | `expiresIn` | string \| omitted | `null` | Optional duration `<positive integer><unit>` where unit is `s\|m\|h\|d` (e.g. `7d`, `30m`). Server stamps `expiresAt = now() + expiresIn` at create time. Non-positive values (`0d`) return 400. |
 
@@ -1158,6 +1223,7 @@ interface WireAuditEntry {
   id: string;
   groupId: string;
   actorUserId: string | null;
+  apiKey: { id: string; name: string | null; prefix: string } | null; // the key whose request wrote it
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;
@@ -1398,6 +1464,7 @@ interface WireAdminAuditEntry {
   groupName: string;     // The group's name (pivoted in via `include`).
   groupSoftDeleted: boolean; // True when the group's `softDeletedAt` is not null.
   actorUserId: string | null;
+  apiKey: { id: string; name: string | null; prefix: string } | null; // the key whose request wrote it
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;     // ISO 8601

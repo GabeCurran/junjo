@@ -6,7 +6,7 @@ import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent, toPublicMember } from "../events.js";
-import { findOrCreateJunjoUser } from "../identity.js";
+import { findJunjoUserId, findOrCreateJunjoUser, renderResolved } from "../identity.js";
 import { isUniqueViolation } from "../prismaErrors.js";
 import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
 import { serializeMember } from "./members.js";
@@ -123,8 +123,25 @@ async function loadRedemptionTarget(
   return invitation;
 }
 
+// The stored target is the literal id the invitation was issued for; a
+// redeemer passes when it is that id or another id of the same person.
+async function assertInvitationTarget(
+  prisma: PrismaClient,
+  gameId: string,
+  targetUserId: string | null,
+  userId: string,
+  junjoUserId: string,
+): Promise<void> {
+  if (!targetUserId || targetUserId === userId) return;
+  const targetJunjoUserId = await findJunjoUserId(prisma, gameId, targetUserId).catch(() => null);
+  if (targetJunjoUserId !== junjoUserId) {
+    throw Errors.permissionDenied("this invitation is for a different user");
+  }
+}
+
 // Direct invitations (with `targetUserId` set) require the body userId
-// to match; mismatches 403 to keep direct invites pinned to their target.
+// to name the same person as the target, by that id or a linked one;
+// mismatches 403 to keep direct invites pinned to their target.
 export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const code = c.req.param("code");
@@ -140,11 +157,8 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
     const { userId } = parsed.data;
 
     const invitation = await loadRedemptionTarget(prisma, code, gameId);
-    if (invitation.targetUserId && invitation.targetUserId !== userId) {
-      throw Errors.permissionDenied("this invitation is for a different user");
-    }
-
     const junjoUserId = await findOrCreateJunjoUser(prisma, gameId, userId);
+    await assertInvitationTarget(prisma, gameId, invitation.targetUserId, userId, junjoUserId);
 
     // Game-level + per-group ban check before any state mutation. A
     // banned user cannot redeem an invitation, regardless of whether
@@ -221,7 +235,10 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       });
 
     publishStagedEvents(hub, result.event);
-    return c.json(serializeMember(result.member, userId), 201);
+    return c.json(
+      serializeMember(result.member, await renderResolved(prisma, gameId, junjoUserId, userId)),
+      201,
+    );
   };
 }
 
@@ -243,11 +260,10 @@ export function declineInvitationByCodeHandler(prisma: PrismaClient): Handler {
     const { userId } = parsed.data;
 
     const invitation = await loadRedemptionTarget(prisma, code, gameId);
-    if (invitation.targetUserId && userId && invitation.targetUserId !== userId) {
-      throw Errors.permissionDenied("this invitation is for a different user");
-    }
-
     const junjoUserId = userId ? await findOrCreateJunjoUser(prisma, gameId, userId) : null;
+    if (userId && junjoUserId) {
+      await assertInvitationTarget(prisma, gameId, invitation.targetUserId, userId, junjoUserId);
+    }
 
     // Guarded on usedAt: a decline racing an accept (or another decline)
     // must not overwrite the winner's redemption record.
