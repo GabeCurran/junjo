@@ -19,7 +19,7 @@ function useCan(
   userId: UserId,
   groupId: GroupId,
   permission: PermissionKey,
-  opts?: { inherit?: boolean },
+  opts?: { inherit?: boolean; context?: PermissionContext },
 ): boolean | undefined;
 ```
 
@@ -47,7 +47,7 @@ If the hook is called outside a `<JunjoProvider>`, it throws synchronously with 
 
 ## Argument changes
 
-Changing any of `userId`, `groupId`, or `permission` between renders re-keys the cache lookup. The hook fires a fresh `junjo.can(...)` for the new key (unless the cache already has it), and the return value flips to `undefined` until that resolves.
+Changing any of `userId`, `groupId`, `permission`, `inherit`, or the value of `context` between renders re-keys the cache lookup. The hook fires a fresh `junjo.can(...)` for the new key (unless the cache already has it), and the return value flips to `undefined` until that resolves.
 
 ## Composing with `useGroup`
 
@@ -83,6 +83,21 @@ Inherited and direct answers are cached under separate keys, so the two spelling
 
 See [Inherited checks](/sdk/permissions#inherited-checks) for the resolution rules.
 
+## Checks with a context
+
+Pass `context` to check in a context, such as the world a player is in, so role entries and overrides limited to that context apply:
+
+```tsx
+const canFly = useCan(userId, networkId, "essentials.fly", { context: { world: currentWorld } });
+```
+
+- `context` is read **by value**: a fresh object literal every render does not refetch. Changing a value does.
+- Without `context`, or with `{}`, only global entries apply.
+- Each context is cached under its own key. Values are compared case-insensitively (ASCII only), the same way the server compares them, so `{ world: "Creative" }` and `{ world: "creative" }` share one answer.
+- `useInvalidatePermissions().invalidate(userId, groupId, permission, inherit, context)` takes a matching fifth `context` argument; `invalidateUser`, `invalidateGroup`, and `invalidateAll` sweep every context.
+
+`context` combines with `inherit`. See [Checks with a context](/sdk/permissions#checks-with-a-context) for the SDK call, and [Contexts](/api-reference/permissions#contexts) in the API reference for how contextual entries rank.
+
 ## useCanMany
 
 Gating a nav bar on six keys with `useCan` costs six requests. `useCanMany` answers a whole set in one, through the batch route, and returns the answers positionally.
@@ -104,8 +119,13 @@ function ShopList({ userId, shops }: { userId: UserId; shops: Group[] }) {
 
 ```ts
 function useCanMany(
-  checks: Array<{ userId: UserId; groupId: GroupId; permission: PermissionKey }>,
-  opts?: { inherit?: boolean },
+  checks: Array<{
+    userId: UserId;
+    groupId: GroupId;
+    permission: PermissionKey;
+    context?: PermissionContext;
+  }>,
+  opts?: { inherit?: boolean; context?: PermissionContext },
 ): readonly (boolean | undefined)[];
 ```
 
@@ -113,6 +133,7 @@ function useCanMany(
 - Entries already answered by `useCan` (or a previous `useCanMany`) are served from the shared cache, and only the remainder is sent. Invalidation reaches both hooks.
 - An entry is `undefined` while loading, and stays `undefined` if the batch rejects. The hook never throws to the consumer.
 - An empty array makes no request.
+- `opts.context` applies to every entry without a `context` of its own; an entry's own `context` wins, and `context: {}` checks that entry globally. Contexts are read by value, as in [`useCan`](#checks-with-a-context).
 - The returned array keeps a stable reference until a value actually changes, which is what keeps `useSyncExternalStore` from re-rendering in a loop.
 
 ## Testing

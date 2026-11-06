@@ -616,7 +616,10 @@ Imports up to 500 memberships in one call, with their roles, overrides and metad
     {
       "userId": "mc:0f8fad5b-d9cb-469f-a165-70867728950e",
       "roleIds": ["role_a", "role_b"],
-      "overrides": [{ "permission": "fly", "value": true }],
+      "overrides": [
+        { "permission": "fly", "value": true },
+        { "permission": "fly", "value": false, "context": { "world": "spawn" } }
+      ],
       "metadata": { "prefix": "[VIP]" }
     }
   ],
@@ -630,7 +633,7 @@ Imports up to 500 memberships in one call, with their roles, overrides and metad
 | `members` | yes | 1 to 500 rows. Each `userId` may appear once, and two linked ids of the same person may not both appear. |
 | `members[].userId` | yes | The dev's external user id. Unknown users are created. |
 | `members[].roleIds` | no | Replaces the member's roles. Every id must be a role of this group. `[]` removes all roles. |
-| `members[].overrides` | no | Replaces the member's overrides, in the role-entry shape `{ permission, value }`. `[]` clears them all. Keys follow the game's [permission mode](/api-reference/permissions#permission-modes). |
+| `members[].overrides` | no | Replaces the member's overrides, global and contextual, in the role-entry shape `{ permission, value, context? }`. `context` limits an override to a [context](/api-reference/permissions#contexts); absent or `{}` is global. Each `(permission, context)` pair may appear once per row. `[]` clears them all. Keys follow the game's [permission mode](/api-reference/permissions#permission-modes), and context values are folded in both modes. |
 | `members[].metadata` | no | Replaces the member's metadata. |
 | `allowBanned` | no | `true` imports banned people without changing any ban. Default `false`. |
 | `actorUserId` | no | External user id of the acting moderator, recorded on the audit entries and on `role.changed`. |
@@ -659,7 +662,7 @@ Every row is checked before anything is written. If any row fails, nothing is wr
 
 | Row code | When |
 |----------|------|
-| `bad_request` | The row is malformed, repeats an earlier `userId` or person, names a role of another group, or has an invalid or repeated permission key. |
+| `bad_request` | The row is malformed, repeats an earlier `userId` or person, names a role of another group, has an invalid permission key or context, or repeats a `(permission, context)` pair. |
 | `invalid_user_id` | `userId` breaks its namespace's [declared format](/api-reference/identity#canonical-formats). |
 | `not_found` | A `roleIds` entry names no role. |
 | `banned` | The person is banned from the game or the group and `allowBanned` is not set. |
@@ -1333,7 +1336,7 @@ A no-op (the role was not assigned) does not write an audit entry.
 
 ## `POST /v1/groups/:id/members/:userId/permissions/:permission`
 
-Sets or updates a member-level permission override. The override wins over any role-derived grant during permission resolution (see [Permissions](/sdk/permissions)). Idempotent: setting an override with the same `grant` value as the existing one returns the unchanged override with no audit entry.
+Sets or updates a member-level permission override. The override wins over any role-derived grant during permission resolution (see [Permissions](/sdk/permissions)). With a `context` the override applies only to checks in that [context](/api-reference/permissions#contexts), and it is a separate override from the key's global one. Idempotent: setting an override with the same `grant` value as the existing one returns the unchanged override with no audit entry.
 
 ### Path parameters
 
@@ -1349,10 +1352,15 @@ Sets or updates a member-level permission override. The override wins over any r
 { "grant": true }
 ```
 
+```json
+{ "grant": false, "context": { "world": "hub" } }
+```
+
 | Field | Required | Notes |
 |-------|----------|-------|
 | `grant` | yes (or `value`) | `true` to grant regardless of roles, `false` to revoke regardless of roles. |
 | `value` | no | Alias of `grant`, matching the role-entry shape `{ permission, value }`. If both are sent they must agree. |
+| `context` | no | The override's [context](/api-reference/permissions#contexts). Absent or `{}` sets the global override. |
 
 Accepts `If-Match` ([member version](#member-versions)).
 
@@ -1371,6 +1379,8 @@ Accepts `If-Match` ([member version](#member-versions)).
 }
 ```
 
+A contextual override carries `context` (with folded values) after `grant`; a global one has no `context` field.
+
 `setBy` is the dev's external id of the actor that set the override; it is `null` (no auth-adapter actor wired yet). The member's version after the call is in the `ETag` header.
 
 ### Audit log
@@ -1381,7 +1391,7 @@ Accepts `If-Match` ([member version](#member-versions)).
 | `groupId` | the group id |
 | `targetId` | the external user id |
 | `actorUserId` | `null` |
-| `payload` | `{ memberId, permission, grant }`; on update of an existing override, `before: { grant }` is added. |
+| `payload` | `{ memberId, permission, grant }`, plus `context` for a contextual override; on update of an existing override, `before: { grant }` is added. |
 
 A no-op (the override already had the same `grant`) writes no audit entry. The first time a permission key is used on a game (across roles or overrides), the route upserts a `PermissionDef` row inside the same transaction; subsequent overrides of the same key reuse the existing registry row.
 
@@ -1389,18 +1399,24 @@ A no-op (the override already had the same `grant`) writes no audit entry. The f
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing or non-boolean `grant` (and no `value`), `grant` and `value` disagree, malformed JSON, `permission` is empty / over 128 characters or breaks the [nodes key rules](/api-reference/permissions#permission-modes), or a malformed `If-Match`. |
+| `bad_request` | 400 | Missing or non-boolean `grant` (and no `value`), `grant` and `value` disagree, malformed JSON, `permission` is empty / over 128 characters or breaks the [nodes key rules](/api-reference/permissions#permission-modes), an invalid `context`, or a malformed `If-Match`. |
 | `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `not_found` | 404 | The group / member does not exist (the cases collapse: missing / soft-deleted / cross-game group; no `ExternalIdentity` for the user; no `GroupMember` row in this group). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `DELETE /v1/groups/:id/members/:userId/permissions/:permission`
 
-Clears a member-level permission override. Idempotent: clearing a permission the member does not have an override for returns `204 No Content` with no audit entry.
+Clears a member-level permission override. Without context query parameters it clears the **global** override; `context.<key>=<value>` parameters select a contextual one (`?context.world=hub`). Idempotent: clearing a permission the member does not have an override for returns `204 No Content` with no audit entry.
 
 ### Path parameters
 
 Same as `POST /v1/groups/:id/members/:userId/permissions/:permission`.
+
+### Query parameters
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `context.<key>` | no | One per context key of the override to clear. Absent targets the global override. |
 
 ### Response
 
@@ -1416,7 +1432,7 @@ Accepts `If-Match` ([member version](#member-versions)).
 | `groupId` | the group id |
 | `targetId` | the external user id |
 | `actorUserId` | `null` |
-| `payload` | `{ memberId, permission, grant }` where `grant` carries the *previous* value of the cleared override. |
+| `payload` | `{ memberId, permission, grant }` where `grant` carries the *previous* value of the cleared override, plus `context` for a contextual override. |
 
 A no-op (no existing override to clear) writes no audit entry. The `PermissionDef` registry row is preserved across clears (matches the `roles.revokePermission` precedent: the catalog is monotonic per game).
 
@@ -1424,7 +1440,7 @@ A no-op (no existing override to clear) writes no audit entry. The `PermissionDe
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `permission` path parameter is empty, or a malformed `If-Match`. |
+| `bad_request` | 400 | `permission` path parameter is empty, a `context.<key>` parameter is invalid or repeated, or a malformed `If-Match`. |
 | `not_found` | 404 | Group / member does not exist (same collapse rules as the POST). |
 | `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -1442,7 +1458,7 @@ Lists a member's permission overrides. Returns a bare array (no pagination wrapp
 
 ### Response
 
-`200 OK` with a `MemberPermissionOverride[]` body, sorted by `permission` ascending for deterministic output.
+`200 OK` with a `MemberPermissionOverride[]` body, sorted by `permission` ascending and then by context (a key's global override first) for deterministic output.
 
 ```json
 [

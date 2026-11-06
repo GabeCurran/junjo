@@ -28,7 +28,7 @@ if (!(await junjo.can(userId, groupId, "guild.invite_member"))) {
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Empty `userId`, `groupId`, or `permission`, or `permission` over 128 characters. |
+| `bad_request` | 400 | Empty `userId`, `groupId`, or `permission`, `permission` over 128 characters, or an invalid [`context`](#checks-with-a-context). |
 | `not_found` | 404 | Group missing, soft-deleted, or owned by a different game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -55,6 +55,7 @@ if (!result.allowed) {
 | `source` | `"role" \| "override" \| "default" \| "none"` | See the source taxonomy below. |
 | `viaRoleId` | `RoleId` (optional) | Present only when `source === "role"`; the role whose entry decided. When a deny decides it is the highest-priority denying role, otherwise the highest-priority granting role. |
 | `viaGroupId` | `GroupId` (optional) | Present only on an [inherited check](#inherited-checks) that reached a decision; names the group the decision came from. |
+| `context` | `PermissionContext` (optional) | The deciding entry's [context](#checks-with-a-context), with values folded to lowercase. Absent when a global entry decided or nothing did. |
 
 ### Source taxonomy
 
@@ -73,7 +74,7 @@ Resolution walks the member's access in layers and stops at the first layer that
 2. The roles the member holds directly.
 3. Those roles' [parents](/sdk/roles#setparentsroleid-parents), then grandparents, and so on. A role reachable by several paths sits at its shortest distance.
 
-Within the deciding layer the most specific key wins: the exact key, then the longest matching `a.b.*` wildcard, down to the bare `*`. Between entries of equal specificity, a deny beats a grant.
+Within the deciding layer the most specific key wins: the exact key, then the longest matching `a.b.*` wildcard, down to the bare `*`. Between entries of equal specificity, a deny beats a grant. A check that sends a [context](#checks-with-a-context) also ranks entries by how well their context matches, before key specificity.
 
 ```ts
 // Parent role "Member":    shop.*  = grant
@@ -110,6 +111,21 @@ This replaces the client-side walker the hierarchy otherwise forces, which costs
 
 Inherited and direct answers are cached separately, both client-side and server-side, so opting in for one call does not change what another call sees.
 
+## Checks with a context
+
+Role entries and member overrides can be limited to a context, such as the world a player is in (see [`roles.grantPermission`](/sdk/roles#grantpermissionroleid-permission-opts) and [`members.overridePermission`](/sdk/members#overridepermissiongroupid-userid-permission-grant)). Pass the check's context as `context` to `can` or `check`:
+
+```ts
+const result = await junjo.check(userId, networkId, "essentials.fly", {
+  context: { world: "creative" },
+});
+// { allowed: true, source: "role", viaRoleId: "role_admin", context: { world: "creative" } }
+```
+
+`context` maps context keys to values and is sent as `context.<key>=<value>` query parameters. Without it, or with `{}`, only global entries apply and the answer is the one the check gave before contexts existed. Keys, values, the 2-key limit and how contextual entries rank against global ones are defined under [Contexts](/api-reference/permissions#contexts) in the API reference.
+
+`context` combines with `inherit`. Each context is a separate cache entry, client-side and server-side; values are compared case-insensitively (ASCII only), so `{ world: "Creative" }` and `{ world: "creative" }` share one answer. `permissionContextKey(context)`, exported from the SDK, returns the canonical form both caches key on.
+
 ## Batched checks
 
 `checkBatch(checks, opts?)` resolves many questions in one request. Answers are positional: `results[i]` corresponds to `checks[i]`.
@@ -129,6 +145,7 @@ Details worth knowing:
 - **Entries already cached** are answered locally and only the remainder is sent, so a partially warm batch still costs at most one request.
 - **Inputs longer than 100** (the server cap) are split across sequential requests automatically; you do not have to chunk.
 - **`{ inherit: true }`** applies to every entry in the call.
+- **Contexts are per entry.** Each entry takes an optional `context`, as on [`check`](#checks-with-a-context); an entry without one sees only global entries.
 - **An unknown `groupId` fails the whole call** with `not_found`, matching the single check rather than burying a typo as a denial.
 - An empty input returns `[]` without a request.
 
@@ -136,7 +153,7 @@ Details worth knowing:
 
 The SDK caches permission answers in the client for 5 seconds by default, and the server caches them for 60. Both layers matter for different reasons; the client-side one is described under [Client-side cache](#client-side-cache) below.
 
-Each unique `(userId, groupId, permission)` answer is cached server-side for 60 seconds. The following mutations invalidate the cache for the affected group:
+Each unique `(userId, groupId, permission, context)` answer is cached server-side for 60 seconds. The following mutations invalidate the cache for the affected group:
 
 - `members.assignRole`, `members.removeRole`
 - `roles.grantPermission`, `roles.revokePermission`, `roles.setEntries`, `roles.setParents`, `roles.update`

@@ -16,8 +16,8 @@ The group-scoped routes (`POST /v1/groups/:id/roles`, `GET /v1/groups/:id/roles`
 | `priority` | number | Integer. Higher = more authority. Used by the SDK's "can-act-on" helpers. |
 | `color` | string \| null | A 7-character hex color (e.g. `"#ff5050"`) if present, null otherwise. |
 | `isDefault` | boolean | A per-role flag the dev can set; multiple roles in a group may carry it. The single canonical "default role" lives on `Group.defaultRoleId`. |
-| `permissions` | string[] | The keys this role grants: every entry whose `value` is true, sorted by key. Deny entries are not listed here. `[]` on a freshly-created role. |
-| `entries` | `{ permission: string, value: boolean }[]` | Every entry on the role, sorted by key. `value: true` grants the key, `value: false` denies it. |
+| `permissions` | string[] | The keys this role grants globally: every global entry whose `value` is true, sorted by key. Deny entries and entries with a `context` are not listed here. `[]` on a freshly-created role. |
+| `entries` | `{ permission: string, value: boolean, context?: object }[]` | Every entry on the role, sorted by key and then by context, with a key's global entry first. `value: true` grants the key, `value: false` denies it. `context` is present only on a [contextual entry](#entries-with-a-context). |
 | `parents` | string[] | Ids of the roles this role inherits from, all in the same group, sorted. |
 | `metadata` | object | Free-form JSON object, at most 16 KB serialized. `{}` by default. |
 | `createdAt` | string | ISO 8601 timestamp. |
@@ -41,6 +41,23 @@ The group-scoped routes (`POST /v1/groups/:id/roles`, `GET /v1/groups/:id/roles`
   "createdAt": "2026-11-05T12:00:00.000Z"
 }
 ```
+
+## Entries with a context
+
+An entry can carry a `context`, such as `{ "world": "creative" }`, so it applies only to checks made in that context. Without one, an entry is global. An entry is identified by its key **and** its context, so one role can hold the same key once globally and once per context:
+
+```json
+{
+  "entries": [
+    { "permission": "essentials.fly", "value": false },
+    { "permission": "essentials.*", "value": true, "context": { "world": "creative" } }
+  ]
+}
+```
+
+Context keys match `^[a-z][a-z0-9_]{0,31}$`, an entry carries at most 2 keys, and values are 1 to 64 characters, stored folded to ASCII lowercase in both permission modes. `{}` means global. How contextual entries rank against global ones is described under [contexts](/api-reference/permissions#contexts). Contextual entries count toward the 5,000-entry cap like any other.
+
+Contextual entries are listed only in `entries`, never in the legacy `permissions` list, and changing one emits `role.updated` with `changed: ["entries"]` rather than `permission.granted` or `permission.revoked`: those two events keep describing the global granted set.
 
 ## `POST /v1/groups/:id/roles`
 
@@ -257,18 +274,27 @@ The first time a permission key is written on a given game, it is auto-registere
 { "permission": "shop.refund", "value": false }
 ```
 
+```json
+{ "permission": "essentials.fly", "value": true, "context": { "world": "creative" } }
+```
+
 | Field | Required | Notes |
 |-------|----------|-------|
 | `permission` | yes | 1-128 characters. Free-form string; the dev defines their own keys. In `"nodes"` mode it is lowercased and must pass the [key rules](/api-reference/permissions#permission-modes). |
 | `value` | no | Boolean, default `true`. `false` stores a deny entry. |
+| `context` | no | The entry's [context](#entries-with-a-context). Absent or `{}` writes the global entry. |
 
-A role holds at most 5,000 entries; adding a new key to a full role returns `400`.
+A role holds at most 5,000 entries, contextual ones included; adding a new entry to a full role returns `400`.
 
 ### Events
+
+For a global entry:
 
 - A key that becomes granted emits `permission.granted`.
 - A grant that becomes a deny emits `permission.revoked` and then `role.updated`.
 - A new deny entry emits `role.updated` only.
+
+Any change to a contextual entry emits `role.updated` with `changed: ["entries"]` only.
 
 ### Response
 
@@ -276,7 +302,7 @@ A role holds at most 5,000 entries; adding a new key to a full role returns `400
 
 ### Audit log
 
-One `permission.granted` entry per write that makes the key granted (a deny turned into a grant adds `"before": { "value": false }` to the payload). Writes that store a deny record a `role.entries.changed` entry instead, with the same diff payload as [`PUT /v1/roles/:id/entries`](#put-v1rolesidentries).
+One `permission.granted` entry per write that makes a global key granted (a deny turned into a grant adds `"before": { "value": false }` to the payload). Writes that store a deny, and every write to a contextual entry, record a `role.entries.changed` entry instead, with the same diff payload as [`PUT /v1/roles/:id/entries`](#put-v1rolesidentries).
 
 ```json
 {
@@ -293,15 +319,15 @@ One `permission.granted` entry per write that makes the key granted (a deny turn
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, or malformed JSON. |
+| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, an invalid `context`, or malformed JSON. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `DELETE /v1/roles/:id/permissions/:permission`
 
-Removes the role's entry for a key, whether it grants or denies. The route is idempotent: removing an entry the role does not have returns the unchanged role with no audit entry. In `"nodes"` mode the key is lowercased before lookup. The `PermissionDef` registry is preserved (removal does not "forget" the key for the game).
+Removes the role's entry for a key, whether it grants or denies. Without context query parameters it removes the **global** entry; `context.<key>=<value>` parameters select a contextual one instead (`DELETE /v1/roles/role_admin/permissions/essentials.fly?context.world=creative`). The route is idempotent: removing an entry the role does not have returns the unchanged role with no audit entry. In `"nodes"` mode the key is lowercased before lookup, and context values are folded in both modes. The `PermissionDef` registry is preserved (removal does not "forget" the key for the game).
 
-Removing a grant emits `permission.revoked` and records a `permission.revoked` audit entry. Removing a deny emits `role.updated` and records `role.entries.changed`.
+Removing a global grant emits `permission.revoked` and records a `permission.revoked` audit entry. Removing a global deny, or any contextual entry, emits `role.updated` and records `role.entries.changed`.
 
 ### Path parameters
 
@@ -309,6 +335,12 @@ Removing a grant emits `permission.revoked` and records a `permission.revoked` a
 |-------|------|-------|
 | `id` | string | The role id. URL-decoded by the router. |
 | `permission` | string | The permission key. URL-decoded by the router. |
+
+### Query parameters
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `context.<key>` | no | One per context key of the entry to remove. Absent targets the global entry. |
 
 ### Response
 
@@ -333,12 +365,13 @@ One `permission.revoked` entry per non-noop revoke:
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | A `context.<key>` parameter is invalid or repeated. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `PUT /v1/roles/:id/entries`
 
-Replaces a role's whole entry list in one transaction. Keys not in the list are removed, keys whose value changes are updated, and new keys are added (and registered in the catalog). A request that changes nothing writes nothing.
+Replaces a role's whole entry list in one transaction. Entries are matched by key and context: entries not in the list are removed, entries whose value changes are updated, and new entries are added (and their keys registered in the catalog). A request that changes nothing writes nothing.
 
 ### Request
 
@@ -347,14 +380,15 @@ Replaces a role's whole entry list in one transaction. Keys not in the list are 
   "entries": [
     { "permission": "*", "value": true },
     { "permission": "chat.mute.exempt", "value": false },
-    { "permission": "shop.admin.*", "value": false }
+    { "permission": "shop.admin.*", "value": false },
+    { "permission": "shop.admin.*", "value": true, "context": { "world": "market" } }
   ]
 }
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `entries` | yes | Array of at most 5,000 `{ permission, value }` objects. A key may appear once; in `"nodes"` mode keys are lowercased first, so two spellings of one key are duplicates. `[]` clears the role. |
+| `entries` | yes | Array of at most 5,000 `{ permission, value, context? }` objects. Each `(permission, context)` pair may appear once: a key may appear once globally and once per distinct context. In `"nodes"` mode keys are lowercased first, and context values are folded in both modes, so two spellings of one pair are duplicates. `[]` clears the role. |
 
 ### Response
 
@@ -377,13 +411,15 @@ One `role.entries.changed` audit entry per non-noop replace, carrying the diff:
 }
 ```
 
+A contextual entry in the diff carries its `context` beside `permission`.
+
 One `role.updated` event with `changed: ["entries"]`. A replace does not emit per-key `permission.granted` / `permission.revoked` events.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Malformed body, over 5,000 entries, a duplicate key, a key over 128 characters, or a key that breaks the `"nodes"` key rules. |
+| `bad_request` | 400 | Malformed body, over 5,000 entries, a duplicate `(permission, context)` pair, a key over 128 characters, a key that breaks the `"nodes"` key rules, or an invalid `context`. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -474,6 +510,15 @@ One member's inputs to resolution, in one read: their status, the roles they hol
       "grant": false,
       "setAt": "2026-11-05T12:00:00.000Z",
       "setBy": null
+    },
+    {
+      "groupId": "grp_network",
+      "userId": "user_alice",
+      "permission": "chat.color",
+      "grant": true,
+      "context": { "world": "hub" },
+      "setAt": "2026-11-05T12:05:00.000Z",
+      "setBy": null
     }
   ],
   "version": 4,
@@ -518,4 +563,4 @@ The response carries `Junjo-Stream-Position`, read before the data (see [snapsho
 }
 ```
 
-`changed` lists any of `name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`. Single-route changes that only add or remove a grant emit `permission.granted` / `permission.revoked` and no `role.updated`.
+`changed` lists any of `name`, `priority`, `color`, `isDefault`, `metadata`, `entries`, `parents`. Single-route changes that only add or remove a global grant emit `permission.granted` / `permission.revoked` and no `role.updated`; any change to a contextual entry emits `role.updated` with `changed: ["entries"]`.

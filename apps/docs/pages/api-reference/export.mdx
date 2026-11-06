@@ -47,8 +47,8 @@ Records refer to each other by **internal ids**: groups, roles, members and reco
 | `game` | `id`, `name`, `config` (as stored, unresolved), `networkId`, `createdAt`, `updatedAt` |
 | `person` | `id`, `identities: [{ userId, namespace, linkedAt, displayName, displayNameUpdatedAt }]` (earliest-linked first) |
 | `group` | `id`, `groupKind`, `name`, `visibility`, `metadata`, `defaultRoleId`, `parentGroupId`, `hasPasscode`, `createdAt`, `updatedAt`, `softDeletedAt`, `memberActivityAt`. Soft-deleted groups are included. |
-| `role` | `id`, `groupId`, `name`, `priority`, `color`, `isDefault`, `metadata`, `entries: [{ permission, value }]`, `parents` (role ids), `createdAt`, `updatedAt` |
-| `member` | `id`, `groupId`, `personId`, `userId`, `status`, `roles` (role ids), `overrides: [{ permission, value, setAt, setByPersonId }]`, `metadata`, `notesPublic`, `notesPrivate`, `version`, `joinedAt`, `leftAt`, `bannedUntil` |
+| `role` | `id`, `groupId`, `name`, `priority`, `color`, `isDefault`, `metadata`, `entries: [{ permission, value, context? }]` (`context` only on contextual entries), `parents` (role ids), `createdAt`, `updatedAt` |
+| `member` | `id`, `groupId`, `personId`, `userId`, `status`, `roles` (role ids), `overrides: [{ permission, value, context?, setAt, setByPersonId }]`, `metadata`, `notesPublic`, `notesPrivate`, `version`, `joinedAt`, `leftAt`, `bannedUntil` |
 | `invitation` | `id`, `groupId`, `code`, `roleId`, `targetUserId`, `createdByPersonId`, `createdAt`, `expiresAt`, `usedAt`, `usedByPersonId` |
 | `relationship` | `groupAId`, `groupBId`, `type`, `since`, `setByPersonId` (directed, as stored) |
 | `ban` | `id`, `personId`, `userId`, `bannedAt`, `expiresAt`, `reason`, `bannedByPersonId`, `issuer` (game bans; group bans are members with status `banned`) |

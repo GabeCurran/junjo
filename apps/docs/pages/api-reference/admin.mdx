@@ -320,7 +320,7 @@ settings page.
   "config": {
     "friends": { "enabled": true, "scope": "per-game", "requestsRequired": true, "maxFriends": 1000, "...": "..." },
     "blocks": { "enabled": true },
-    "permissions": { "mode": "exact" },
+    "permissions": { "mode": "exact", "contexts": {} },
     "identity": { "formats": {} }
   },
   "networkId": null
@@ -330,7 +330,7 @@ settings page.
 | Field | Type | Notes |
 |-------|------|-------|
 | `gameId` | string | Echoed from the path. |
-| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the friends and blocks schema, and [Permission modes](/api-reference/permissions#permission-modes) for `permissions.mode` (`"exact"` or `"nodes"`). A `PATCH` that changes `permissions.mode` runs the mode-switch checks and returns `409 permission_mode_conflict` when they fail. `identity.formats` maps namespaces to declared [canonical id formats](./identity#canonical-formats) (default `{}`). |
+| `config` | object | Fully-resolved `GameConfig`. See [Friends configuration](./friends.mdx#configuration) for the friends and blocks schema, and [Permission modes](/api-reference/permissions#permission-modes) for `permissions.mode` (`"exact"` or `"nodes"`). A `PATCH` that changes `permissions.mode` runs the mode-switch checks and returns `409 permission_mode_conflict` when they fail. `permissions.contexts` holds the game's [context inheritance](#permission-contexts) (default `{}`). `identity.formats` maps namespaces to declared [canonical id formats](./identity#canonical-formats) (default `{}`). |
 | `networkId` | string \| null | The network the game belongs to, when `friends.scope = "network"`. Null for standalone games. |
 
 ### Errors
@@ -368,6 +368,41 @@ value branch-by-branch, so a body of
 
 `config.groups.kinds` is replaced as a whole in the same way: send every kind that should keep limits, and `{ "groups": { "kinds": {} } }` removes them all. Each entry takes `maxMembers` (1 to 100000), `maxPerUser` (1 to 1000), `deleteWhenEmpty` (boolean) and `idleDeleteHours` (1 to 8760), all optional; at most 32 kinds, each name 1 to 64 characters. See [Kind limits](./groups#kind-limits).
 
+`config.permissions.contexts` is replaced as a whole in the same way; see [Permission contexts](#permission-contexts).
+
+### Permission contexts
+
+`permissions.contexts` declares inheritance between the values of a [context](/api-reference/permissions#contexts) key, so a check in one value also sees the entries written for the values it inherits:
+
+```json
+{
+  "config": {
+    "permissions": {
+      "contexts": {
+        "world": {
+          "inherit": {
+            "pvpworld": ["world"],
+            "world_nether": ["world"],
+            "cave_world_nether": ["world_nether"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `contexts` | object | Context key to `{ inherit }`. Keys match `^[a-z][a-z0-9_]{0,31}$`; at most 32 keys. |
+| `contexts.<key>.inherit` | object | Value to the list of values it inherits from. Values are 1 to 64 characters with no control characters. |
+
+- The map is stated in full: a `PATCH` that includes `permissions.contexts` replaces the stored map, and `{ "permissions": { "contexts": {} } }` removes all inheritance. A `PATCH` of `permissions.mode` alone keeps it.
+- Values are stored folded to ASCII lowercase, like every context value; repeated parents collapse to one.
+- Inheritance is transitive. A check ranks a value's own entries first, then each inherited value by its shortest distance.
+- Refused with `400 bad_request`: a cycle (a value that reaches itself, including after folding), a chain deeper than 16 steps, more than 256 values listing parents under one key, more than 8 parents on one value, two values equal after folding, an invalid key or value, or any other shape.
+- A change drops every cached permission answer for the game.
+
 ### Response
 
 `200 OK` with the same `WireAdminGameConfig` shape as the GET above,
@@ -377,7 +412,7 @@ reflecting the post-merge state.
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Malformed JSON; body missing both `config` and `networkId`; validation failure on the merged config (e.g. `friends.maxFriends < 0`, an `identity.formats` key that breaks the namespace pattern, more than 16 declared formats, an unknown format, a `groups.kinds` value out of range, more than 32 kinds). |
+| `bad_request` | 400 | Malformed JSON; body missing both `config` and `networkId`; validation failure on the merged config (e.g. `friends.maxFriends < 0`, an `identity.formats` key that breaks the namespace pattern, more than 16 declared formats, an unknown format, a `groups.kinds` value out of range, more than 32 kinds, a `permissions.contexts` cycle or a limit above exceeded). |
 | `not_found` | 404 | No game with the supplied id exists. |
 | `permission_mode_conflict` | 409 | A `permissions.mode` switch would change the meaning of stored keys or role names. |
 | `identity_format_conflict` | 409 | Stored user ids in a newly declared (or changed) namespace do not match its format. |
@@ -815,6 +850,7 @@ Sets or updates a member-level permission override. Mirrors the per-game `POST /
 ```ts
 interface AdminOverridePermissionBody {
   grant: boolean;
+  context?: Record<string, string>; // Absent or {} targets the global override
 }
 ```
 
@@ -828,6 +864,7 @@ interface WireAdminMemberPermissionOverride {
   userId: string;                // The dev-supplied external user id
   permission: string;
   grant: boolean;
+  context?: Record<string, string>; // Present only on a contextual override
   setAt: string;                 // ISO 8601
   setBy: string | null;          // null (no auth-adapter actor wired)
 }
@@ -846,12 +883,12 @@ interface WireAdminMemberPermissionOverride {
 | Code | Status | When |
 |------|--------|------|
 | `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
-| `bad_request` | 400 | `grant` missing or non-boolean, permission key over 128 chars, or invalid JSON. |
+| `bad_request` | 400 | `grant` missing or non-boolean, permission key over 128 chars, an invalid `context`, or invalid JSON. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 ## DELETE /v1/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission
 
-Clears a member-level permission override. Mirrors the per-game `DELETE` counterpart's semantics.
+Clears a member-level permission override. Mirrors the per-game `DELETE` counterpart's semantics, including the `context.<key>=<value>` query parameters that select a contextual override (without them the global override is cleared).
 
 ### Response
 
@@ -868,6 +905,7 @@ Clears a member-level permission override. Mirrors the per-game `DELETE` counter
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | A `context.<key>` parameter is invalid or repeated. |
 | `not_found` | 404 | Group missing / cross-game / soft-deleted, no `ExternalIdentity`, or no `GroupMember` row. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
@@ -877,7 +915,7 @@ Lists a member's permission overrides.
 
 ### Response
 
-`200 OK` with a bare array of `WireAdminMemberPermissionOverride` rows (no pagination wrapper). Sorted by `permissionKey` ascending for deterministic output.
+`200 OK` with a bare array of `WireAdminMemberPermissionOverride` rows (no pagination wrapper). Sorted by `permissionKey` ascending, then by context with a key's global override first, for deterministic output.
 
 ### Behavior
 
@@ -1107,6 +1145,8 @@ Request body:
 | Field | Type | Notes |
 |-------|------|-------|
 | `permission` | string | Required. 1-128 characters. Free-form (any UTF-8); convention is namespaced like `guild.invite_member` or `vault.withdraw`. |
+| `value` | boolean | Optional, default `true`. `false` stores a deny entry. |
+| `context` | object | Optional. The entry's [context](/api-reference/roles#entries-with-a-context); absent or `{}` writes the global entry. A contextual write emits `role.updated` instead of `permission.granted`. |
 
 Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` populated). The wire shape matches `WireAdminRole` from the list / create endpoints.
 
@@ -1136,6 +1176,8 @@ Path parameters:
 | `gameId` | string | The cross-game id (`Game.id`). |
 | `roleId` | string | The role id (`Role.id`). |
 | `permission` | string | The permission key to revoke. URL-decoded; keys with `/` or other reserved characters must be `encodeURIComponent`'d by the caller. |
+
+Query parameters: `context.<key>=<value>` selects a contextual entry, as on the per-game route; without them the global entry is removed.
 
 Response: `200 OK` with the post-state `WireAdminRole` (the role with `permissions` reflecting the revoke). Even no-op calls return the unchanged role.
 
@@ -1510,13 +1552,14 @@ Path parameters:
 |------|------|-------|
 | `gameId` | string | The cross-game id (`Game.id`). Scopes the `ExternalIdentity` lookup, the group membership join, and the cache key. |
 
-Query parameters (all required):
+Query parameters (`userId`, `groupId` and `permission` required):
 
 | Name | Type | Notes |
 |------|------|-------|
 | `userId` | string 1-N | The dev-supplied external user id (NOT the internal `JunjoUser.id`). |
 | `groupId` | string 1-N | The group whose membership + roles + overrides drive the resolution. |
 | `permission` | string 1-128 | The permission key. Cap matches `ADMIN_PERMISSION_KEY_MAX_LENGTH`. |
+| `context.<key>` | string 1-64 | Optional. The check's [context](/api-reference/permissions#contexts), one parameter per key, at most 2. |
 
 Response: `200 OK` with `PermissionCheckResult`. Wire format:
 
@@ -1527,6 +1570,7 @@ interface PermissionCheckResult {
   allowed: boolean;
   source: PermissionSource;
   viaRoleId?: string; // Only set when source === "role"
+  context?: Record<string, string>; // The deciding entry's context, when it has one
 }
 ```
 
@@ -1549,7 +1593,7 @@ Errors:
 | Code | Status | When |
 |------|--------|------|
 | `not_found` | 404 | `gameId` does not exist; `groupId` does not exist, is soft-deleted, or belongs to a different game. |
-| `bad_request` | 400 | Missing or empty `userId` / `groupId` / `permission`; `permission` over 128 chars. |
+| `bad_request` | 400 | Missing or empty `userId` / `groupId` / `permission`; `permission` over 128 chars; an invalid or repeated `context.<key>` parameter. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
 Example:
