@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { AlertCircle, Key, Loader2, Plus } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
@@ -25,9 +25,10 @@ import {
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { RoleChip } from "../ui/role-chip";
+import { Notice } from "../ui/section";
 
 interface PermissionsMatrixProps {
   // Sorted by `priority desc, name asc` server-side. We render in this
@@ -40,8 +41,6 @@ interface PermissionsMatrixProps {
   groupId: string;
 }
 
-const numberFormatter = new Intl.NumberFormat("en-US");
-
 // Compose the pending-cell state key. Same convention as the row dialogs
 // in `view-permission-overrides-dialog.tsx`.
 function cellKey(roleId: string, permission: string): string {
@@ -49,7 +48,7 @@ function cellKey(roleId: string, permission: string): string {
 }
 
 interface CellError {
-  roleId: string;
+  roleName: string;
   permission: string;
   error: string;
 }
@@ -86,8 +85,8 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
   const newKeyInputId = useId();
 
   const catalogKeys = useMemo(() => catalog.map((c) => c.key), [catalog]);
-  // Drop locally-added keys that have since landed in the catalog (e.g.
-  // after a successful grant that auto-registered them). The dedupe also
+  // Drop locally-added keys that have since landed in the catalog, which
+  // a successful grant does by auto-registering them. The dedupe also
   // protects against an operator entering a key that was registered by
   // some other path between page loads.
   const allKeys = useMemo(() => {
@@ -163,7 +162,11 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
           return fromProps ?? r;
         }),
       );
-      setCellError({ roleId, permission, error: result.error ?? "could not toggle permission" });
+      setCellError({
+        roleName: roles.find((r) => r.id === roleId)?.name ?? roleId,
+        permission,
+        error: result.error ?? "The server gave no reason. Try again.",
+      });
       return;
     }
 
@@ -188,15 +191,15 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
     setKeyError(null);
     const trimmed = newKey.trim();
     if (trimmed.length === 0) {
-      setKeyError("permission key is required");
+      setKeyError("Enter a permission key.");
       return;
     }
     if (trimmed.length > ADMIN_PERMISSION_KEY_MAX_LENGTH) {
-      setKeyError(`permission key must be at most ${ADMIN_PERMISSION_KEY_MAX_LENGTH} characters`);
+      setKeyError(`Shorten the key to ${ADMIN_PERMISSION_KEY_MAX_LENGTH} characters or fewer.`);
       return;
     }
     if (allKeys.includes(trimmed)) {
-      setKeyError("that key already exists in the matrix");
+      setKeyError(`${trimmed} is already a column.`);
       return;
     }
     setLocalKeys((ks) => [...ks, trimmed]);
@@ -204,98 +207,84 @@ export function PermissionsMatrix({ roles, catalog, gameId, groupId }: Permissio
   }
 
   return (
-    <Card>
-      <CardHeader className="space-y-1.5">
-        <CardTitle className="text-base">Permissions matrix</CardTitle>
-        <CardDescription>
-          Each cell shows the global entry stored on that role for that key: granted, denied, or
-          none. Clicking a cell moves it from none to granted to denied and back to none. Entries
-          limited to a context are listed under the cell with their context and are not changed by
-          clicking. A role also inherits its parent roles' entries, and in nodes mode a wildcard
-          entry covers more specific keys, so an empty cell does not mean the role lacks access. Use
-          the permission check to see a member's effective access. The first write of a
-          never-before-seen key registers it into this game's catalog automatically.{" "}
-          {numberFormatter.format(roles.length)} {roles.length === 1 ? "role" : "roles"} x{" "}
-          {numberFormatter.format(allKeys.length)} {allKeys.length === 1 ? "key" : "keys"}.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <form onSubmit={handleRegisterKey} className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <div className="flex-1 space-y-1.5">
-            <Label htmlFor={newKeyInputId}>Register a new permission key</Label>
-            <Input
-              id={newKeyInputId}
-              value={newKey}
-              onChange={(e) => setNewKey(e.target.value)}
-              placeholder="guild.invite_member"
-              maxLength={ADMIN_PERMISSION_KEY_MAX_LENGTH}
-              autoComplete="off"
-              className="font-mono text-sm"
-            />
-          </div>
-          <Button type="submit" variant="secondary">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <form onSubmit={handleRegisterKey} className="flex items-center gap-2">
+          <Label htmlFor={newKeyInputId} className="sr-only">
+            New permission key
+          </Label>
+          <Input
+            id={newKeyInputId}
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="New permission key"
+            maxLength={ADMIN_PERMISSION_KEY_MAX_LENGTH}
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full font-mono sm:w-72"
+          />
+          <Button type="submit" variant="outline">
             <Plus className="h-3.5 w-3.5" aria-hidden />
             Add column
           </Button>
         </form>
-        <p className="text-xs text-muted-foreground">
-          New keys appear as a column locally. The key persists into the per-game catalog the first
-          time you grant it to a role; until then it lives only in your browser.
+        <Legend />
+      </div>
+      {keyError ? (
+        <p className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {keyError}
         </p>
-        {keyError ? (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {keyError}
-          </div>
-        ) : null}
-        {cellError ? (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            <div className="flex-1">
-              <p className="font-medium">Could not toggle permission</p>
-              <p className="text-xs">
-                role <span className="font-mono">{cellError.roleId}</span> /{" "}
-                <span className="font-mono">{cellError.permission}</span>: {cellError.error}
-              </p>
-            </div>
-          </div>
-        ) : null}
-        {roles.length === 0 ? (
-          <EmptyState
-            title="No roles yet"
-            body="Add at least one role in the Roles tab before granting permissions. The matrix needs both rows (roles) and columns (permission keys)."
-          />
-        ) : allKeys.length === 0 ? (
-          <EmptyState
-            title="No permission keys yet"
-            body="Register your first permission key above. Common patterns: 'guild.invite_member', 'raid.start', 'vault.withdraw'."
-          />
-        ) : (
-          <MatrixTable
-            roles={optimisticRoles}
-            keys={allKeys}
-            catalogKeys={catalogKeys}
-            pending={pending}
-            stateOf={stateOf}
-            onToggle={toggleCell}
-          />
-        )}
-      </CardContent>
-    </Card>
+      ) : null}
+      {cellError ? (
+        <p className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          Could not change <span className="font-mono">{cellError.permission}</span> for{" "}
+          {cellError.roleName}: {cellError.error}
+        </p>
+      ) : null}
+      {roles.length === 0 ? (
+        <Notice title="No roles yet" body="Create a role on the Roles tab first." />
+      ) : allKeys.length === 0 ? (
+        <Notice
+          title="No permission keys yet"
+          body="Add a key above. It is saved to the game the first time you grant it."
+        />
+      ) : (
+        <MatrixTable
+          roles={optimisticRoles}
+          keys={allKeys}
+          catalogKeys={catalogKeys}
+          pending={pending}
+          stateOf={stateOf}
+          onToggle={toggleCell}
+        />
+      )}
+    </div>
   );
 }
 
-interface EmptyStateProps {
-  title: string;
-  body: string;
+function Swatch({ className }: { className: string }) {
+  return <span aria-hidden className={cn("inline-block h-3 w-3 rounded-sm border", className)} />;
 }
 
-function EmptyState({ title, body }: EmptyStateProps) {
+// What the cell fills mean. The cells hold each role's own entries;
+// inherited and wildcard access is resolved by the permission check.
+function Legend() {
   return (
-    <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-      <Key className="h-8 w-8 text-muted-foreground" aria-hidden />
-      <p className="mt-3 text-sm font-medium">{title}</p>
-      <p className="mt-1 max-w-md text-xs text-muted-foreground">{body}</p>
-    </div>
+    <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch className="border-allow bg-allow" />
+        Granted
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch className="border-destructive bg-destructive" />
+        Denied
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch className="border-input bg-background" />
+        No entry
+      </span>
+      <span>Own entries only, not inherited</span>
+    </p>
   );
 }
 
@@ -315,16 +304,19 @@ const NEXT_ACTION: Record<RoleEntryState, string> = {
 };
 
 function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: MatrixTableProps) {
-  const names = useMemo(() => new Map(roles.map((r) => [r.id, r.name])), [roles]);
+  const byId = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
   const catalogSet = useMemo(() => new Set(catalogKeys), [catalogKeys]);
+  // The sticky role column needs an opaque fill; its row hover is drawn
+  // underneath the cell's content so the text is not dimmed.
+  const stickyCell = "sticky left-0 z-10 bg-background";
   return (
-    <div className="overflow-x-auto rounded-md border border-border">
+    <div className="overflow-x-auto">
       <table className="w-full border-collapse text-sm">
         <thead>
-          <tr className="border-b border-border bg-muted/40">
+          <tr className="border-b border-border text-xs text-muted-foreground">
             <th
               scope="col"
-              className="sticky left-0 z-10 min-w-[12rem] bg-muted/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground"
+              className={cn(stickyCell, "min-w-[12rem] py-2 pr-4 text-left font-medium")}
             >
               Role
             </th>
@@ -334,13 +326,13 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
                 <th
                   key={key}
                   scope="col"
-                  className="min-w-[8rem] border-l border-border px-3 py-2 text-left text-xs font-medium"
+                  className="min-w-[7rem] px-3 py-2 text-center font-medium"
                   title={key}
                 >
-                  <div className="flex flex-col gap-1">
-                    <span className="truncate font-mono text-xs text-foreground">{key}</span>
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="max-w-[12rem] truncate font-mono text-foreground">{key}</span>
                     {inCatalog ? null : (
-                      <Badge variant="outline" className="w-fit text-xs">
+                      <Badge variant="outline" className="w-fit text-xs font-normal">
                         Local
                       </Badge>
                     )}
@@ -352,28 +344,27 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
         </thead>
         <tbody>
           {roles.map((role) => (
-            <tr key={role.id} className="border-b border-border last:border-0">
+            <tr key={role.id} className="group border-b border-border/60 hover:bg-accent/40">
               <th
                 scope="row"
-                className="sticky left-0 z-10 bg-background px-3 py-3 text-left align-top"
+                className={cn(
+                  stickyCell,
+                  "py-2.5 pr-4 text-left align-top font-normal",
+                  "before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-accent/40 before:opacity-0 group-hover:before:opacity-100",
+                )}
               >
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    {role.color ? (
-                      <span
-                        aria-hidden
-                        className="inline-block h-3 w-3 shrink-0 rounded-full border border-border"
-                        style={{ backgroundColor: role.color }}
-                      />
-                    ) : null}
-                    <span className="text-sm font-medium">{role.name}</span>
-                  </div>
-                  <span className="font-mono tabular-nums text-xs text-muted-foreground">
+                <div className="flex flex-col items-start gap-1">
+                  <RoleChip name={role.name} color={role.color} />
+                  <span className="text-xs tabular-nums text-muted-foreground">
                     priority {role.priority}
                   </span>
                   {role.parents && role.parents.length > 0 ? (
-                    <span className="text-xs text-muted-foreground">
-                      inherits {role.parents.map((p) => names.get(p) ?? p).join(", ")}
+                    <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      inherits
+                      {role.parents.map((p) => {
+                        const parent = byId.get(p);
+                        return <RoleChip key={p} name={parent?.name ?? p} color={parent?.color} />;
+                      })}
                     </span>
                   ) : null}
                 </div>
@@ -382,7 +373,7 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
                 const state = stateOf(role.id, key);
                 const isPending = pending.has(cellKey(role.id, key));
                 return (
-                  <td key={key} className="border-l border-border px-3 py-3 align-top">
+                  <td key={key} className="px-3 py-2.5 text-center align-top">
                     <MatrixCell
                       state={state}
                       pending={isPending}
@@ -405,7 +396,7 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
 function ContextEntries({ entries }: { entries: AdminPermissionEntry[] }) {
   if (entries.length === 0) return null;
   return (
-    <div className="mt-1 flex flex-col gap-1">
+    <div className="mt-1 flex flex-col items-center gap-1">
       {entries.map((e) => (
         <Badge
           key={permissionEntryId(e)}
@@ -442,7 +433,7 @@ function MatrixCell({ state, pending, onToggle, ariaLabel }: MatrixCellProps) {
         className={cn(
           "h-5 w-5 cursor-pointer rounded border transition-colors",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-          state === "grant" && "border-primary bg-primary hover:bg-primary/90",
+          state === "grant" && "border-allow bg-allow hover:bg-allow/90",
           state === "deny" && "border-destructive bg-destructive hover:bg-destructive/90",
           state === "none" && "border-input bg-background hover:bg-accent",
           pending && "cursor-wait opacity-60",
@@ -457,7 +448,7 @@ function MatrixCell({ state, pending, onToggle, ariaLabel }: MatrixCellProps) {
         <svg
           aria-hidden
           viewBox="0 0 12 12"
-          className="pointer-events-none absolute h-3 w-3 text-primary-foreground"
+          className="pointer-events-none absolute h-3 w-3 text-background"
           fill="none"
           stroke="currentColor"
           strokeWidth={2}

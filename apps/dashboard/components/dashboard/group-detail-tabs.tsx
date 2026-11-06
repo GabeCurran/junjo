@@ -3,16 +3,13 @@ import Link from "next/link";
 
 import { cn } from "../../lib/utils";
 
-// Tab navigation for the group detail page. Six tabs (Members, Roles,
-// Permissions, Audit, Relationships, Sub-groups). The active tab is
-// selected via a URL `?tab=` parameter that the page lenient-parses;
-// switching is just an anchor `<Link>` so the browser's Back button
-// restores prior tab state without per-tab JS state.
+// Tab navigation for the group detail page. The active tab is selected
+// via a URL `?tab=` parameter that the page lenient-parses; switching is
+// just an anchor `<Link>` so the browser's Back button restores prior
+// tab state without per-tab JS state.
 //
 // Server Component on purpose: tabs do not need interactivity beyond
-// navigation, and rendering them server-side keeps the bundle smaller and
-// matches the page's overall composition (Suspense boundaries + Server
-// Components + occasional Client islands).
+// navigation.
 
 export const GROUP_DETAIL_TABS = [
   "members",
@@ -29,51 +26,17 @@ export const GROUP_DETAIL_DEFAULT_TAB: GroupDetailTab = "members";
 interface TabDef {
   value: GroupDetailTab;
   label: string;
-  description: string;
 }
 
-// `description` populates the topbar when this tab is active. Adding new
-// tabs means appending to this array plus extending the union above.
+// Adding a tab means appending here plus extending the union above.
 const TAB_DEFS: readonly TabDef[] = [
-  {
-    value: "members",
-    label: "Members",
-    description: "Members in this group, with their assigned roles and lifecycle status.",
-  },
-  {
-    value: "roles",
-    label: "Roles",
-    description: "Roles defined for this group, ordered by priority.",
-  },
-  {
-    value: "permissions",
-    label: "Permissions",
-    description:
-      "Matrix of role permissions. Toggle a cell to grant or revoke a permission key for a role.",
-  },
-  {
-    value: "audit",
-    label: "Audit",
-    description:
-      "Every state change in this group, newest first. Filter by action and page through history.",
-  },
-  {
-    value: "relationships",
-    label: "Relationships",
-    description:
-      "Outgoing directed links from this group to others in the same game. Set, edit, or clear ally / rival / vassal relationships.",
-  },
-  {
-    value: "sub-groups",
-    label: "Sub-groups",
-    description:
-      "This group's place in the hierarchy. View and edit the parent assignment and direct children.",
-  },
+  { value: "members", label: "Members" },
+  { value: "roles", label: "Roles" },
+  { value: "permissions", label: "Permissions" },
+  { value: "audit", label: "Audit" },
+  { value: "relationships", label: "Relationships" },
+  { value: "sub-groups", label: "Sub-groups" },
 ];
-
-export function getTabDescription(tab: GroupDetailTab): string {
-  return TAB_DEFS.find((t) => t.value === tab)?.description ?? "";
-}
 
 interface GroupDetailTabsProps {
   gameId: string;
@@ -81,7 +44,7 @@ interface GroupDetailTabsProps {
   active: GroupDetailTab;
 }
 
-// The `Members` tab uses the canonical URL (`?tab=` omitted) so the
+// The default tab uses the canonical URL (`?tab=` omitted) so the
 // default view stays clean. Other tabs append `?tab=<value>`.
 function buildTabHref(gameId: string, groupId: string, tab: GroupDetailTab): string {
   const base = `/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}`;
@@ -94,7 +57,7 @@ export function GroupDetailTabs({ gameId, groupId, active }: GroupDetailTabsProp
     <div
       role="tablist"
       aria-label="Group sections"
-      className="flex items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-border"
+      className="flex items-center gap-6 overflow-x-auto whitespace-nowrap border-b border-border"
     >
       {TAB_DEFS.map((tab) => {
         const isActive = tab.value === active;
@@ -105,11 +68,10 @@ export function GroupDetailTabs({ gameId, groupId, active }: GroupDetailTabsProp
             aria-selected={isActive}
             href={buildTabHref(gameId, groupId, tab.value)}
             className={cn(
-              "inline-flex items-center px-4 py-2 text-sm font-medium transition-colors",
-              "border-b-2 -mb-px",
+              "-mb-px inline-flex items-center border-b-2 pb-2 pt-1 text-sm font-medium transition-colors",
               isActive
-                ? "border-foreground text-foreground"
-                : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             {tab.label}

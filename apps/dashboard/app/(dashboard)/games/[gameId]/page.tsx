@@ -108,7 +108,7 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
         }
       />
       <main className="flex-1 px-6 pb-12 pt-4">
-        <div className="mx-auto flex max-w-screen-xl flex-col gap-10">
+        <div className="flex max-w-screen-xl flex-col gap-10">
           <GameFigures game={game} />
           <div className="grid gap-10 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             <Suspense fallback={<div className="h-48 animate-pulse rounded bg-muted" />}>

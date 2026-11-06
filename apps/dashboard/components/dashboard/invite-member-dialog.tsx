@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { Check, Copy, Link2, Mail, ShieldAlert, UserPlus } from "lucide-react";
+import { Check, Copy, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
@@ -39,7 +39,6 @@ const INITIAL_STATE: InviteMemberResult = { ok: false };
 interface TabDef {
   value: InviteMode;
   label: string;
-  icon: typeof Mail;
   description: string;
 }
 
@@ -47,23 +46,18 @@ const TABS: readonly TabDef[] = [
   {
     value: "userId",
     label: "By user id",
-    icon: Mail,
-    description:
-      "Direct invitation - only the named user can accept. The dev's frontend or auth-adapter integration is responsible for surfacing it to them.",
+    description: "Only this user can accept. Your game is the one that tells them.",
   },
   {
     value: "code",
     label: "By code",
-    icon: ShieldAlert,
-    description:
-      "Open invitation - anyone with the code can accept. The code is shown once after creation; it stays retrievable from the invitations endpoint afterward.",
+    description: "Anyone with the code can accept. Share it like a password.",
   },
   {
     value: "link",
     label: "By link",
-    icon: Link2,
     description:
-      "Open invitation rendered as a shareable URL. Construct against JUNJO_INVITE_BASE_URL (or JUNJO_BASE_URL when unset).",
+      "Anyone with the link can accept. It is built from JUNJO_INVITE_BASE_URL, or JUNJO_BASE_URL when that is unset.",
   },
 ];
 
@@ -167,18 +161,15 @@ export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps)
             <DialogHeader>
               <DialogTitle>Invite member</DialogTitle>
               <DialogDescription>
-                Issue a direct invitation, an open code, or a shareable link for this group. All
-                three call the same admin endpoint and produce the same `member.invited` audit
-                entry; only the variant differs.
+                Invite someone to this group by user id, code or link.
               </DialogDescription>
             </DialogHeader>
             <div
               role="tablist"
               aria-label="Invitation type"
-              className="flex gap-1 rounded-md border border-border bg-muted/40 p-1"
+              className="flex gap-5 border-b border-border"
             >
               {TABS.map((tab) => {
-                const Icon = tab.icon;
                 const active = tab.value === mode;
                 return (
                   <button
@@ -188,19 +179,18 @@ export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps)
                     aria-selected={active}
                     onClick={() => handleTabClick(tab.value)}
                     className={cn(
-                      "flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 text-xs font-medium transition-colors",
+                      "-mb-px border-b-2 pb-2 text-sm font-medium transition-colors",
                       active
-                        ? "bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
+                        ? "border-primary text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    <Icon className="h-3.5 w-3.5" aria-hidden />
                     {tab.label}
                   </button>
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {TABS.find((t) => t.value === mode)?.description}
             </p>
             <form action={formAction} className="space-y-4" key={mode}>
@@ -220,10 +210,7 @@ export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps)
                     spellCheck={false}
                     className="font-mono"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    The dev-supplied id from your auth provider. Junjo links it to a JunjoUser via
-                    ExternalIdentity on first acceptance.
-                  </p>
+                  <p className="text-xs text-muted-foreground">The id from your auth provider.</p>
                 </div>
               ) : null}
               <div className="space-y-2">
@@ -238,8 +225,7 @@ export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps)
                   className="font-mono"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Auto-assigned to the new member when the invitation is accepted. Not validated
-                  against `Role` on create; an invalid id surfaces at accept time.
+                  Given to the member when they accept. The id is checked then, not now.
                 </p>
               </div>
               <div className="space-y-2">
@@ -253,8 +239,7 @@ export function InviteMemberDialog({ gameId, groupId }: InviteMemberDialogProps)
                   className="font-mono"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Format: `&lt;positive integer&gt;&lt;unit&gt;` where unit is s, m, h, or d. Leave
-                  blank for no expiry.
+                  A number and a unit: s, m, h or d. Leave blank for no expiry.
                 </p>
               </div>
               {state.error ? (
@@ -290,8 +275,8 @@ function ResultPanel({ mode, invitation, inviteUrl, copied, onCopy, onDone }: Re
   const title = mode === "link" ? "Invite link generated" : "Invite code generated";
   const description =
     mode === "link"
-      ? "Share this link with the recipient. Anyone who opens it can accept the invitation, so treat it like a one-time secret."
-      : "Share this code with the recipient. Anyone who knows it can accept, so treat it like a one-time secret.";
+      ? "Anyone who opens this link can accept, so send it only to the person you are inviting."
+      : "Anyone who has this code can accept, so send it only to the person you are inviting.";
   return (
     <>
       <DialogHeader>

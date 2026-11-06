@@ -1,6 +1,4 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft } from "lucide-react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
@@ -20,16 +18,9 @@ import { MemberActivityHeatmap } from "../../../../../components/analytics/membe
 import { PermissionUsageChart } from "../../../../../components/analytics/permission-usage-chart";
 import { RoleDistributionChart } from "../../../../../components/analytics/role-distribution-chart";
 import { PageHeader } from "../../../../../components/dashboard/page-header";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../../../components/ui/card";
+import { Notice } from "../../../../../components/ui/section";
 import {
   AdminDisabledError,
-  type AdminGame,
   type AdminGroupChurn,
   type AdminGroupGrowth,
   type AdminMemberActivity,
@@ -99,33 +90,16 @@ function parseQuery(
   };
 }
 
-interface ErrorCardProps {
-  title: string;
-  body: string;
-}
-
-function ErrorCard({ title, body }: ErrorCardProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{body}</CardDescription>
-      </CardHeader>
-    </Card>
-  );
-}
-
 function AnalyticsBodySkeleton() {
   return (
-    <Card className="border-dashed">
-      <CardHeader>
-        <CardTitle className="h-4 w-32 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="h-24 w-full rounded bg-muted/50" />
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-10" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="flex flex-col gap-3">
+          <div className="h-5 w-40 rounded bg-muted" />
+          <div className="h-64 w-full rounded bg-muted/50" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -145,7 +119,6 @@ async function AnalyticsBody({
   const fromIso = resolveRangeFrom(query);
   const toIso = resolveRangeTo(query);
 
-  let game: AdminGame;
   let churn: AdminGroupChurn;
   let growth: AdminGroupGrowth;
   let memberActivity: AdminMemberActivity;
@@ -158,10 +131,9 @@ async function AnalyticsBody({
     // revalidate slot. The 12.5 charts (role distribution + permission
     // usage) ignore `fromIso` / `toIso` deliberately - they answer
     // "what is currently deployed?" not "what changed in this window?"
-    // The chart card descriptions surface the snapshot semantics inline
-    // so an operator changing the date range above does not get
-    // confused about why the 12.5 charts do not move.
-    [game, churn, growth, memberActivity, roleDistribution, permissionUsage] = await Promise.all([
+    // Their meta lines say "as of now" so the snapshot semantics stay
+    // visible when the range changes.
+    [, churn, growth, memberActivity, roleDistribution, permissionUsage] = await Promise.all([
       fetchAdminGame(gameId),
       fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
       fetchAdminGameGroupGrowth(gameId, { from: fromIso, to: toIso }),
@@ -172,9 +144,9 @@ async function AnalyticsBody({
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load analytics. The token gates every cross-game admin endpoint."
+        <Notice
+          title="Cross-game access is off"
+          body="Set JUNJO_ADMIN_TOKEN on the dashboard and the server to load analytics."
         />
       );
     }
@@ -182,9 +154,11 @@ async function AnalyticsBody({
       notFound();
     }
     return (
-      <ErrorCard
+      <Notice
         title="Could not load analytics"
-        body={err instanceof Error ? err.message : "unknown error fetching analytics"}
+        body={
+          err instanceof Error ? err.message : "An analytics request failed. Reload to try again."
+        }
       />
     );
   }
@@ -213,22 +187,18 @@ async function AnalyticsBody({
     roleDistribution.totalAssignments === 0 &&
     permissionUsage.totalCount === 0;
   return (
-    <div className="space-y-4">
-      <p className="text-xs text-muted-foreground">
-        Game <span className="font-mono">{game.name}</span> -{" "}
-        <span className="font-mono text-[11px]">{game.id}</span>
-      </p>
+    <div className="flex flex-col gap-10">
+      {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
       <GroupChurnChart data={churn} />
       <GroupGrowthChart data={growth} />
       <MemberActivityHeatmap data={memberActivity} />
       {/* Role distribution + permission usage sit side-by-side at the
           bottom of the surface. On narrow viewports they stack via the
           responsive grid (single column below `lg`, two columns at lg+). */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-10 lg:grid-cols-2">
         <RoleDistributionChart data={roleDistribution} />
         <PermissionUsageChart data={permissionUsage} />
       </div>
-      {showOnboardingHint ? <AnalyticsEmptyState docsBaseUrl={docsBaseUrl} /> : null}
     </div>
   );
 }
@@ -246,21 +216,9 @@ export default async function GameAnalyticsPage(props: AnalyticsPageProps) {
 
   return (
     <>
-      <PageHeader
-        title="Analytics"
-        meta="Group churn, growth over time, member activity, and role / permission distributions."
-        actions={
-          <Link
-            href={`/games/${encodeURIComponent(params.gameId)}`}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          >
-            <ArrowLeft className="h-3 w-3" aria-hidden />
-            Game detail
-          </Link>
-        }
-      />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto flex max-w-screen-2xl flex-col gap-6">
+      <PageHeader title="Analytics" />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="flex max-w-screen-2xl flex-col gap-8">
           <DateRangePicker query={query} />
           <Suspense key={suspenseKey} fallback={<AnalyticsBodySkeleton />}>
             <AnalyticsBody gameId={params.gameId} query={query} />

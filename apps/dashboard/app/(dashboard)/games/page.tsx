@@ -14,7 +14,7 @@ export default function GamesPage() {
     <>
       <PageHeader title="Games" actions={<CreateGameDialog />} />
       <main className="flex-1 px-6 pb-12 pt-4">
-        <div className="mx-auto max-w-screen-xl">
+        <div className="max-w-screen-xl">
           <Suspense fallback={<div className="h-48 animate-pulse rounded bg-muted" />}>
             <GamesList />
           </Suspense>

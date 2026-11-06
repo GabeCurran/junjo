@@ -1,6 +1,4 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft } from "lucide-react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
@@ -13,13 +11,7 @@ import {
   resolveSince,
 } from "../../../../../components/dashboard/game-audit-feed-helpers";
 import { PageHeader } from "../../../../../components/dashboard/page-header";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../../../components/ui/card";
+import { Notice } from "../../../../../components/ui/section";
 import {
   ADMIN_AUDIT_ACTIONS,
   ADMIN_GAME_AUDIT_ACTOR_ID_MAX_LENGTH,
@@ -106,54 +98,20 @@ function parseQuery(
 
 function AuditFeedSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-24 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="space-y-2">
-                <div className="h-3 w-16 rounded bg-muted" />
-                <div className="h-10 w-full rounded bg-muted" />
-              </div>
-            ))}
+    <div className="flex flex-col gap-4" aria-hidden>
+      <div className="flex flex-wrap gap-3">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="h-8 w-40 rounded bg-muted" />
+        ))}
+      </div>
+      <div>
+        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+          <div key={i} className="border-b border-border/60 py-3">
+            <div className="h-4 w-1/2 rounded bg-muted" />
           </div>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="space-y-2">
-                <div className="h-3 w-16 rounded bg-muted" />
-                <div className="h-10 w-full rounded bg-muted" />
-              </div>
-            ))}
-          </div>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div key={i} className="border-b border-border py-3 last:border-0">
-              <div className="h-4 w-1/3 rounded bg-muted" />
-              <div className="mt-2 h-3 w-1/2 rounded bg-muted" />
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-interface ErrorCardProps {
-  title: string;
-  body: string;
-}
-
-function ErrorCard({ title, body }: ErrorCardProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{body}</CardDescription>
-      </CardHeader>
-    </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -186,9 +144,9 @@ async function AuditBody({
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load the audit log. The token gates every cross-game admin endpoint."
+        <Notice
+          title="Cross-game access is off"
+          body="Set JUNJO_ADMIN_TOKEN on the dashboard and the server to load the audit log."
         />
       );
     }
@@ -196,9 +154,9 @@ async function AuditBody({
       notFound();
     }
     return (
-      <ErrorCard
-        title="Could not load audit log"
-        body={err instanceof Error ? err.message : "unknown error fetching audit entries"}
+      <Notice
+        title="Could not load the audit log"
+        body={err instanceof Error ? err.message : "The audit request failed. Reload to try again."}
       />
     );
   }
@@ -218,21 +176,9 @@ export default async function GameAuditPage(props: AuditPageProps) {
 
   return (
     <>
-      <PageHeader
-        title="Audit log"
-        meta="Every state change recorded across this game's groups, with action / actor / target / date-range filters and CSV export."
-        actions={
-          <Link
-            href={`/games/${encodeURIComponent(params.gameId)}`}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          >
-            <ArrowLeft className="h-3 w-3" aria-hidden />
-            Game detail
-          </Link>
-        }
-      />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-2xl">
+      <PageHeader title="Audit log" />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="max-w-screen-2xl">
           <Suspense key={suspenseKey} fallback={<AuditFeedSkeleton />}>
             <AuditBody gameId={params.gameId} query={query} />
           </Suspense>

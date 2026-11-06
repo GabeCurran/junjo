@@ -98,8 +98,8 @@ export function DateRangePicker({ query }: DateRangePickerProps) {
   const [customFrom, setCustomFrom] = useState(() => isoToDatetimeLocal(query.from));
   const [customTo, setCustomTo] = useState(() => isoToDatetimeLocal(query.to));
 
-  // Re-sync local state when the URL changes from outside the picker (e.g.
-  // a router push from a sibling component, or a back/forward navigation).
+  // Re-sync local state when the URL changes from outside the picker,
+  // through another component's navigation or the history stack.
   // The ref guards against the first effect run since the initial `useState`
   // already snapshotted from `query`.
   const lastSyncedQueryRef = useRef(query);
@@ -111,7 +111,7 @@ export function DateRangePicker({ query }: DateRangePickerProps) {
   }, [query]);
 
   // Push a new URL with the supplied param overrides preserving every
-  // other existing search param (e.g. a future `chart=` filter). Empty
+  // other existing search param. Empty
   // / undefined values clear the param. `router.replace` over `push`
   // because changing the time window shouldn't pollute the back-stack
   // with intermediate states.
@@ -135,8 +135,7 @@ export function DateRangePicker({ query }: DateRangePickerProps) {
     (range: AnalyticsRange) => {
       // Selecting a preset clears `from` / `to`. Selecting `custom` keeps
       // any prior `from` / `to` so the operator's previously-applied window
-      // is the seed value of the inputs - matches Stripe / Linear analytics
-      // pickers' "remember the last custom range" behavior.
+      // is the seed value of the inputs.
       pushQuery(range === "custom" ? { range } : { range, from: undefined, to: undefined });
     },
     [pushQuery],
@@ -213,7 +212,7 @@ export function DateRangePicker({ query }: DateRangePickerProps) {
             onClick={onApplyCustom}
             className="rounded-md border border-border bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
-            Apply
+            Apply range
           </button>
         </div>
       ) : null}

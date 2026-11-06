@@ -1,10 +1,11 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { ArrowRight, History } from "lucide-react";
+import { History } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useId } from "react";
 
+import { isModerationAction, relativeTime } from "../../lib/activity";
 import {
   ADMIN_AUDIT_ACTIONS,
   ADMIN_AUDIT_DEFAULT_PAGE_SIZE,
@@ -13,34 +14,9 @@ import {
   type AdminGroupAuditPage,
 } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-
-const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
-
-const TIME_UNITS: Array<{ unit: Intl.RelativeTimeFormatUnit; ms: number }> = [
-  { unit: "year", ms: 365 * 24 * 60 * 60 * 1000 },
-  { unit: "month", ms: 30 * 24 * 60 * 60 * 1000 },
-  { unit: "day", ms: 24 * 60 * 60 * 1000 },
-  { unit: "hour", ms: 60 * 60 * 1000 },
-  { unit: "minute", ms: 60 * 1000 },
-  { unit: "second", ms: 1000 },
-];
-
-// Mirrors `relativeTime` in `recent-activity-feed.tsx` byte-for-byte.
-// Picks the largest unit that fits the elapsed delta so a single unit
-// reads cleanly without a compound "1d 3h" form.
-function relativeTime(iso: string, now = Date.now()): string {
-  const then = new Date(iso).getTime();
-  const deltaMs = then - now;
-  const absMs = Math.abs(deltaMs);
-  for (const { unit, ms } of TIME_UNITS) {
-    if (absMs >= ms || unit === "second") {
-      const value = Math.round(deltaMs / ms);
-      return RELATIVE_FORMATTER.format(value, unit);
-    }
-  }
-  return RELATIVE_FORMATTER.format(0, "second");
-}
+import { Button } from "../ui/button";
+import { Notice } from "../ui/section";
+import { ActivitySentence } from "./activity-line";
 
 const absoluteFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
@@ -51,6 +27,11 @@ const absoluteFormatter = new Intl.DateTimeFormat("en-US", {
   second: "2-digit",
 });
 
+const SELECT_CLASS = cn(
+  "h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background",
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+);
+
 export interface AuditQueryState {
   actions: string[];
   before: string | undefined;
@@ -60,88 +41,63 @@ export interface AuditQueryState {
 interface AuditFeedProps {
   page: AdminGroupAuditPage;
   query: AuditQueryState;
+  // The group's name, used as the place in each entry's sentence.
+  groupName?: string;
 }
 
 interface AuditRowProps {
   entry: AdminGroupAuditEntry;
+  groupName: string | undefined;
 }
 
-function AuditRow({ entry }: AuditRowProps) {
+// One entry as a sentence with its actor, the raw action on hover, and
+// the payload behind a disclosure.
+function AuditRow({ entry, groupName }: AuditRowProps) {
   const hasPayload = Object.keys(entry.payload).length > 0;
+  const via = entry.apiKey ? (entry.apiKey.name ?? entry.apiKey.prefix) : null;
   return (
-    <li className="flex items-start gap-3 py-3">
-      <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
-        <ArrowRight className="h-3 w-3" />
-      </div>
+    <li className="flex items-baseline gap-3 py-2.5">
+      <span
+        aria-hidden
+        className={cn(
+          "mt-1.5 h-1.5 w-1.5 shrink-0 self-start rounded-full",
+          isModerationAction(entry.action) ? "bg-destructive" : "bg-border",
+        )}
+      />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-mono text-sm font-medium">{entry.action}</span>
-          <time
-            dateTime={entry.createdAt}
-            title={absoluteFormatter.format(new Date(entry.createdAt))}
-            className="text-xs text-muted-foreground"
-          >
-            {relativeTime(entry.createdAt)}
-          </time>
-        </div>
-        <p className="mt-0.5 break-all text-xs text-muted-foreground">
+        <p className="break-words text-sm text-muted-foreground" title={entry.action}>
+          <ActivitySentence entry={{ ...entry, groupName: groupName ?? null }} />
           {entry.actorUserId ? (
             <>
-              actor <span className="font-mono">{entry.actorUserId}</span>
-            </>
-          ) : (
-            <span>actor: system</span>
-          )}
-          {entry.apiKey ? (
-            <>
-              {" "}
-              via key <span className="font-mono">{entry.apiKey.name ?? entry.apiKey.prefix}</span>
+              {" by "}
+              <span className="font-medium text-foreground">{entry.actorUserId}</span>
             </>
           ) : null}
-          {entry.targetId ? (
-            <>
-              {" · "}target <span className="font-mono">{entry.targetId}</span>
-            </>
-          ) : null}
+          {via ? <span className="text-muted-foreground/80"> via {via}</span> : null}
         </p>
         {hasPayload ? (
-          <details className="mt-1.5">
+          <details className="mt-1">
             <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
-              payload
+              Payload
             </summary>
-            <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-card/50 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            <pre className="mt-1 overflow-x-auto rounded-md border border-border bg-card p-2 font-mono text-xs leading-relaxed text-muted-foreground">
               {JSON.stringify(entry.payload, null, 2)}
             </pre>
           </details>
         ) : null}
       </div>
+      <time
+        dateTime={entry.createdAt}
+        title={absoluteFormatter.format(new Date(entry.createdAt))}
+        className="shrink-0 text-xs tabular-nums text-muted-foreground"
+      >
+        {relativeTime(entry.createdAt)}
+      </time>
     </li>
   );
 }
 
-interface FeedShellProps {
-  total: number | undefined;
-  children: React.ReactNode;
-}
-
-function FeedShell({ total, children }: FeedShellProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Audit log</CardTitle>
-        <CardDescription>
-          State changes recorded for this group, newest first.
-          {total !== undefined
-            ? ` ${total} ${total === 1 ? "entry" : "entries"} on this page.`
-            : ""}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
-  );
-}
-
-export function AuditFeed({ page, query }: AuditFeedProps) {
+export function AuditFeed({ page, query, groupName }: AuditFeedProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -189,144 +145,116 @@ export function AuditFeed({ page, query }: AuditFeedProps) {
   const isFirstPage = query.before === undefined;
 
   return (
-    <FeedShell total={page.items.length}>
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor={actionSelectId} className="sr-only">
-              Filter by action
-            </label>
-            <select
-              id={actionSelectId}
-              value={selectedAction}
-              onChange={(e) => {
-                const next = e.target.value;
-                pushQuery({
-                  actions: next.length > 0 ? [next] : [],
-                  // Reset cursor when the filter changes; the result set
-                  // means something different now.
-                  before: undefined,
-                });
-              }}
-              className={cn(
-                "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "focus-visible:ring-offset-2 ring-offset-background",
-              )}
-            >
-              <option value="">All actions</option>
-              {ADMIN_AUDIT_ACTIONS.map((action) => (
-                <option key={action} value={action}>
-                  {action}
-                </option>
-              ))}
-            </select>
-            <div className="flex items-center gap-2">
-              <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
-                Rows
-              </label>
-              <select
-                id={pageSizeSelectId}
-                value={query.limit}
-                onChange={(e) => {
-                  const nextLimit = Number(e.target.value);
-                  pushQuery({ limit: nextLimit, before: undefined });
-                }}
-                className={cn(
-                  "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  "focus-visible:ring-offset-2 ring-offset-background",
-                )}
-              >
-                {ADMIN_AUDIT_PAGE_SIZE_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {!isFirstPage ? (
-            <button
-              type="button"
-              onClick={() => pushQuery({ before: undefined })}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-              )}
-            >
-              <History className="h-3 w-3" aria-hidden />
-              Jump to newest
-            </button>
-          ) : null}
-        </div>
-
-        {page.items.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <p className="text-sm font-medium">
-              {selectedAction.length > 0
-                ? `No ${selectedAction} entries`
-                : isFirstPage
-                  ? "No audit entries yet"
-                  : "No more entries"}
-            </p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              {selectedAction.length > 0
-                ? "Clear the filter or pick a different action to widen the result set."
-                : isFirstPage
-                  ? "State changes in this group will appear here as soon as the audit log records them."
-                  : "You have reached the end of the audit history for the current filter."}
-            </p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {page.items.map((entry) => (
-              <AuditRow key={entry.id} entry={entry} />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor={actionSelectId} className="sr-only">
+            Filter by action
+          </label>
+          <select
+            id={actionSelectId}
+            value={selectedAction}
+            onChange={(e) => {
+              const next = e.target.value;
+              pushQuery({
+                actions: next.length > 0 ? [next] : [],
+                // Reset cursor when the filter changes; the result set
+                // means something different now.
+                before: undefined,
+              });
+            }}
+            className={SELECT_CLASS}
+          >
+            <option value="">All actions</option>
+            {ADMIN_AUDIT_ACTIONS.map((action) => (
+              <option key={action} value={action}>
+                {action}
+              </option>
             ))}
-          </ul>
-        )}
+          </select>
+          <label htmlFor={pageSizeSelectId} className="ml-2 text-sm text-muted-foreground">
+            Rows
+          </label>
+          <select
+            id={pageSizeSelectId}
+            value={query.limit}
+            onChange={(e) => {
+              const nextLimit = Number(e.target.value);
+              pushQuery({ limit: nextLimit, before: undefined });
+            }}
+            className={SELECT_CLASS}
+          >
+            {ADMIN_AUDIT_PAGE_SIZE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </div>
+        {!isFirstPage ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => pushQuery({ before: undefined })}
+          >
+            <History className="h-3.5 w-3.5" aria-hidden />
+            Jump to newest
+          </Button>
+        ) : null}
+      </div>
 
-        <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>
-            {isFirstPage ? "Showing the newest page" : "Showing entries older than the cursor"}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              // Browser back is the natural "go to the previous page"
-              // gesture for cursor-based pagination - the server cannot
-              // run the inverse query of `createdAt < before`, so the
-              // dashboard relies on the URL history that pushQuery has
-              // accumulated.
-              onClick={() => router.back()}
-              disabled={isFirstPage}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (page.nextCursor !== null) {
-                  pushQuery({ before: page.nextCursor });
-                }
-              }}
-              disabled={page.nextCursor === null}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
-            >
-              Next
-            </button>
-          </div>
+      {page.items.length === 0 ? (
+        selectedAction.length > 0 ? (
+          <Notice
+            title={`No ${selectedAction} entries`}
+            body="Clear the action filter or pick another action."
+          />
+        ) : isFirstPage ? (
+          <Notice title="No activity yet" body="Changes in this group show up here." />
+        ) : (
+          <Notice title="No older entries" body="This is the end of the audit log." />
+        )
+      ) : (
+        <ul className="divide-y divide-border/60 border-y border-border/60">
+          {page.items.map((entry) => (
+            <AuditRow key={entry.id} entry={entry} groupName={groupName} />
+          ))}
+        </ul>
+      )}
+
+      <div className="flex flex-col items-start justify-between gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center">
+        <span>{isFirstPage ? "Newest entries" : "Older entries"}</span>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            // Browser back is the natural "go to the previous page"
+            // gesture for cursor-based pagination: the server cannot
+            // run the inverse query of `createdAt < before`, so the
+            // dashboard relies on the URL history that pushQuery has
+            // accumulated.
+            onClick={() => router.back()}
+            disabled={isFirstPage}
+          >
+            Previous
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (page.nextCursor !== null) {
+                pushQuery({ before: page.nextCursor });
+              }
+            }}
+            disabled={page.nextCursor === null}
+          >
+            Next
+          </Button>
         </div>
       </div>
-    </FeedShell>
+    </div>
   );
 }

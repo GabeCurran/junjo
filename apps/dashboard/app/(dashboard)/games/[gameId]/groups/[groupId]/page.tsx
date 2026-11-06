@@ -1,17 +1,18 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { AuditFeed, type AuditQueryState } from "../../../../../../components/dashboard/audit-feed";
-import { GroupDetailHeader } from "../../../../../../components/dashboard/group-detail-header";
+import {
+  GroupFigures,
+  GroupMeta,
+} from "../../../../../../components/dashboard/group-detail-header";
 import {
   GROUP_DETAIL_DEFAULT_TAB,
   GROUP_DETAIL_TABS,
   type GroupDetailTab,
   GroupDetailTabs,
-  getTabDescription,
 } from "../../../../../../components/dashboard/group-detail-tabs";
 import {
   type MembersQueryState,
@@ -22,13 +23,7 @@ import { PermissionsMatrix } from "../../../../../../components/dashboard/permis
 import { RelationshipsTable } from "../../../../../../components/dashboard/relationships-table";
 import { RolesTable } from "../../../../../../components/dashboard/roles-table";
 import { SubGroupsTable } from "../../../../../../components/dashboard/sub-groups-table";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../../../../components/ui/card";
+import { Notice } from "../../../../../../components/ui/section";
 import {
   ADMIN_AUDIT_ACTIONS,
   ADMIN_AUDIT_DEFAULT_PAGE_SIZE,
@@ -74,8 +69,8 @@ export async function generateMetadata(props: GroupDetailPageProps) {
 }
 
 // Lenient parser: invalid values fall through to defaults rather than 400.
-// A stale URL (e.g. shared from a previous deploy with a different status
-// allowlist) should not blow up the page; it just resets the affected param.
+// A stale URL, from a deploy with a different status allowlist, should not
+// blow up the page; it just resets the affected param.
 function readParam(
   searchParams: Record<string, string | string[] | undefined>,
   key: string,
@@ -161,217 +156,68 @@ function parseAuditQuery(
   return { actions, before, limit };
 }
 
-function MembersSkeleton() {
+// A loading block shaped like a toolbar over a few table rows.
+function TabSkeleton({ rows = 5 }: { rows?: number }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-24 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2">
-              <div className="h-10 w-64 rounded-md bg-muted" />
-              <div className="h-10 w-32 rounded-md bg-muted" />
-            </div>
-            <div className="h-10 w-24 rounded-md bg-muted" />
+    <div className="flex flex-col gap-3" aria-hidden>
+      <div className="flex items-center justify-between gap-3">
+        <div className="h-9 w-64 animate-pulse rounded-md bg-muted" />
+        <div className="h-9 w-28 animate-pulse rounded-md bg-muted" />
+      </div>
+      <div className="flex flex-col">
+        <div className="h-8 border-b border-border" />
+        {Array.from({ length: rows }, (_, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: placeholder rows never reorder.
+          <div key={i} className="flex items-center gap-6 border-b border-border/60 py-3">
+            <div className="h-4 w-1/4 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-16 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-24 animate-pulse rounded bg-muted" />
           </div>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-border py-3 last:border-0"
-            >
-              <div className="h-4 w-1/3 rounded bg-muted" />
-              <div className="flex gap-3">
-                <div className="h-6 w-16 rounded bg-muted" />
-                <div className="h-6 w-20 rounded bg-muted" />
-                <div className="h-4 w-20 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 
-interface ErrorCardProps {
-  title: string;
-  body: string;
-}
-
-function ErrorCard({ title, body }: ErrorCardProps) {
+// The failure every tab shares when the dashboard has no admin token.
+function AdminOffNotice({ what }: { what: string }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{body}</CardDescription>
-      </CardHeader>
-    </Card>
+    <Notice
+      title="Cross-game access is off"
+      body={`Set JUNJO_ADMIN_TOKEN on the dashboard and the server to load ${what}.`}
+    />
   );
 }
 
-async function GroupBody({ gameId, groupId }: { gameId: string; groupId: string }) {
-  let group: AdminGroup;
-  try {
-    group = await fetchAdminGroup(gameId, groupId);
-  } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load this group. The token gates every cross-game admin endpoint."
-        />
-      );
-    }
-    // Map the server's "admin request failed: group not found" message to a
-    // Next.js 404 (the substring match is intentionally narrow; anything
-    // else falls through to the inline empty state below). Mirrors the
-    // game detail page's not-found handling.
-    if (err instanceof Error && /not.?found/i.test(err.message)) {
-      notFound();
-    }
-    return (
-      <ErrorCard
-        title="Could not load group"
-        body={err instanceof Error ? err.message : "unknown error fetching the group"}
-      />
-    );
-  }
-
-  return <GroupDetailHeader group={group} />;
+function failureBody(err: unknown, what: string): string {
+  return err instanceof Error ? err.message : `The ${what} request failed.`;
 }
 
-function RolesSkeleton() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-20 rounded bg-muted" />
-        <CardDescription className="h-3 w-80 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-border py-3 last:border-0"
-            >
-              <div className="h-4 w-1/4 rounded bg-muted" />
-              <div className="flex gap-3">
-                <div className="h-6 w-16 rounded bg-muted" />
-                <div className="h-6 w-12 rounded bg-muted" />
-                <div className="h-4 w-20 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+// Every tab body below shares the group fetch's 404 contract: a missing
+// group already resolved to notFound() in the page, so a failure here is
+// a transient backend error or a race with a delete.
 
 async function RolesBody({ gameId, groupId }: { gameId: string; groupId: string }) {
   let roles: AdminRole[];
   try {
     roles = await fetchAdminGroupRoles(gameId, groupId);
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load roles."
-        />
-      );
-    }
-    // The roles fetch shares the 404-collapse contract with the group
-    // fetch; when the group itself is missing, the parent <GroupBody>
-    // already calls notFound(). Reaching here means a transient backend
-    // error or a soft-deleted group raced with the page render.
-    return (
-      <ErrorCard
-        title="Could not load roles"
-        body={err instanceof Error ? err.message : "unknown error fetching roles"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="roles" />;
+    return <Notice title="Could not load roles" body={failureBody(err, "roles")} />;
   }
 
   return <RolesTable roles={roles} gameId={gameId} groupId={groupId} />;
 }
 
-function PermissionsSkeleton() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-40 rounded bg-muted" />
-        <CardDescription className="h-3 w-80 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <div className="h-10 flex-1 rounded-md bg-muted" />
-            <div className="h-10 w-32 rounded-md bg-muted" />
-          </div>
-          <div className="rounded-md border border-border">
-            <div className="space-y-2 p-3">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <div className="h-4 w-32 rounded bg-muted" />
-                  <div className="flex flex-1 gap-2">
-                    {[0, 1, 2, 3].map((j) => (
-                      <div key={j} className="h-6 w-6 rounded bg-muted" />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function AuditSkeleton() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-24 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2">
-              <div className="h-10 w-48 rounded-md bg-muted" />
-              <div className="h-10 w-24 rounded-md bg-muted" />
-            </div>
-          </div>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="flex items-start gap-3 border-b border-border py-3 last:border-0"
-            >
-              <div className="mt-1 h-6 w-6 shrink-0 rounded-full bg-muted" />
-              <div className="flex flex-1 flex-col gap-1">
-                <div className="h-4 w-1/3 rounded bg-muted" />
-                <div className="h-3 w-1/2 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 async function AuditBody({
   gameId,
   groupId,
+  groupName,
   query,
 }: {
   gameId: string;
   groupId: string;
+  groupName: string;
   query: AuditQueryState;
 }) {
   let page: AdminGroupAuditPage;
@@ -382,54 +228,11 @@ async function AuditBody({
       actions: query.actions.length > 0 ? query.actions : undefined,
     });
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load the audit log."
-        />
-      );
-    }
-    // The audit fetch shares the 404-collapse contract with the group
-    // fetch; when the group itself is missing, the parent <GroupBody>
-    // already calls notFound(). Reaching here means a transient backend
-    // error or a race against a soft-delete sweep.
-    return (
-      <ErrorCard
-        title="Could not load audit log"
-        body={err instanceof Error ? err.message : "unknown error fetching audit entries"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="the audit log" />;
+    return <Notice title="Could not load the audit log" body={failureBody(err, "audit")} />;
   }
 
-  return <AuditFeed page={page} query={query} />;
-}
-
-function RelationshipsSkeleton() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-32 rounded bg-muted" />
-        <CardDescription className="h-3 w-80 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-border py-3 last:border-0"
-            >
-              <div className="h-4 w-1/3 rounded bg-muted" />
-              <div className="flex gap-3">
-                <div className="h-6 w-20 rounded bg-muted" />
-                <div className="h-4 w-24 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
+  return <AuditFeed page={page} query={query} groupName={groupName} />;
 }
 
 async function RelationshipsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
@@ -437,99 +240,20 @@ async function RelationshipsBody({ gameId, groupId }: { gameId: string; groupId:
   try {
     relationships = await fetchAdminGroupRelationships(gameId, groupId);
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load relationships."
-        />
-      );
-    }
-    // The relationships fetch shares the 404-collapse contract with the
-    // group fetch; when the group itself is missing, the parent
-    // <GroupBody> already calls notFound(). Reaching here means a
-    // transient backend error.
-    return (
-      <ErrorCard
-        title="Could not load relationships"
-        body={err instanceof Error ? err.message : "unknown error fetching relationships"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="relationships" />;
+    return <Notice title="Could not load relationships" body={failureBody(err, "relationships")} />;
   }
 
   return <RelationshipsTable relationships={relationships} gameId={gameId} groupId={groupId} />;
 }
 
-function SubGroupsSkeleton() {
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="h-4 w-28 rounded bg-muted" />
-          <CardDescription className="h-3 w-72 rounded bg-muted" />
-        </CardHeader>
-        <CardContent>
-          <div className="h-16 rounded-md bg-muted" />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="h-4 w-32 rounded bg-muted" />
-          <CardDescription className="h-3 w-80 rounded bg-muted" />
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between border-b border-border py-3 last:border-0"
-              >
-                <div className="h-4 w-1/3 rounded bg-muted" />
-                <div className="flex gap-3">
-                  <div className="h-6 w-12 rounded bg-muted" />
-                  <div className="h-4 w-16 rounded bg-muted" />
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-async function SubGroupsBody({ gameId, groupId }: { gameId: string; groupId: string }) {
-  let group: AdminGroup;
+async function SubGroupsBody({ gameId, group }: { gameId: string; group: AdminGroup }) {
   let children: AdminGroup[];
   try {
-    // Parallel fetches: the parent breadcrumb needs the current group's
-    // `parentGroupId` field while the children list needs the bare-array
-    // children endpoint. Both fetches share the 60s revalidate cache used
-    // by `<GroupBody>` above (the group fetch hits the cached value),
-    // so the cost is one extra round trip for the children only.
-    [group, children] = await Promise.all([
-      fetchAdminGroup(gameId, groupId),
-      fetchAdminGroupChildren(gameId, groupId),
-    ]);
+    children = await fetchAdminGroupChildren(gameId, group.id);
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load sub-groups."
-        />
-      );
-    }
-    // The children fetch shares the 404-collapse contract with the group
-    // fetch; when the group itself is missing, the parent <GroupBody>
-    // already calls notFound(). Reaching here means a transient backend
-    // error.
-    return (
-      <ErrorCard
-        title="Could not load sub-groups"
-        body={err instanceof Error ? err.message : "unknown error fetching sub-groups"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="sub-groups" />;
+    return <Notice title="Could not load sub-groups" body={failureBody(err, "sub-groups")} />;
   }
 
   return <SubGroupsTable group={group} childGroups={children} gameId={gameId} />;
@@ -539,28 +263,14 @@ async function PermissionsBody({ gameId, groupId }: { gameId: string; groupId: s
   let roles: AdminRole[];
   let catalog: AdminPermissionDef[];
   try {
-    // Parallel fetches: the matrix needs both rows (roles) and columns
-    // (catalog keys). Either failing surfaces the same envelope; we only
-    // distinguish `AdminDisabledError` for the operator-friendly hint.
+    // The matrix needs both rows (roles) and columns (catalog keys).
     [roles, catalog] = await Promise.all([
       fetchAdminGroupRoles(gameId, groupId),
       fetchAdminGamePermissions(gameId),
     ]);
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load the permissions matrix."
-        />
-      );
-    }
-    return (
-      <ErrorCard
-        title="Could not load permissions"
-        body={err instanceof Error ? err.message : "unknown error fetching permissions"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="permissions" />;
+    return <Notice title="Could not load permissions" body={failureBody(err, "permissions")} />;
   }
 
   return <PermissionsMatrix roles={roles} catalog={catalog} gameId={gameId} groupId={groupId} />;
@@ -584,24 +294,8 @@ async function MembersBody({
       q: query.q.length > 0 ? query.q : undefined,
     });
   } catch (err) {
-    if (err instanceof AdminDisabledError) {
-      return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load members."
-        />
-      );
-    }
-    // The members fetch can fail with the same not-found envelope as the
-    // group fetch (the server enforces the same 404-collapse). When the
-    // group itself is missing, the parent <GroupBody> already calls
-    // notFound() above, so reaching here means a transient backend error.
-    return (
-      <ErrorCard
-        title="Could not load members"
-        body={err instanceof Error ? err.message : "unknown error fetching members"}
-      />
-    );
+    if (err instanceof AdminDisabledError) return <AdminOffNotice what="members" />;
+    return <Notice title="Could not load members" body={failureBody(err, "members")} />;
   }
 
   return <MembersTable data={page} query={query} gameId={gameId} groupId={groupId} />;
@@ -620,70 +314,87 @@ export default async function GroupDetailPage(props: GroupDetailPageProps) {
   const membersKey = JSON.stringify(query);
   const auditKey = JSON.stringify(auditQuery);
 
+  const allGroupsLink = (
+    <Link
+      href={`/games/${encodeURIComponent(params.gameId)}/groups`}
+      className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+    >
+      All groups
+    </Link>
+  );
+
+  // The group heads the page, so it loads before the tabs. The fetch is
+  // cached, so generateMetadata and this call share one request.
+  let group: AdminGroup;
+  try {
+    group = await fetchAdminGroup(params.gameId, params.groupId);
+  } catch (err) {
+    // The server reports a missing group as "group not found"; the match
+    // is narrow so anything else renders the inline failure below.
+    if (
+      err instanceof Error &&
+      !(err instanceof AdminDisabledError) &&
+      /not.?found/i.test(err.message)
+    ) {
+      notFound();
+    }
+    return (
+      <>
+        <PageHeader title="Group" actions={allGroupsLink} />
+        <main className="flex-1 px-6 pb-12 pt-4">
+          <div className="max-w-screen-2xl">
+            {err instanceof AdminDisabledError ? (
+              <AdminOffNotice what="this group" />
+            ) : (
+              <Notice title="Could not load the group" body={failureBody(err, "group")} />
+            )}
+          </div>
+        </main>
+      </>
+    );
+  }
+
   return (
     <>
-      <PageHeader
-        title="Group detail"
-        meta={getTabDescription(activeTab)}
-        actions={
-          <Link
-            href={`/games/${encodeURIComponent(params.gameId)}/groups`}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          >
-            <ArrowLeft className="h-3 w-3" aria-hidden />
-            All groups
-          </Link>
-        }
-      />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-2xl space-y-6">
-          <Suspense fallback={<GroupHeaderSkeleton />}>
-            <GroupBody gameId={params.gameId} groupId={params.groupId} />
-          </Suspense>
-          <GroupDetailTabs gameId={params.gameId} groupId={params.groupId} active={activeTab} />
-          {activeTab === "roles" ? (
-            <Suspense fallback={<RolesSkeleton />}>
-              <RolesBody gameId={params.gameId} groupId={params.groupId} />
-            </Suspense>
-          ) : activeTab === "permissions" ? (
-            <Suspense fallback={<PermissionsSkeleton />}>
-              <PermissionsBody gameId={params.gameId} groupId={params.groupId} />
-            </Suspense>
-          ) : activeTab === "audit" ? (
-            <Suspense key={auditKey} fallback={<AuditSkeleton />}>
-              <AuditBody gameId={params.gameId} groupId={params.groupId} query={auditQuery} />
-            </Suspense>
-          ) : activeTab === "relationships" ? (
-            <Suspense fallback={<RelationshipsSkeleton />}>
-              <RelationshipsBody gameId={params.gameId} groupId={params.groupId} />
-            </Suspense>
-          ) : activeTab === "sub-groups" ? (
-            <Suspense fallback={<SubGroupsSkeleton />}>
-              <SubGroupsBody gameId={params.gameId} groupId={params.groupId} />
-            </Suspense>
-          ) : (
-            <Suspense key={membersKey} fallback={<MembersSkeleton />}>
-              <MembersBody gameId={params.gameId} groupId={params.groupId} query={query} />
-            </Suspense>
-          )}
+      <PageHeader title={group.name} meta={<GroupMeta group={group} />} actions={allGroupsLink} />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="flex max-w-screen-2xl flex-col gap-8">
+          <GroupFigures group={group} />
+          <div className="flex flex-col gap-5">
+            <GroupDetailTabs gameId={params.gameId} groupId={params.groupId} active={activeTab} />
+            {activeTab === "roles" ? (
+              <Suspense fallback={<TabSkeleton rows={3} />}>
+                <RolesBody gameId={params.gameId} groupId={params.groupId} />
+              </Suspense>
+            ) : activeTab === "permissions" ? (
+              <Suspense fallback={<TabSkeleton rows={3} />}>
+                <PermissionsBody gameId={params.gameId} groupId={params.groupId} />
+              </Suspense>
+            ) : activeTab === "audit" ? (
+              <Suspense key={auditKey} fallback={<TabSkeleton />}>
+                <AuditBody
+                  gameId={params.gameId}
+                  groupId={params.groupId}
+                  groupName={group.name}
+                  query={auditQuery}
+                />
+              </Suspense>
+            ) : activeTab === "relationships" ? (
+              <Suspense fallback={<TabSkeleton rows={3} />}>
+                <RelationshipsBody gameId={params.gameId} groupId={params.groupId} />
+              </Suspense>
+            ) : activeTab === "sub-groups" ? (
+              <Suspense fallback={<TabSkeleton rows={3} />}>
+                <SubGroupsBody gameId={params.gameId} group={group} />
+              </Suspense>
+            ) : (
+              <Suspense key={membersKey} fallback={<TabSkeleton />}>
+                <MembersBody gameId={params.gameId} groupId={params.groupId} query={query} />
+              </Suspense>
+            )}
+          </div>
         </div>
       </main>
     </>
-  );
-}
-
-function GroupHeaderSkeleton() {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-start gap-3">
-        <div className="h-12 w-12 rounded-md bg-muted" />
-        <div className="flex flex-col gap-2">
-          <div className="h-5 w-48 rounded bg-muted" />
-          <div className="h-3 w-32 rounded bg-muted" />
-          <div className="h-3 w-40 rounded bg-muted" />
-        </div>
-      </div>
-      <div className="h-20 w-full rounded-md bg-muted sm:w-56" />
-    </div>
   );
 }

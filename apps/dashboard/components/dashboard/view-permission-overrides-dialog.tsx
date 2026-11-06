@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use client";
 
-import { ListChecks, ShieldOff, Trash2 } from "lucide-react";
+import { ListChecks, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
@@ -25,6 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
+import { Notice } from "../ui/section";
 
 interface ViewPermissionOverridesDialogProps {
   gameId: string;
@@ -69,7 +70,7 @@ export function ViewPermissionOverridesDialog({
       setData({
         status: "error",
         overrides: [],
-        error: result.error ?? "could not load overrides",
+        error: result.error ?? "The server gave no reason. Close and reopen to retry.",
       });
     }
   }, [gameId, groupId, userId]);
@@ -105,7 +106,10 @@ export function ViewPermissionOverridesDialog({
     if (result.ok) {
       await refetch();
     } else {
-      setRowError({ permission: o.permission, error: result.error ?? "could not clear override" });
+      setRowError({
+        permission: o.permission,
+        error: result.error ?? "The server gave no reason. Try again.",
+      });
     }
   }
 
@@ -121,46 +125,41 @@ export function ViewPermissionOverridesDialog({
         <DialogHeader>
           <DialogTitle>Permission overrides</DialogTitle>
           <DialogDescription>
-            Member-level overrides for <span className="font-mono">{externalUserId}</span>. Clearing
-            an override falls back to the role-derived default; the override row is hard-deleted but
-            the permission key stays in this game's catalog for reuse.
+            Overrides for <span className="font-mono">{externalUserId}</span>. Clearing one hands
+            the permission back to their roles.
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-[120px]">
           {data.status === "idle" || data.status === "loading" ? (
-            <div className="space-y-2">
+            <div>
               {[0, 1, 2].map((i) => (
                 <div
                   key={i}
-                  className="flex items-center justify-between rounded-md border border-border bg-card/50 px-3 py-2"
+                  className="flex items-center justify-between border-b border-border/60 py-2"
                 >
-                  <div className="h-4 w-1/2 rounded bg-muted" />
-                  <div className="h-6 w-16 rounded bg-muted" />
+                  <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
+                  <div className="h-6 w-16 animate-pulse rounded bg-muted" />
                 </div>
               ))}
             </div>
           ) : null}
           {data.status === "error" ? (
-            <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {data.error}
-            </div>
+            <p className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              Could not load overrides: {data.error}
+            </p>
           ) : null}
           {data.status === "loaded" && data.overrides.length === 0 ? (
-            <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-8 text-center">
-              <ShieldOff className="h-7 w-7 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm font-medium">No overrides set</p>
-              <p className="mt-1 max-w-md text-xs text-muted-foreground">
-                This member resolves permissions purely from their assigned roles. Use the Override
-                action on the row to grant or revoke a single permission.
-              </p>
-            </div>
+            <Notice
+              title="No overrides set"
+              body="This member's permissions come from their roles alone."
+            />
           ) : null}
           {data.status === "loaded" && data.overrides.length > 0 ? (
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border/60 border-y border-border/60">
               {data.overrides.map((o) => (
                 <li
                   key={permissionEntryId(o)}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border bg-card/50 px-3 py-2"
+                  className="flex items-center justify-between gap-3 py-2"
                 >
                   <div className="flex flex-col gap-1 overflow-hidden">
                     <span className="flex items-center gap-2">

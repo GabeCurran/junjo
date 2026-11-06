@@ -26,6 +26,21 @@ function Part({ part }: { part: ActivityPart }) {
   }
 }
 
+// The sentence for one audit entry, with the moderator's reason when it
+// has one. Feeds and tables both render entries through this.
+export function ActivitySentence({ entry }: { entry: ActivityInput }) {
+  const reason = activityReason(entry);
+  return (
+    <>
+      {describeActivity(entry).map((part, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional and never reorder.
+        <Part key={i} part={part} />
+      ))}
+      {reason ? <span>: {reason}</span> : null}
+    </>
+  );
+}
+
 interface ActivityLineProps {
   entry: ActivityInput & {
     createdAt: string;
@@ -35,7 +50,6 @@ interface ActivityLineProps {
 
 // One audit entry as a sentence, its reason, and how long ago.
 export function ActivityLine({ entry }: ActivityLineProps) {
-  const reason = activityReason(entry);
   const via = entry.apiKey ? (entry.apiKey.name ?? entry.apiKey.prefix) : null;
   return (
     <li className="flex items-baseline gap-3 py-2">
@@ -47,11 +61,7 @@ export function ActivityLine({ entry }: ActivityLineProps) {
         )}
       />
       <p className="min-w-0 flex-1 break-words text-sm text-muted-foreground">
-        {describeActivity(entry).map((part, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional and never reorder.
-          <Part key={i} part={part} />
-        ))}
-        {reason ? <span>: {reason}</span> : null}
+        <ActivitySentence entry={entry} />
         {via ? <span className="text-muted-foreground/80"> via {via}</span> : null}
       </p>
       <time

@@ -2,6 +2,7 @@
 import Link from "next/link";
 
 import { PageHeader } from "../../../components/dashboard/page-header";
+import { Notice } from "../../../components/ui/section";
 
 export const metadata = {
   title: "Audit | Junjo Dashboard",
@@ -10,18 +11,21 @@ export const metadata = {
 export default function AuditPage() {
   return (
     <>
-      <PageHeader title="Audit" meta="Audit logs are scoped per game." />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
-          <h2 className="text-lg font-semibold">Audit logs are game-scoped</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Every mutation writes to its game's audit table. Open a game from the{" "}
-            <Link href="/games" className="font-medium text-foreground underline">
-              Games list
-            </Link>{" "}
-            to view its paginated audit log with action / actor / target / date filters and CSV
-            export.
-          </p>
+      <PageHeader title="Audit" />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="max-w-screen-xl">
+          <Notice
+            title="Audit logs are per game"
+            body={
+              <>
+                Pick a game in the game switcher, then open Audit log. Or choose one from{" "}
+                <Link href="/games" className="text-primary hover:underline">
+                  Games
+                </Link>
+                .
+              </>
+            }
+          />
         </div>
       </main>
     </>

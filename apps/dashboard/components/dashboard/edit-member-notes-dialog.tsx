@@ -74,10 +74,7 @@ export function EditMemberNotesDialog({
         <DialogHeader>
           <DialogTitle>Edit member notes</DialogTitle>
           <DialogDescription>
-            Public and private operator notes for{" "}
-            <span className="font-mono">{externalUserId}</span>. Public notes show up in the members
-            table preview; private notes are only visible to operators with admin access. Empty
-            either field to clear it.
+            Notes on <span className="font-mono">{externalUserId}</span>. Empty a field to clear it.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -92,7 +89,7 @@ export function EditMemberNotesDialog({
               defaultValue={notesPublic ?? ""}
               maxLength={ADMIN_MEMBER_NOTES_MAX_LENGTH}
               rows={3}
-              placeholder="Visible to other operators in the members table"
+              placeholder="Shown in the members table"
             />
           </div>
           <div className="space-y-2">
@@ -103,11 +100,10 @@ export function EditMemberNotesDialog({
               defaultValue={notesPrivate ?? ""}
               maxLength={ADMIN_MEMBER_NOTES_MAX_LENGTH}
               rows={3}
-              placeholder="Operator-only context, not surfaced in the table"
+              placeholder="Shown only here"
             />
             <p className="text-xs text-muted-foreground">
-              Up to {ADMIN_MEMBER_NOTES_MAX_LENGTH} characters per field. The server normalizes
-              empty input to `null` so cleared notes do not linger as empty strings.
+              Up to {ADMIN_MEMBER_NOTES_MAX_LENGTH} characters each.
             </p>
           </div>
           {state.error ? (

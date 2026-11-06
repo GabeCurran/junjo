@@ -7,6 +7,7 @@ import type {
   AdminApiKeyInput,
   AdminApiKeyList,
   AdminAuditPage,
+  AdminContextInheritance,
   AdminGame,
   AdminGameAuditPage,
   AdminGameList,
@@ -14,6 +15,7 @@ import type {
   AdminGroupAuditPage,
   AdminGroupChurn,
   AdminGroupGrowth,
+  AdminGroupKindLimits,
   AdminGroupList,
   AdminGroupMember,
   AdminGroupMemberList,
@@ -23,10 +25,12 @@ import type {
   AdminMemberPermissionOverride,
   AdminPermissionCheckResult,
   AdminPermissionDef,
+  AdminPermissionMode,
   AdminPermissionUsage,
   AdminRole,
   AdminRoleDistribution,
   AdminStats,
+  AdminUserIdFormat,
   CreateAdminGroupInvitationInput,
   CreateAdminRoleInput,
   FetchAdminGameAuditParams,
@@ -185,6 +189,12 @@ export interface AdminGameConfig {
       };
     };
     blocks: { enabled: boolean };
+    permissions: {
+      mode: AdminPermissionMode;
+      contexts: AdminContextInheritance;
+    };
+    identity: { formats: Record<string, AdminUserIdFormat> };
+    groups: { kinds: Record<string, AdminGroupKindLimits> };
   };
   networkId: string | null;
 }
@@ -205,6 +215,11 @@ export type AdminGameConfigPatch = {
       }>;
     }>;
     blocks?: Partial<{ enabled: boolean }>;
+    // `contexts`, `formats` and `kinds` are stated in full and replace
+    // the stored map.
+    permissions?: Partial<{ mode: AdminPermissionMode; contexts: AdminContextInheritance }>;
+    identity?: { formats: Record<string, AdminUserIdFormat> };
+    groups?: { kinds: Record<string, AdminGroupKindLimits> };
   }>;
   networkId?: string | null;
 };
@@ -730,6 +745,9 @@ export function fetchAdminPermissionCheck(
   qs.set("userId", params.userId);
   qs.set("groupId", params.groupId);
   qs.set("permission", params.permission);
+  for (const [key, value] of Object.entries(params.context ?? {})) {
+    qs.set(`context.${key}`, value);
+  }
   return adminFetch<AdminPermissionCheckResult>(
     `/v1/admin/games/${encodeURIComponent(gameId)}/permissions/check?${qs.toString()}`,
     { ...opts, revalidate: opts?.revalidate ?? 0 },

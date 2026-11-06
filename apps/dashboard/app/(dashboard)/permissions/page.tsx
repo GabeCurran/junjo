@@ -2,6 +2,7 @@
 import Link from "next/link";
 
 import { PageHeader } from "../../../components/dashboard/page-header";
+import { Notice } from "../../../components/ui/section";
 
 export const metadata = {
   title: "Permissions | Junjo Dashboard",
@@ -10,21 +11,21 @@ export const metadata = {
 export default function PermissionsPage() {
   return (
     <>
-      <PageHeader
-        title="Permissions"
-        meta="Resolve a (user, group, permission) triple to debug authorization."
-      />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
-          <h2 className="text-lg font-semibold">Permission checks are game-scoped</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Permissions are defined and resolved per game. Open a game from the{" "}
-            <Link href="/games" className="font-medium text-foreground underline">
-              Games list
-            </Link>{" "}
-            and use its <span className="font-mono">Permission check</span> action to test a (user,
-            group, permission) triple against the same resolver your runtime uses.
-          </p>
+      <PageHeader title="Permissions" />
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="max-w-screen-xl">
+          <Notice
+            title="Permission checks are per game"
+            body={
+              <>
+                Pick a game in the game switcher, then open Permission check. Or choose one from{" "}
+                <Link href="/games" className="text-primary hover:underline">
+                  Games
+                </Link>
+                .
+              </>
+            }
+          />
         </div>
       </main>
     </>

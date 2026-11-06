@@ -18,7 +18,7 @@ export default function DashboardHomePage() {
     <>
       <PageHeader title="Overview" />
       <main className="flex-1 px-6 pb-12 pt-4">
-        <div className="mx-auto flex max-w-screen-xl flex-col gap-8">
+        <div className="flex max-w-screen-xl flex-col gap-8">
           {/* Each panel streams in on its own. */}
           <Suspense fallback={<Placeholder className="h-16 w-full max-w-xl" />}>
             <StatsCards />

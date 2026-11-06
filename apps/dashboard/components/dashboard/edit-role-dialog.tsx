@@ -35,7 +35,7 @@ function SubmitButton() {
   const { pending } = useFormStatus();
   return (
     <Button type="submit" disabled={pending}>
-      {pending ? "Saving..." : "Save changes"}
+      {pending ? "Saving..." : "Save role"}
     </Button>
   );
 }
@@ -66,8 +66,8 @@ export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
         <DialogHeader>
           <DialogTitle>Edit role</DialogTitle>
           <DialogDescription>
-            Update <span className="font-mono">{role.name}</span>. Only changed fields land in the
-            audit log; supplying a value that matches the stored row is a no-op server-side.
+            Editing <span className="font-medium text-foreground">{role.name}</span>. Only changed
+            fields are written to the audit log.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -108,7 +108,7 @@ export function EditRoleDialog({ gameId, groupId, role }: EditRoleDialogProps) {
               pattern="^#[0-9a-fA-F]{6}$"
             />
             <p className="text-xs text-muted-foreground">
-              Hex value like <code>#6366f1</code>. Clear the field to remove the role's color.
+              A six-digit hex color. Clear it to remove the color.
             </p>
           </div>
           <div className="flex items-center gap-2">

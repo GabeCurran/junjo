@@ -60,22 +60,18 @@ export function DeleteRoleDialog({ gameId, groupId, role }: DeleteRoleDialogProp
         <DialogHeader>
           <DialogTitle>Delete role</DialogTitle>
           <DialogDescription>
-            Permanently delete <span className="font-mono">{role.name}</span>. The role's permission
-            grants are removed with it; assigned members must be reassigned first or the server
-            returns a 409.
+            Deletes <span className="font-medium text-foreground">{role.name}</span> and its
+            permission entries. Move its members to another role first; the server refuses to delete
+            a role that is still assigned.
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
           <input type="hidden" name="gameId" value={gameId} />
           <input type="hidden" name="groupId" value={groupId} />
           <input type="hidden" name="roleId" value={role.id} />
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
-            <p className="font-medium text-destructive">This cannot be undone.</p>
-            <p className="mt-1 text-muted-foreground">
-              The role row is hard-deleted. Audit history of past assignments is preserved on member
-              rows but the role definition is gone.
-            </p>
-          </div>
+          <p className="text-sm font-medium text-destructive">
+            This cannot be undone. The audit log keeps past assignments.
+          </p>
           {state.error ? (
             <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {state.error}

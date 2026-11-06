@@ -2,7 +2,7 @@
 "use client";
 
 import { type ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
-import { Search, Users } from "lucide-react";
+import { Search } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -11,13 +11,14 @@ import {
   ADMIN_MEMBER_STATUS_FILTERS,
   type AdminGroupMember,
   type AdminGroupMemberList,
-  type AdminMemberRole,
   type AdminMemberStatusFilter,
 } from "../../lib/admin-shared";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { RoleChip } from "../ui/role-chip";
+import { Notice } from "../ui/section";
 import { EditMemberNotesDialog } from "./edit-member-notes-dialog";
 import { InviteMemberDialog } from "./invite-member-dialog";
 import { KickMemberDialog } from "./kick-member-dialog";
@@ -33,6 +34,11 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 
 const SEARCH_DEBOUNCE_MS = 350;
 const SEARCH_VALUE_MAX = 255;
+
+const SELECT_CLASS = cn(
+  "h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background",
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+);
 
 export interface MembersQueryState {
   q: string;
@@ -90,48 +96,8 @@ function statusBadgeVariant(status: string): "secondary" | "muted" | "destructiv
   }
 }
 
-interface RoleChipProps {
-  role: AdminMemberRole;
-}
-
-function RoleChip({ role }: RoleChipProps) {
-  // Role color is a hex string per the schema. We render a small colored dot
-  // alongside the name; the chip itself uses the muted badge so the color is
-  // a hint, not the whole UI signal.
-  const dotStyle = role.color ? { backgroundColor: role.color } : undefined;
-  return (
-    <Badge variant="muted" className="inline-flex items-center gap-1.5">
-      {role.color ? (
-        <span
-          aria-hidden
-          className="inline-block h-2 w-2 rounded-full border border-border"
-          style={dotStyle}
-        />
-      ) : null}
-      {role.name}
-    </Badge>
-  );
-}
-
-interface BrowserShellProps {
-  total: number;
-  children: React.ReactNode;
-}
-
-function BrowserShell({ total, children }: BrowserShellProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Members</CardTitle>
-        <CardDescription>
-          Every member in this group, with their assigned roles and lifecycle status.{" "}
-          {numberFormatter.format(total)} {total === 1 ? "match" : "matches"} for the current
-          filter.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
-  );
+function statusLabel(status: string): string {
+  return STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status;
 }
 
 export function MembersTable({ data, query, gameId, groupId }: MembersTableProps) {
@@ -161,8 +127,8 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
     [pathname, query, router, searchParams],
   );
 
-  // Reset the local search box if the URL `q` changes from outside (e.g. the
-  // operator hits Back).
+  // Reset the local search box when the URL `q` changes from outside,
+  // through history navigation.
   useEffect(() => {
     setSearchValue(query.q);
   }, [query.q]);
@@ -188,9 +154,9 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         header: "User",
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="font-mono text-sm">{row.original.externalUserId}</span>
-            <span className="font-mono text-xs text-muted-foreground">
-              junjo: {row.original.junjoUserId}
+            <span className="font-mono">{row.original.externalUserId}</span>
+            <span className="font-mono text-xs text-muted-foreground" title="Junjo user id">
+              {row.original.junjoUserId}
             </span>
           </div>
         ),
@@ -199,7 +165,9 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         accessorKey: "status",
         header: "Status",
         cell: ({ row }) => (
-          <Badge variant={statusBadgeVariant(row.original.status)}>{row.original.status}</Badge>
+          <Badge variant={statusBadgeVariant(row.original.status)}>
+            {statusLabel(row.original.status)}
+          </Badge>
         ),
       },
       {
@@ -208,12 +176,12 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         cell: ({ row }) => {
           const roles = row.original.roles;
           if (roles.length === 0) {
-            return <span className="text-xs text-muted-foreground">no roles</span>;
+            return <span className="text-muted-foreground">-</span>;
           }
           return (
             <div className="flex flex-wrap gap-1">
               {roles.map((r) => (
-                <RoleChip key={r.id} role={r} />
+                <RoleChip key={r.id} name={r.name} color={r.color} />
               ))}
             </div>
           );
@@ -224,12 +192,12 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         header: "Public note",
         cell: ({ row }) => {
           const note = row.original.notesPublic;
-          if (!note) return <span className="text-xs text-muted-foreground">-</span>;
+          if (!note) return <span className="text-muted-foreground">-</span>;
           // Truncate visually via CSS; the full note is one click away in
           // the Notes row-action dialog.
           return (
             <span
-              className="inline-block max-w-[16rem] truncate text-xs text-muted-foreground"
+              className="inline-block max-w-[16rem] truncate align-bottom text-muted-foreground"
               title={note}
             >
               {note}
@@ -241,7 +209,7 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
         accessorKey: "joinedAt",
         header: "Joined",
         cell: ({ row }) => (
-          <span className="whitespace-nowrap text-xs text-muted-foreground">
+          <span className="whitespace-nowrap text-muted-foreground">
             {dateFormatter.format(new Date(row.original.joinedAt))}
           </span>
         ),
@@ -309,160 +277,147 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
   const start = data.total === 0 ? 0 : query.offset + 1;
   const end = query.offset + data.items.length;
 
+  const filtered = query.q.length > 0 || query.status !== "active";
+
   return (
-    <BrowserShell total={data.total}>
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-            <div className="relative">
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                id={searchInputId}
-                value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
-                placeholder="Search by user id"
-                aria-label="Search members by external user id"
-                className="w-64 pl-9"
-                maxLength={SEARCH_VALUE_MAX}
-                autoComplete="off"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <label htmlFor={statusSelectId} className="sr-only">
-                Filter by status
-              </label>
-              <select
-                id={statusSelectId}
-                value={query.status}
-                onChange={(e) => {
-                  const next = e.target.value as AdminMemberStatusFilter;
-                  if ((ADMIN_MEMBER_STATUS_FILTERS as readonly string[]).includes(next)) {
-                    pushQuery({ status: next, offset: 0 });
-                  }
-                }}
-                className={cn(
-                  "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  "focus-visible:ring-offset-2 ring-offset-background",
-                )}
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              id={searchInputId}
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
+              placeholder="Search by user id"
+              aria-label="Search members by external user id"
+              className="w-full pl-9 sm:w-64"
+              maxLength={SEARCH_VALUE_MAX}
+              autoComplete="off"
+            />
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
-                Rows
-              </label>
-              <select
-                id={pageSizeSelectId}
-                value={query.limit}
-                onChange={(e) => {
-                  const nextLimit = Number(e.target.value);
-                  pushQuery({ limit: nextLimit, offset: 0 });
-                }}
-                className={cn(
-                  "h-10 rounded-md border border-input bg-background px-3 text-sm",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  "focus-visible:ring-offset-2 ring-offset-background",
-                )}
-              >
-                {ADMIN_MEMBERS_PAGE_SIZE_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <InviteMemberDialog gameId={gameId} groupId={groupId} />
-          </div>
+          <label htmlFor={statusSelectId} className="sr-only">
+            Filter by status
+          </label>
+          <select
+            id={statusSelectId}
+            value={query.status}
+            onChange={(e) => {
+              const next = e.target.value as AdminMemberStatusFilter;
+              if ((ADMIN_MEMBER_STATUS_FILTERS as readonly string[]).includes(next)) {
+                pushQuery({ status: next, offset: 0 });
+              }
+            }}
+            className={SELECT_CLASS}
+          >
+            {STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
-
-        {data.items.length === 0 ? (
-          <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-            <Users className="h-8 w-8 text-muted-foreground" aria-hidden />
-            <p className="mt-3 text-sm font-medium">No members match your filter</p>
-            <p className="mt-1 max-w-md text-xs text-muted-foreground">
-              Clear the search box or try a different status to widen the result set. The active
-              filter is the default; switch to All to see left, kicked, and invited members.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                {table.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id} className="border-b border-border text-xs text-muted-foreground">
-                    {hg.headers.map((header) => (
-                      <th key={header.id} className="py-2 pr-4 text-left font-medium">
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="border-b border-border last:border-0">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="py-3 pr-4">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>
-            {data.total === 0
-              ? "No results"
-              : `Showing ${numberFormatter.format(start)}-${numberFormatter.format(end)} of ${numberFormatter.format(data.total)}`}
-          </span>
+        <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span>
-              Page {numberFormatter.format(currentPage)} of {numberFormatter.format(totalPages)}
-            </span>
-            <button
-              type="button"
-              onClick={() => pushQuery({ offset: Math.max(0, query.offset - query.limit) })}
-              disabled={query.offset === 0}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
+            <label htmlFor={pageSizeSelectId} className="text-sm text-muted-foreground">
+              Rows
+            </label>
+            <select
+              id={pageSizeSelectId}
+              value={query.limit}
+              onChange={(e) => {
+                const nextLimit = Number(e.target.value);
+                pushQuery({ limit: nextLimit, offset: 0 });
+              }}
+              className={SELECT_CLASS}
             >
-              Previous
-            </button>
-            <button
-              type="button"
-              onClick={() => pushQuery({ offset: query.offset + query.limit })}
-              disabled={!data.hasMore}
-              className={cn(
-                "inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-xs",
-                "transition-colors hover:bg-accent hover:text-accent-foreground",
-                "disabled:pointer-events-none disabled:opacity-50",
-              )}
-            >
-              Next
-            </button>
+              {ADMIN_MEMBERS_PAGE_SIZE_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
           </div>
+          <InviteMemberDialog gameId={gameId} groupId={groupId} />
         </div>
       </div>
-    </BrowserShell>
+
+      {data.items.length === 0 ? (
+        filtered ? (
+          <Notice
+            title="No members match this filter"
+            body="Clear the search, or set status to All to include members who left, were kicked or are invited."
+          />
+        ) : (
+          <Notice
+            title="No active members"
+            body="Invite one, or set status to All to see past members."
+          />
+        )
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id} className="border-b border-border text-xs text-muted-foreground">
+                  {hg.headers.map((header) => (
+                    <th key={header.id} className="py-2 pr-4 text-left font-medium">
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  ))}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map((row) => (
+                <tr key={row.id} className="border-b border-border/60 hover:bg-accent/40">
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="py-2.5 pr-4">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex flex-col items-start justify-between gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center">
+        <span className="tabular-nums">
+          {data.total === 0
+            ? "No results"
+            : `${numberFormatter.format(start)}-${numberFormatter.format(end)} of ${numberFormatter.format(data.total)}`}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="tabular-nums">
+            Page {numberFormatter.format(currentPage)} of {numberFormatter.format(totalPages)}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => pushQuery({ offset: Math.max(0, query.offset - query.limit) })}
+            disabled={query.offset === 0}
+          >
+            Previous
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => pushQuery({ offset: query.offset + query.limit })}
+            disabled={!data.hasMore}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -73,10 +73,12 @@ export function describeActivity(entry: ActivityInput): ActivityPart[] {
     case "role.parents.set":
       return [text("Role inheritance changed in "), group];
     case "permission.granted":
+    case "role.permission.granted":
       return permission
         ? [{ kind: "code", text: permission }, text(" was granted in "), group]
         : [text("A permission was granted in "), group];
     case "permission.revoked":
+    case "role.permission.revoked":
       return permission
         ? [{ kind: "code", text: permission }, text(" was revoked in "), group]
         : [text("A permission was revoked in "), group];

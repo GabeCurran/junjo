@@ -1,5 +1,4 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
@@ -9,13 +8,7 @@ import {
   GroupsTable,
 } from "../../../../../components/dashboard/groups-table";
 import { PageHeader } from "../../../../../components/dashboard/page-header";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../../../components/ui/card";
+import { Notice } from "../../../../../components/ui/section";
 import {
   ADMIN_GROUPS_DEFAULT_PAGE_SIZE,
   ADMIN_GROUPS_PAGE_SIZE_OPTIONS,
@@ -44,8 +37,8 @@ const SEARCH_VALUE_MAX = 120;
 const KIND_VALUE_MAX = 64;
 
 // Lenient parser: invalid values fall through to defaults rather than 400.
-// A stale URL (e.g. shared from a previous deploy with a different sort
-// allowlist) should not blow up the page; it just resets the affected param.
+// A stale URL, from a deploy with a different sort allowlist, should not
+// blow up the page; it just resets the affected param.
 function readParam(
   searchParams: Record<string, string | string[] | undefined>,
   key: string,
@@ -98,54 +91,24 @@ function parseQuery(searchParams: Record<string, string | string[] | undefined>)
 
 function GroupsBrowserSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="h-4 w-40 rounded bg-muted" />
-        <CardDescription className="h-3 w-72 rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2">
-              <div className="h-10 w-64 rounded-md bg-muted" />
-              <div className="h-10 w-40 rounded-md bg-muted" />
-              <div className="h-10 w-40 rounded-md bg-muted" />
-            </div>
-            <div className="h-10 w-24 rounded-md bg-muted" />
+    <div className="flex flex-col gap-3" aria-hidden>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="h-9 w-64 animate-pulse rounded-md bg-muted" />
+        <div className="h-9 w-36 animate-pulse rounded-md bg-muted" />
+        <div className="h-9 w-36 animate-pulse rounded-md bg-muted" />
+      </div>
+      <div className="flex flex-col">
+        <div className="h-8 border-b border-border" />
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="flex items-center gap-6 border-b border-border/60 py-3">
+            <div className="h-4 w-1/3 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-16 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-16 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-20 animate-pulse rounded bg-muted" />
           </div>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-border py-3 last:border-0"
-            >
-              <div className="h-4 w-1/3 rounded bg-muted" />
-              <div className="flex gap-6">
-                <div className="h-4 w-12 rounded bg-muted" />
-                <div className="h-4 w-16 rounded bg-muted" />
-                <div className="h-4 w-10 rounded bg-muted" />
-                <div className="h-4 w-20 rounded bg-muted" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-interface ErrorCardProps {
-  title: string;
-  body: string;
-}
-
-function ErrorCard({ title, body }: ErrorCardProps) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{body}</CardDescription>
-      </CardHeader>
-    </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -170,9 +133,9 @@ async function GroupsBrowser({
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return (
-        <ErrorCard
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load groups. The token gates every cross-game admin endpoint."
+        <Notice
+          title="Cross-game access is off"
+          body="Set JUNJO_ADMIN_TOKEN on the dashboard and the server to load groups."
         />
       );
     }
@@ -180,9 +143,9 @@ async function GroupsBrowser({
       notFound();
     }
     return (
-      <ErrorCard
+      <Notice
         title="Could not load groups"
-        body={err instanceof Error ? err.message : "unknown error fetching groups"}
+        body={err instanceof Error ? err.message : "The groups request failed."}
       />
     );
   }
@@ -210,19 +173,17 @@ export default async function GroupsPage(props: GroupsPageProps) {
     <>
       <PageHeader
         title="Groups"
-        meta="Search, filter, and sort every group in this game."
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}`}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            className="text-sm text-muted-foreground hover:text-foreground hover:underline"
           >
-            <ArrowLeft className="h-3 w-3" aria-hidden />
-            Game detail
+            Game overview
           </Link>
         }
       />
-      <main className="flex-1 px-6 py-8">
-        <div className="mx-auto max-w-screen-2xl">
+      <main className="flex-1 px-6 pb-12 pt-4">
+        <div className="max-w-screen-2xl">
           <Suspense key={suspenseKey} fallback={<GroupsBrowserSkeleton />}>
             <GroupsBrowser gameId={params.gameId} query={query} />
           </Suspense>
