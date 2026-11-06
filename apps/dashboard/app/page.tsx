@@ -205,7 +205,7 @@ export default function LandingPage() {
         </section>
 
         <section className="border-t border-border">
-          <div className="mx-auto grid max-w-screen-lg gap-10 px-6 py-16 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+          <div className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
             <div>
               <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
                 Built for game servers
