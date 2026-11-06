@@ -19,7 +19,6 @@ import io.junjo.sdk.model.PermissionEntry;
 import io.junjo.sdk.model.Role;
 import io.junjo.sdk.model.RoleGraph;
 import io.junjo.sdk.model.Sanction;
-import io.junjo.sdk.permissions.PermissionResolver;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -31,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * The mirror's state file: one checksummed JSON line (see {@link DurableFiles}) holding the
@@ -93,7 +93,7 @@ final class MirrorSnapshot {
      * @throws RuntimeException when it fails its checksum, is not a mirror snapshot of this
      *     version, or is malformed
      */
-    static Optional<State> load(Path file) throws IOException {
+    static Optional<State> load(Path file, Function<RoleGraph, GroupState> compile) throws IOException {
         if (!Files.exists(file)) return Optional.empty();
         String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8).strip();
         JsonObject o = DurableFiles.parseLine(text);
@@ -103,7 +103,7 @@ final class MirrorSnapshot {
         State s = State.EMPTY.withPosition(Json.str(o, "position"));
         for (JsonObject g : Json.objects(Json.arr(o, "groups"), "groups")) {
             RoleGraph graph = Wire.roleGraph(g);
-            s = s.withGroup(graph.groupId(), new GroupState(graph, PermissionResolver.compile(graph)));
+            s = s.withGroup(graph.groupId(), compile.apply(graph));
         }
         List<Ban> bans = new ArrayList<>();
         for (JsonObject b : Json.objects(Json.arr(o, "bans"), "bans")) bans.add(ban(b));
@@ -153,6 +153,7 @@ final class MirrorSnapshot {
                 JsonObject en = new JsonObject();
                 en.addProperty("permission", e.permission());
                 en.addProperty("value", e.value());
+                if (!e.context().isGlobal()) en.add("context", Json.toJson(e.context()));
                 entries.add(en);
             }
             j.add("entries", entries);
@@ -178,6 +179,7 @@ final class MirrorSnapshot {
             j.addProperty("userId", x.userId());
             j.addProperty("permission", x.permission());
             j.addProperty("grant", x.grant());
+            if (!x.context().isGlobal()) j.add("context", Json.toJson(x.context()));
             j.addProperty("setAt", x.setAt().toString());
             j.addProperty("setBy", x.setBy());
             overrides.add(j);

@@ -5,6 +5,7 @@ import io.junjo.sdk.internal.ApiSupport;
 import io.junjo.sdk.internal.Route;
 import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.model.AddSanctionInput;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateBanInput;
 import io.junjo.sdk.model.SetMemberNotesInput;
 import java.time.Instant;
@@ -88,9 +89,21 @@ public record QueuedWrite(String method, String path, String body, String ifMatc
         return of(Routes.overridePermission(groupId, userId, permission, grant), "override permission");
     }
 
+    /** As {@code members().overridePermission} with a context. */
+    public static QueuedWrite overridePermission(
+            String groupId, String userId, String permission, boolean grant, Context context) {
+        return of(Routes.overridePermission(groupId, userId, permission, grant, context), "override permission");
+    }
+
     /** As {@code members().clearPermissionOverride}. */
     public static QueuedWrite clearPermissionOverride(String groupId, String userId, String permission) {
         return of(Routes.clearPermissionOverride(groupId, userId, permission), "clear permission override");
+    }
+
+    /** As {@code members().clearPermissionOverride} with a context. */
+    public static QueuedWrite clearPermissionOverride(
+            String groupId, String userId, String permission, Context context) {
+        return of(Routes.clearPermissionOverride(groupId, userId, permission, context), "clear permission override");
     }
 
     /** As {@code members().setMetadata}. */

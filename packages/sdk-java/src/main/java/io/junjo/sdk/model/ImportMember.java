@@ -33,13 +33,17 @@ public final class ImportMember extends RequestBody {
             return this;
         }
 
-        /** The member's full override list. */
+        /**
+         * The member's full override list, global and contextual. Each {@code (permission,
+         * context)} pair may appear once.
+         */
         public Builder overrides(List<PermissionEntry> overrides) {
             List<Map<String, Object>> out = new ArrayList<>();
             for (PermissionEntry e : overrides) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("permission", e.permission());
                 m.put("value", e.value());
+                if (!e.context().isGlobal()) m.put("context", e.context().values());
                 out.add(m);
             }
             f.put("overrides", out);

@@ -5,6 +5,7 @@ import io.junjo.sdk.internal.ApiSupport;
 import io.junjo.sdk.internal.Json;
 import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.internal.Wire;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateRoleInput;
 import io.junjo.sdk.model.PermissionEntry;
 import io.junjo.sdk.model.Role;
@@ -71,8 +72,9 @@ public final class RolesApi {
     }
 
     /**
-     * Replaces the role's whole entry list, grants and denies, in one atomic write. Keys absent
-     * from {@code entries} are removed from the role.
+     * Replaces the role's whole entry list, grants and denies, global and contextual, in one atomic
+     * write. Entries are matched by key and context: those absent from {@code entries} are removed
+     * from the role. Each {@code (permission, context)} pair may appear once.
      */
     public CompletableFuture<Role> setEntries(String roleId, List<PermissionEntry> entries, WriteOptions opts) {
         return api.write(Routes.setEntries(roleId, entries), opts, Wire::role);
@@ -88,7 +90,26 @@ public final class RolesApi {
      * deny entry for it.
      */
     public CompletableFuture<Role> grantPermission(String roleId, String permission, boolean value, WriteOptions opts) {
-        return api.write(Routes.grantPermission(roleId, permission, value), opts, Wire::role);
+        return grantPermission(roleId, permission, value, Context.GLOBAL, opts);
+    }
+
+    /**
+     * Same as {@link #grantPermission(String, String, boolean, Context, WriteOptions)} with default
+     * options.
+     */
+    public CompletableFuture<Role> grantPermission(String roleId, String permission, boolean value, Context context) {
+        return grantPermission(roleId, permission, value, context, WriteOptions.none());
+    }
+
+    /**
+     * Adds or updates the role's entry for the key in {@code context}: {@code value} true grants
+     * the key there, false stores a deny. The entry for a context is separate from the key's
+     * global entry and from its entries in other contexts; {@link Context#GLOBAL} writes the
+     * global one.
+     */
+    public CompletableFuture<Role> grantPermission(
+            String roleId, String permission, boolean value, Context context, WriteOptions opts) {
+        return api.write(Routes.grantPermission(roleId, permission, value, context), opts, Wire::role);
     }
 
     /** Same as {@link #revokePermission(String, String, WriteOptions)} with default options. */
@@ -96,9 +117,23 @@ public final class RolesApi {
         return revokePermission(roleId, permission, WriteOptions.none());
     }
 
-    /** Removes the role's entry for the key, grant or deny. */
+    /** Removes the role's global entry for the key, grant or deny. */
     public CompletableFuture<Role> revokePermission(String roleId, String permission, WriteOptions opts) {
-        return api.write(Routes.revokePermission(roleId, permission), opts, Wire::role);
+        return revokePermission(roleId, permission, Context.GLOBAL, opts);
+    }
+
+    /** Same as {@link #revokePermission(String, String, Context, WriteOptions)} with default options. */
+    public CompletableFuture<Role> revokePermission(String roleId, String permission, Context context) {
+        return revokePermission(roleId, permission, context, WriteOptions.none());
+    }
+
+    /**
+     * Removes the role's entry for the key in exactly {@code context}, grant or deny; entries for
+     * the key in other contexts stay. {@link Context#GLOBAL} removes the global entry.
+     */
+    public CompletableFuture<Role> revokePermission(
+            String roleId, String permission, Context context, WriteOptions opts) {
+        return api.write(Routes.revokePermission(roleId, permission, context), opts, Wire::role);
     }
 
     /** Same as {@link #setParents(String, List, WriteOptions)} with default options. */

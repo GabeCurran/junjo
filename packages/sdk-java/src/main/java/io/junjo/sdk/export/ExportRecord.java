@@ -1,5 +1,7 @@
 package io.junjo.sdk.export;
 
+import io.junjo.sdk.model.Context;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -14,5 +16,19 @@ public record ExportRecord(String kind, Map<String, Object> fields, String json)
      */
     public Object get(String name) {
         return fields.get(name);
+    }
+
+    /**
+     * The {@code context} of one element of a {@code role} record's {@code entries} or a
+     * {@code member} record's {@code overrides}, as a {@link Context}: {@link Context#GLOBAL}
+     * when the element has none or is not an object. Non-string values are ignored.
+     */
+    public static Context context(Object element) {
+        if (!(element instanceof Map<?, ?> m) || !(m.get("context") instanceof Map<?, ?> raw)) return Context.GLOBAL;
+        Map<String, String> values = new LinkedHashMap<>();
+        raw.forEach((k, v) -> {
+            if (k instanceof String key && v instanceof String value) values.put(key, value);
+        });
+        return Context.fromWire(values);
     }
 }

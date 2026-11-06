@@ -1,6 +1,7 @@
 package io.junjo.sdk.internal;
 
 import io.junjo.sdk.model.AddSanctionInput;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateBanInput;
 import io.junjo.sdk.model.CreateGroupInput;
 import io.junjo.sdk.model.CreateRoleInput;
@@ -81,11 +82,23 @@ public final class Routes {
     }
 
     public static Route overridePermission(String groupId, String userId, String permission, boolean grant) {
-        return new Route("POST", memberPermission(groupId, userId, permission), Map.of("grant", grant), false);
+        return overridePermission(groupId, userId, permission, grant, Context.GLOBAL);
+    }
+
+    public static Route overridePermission(
+            String groupId, String userId, String permission, boolean grant, Context context) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("grant", grant);
+        putContext(body, context);
+        return new Route("POST", memberPermission(groupId, userId, permission), body, false);
     }
 
     public static Route clearPermissionOverride(String groupId, String userId, String permission) {
-        return new Route("DELETE", memberPermission(groupId, userId, permission), null, false);
+        return clearPermissionOverride(groupId, userId, permission, Context.GLOBAL);
+    }
+
+    public static Route clearPermissionOverride(String groupId, String userId, String permission, Context context) {
+        return new Route("DELETE", withContext(memberPermission(groupId, userId, permission), context), null, false);
     }
 
     // ------------------------------------------------------------------ roles
@@ -104,16 +117,25 @@ public final class Routes {
 
     public static Route setEntries(String roleId, List<PermissionEntry> entries) {
         List<Map<String, Object>> list = new ArrayList<>(entries.size());
-        for (PermissionEntry e : entries) list.add(entry(e.permission(), e.value()));
+        for (PermissionEntry e : entries) list.add(entry(e.permission(), e.value(), e.context()));
         return new Route("PUT", role(roleId) + "/entries", Map.of("entries", list), false);
     }
 
     public static Route grantPermission(String roleId, String permission, boolean value) {
-        return new Route("POST", role(roleId) + "/permissions", entry(permission, value), false);
+        return grantPermission(roleId, permission, value, Context.GLOBAL);
+    }
+
+    public static Route grantPermission(String roleId, String permission, boolean value, Context context) {
+        return new Route("POST", role(roleId) + "/permissions", entry(permission, value, context), false);
     }
 
     public static Route revokePermission(String roleId, String permission) {
-        return new Route("DELETE", role(roleId) + "/permissions/" + Paths.seg(permission), null, false);
+        return revokePermission(roleId, permission, Context.GLOBAL);
+    }
+
+    public static Route revokePermission(String roleId, String permission, Context context) {
+        return new Route(
+                "DELETE", withContext(role(roleId) + "/permissions/" + Paths.seg(permission), context), null, false);
     }
 
     public static Route setParents(String roleId, List<String> parents) {
@@ -188,11 +210,31 @@ public final class Routes {
         return member(groupId, userId) + "/permissions/" + Paths.seg(permission);
     }
 
-    private static Map<String, Object> entry(String permission, boolean value) {
+    /**
+     * Appends a context as {@code context.<key>=<value>} query parameters, the form the check and
+     * delete routes read; the global context adds none.
+     */
+    public static String withContext(String path, Context context) {
+        return contextQuery(new Paths.Query(), context).appendTo(path);
+    }
+
+    /** Adds a context's {@code context.<key>=<value>} parameters to a query. */
+    public static Paths.Query contextQuery(Paths.Query query, Context context) {
+        if (context != null) context.values().forEach((k, v) -> query.add("context." + k, v));
+        return query;
+    }
+
+    private static Map<String, Object> entry(String permission, boolean value, Context context) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("permission", permission);
         m.put("value", value);
+        putContext(m, context);
         return m;
+    }
+
+    // A global write sends no context field; the server reads an absent context as global.
+    private static void putContext(Map<String, Object> body, Context context) {
+        if (context != null && !context.isGlobal()) body.put("context", context.values());
     }
 
     private static Map<String, Object> actor(String actorUserId) {

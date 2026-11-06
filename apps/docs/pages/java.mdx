@@ -154,7 +154,88 @@ PermissionResolver.GroupResolver resolver = PermissionResolver.compile(graph);
 PermissionCheckResult result = resolver.check(access, "chat.color");
 ```
 
-The resolver implements the [layered precedence](/api-reference/permissions): the member's overrides, then directly held roles, then their parents; the most specific key within the deciding layer; deny on ties. Both [permission modes](/api-reference/permissions#permission-modes) are supported. In `nodes` mode, case folding is ASCII-only, exactly like the server, so the answer never depends on the JVM's default locale. A member whose status is not `active` answers `allowed=false, source=none`, as on the server.
+The resolver implements the [layered precedence](/api-reference/permissions): the member's overrides, then directly held roles, then their parents; within the deciding layer, the best [context](#contexts) match, then the most specific key; deny on ties. Both [permission modes](/api-reference/permissions#permission-modes) are supported. In `nodes` mode, case folding is ASCII-only, exactly like the server, so the answer never depends on the JVM's default locale. A member whose status is not `active` answers `allowed=false, source=none`, as on the server.
+
+## Contexts
+
+An entry or an override can carry a [context](/api-reference/permissions#contexts), such as the world a player is in, so it applies only to checks made in that context. A `Context` is an immutable map of context keys to values; values are folded with the server's ASCII-only lowercase fold, so `Context.of("world", "World_Nether")` equals `Context.of("world", "world_nether")`. `Context.GLOBAL` is the empty context. Every call that takes a context has an overload without one, which means global.
+
+```java
+Context creative = Context.of("world", "creative");
+
+// Writes: an entry's identity is its key and its context.
+junjo.roles().setEntries(roleId, List.of(
+        PermissionEntry.deny("essentials.fly"),                 // global
+        PermissionEntry.grant("essentials.*", creative)));      // only in creative
+junjo.roles().grantPermission(roleId, "worldedit.*", true, creative);
+junjo.roles().revokePermission(roleId, "worldedit.*", creative);    // ?context.world=creative
+junjo.members().overridePermission("grp_main", player, "chat.color", false, Context.of("world", "hub"));
+junjo.members().clearPermissionOverride("grp_main", player, "chat.color", Context.of("world", "hub"));
+queue.enqueue(QueuedWrite.overridePermission("grp_main", player, "fly", false, creative));
+
+// Server checks, and the deciding entry's context.
+PermissionCheckResult r = junjo.permissions().check(player, "grp_main", "essentials.fly", creative).join();
+r.context();   // {"world":"creative"}, or Context.GLOBAL when a global entry decided
+junjo.permissions().checkBatch(List.of(
+        new PermissionCheckRequest(player, "grp_main", "essentials.fly", creative)));
+```
+
+`PermissionEntry.context()`, `MemberPermissionOverride.context()` and `PermissionCheckResult.context()` are never null; `ImportMember.overrides` takes contextual entries too, and `ExportRecord.context(element)` reads the `context` of one exported role entry or member override. How a contextual entry ranks against a global one, and against a more specific key, is described under [Precedence](/api-reference/permissions#precedence).
+
+### Inheritance in the mirror
+
+A game can declare that one value inherits another's entries, in its config's [`permissions.contexts`](/api-reference/admin#permission-contexts). That config is set through the admin API and is **not readable with a game key**, so the mirror and the resolver take the same table from you:
+
+```java
+ContextInheritance worlds = ContextInheritance.builder()
+        .inherit("world", "pvpworld", "world")
+        .inherit("world", "world_nether", "world")
+        .inherit("world", "cave_world_nether", "world_nether")
+        .build();   // refuses a cycle, a chain over 16 steps and the other limits the server refuses
+
+GameMirror mirror = GameMirror.builder(junjo).group("grp_main").contextInheritance(worlds).build();
+mirror.can(player, "grp_main", "warp.spawn", Context.of("world", "pvpworld"));
+
+PermissionResolver.compile(graph, worlds).check(access, "warp.spawn", Context.of("world", "pvpworld"));
+```
+
+Keep it identical to the game's config, or contextual answers can differ from `permissions().check`. After the config changes, `mirror.setContextInheritance(next)` recompiles the loaded role graphs; the table is not saved in the snapshot file, so pass it to the builder on every start. `ContextInheritance.of(map)` reads the config's `{ key: { value: [parents] } }` shape.
+
+### Per-world checks on a Paper server
+
+A Paper server keeps one context-bound `MemberChecker` per player and replaces it when the player changes world. The checker caches the member's compiled overrides and the world's inheritance chain, and always reads the mirror's current state:
+
+```java
+private final Map<UUID, MemberChecker> checkers = new ConcurrentHashMap<>();
+
+private void bind(Player player) {
+    String id = Ids.namespaced("mc", player.getUniqueId());
+    checkers.put(player.getUniqueId(),
+            mirror.checker(id, "grp_server", Context.of("world", player.getWorld().getName())));
+}
+
+@EventHandler
+public void onJoin(PlayerJoinEvent event) {
+    bind(event.getPlayer());
+}
+
+@EventHandler
+public void onWorldChange(PlayerChangedWorldEvent event) {
+    bind(event.getPlayer());
+}
+
+@EventHandler
+public void onQuit(PlayerQuitEvent event) {
+    checkers.remove(event.getPlayer().getUniqueId());
+}
+
+boolean has(Player player, String permission) {
+    MemberChecker c = checkers.get(player.getUniqueId());
+    return c != null && c.can(permission) == Answer.YES;   // lock-free, no I/O
+}
+```
+
+World names such as `w_TheNewIsland` can be passed as they are: the fold makes them match entries written as `w_thenewisland`.
 
 ## The game stream
 
@@ -280,7 +361,8 @@ What else to know:
 - **Snapshot file.** With `snapshotFile`, the mirror saves its state (position, role graphs, bans, sanctions, tracked members, resolved ids) at most every `snapshotInterval` (30 s) and on `close()`, using a temporary file, `fsync`, an atomic move and a CRC32 checksum. At start it loads the file and answers from it at once, then resumes the game stream from the saved position. **Data loaded from the file may be stale until the stream catches up.** When the saved position has expired, the mirror reloads everything from the server; an unreadable file is ignored and reported.
 - **Batched member loads.** `track` calls issued close together are loaded with one `getAccessMany` request per group (up to 100 ids). Member loads have their own timeout, `memberLoadTimeout` (5 s), separate from `loadTimeout` (60 s) for the bulk loads.
 - **Non-members.** A user with no membership in a group answers `source=none`, as `permissions().check` does. `defaultRoleForNonMembers(true)` checks such users against the group's default role instead; that is off by default because it then differs from the server's answer.
-- **Repeated checks.** `mirror.checker(userId, groupId)` returns a `MemberChecker` that gives the same answers as `check` but reuses the member's compiled overrides; `grantedKeys()` lists the keys that resolve to allowed.
+- **Repeated checks.** `mirror.checker(userId, groupId)` returns a `MemberChecker` that gives the same answers as `check` but reuses the member's compiled overrides; `grantedKeys()` lists the keys that resolve to allowed. `mirror.checker(userId, groupId, context)` binds the checker to a [context](#contexts).
+- **Contexts.** `check`, `can` and `checker` take an optional `Context`; without one only global entries apply. Contextual entries and overrides reload with their role graph and member access, on `role.updated` and `member.updated`. The inheritance comes from `contextInheritance(...)` (see [Inheritance in the mirror](#inheritance-in-the-mirror)).
 - **Reads.** `bans()`, `sanctions(userId)`, `sanctionsAll()`, `trackedMembers(groupId)`, `access(userId, groupId)` (metadata included), and stream health: `streamState()`, `isLive()`, `lastEventAt()`, `position()`.
 
 ## WriteQueue

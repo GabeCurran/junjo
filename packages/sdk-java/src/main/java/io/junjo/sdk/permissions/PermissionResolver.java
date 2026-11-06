@@ -1,5 +1,6 @@
 package io.junjo.sdk.permissions;
 
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.MemberAccess;
 import io.junjo.sdk.model.MemberPermissionOverride;
 import io.junjo.sdk.model.MemberStatus;
@@ -27,22 +28,35 @@ import java.util.Set;
  * Local permission resolution, the same algorithm the server runs and held to the same shared
  * conformance vectors. Pure: no I/O, no shared mutable state, safe from any thread.
  *
+ * <p>An entry applies to a check when its key is a candidate for the permission and its context
+ * applies: a global entry always applies, and an entry with context {@code E} applies when, for
+ * every {@code (k, v)} in {@code E}, the check's context {@code C} has {@code k} and {@code v} is
+ * in the inheritance chain of {@code C[k]} (see {@link ContextInheritance#chain}). Its context
+ * score is the number of keys in {@code E} and the sum of their chain distances; a global entry
+ * scores zero on both.
+ *
  * <p>Precedence, applied in order:
  * <ol>
  *   <li>Layer. The member's own overrides, then the roles held directly, then their parents, then
  *       grandparents. A role reachable through several paths sits at its shortest distance. The
- *       first layer with any matching entry decides.
- *   <li>Specificity within that layer: the exact key beats the longest matching wildcard, down to
- *       the bare wildcard.
- *   <li>Deny wins between entries of equal layer and specificity. Among equal entries the role
- *       reported is the one with the highest priority, then the greatest id.
+ *       first layer with any applicable entry decides.
+ *   <li>Context within that layer: more matched keys win, then the smaller distance sum.
+ *   <li>Specificity among the entries with the best context score: the exact key beats the
+ *       longest matching wildcard, down to the bare wildcard.
+ *   <li>Deny wins between the entries that remain. Among equal entries the role reported is the
+ *       one with the highest priority, then the greatest id.
  * </ol>
+ *
+ * <p>The result's context is the deciding entry's; when several entries of the deciding value
+ * tie, the one with the smallest {@link Context#canonicalKey()} is reported. A check with the
+ * global context sees only global entries.
  *
  * <p>The mode only changes key matching. Case folding in {@code nodes} mode is ASCII-only (A-Z to
  * a-z) and independent of the default locale. It deliberately does not use
  * {@link String#toLowerCase(java.util.Locale)}: even under {@code Locale.ROOT} that folds some
  * non-ASCII characters (KELVIN SIGN U+212A) to ASCII letters, which would let a check match a
- * stored key that the server, folding ASCII only, does not match.
+ * stored key that the server, folding ASCII only, does not match. Context values are folded the
+ * same way in every mode.
  */
 public final class PermissionResolver {
     /** Bounds the role-parent walk; writes are cycle-checked, so this only guards corrupt data. */
@@ -55,13 +69,22 @@ public final class PermissionResolver {
     /**
      * A role as the resolver sees it.
      *
-     * @param entries normalized key to grant (true) or deny (false)
+     * @param entries the global entries, normalized key to grant (true) or deny (false)
+     * @param contextEntries the entries limited to a context, keys normalized; each context is
+     *     non-global
      */
-    public record ResolverRole(long priority, Map<String, Boolean> entries, List<String> parents) {
+    public record ResolverRole(
+            long priority, Map<String, Boolean> entries, List<PermissionEntry> contextEntries, List<String> parents) {
         /** Copies the collections. */
         public ResolverRole {
             entries = Map.copyOf(entries);
+            contextEntries = List.copyOf(contextEntries);
             parents = List.copyOf(parents);
+        }
+
+        /** A role with global entries only. */
+        public ResolverRole(long priority, Map<String, Boolean> entries, List<String> parents) {
+            this(priority, entries, List.of(), parents);
         }
     }
 
@@ -132,10 +155,11 @@ public final class PermissionResolver {
     }
 
     /**
-     * Resolves one active member's check from overrides and roles. Membership and status gating
-     * are the caller's job. Answers {@link PermissionSource#DEFAULT} when nothing matches.
+     * Resolves one active member's check from global overrides and roles, with no context: only
+     * global entries apply. Membership and status gating are the caller's job. Answers
+     * {@link PermissionSource#DEFAULT} when nothing matches.
      *
-     * @param overrides the member's overrides, normalized key to value
+     * @param overrides the member's global overrides, normalized key to value
      * @param roles every role of the group by id, entries normalized
      */
     public static PermissionCheckResult resolve(
@@ -144,12 +168,57 @@ public final class PermissionResolver {
             List<String> directRoleIds,
             Map<String, ResolverRole> roles,
             String permission) {
+        return resolve(mode, overrides, List.of(), directRoleIds, roles, permission, Map.of());
+    }
+
+    /**
+     * Resolves one active member's check in a context. Membership and status gating are the
+     * caller's job. Answers {@link PermissionSource#DEFAULT} when nothing matches.
+     *
+     * @param overrides the member's global overrides, normalized key to value
+     * @param contextOverrides the member's contextual overrides, keys normalized
+     * @param roles every role of the group by id, entries normalized
+     * @param context the check's context
+     * @param inheritance the game's context inheritance
+     */
+    public static PermissionCheckResult resolve(
+            PermissionMode mode,
+            Map<String, Boolean> overrides,
+            List<PermissionEntry> contextOverrides,
+            List<String> directRoleIds,
+            Map<String, ResolverRole> roles,
+            String permission,
+            Context context,
+            ContextInheritance inheritance) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(inheritance, "inheritance");
+        return resolve(mode, overrides, contextOverrides, directRoleIds, roles, permission,
+                inheritance.chains(context));
+    }
+
+    /**
+     * As {@link #resolve(PermissionMode, Map, List, List, Map, String, Context, ContextInheritance)}
+     * with the check context's chains already computed by {@link ContextInheritance#chains}, for a
+     * caller that checks many permissions in one context.
+     */
+    public static PermissionCheckResult resolve(
+            PermissionMode mode,
+            Map<String, Boolean> overrides,
+            List<PermissionEntry> contextOverrides,
+            List<String> directRoleIds,
+            Map<String, ResolverRole> roles,
+            String permission,
+            Map<String, Map<String, Integer>> chains) {
         Objects.requireNonNull(permission, "permission");
         List<String> candidates = candidateKeys(mode, permission);
+        Map<String, Integer> rankOf = new HashMap<>();
+        for (int i = 0; i < candidates.size(); i++) rankOf.put(candidates.get(i), i);
 
-        int overrideRank = bestCandidate(overrides, candidates);
-        if (overrideRank != -1) {
-            return PermissionCheckResult.of(overrides.get(candidates.get(overrideRank)), PermissionSource.OVERRIDE);
+        SourceBest own = sourceBest(overrides, contextOverrides, candidates, rankOf, chains);
+        if (own != null) {
+            boolean allowed = own.deny == null;
+            return new PermissionCheckResult(allowed, PermissionSource.OVERRIDE, null, null,
+                    allowed ? own.grant : own.deny);
         }
 
         Set<String> visited = new HashSet<>();
@@ -160,34 +229,28 @@ public final class PermissionResolver {
         for (int depth = 0; !layer.isEmpty() && depth <= MAX_ROLE_DEPTH; depth++) {
             visited.addAll(layer);
 
-            int rank = -1;
+            List<LayerHit> hits = new ArrayList<>();
+            Score top = null;
             for (String id : layer) {
-                int r = bestCandidate(roles.get(id).entries(), candidates);
-                if (r != -1 && (rank == -1 || r < rank)) rank = r;
+                ResolverRole role = roles.get(id);
+                SourceBest best = sourceBest(role.entries(), role.contextEntries(), candidates, rankOf, chains);
+                if (best == null) continue;
+                hits.add(new LayerHit(id, role.priority(), best));
+                if (top == null || best.score.compareTo(top) < 0) top = best.score;
             }
 
-            if (rank != -1) {
-                String key = candidates.get(rank);
-                String denier = null;
-                long denierPriority = 0;
-                String granter = null;
-                long granterPriority = 0;
-                for (String id : layer) {
-                    ResolverRole role = roles.get(id);
-                    Boolean value = role.entries().get(key);
-                    if (value == null) continue;
-                    if (!value) {
-                        if (denier == null || outranks(id, role.priority(), denier, denierPriority)) {
-                            denier = id;
-                            denierPriority = role.priority();
-                        }
-                    } else if (granter == null || outranks(id, role.priority(), granter, granterPriority)) {
-                        granter = id;
-                        granterPriority = role.priority();
-                    }
+            if (top != null) {
+                LayerHit denier = null;
+                LayerHit granter = null;
+                for (LayerHit hit : hits) {
+                    if (hit.best.score.compareTo(top) != 0) continue;
+                    if (hit.best.deny != null && (denier == null || outranks(hit, denier))) denier = hit;
+                    if (hit.best.grant != null && (granter == null || outranks(hit, granter))) granter = hit;
                 }
-                String decider = denier != null ? denier : granter;
-                return new PermissionCheckResult(denier == null, PermissionSource.ROLE, decider, null);
+                if (denier != null) {
+                    return new PermissionCheckResult(false, PermissionSource.ROLE, denier.id, null, denier.best.deny);
+                }
+                return new PermissionCheckResult(true, PermissionSource.ROLE, granter.id, null, granter.best.grant);
             }
 
             LinkedHashSet<String> next = new LinkedHashSet<>();
@@ -201,17 +264,96 @@ public final class PermissionResolver {
         return PermissionCheckResult.of(false, PermissionSource.DEFAULT);
     }
 
-    private static int bestCandidate(Map<String, Boolean> entries, List<String> candidates) {
-        for (int i = 0; i < candidates.size(); i++) {
-            if (entries.containsKey(candidates.get(i))) return i;
+    // An applicable entry's place in the precedence: context keys matched, chain distance sum,
+    // specificity rank. The smaller compares as the better.
+    private record Score(int keys, int distance, int rank) implements Comparable<Score> {
+        @Override
+        public int compareTo(Score o) {
+            if (keys != o.keys) return Integer.compare(o.keys, keys);
+            if (distance != o.distance) return Integer.compare(distance, o.distance);
+            return Integer.compare(rank, o.rank);
         }
-        return -1;
+    }
+
+    // The best-scoring applicable entries of one role, or of the overrides. deny and grant are null
+    // when no entry of that value has the best score; otherwise they hold the context to report for
+    // it, the smallest canonical key when several qualify.
+    private static final class SourceBest {
+        Score score;
+        Context deny;
+        Context grant;
+
+        SourceBest(Score score) {
+            this.score = score;
+        }
+    }
+
+    private record LayerHit(String id, long priority, SourceBest best) {}
+
+    private static SourceBest sourceBest(
+            Map<String, Boolean> global,
+            List<PermissionEntry> contextual,
+            List<String> candidates,
+            Map<String, Integer> rankOf,
+            Map<String, Map<String, Integer>> chains) {
+        SourceBest best = null;
+        // Global entries all score zero on context, so only the most specific one matters.
+        for (int i = 0; i < candidates.size(); i++) {
+            Boolean value = global.get(candidates.get(i));
+            if (value == null) continue;
+            best = consider(best, new Score(0, 0, i), value, Context.GLOBAL);
+            break;
+        }
+        if (!contextual.isEmpty() && !chains.isEmpty()) {
+            for (PermissionEntry entry : contextual) {
+                Integer rank = rankOf.get(entry.permission());
+                if (rank == null) continue;
+                Score score = contextScore(entry.context(), chains, rank);
+                if (score == null) continue;
+                best = consider(best, score, entry.value(), entry.context());
+            }
+        }
+        return best;
+    }
+
+    private static SourceBest consider(SourceBest best, Score score, boolean value, Context context) {
+        if (best == null) {
+            best = new SourceBest(score);
+        } else {
+            int order = score.compareTo(best.score);
+            if (order > 0) return best;
+            if (order < 0) {
+                best.score = score;
+                best.deny = null;
+                best.grant = null;
+            }
+        }
+        Context held = value ? best.grant : best.deny;
+        if (held == null || context.canonicalKey().compareTo(held.canonicalKey()) < 0) {
+            if (value) best.grant = context;
+            else best.deny = context;
+        }
+        return best;
+    }
+
+    // Null when the entry's context does not apply to the check.
+    private static Score contextScore(Context context, Map<String, Map<String, Integer>> chains, int rank) {
+        int keys = 0;
+        int distance = 0;
+        for (Map.Entry<String, String> e : context.values().entrySet()) {
+            Map<String, Integer> chain = chains.get(e.getKey());
+            Integer d = chain == null ? null : chain.get(e.getValue());
+            if (d == null) return null;
+            keys++;
+            distance += d;
+        }
+        return new Score(keys, distance, rank);
     }
 
     // Higher priority first, then the greater role id (UTF-16 code unit order, as the server).
-    private static boolean outranks(String aId, long aPriority, String bId, long bPriority) {
-        if (aPriority != bPriority) return aPriority > bPriority;
-        return aId.compareTo(bId) > 0;
+    private static boolean outranks(LayerHit a, LayerHit b) {
+        if (a.priority != b.priority) return a.priority > b.priority;
+        return a.id.compareTo(b.id) > 0;
     }
 
     /**
@@ -258,41 +400,126 @@ public final class PermissionResolver {
     }
 
     /**
-     * Prepares a role graph for repeated checks: entries normalized once, roles indexed by id. The
-     * result is immutable and thread-safe.
+     * Prepares a role graph for repeated checks without context inheritance; see
+     * {@link #compile(RoleGraph, ContextInheritance)}.
      */
     public static GroupResolver compile(RoleGraph graph) {
+        return compile(graph, ContextInheritance.NONE);
+    }
+
+    /**
+     * Prepares a role graph for repeated checks: entries normalized once and split into global and
+     * contextual, roles indexed by id, the game's context inheritance bound. The result is
+     * immutable and thread-safe.
+     */
+    public static GroupResolver compile(RoleGraph graph, ContextInheritance inheritance) {
+        Objects.requireNonNull(inheritance, "inheritance");
         Map<String, ResolverRole> roles = new LinkedHashMap<>();
         for (Role r : graph.roles()) {
             Map<String, Boolean> entries = new HashMap<>();
+            List<PermissionEntry> contextual = new ArrayList<>();
             for (PermissionEntry e : r.entries()) {
-                entries.put(normalizeKey(graph.mode(), e.permission()), e.value());
+                String key = normalizeKey(graph.mode(), e.permission());
+                if (e.context().isGlobal()) entries.put(key, e.value());
+                else contextual.add(new PermissionEntry(key, e.value(), e.context()));
             }
-            roles.put(r.id(), new ResolverRole(r.priority(), entries, r.parents()));
+            roles.put(r.id(), new ResolverRole(r.priority(), entries, contextual, r.parents()));
         }
-        return new GroupResolver(graph.groupId(), graph.mode(), Collections.unmodifiableMap(roles));
+        return new GroupResolver(graph.groupId(), graph.mode(), Collections.unmodifiableMap(roles), inheritance);
     }
 
-    /** A compiled, immutable resolver for one group's role graph. */
-    public record GroupResolver(String groupId, PermissionMode mode, Map<String, ResolverRole> roles) {
-        /**
-         * Checks a member with the server's status gate: a member who is not active answers
-         * {@code allowed=false, source=none}.
-         */
-        public PermissionCheckResult check(MemberAccess access, String permission) {
-            if (access.status() != MemberStatus.ACTIVE) return PermissionCheckResult.of(false, PermissionSource.NONE);
-            Map<String, Boolean> overrides = new HashMap<>();
-            for (MemberPermissionOverride o : access.overrides()) {
-                overrides.put(normalizeKey(mode, o.permission()), o.grant());
-            }
-            return resolve(mode, overrides, access.roleIds(), roles, permission);
+    /**
+     * A member's overrides normalized for the resolver: global ones by key, contextual ones as a
+     * list with their keys normalized.
+     */
+    public record CompiledOverrides(Map<String, Boolean> global, List<PermissionEntry> contextual) {
+        /** No overrides. */
+        public static final CompiledOverrides NONE = new CompiledOverrides(Map.of(), List.of());
+
+        /** Copies the collections. */
+        public CompiledOverrides {
+            global = Map.copyOf(global);
+            contextual = List.copyOf(contextual);
         }
 
-        /** Checks an active member from raw inputs; override keys are normalized here. */
+        /** Normalizes a member's overrides in the mode. */
+        public static CompiledOverrides of(PermissionMode mode, List<MemberPermissionOverride> overrides) {
+            if (overrides.isEmpty()) return NONE;
+            Map<String, Boolean> global = new HashMap<>();
+            List<PermissionEntry> contextual = new ArrayList<>();
+            for (MemberPermissionOverride o : overrides) {
+                String key = normalizeKey(mode, o.permission());
+                if (o.context().isGlobal()) global.put(key, o.grant());
+                else contextual.add(new PermissionEntry(key, o.grant(), o.context()));
+            }
+            return new CompiledOverrides(global, contextual);
+        }
+
+        /** Normalizes raw override entries in the mode. */
+        public static CompiledOverrides ofEntries(PermissionMode mode, List<PermissionEntry> overrides) {
+            if (overrides.isEmpty()) return NONE;
+            Map<String, Boolean> global = new HashMap<>();
+            List<PermissionEntry> contextual = new ArrayList<>();
+            for (PermissionEntry e : overrides) {
+                String key = normalizeKey(mode, e.permission());
+                if (e.context().isGlobal()) global.put(key, e.value());
+                else contextual.add(new PermissionEntry(key, e.value(), e.context()));
+            }
+            return new CompiledOverrides(global, contextual);
+        }
+    }
+
+    /**
+     * A compiled, immutable resolver for one group's role graph.
+     *
+     * @param inheritance the game's context inheritance the checks resolve with
+     */
+    public record GroupResolver(
+            String groupId, PermissionMode mode, Map<String, ResolverRole> roles, ContextInheritance inheritance) {
+        /** A null inheritance reads as {@link ContextInheritance#NONE}. */
+        public GroupResolver {
+            if (inheritance == null) inheritance = ContextInheritance.NONE;
+        }
+
+        /** A resolver without context inheritance. */
+        public GroupResolver(String groupId, PermissionMode mode, Map<String, ResolverRole> roles) {
+            this(groupId, mode, roles, ContextInheritance.NONE);
+        }
+
+        /**
+         * Checks a member with no context, with the server's status gate: a member who is not
+         * active answers {@code allowed=false, source=none}.
+         */
+        public PermissionCheckResult check(MemberAccess access, String permission) {
+            return check(access, permission, Context.GLOBAL);
+        }
+
+        /**
+         * Checks a member in a context, with the server's status gate: a member who is not active
+         * answers {@code allowed=false, source=none}.
+         */
+        public PermissionCheckResult check(MemberAccess access, String permission, Context context) {
+            if (access.status() != MemberStatus.ACTIVE) return PermissionCheckResult.of(false, PermissionSource.NONE);
+            CompiledOverrides o = CompiledOverrides.of(mode, access.overrides());
+            return resolve(mode, o.global(), o.contextual(), access.roleIds(), roles, permission, context, inheritance);
+        }
+
+        /** Checks an active member from raw inputs with no context; override keys are normalized here. */
         public PermissionCheckResult check(List<String> roleIds, Map<String, Boolean> overrides, String permission) {
             Map<String, Boolean> normalized = new HashMap<>();
             overrides.forEach((k, v) -> normalized.put(normalizeKey(mode, k), v));
             return resolve(mode, normalized, roleIds, roles, permission);
+        }
+
+        /**
+         * Checks an active member from raw inputs in a context; override keys are normalized here.
+         *
+         * @param overrides the member's overrides, global and contextual
+         */
+        public PermissionCheckResult check(
+                List<String> roleIds, List<PermissionEntry> overrides, String permission, Context context) {
+            CompiledOverrides o = CompiledOverrides.ofEntries(mode, overrides);
+            return resolve(mode, o.global(), o.contextual(), roleIds, roles, permission, context, inheritance);
         }
     }
 }
