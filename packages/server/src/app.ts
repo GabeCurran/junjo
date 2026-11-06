@@ -5,7 +5,9 @@ import { withAuditAttribution } from "./auditAttribution.js";
 import { prisma as defaultPrisma } from "./db.js";
 import { eventHub as defaultHub } from "./eventHub.js";
 import { withEventLog } from "./eventLog.js";
+import { buildGameRoutes, registerGameRoutes } from "./gameRoutes.js";
 import { idempotencyMiddleware } from "./idempotency.js";
+import { adminAsGameMiddleware } from "./middleware/adminAsGame.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
@@ -59,63 +61,9 @@ import {
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
 } from "./routes/admin.js";
-import { bansRouter, getUserModerationHandler } from "./routes/bans.js";
-import { subscribeEventsHandler } from "./routes/events.js";
-import { exportHandler } from "./routes/export.js";
-import {
-  createFriendTagHandler,
-  deleteFriendTagHandler,
-  listFriendTagsHandler,
-  setFriendTagsHandler,
-  updateFriendTagHandler,
-} from "./routes/friendTags.js";
-import {
-  acceptFriendRequestHandler,
-  addBlockHandler,
-  cancelFriendRequestHandler,
-  declineFriendRequestHandler,
-  getRelationshipHandler,
-  listBlocksHandler,
-  listFriendRequestsHandler,
-  listFriendsHandler,
-  removeBlockHandler,
-  sendFriendRequestHandler,
-  unfriendHandler,
-} from "./routes/friends.js";
-import { type GameStreamOptions, gameEventsHandlers } from "./routes/gameEvents.js";
-import { groupsRouter } from "./routes/groups.js";
+import type { GameStreamOptions } from "./routes/gameEvents.js";
 import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
-import {
-  findIdentitiesByNameHandler,
-  identityLinkHandlers,
-  listLinkedIdentitiesHandler,
-  setDisplayNameHandler,
-} from "./routes/identities.js";
-import {
-  acceptInvitationByCodeHandler,
-  declineInvitationByCodeHandler,
-  deleteInvitationByCodeHandler,
-  getInvitationByCodeHandler,
-} from "./routes/invitations.js";
-import { getMemberByIdHandler, listMembersForUserHandler } from "./routes/members.js";
-import { checkPermissionBatchHandler, checkPermissionHandler } from "./routes/permissions.js";
-import {
-  deleteRoleByIdHandler,
-  getRoleByIdHandler,
-  grantPermissionHandler,
-  replaceRoleEntriesHandler,
-  revokePermissionHandler,
-  setRoleParentsHandler,
-  updateRoleByIdHandler,
-} from "./routes/roles.js";
-import {
-  listUserSanctionHistoryHandler,
-  listUserSanctionsHandler,
-  sanctionsRouter,
-} from "./routes/sanctions.js";
-import { listFriendSuggestionsHandler } from "./routes/suggestions.js";
-import { getUserVisibilityHandler, setUserVisibilityHandler } from "./routes/visibility.js";
-import { webhooksRouter } from "./routes/webhooks.js";
+import { getInvitationByCodeHandler } from "./routes/invitations.js";
 
 export interface CreateAppOptions {
   prisma?: PrismaClient;
@@ -177,6 +125,13 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     opts.rateLimit instanceof Object && "consume" in opts.rateLimit
       ? (opts.rateLimit as RateLimiter)
       : buildRateLimiter(opts.rateLimit ?? undefined);
+
+  // Built once so both mounts below share the per-game handlers' state.
+  const gameRoutes = buildGameRoutes(prisma, hub, {
+    events: opts.events,
+    identityLinks: opts.identityLinks,
+    webhooks: opts.webhooks,
+  });
 
   const app = new Hono();
   app.use("*", requestIdMiddleware());
@@ -438,65 +393,28 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     adminAuthMiddleware(opts.adminToken),
     getPermissionUsageHandler(prisma),
   );
+  // Every per-game route for any game, authenticated by the admin token
+  // instead of a key for that game. The admin token already reads and
+  // writes every game through the routes above, so this grants nothing
+  // new. Registered before the per-game `apiKeyMiddleware` for the same
+  // reason as the admin routes.
+  const asGame = new Hono();
+  asGame.use("*", adminAuthMiddleware(opts.adminToken));
+  asGame.use("*", adminAsGameMiddleware(prisma));
+  // Requests here carry no API key, so the idempotency middleware only
+  // validates an Idempotency-Key header and then runs the request without
+  // claiming or replaying a record: a retried write runs again.
+  asGame.use("*", idempotencyMiddleware(prisma, { now: opts.idempotency?.now }));
+  registerGameRoutes(asGame, gameRoutes, { keyBound: false });
+  // Ends the chain for unmatched paths, including the key-bound routes
+  // this mount leaves out, so they answer 404 instead of reaching the
+  // per-game key check registered later on `v1`.
+  asGame.all("*", (c) => c.notFound());
+  v1.route("/admin/games/:gameId/as-game", asGame);
   v1.use("*", apiKeyMiddleware(store));
   // Per-key Idempotency-Key handling for every mutating route below.
   v1.use("*", idempotencyMiddleware(prisma, { now: opts.idempotency?.now }));
-  v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
-  v1.route("/groups", groupsRouter(prisma, hub));
-  v1.route("/bans", bansRouter(prisma, hub));
-  v1.route("/sanctions", sanctionsRouter(prisma, hub));
-  v1.get("/export", exportHandler(prisma));
-  v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
-  v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma, hub));
-  v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
-  v1.get("/members/:id", getMemberByIdHandler(prisma));
-  v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
-  v1.get("/users/:userId/identities", listLinkedIdentitiesHandler(prisma));
-  v1.get("/users/:userId/moderation", getUserModerationHandler(prisma));
-  v1.get("/users/:userId/sanctions", listUserSanctionsHandler(prisma));
-  v1.get("/users/:userId/sanctions/history", listUserSanctionHistoryHandler(prisma));
-  v1.put("/users/:userId/display-name", setDisplayNameHandler(prisma, hub));
-  v1.get("/identities/by-name", findIdentitiesByNameHandler(prisma));
-  const identityLinks = identityLinkHandlers(prisma, { hub, now: opts.identityLinks?.now });
-  v1.post("/users/:userId/link-codes", identityLinks.issue);
-  v1.post("/link-codes/redeem", identityLinks.redeem);
-  v1.post("/users/:userId/unlink", identityLinks.unlink);
-  v1.get("/roles/:id", getRoleByIdHandler(prisma));
-  v1.patch("/roles/:id", updateRoleByIdHandler(prisma, hub));
-  v1.delete("/roles/:id", deleteRoleByIdHandler(prisma, hub));
-  v1.post("/roles/:id/permissions", grantPermissionHandler(prisma, hub));
-  v1.delete("/roles/:id/permissions/:permission", revokePermissionHandler(prisma, hub));
-  v1.put("/roles/:id/entries", replaceRoleEntriesHandler(prisma, hub));
-  v1.put("/roles/:id/parents", setRoleParentsHandler(prisma, hub));
-  v1.get("/permissions/check", checkPermissionHandler(prisma));
-  v1.post("/permissions/check-batch", checkPermissionBatchHandler(prisma));
-  v1.post("/users/:userId/friend-requests", sendFriendRequestHandler(prisma, hub));
-  v1.get("/users/:userId/friend-requests", listFriendRequestsHandler(prisma));
-  v1.post("/friend-requests/:id/accept", acceptFriendRequestHandler(prisma, hub));
-  v1.post("/friend-requests/:id/decline", declineFriendRequestHandler(prisma, hub));
-  v1.delete("/friend-requests/:id", cancelFriendRequestHandler(prisma, hub));
-  v1.get("/users/:userId/friends", listFriendsHandler(prisma));
-  v1.get("/users/:viewerUserId/friends/:otherUserId/relationship", getRelationshipHandler(prisma));
-  v1.delete("/users/:userId/friends/:otherUserId", unfriendHandler(prisma, hub));
-  v1.post("/users/:userId/blocks", addBlockHandler(prisma, hub));
-  v1.delete("/users/:userId/blocks/:otherUserId", removeBlockHandler(prisma, hub));
-  v1.get("/users/:userId/blocks", listBlocksHandler(prisma));
-  v1.get("/users/:userId/friend-tags", listFriendTagsHandler(prisma));
-  v1.post("/users/:userId/friend-tags", createFriendTagHandler(prisma));
-  v1.patch("/friend-tags/:id", updateFriendTagHandler(prisma));
-  v1.delete("/friend-tags/:id", deleteFriendTagHandler(prisma));
-  v1.put("/users/:userId/friends/:otherUserId/tags", setFriendTagsHandler(prisma));
-  v1.get("/users/:userId/visibility", getUserVisibilityHandler(prisma));
-  v1.patch("/users/:userId/visibility", setUserVisibilityHandler(prisma));
-  v1.get("/users/:userId/friends/suggestions", listFriendSuggestionsHandler(prisma));
-  const gameEvents = gameEventsHandlers(prisma, { ...opts.events, hub });
-  v1.get("/events", gameEvents.subscribe);
-  v1.get("/events/position", gameEvents.position);
-  v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
-  v1.route(
-    "/webhooks",
-    webhooksRouter(prisma, { allowPrivateHosts: opts.webhooks?.allowPrivateHosts }),
-  );
+  registerGameRoutes(v1, gameRoutes, { keyBound: true });
   app.route("/v1", v1);
 
   return app;
