@@ -72,21 +72,43 @@ export class AdminDisabledError extends Error {
   }
 }
 
+// Cache tags for the few reads that keep a revalidate window. Server
+// actions that write invalidate them (see lib/revalidate.ts), so a
+// change shows on the next render instead of after the window.
+export const ADMIN_GAMES_TAG = "admin:games";
+
+export function adminGameTag(gameId: string): string {
+  return `admin:game:${gameId}`;
+}
+
+// How long the cached reads (games list, permission catalog, config)
+// may be served from Next's data cache, in seconds.
+const SHORT_REVALIDATE_SECONDS = 30;
+
 interface FetchOptions {
-  // Next.js revalidate window in seconds. Defaults to 60s; overridable so a
-  // future "force refresh" action can pass `revalidate: 0`.
+  // Seconds the response may be served from Next's data cache. Omitted
+  // or 0 fetches fresh on every render; identical requests within one
+  // render are still deduplicated by Next.
   revalidate?: number;
   // Init-time signal forwarded to the platform fetch. Optional.
   signal?: AbortSignal;
 }
 
-async function adminFetch<T>(path: string, opts: FetchOptions = {}): Promise<T> {
+interface CachedFetchOptions extends FetchOptions {
+  // Data cache tags; they apply only while `revalidate` is above 0.
+  tags?: string[];
+}
+
+async function adminFetch<T>(path: string, opts: CachedFetchOptions = {}): Promise<T> {
   const token = getAdminToken();
   if (!token) throw new AdminDisabledError();
   const baseUrl = getJunjoBaseUrl();
+  const revalidate = opts.revalidate ?? 0;
   const res = await fetch(`${baseUrl}${path}`, {
     headers: { authorization: `Bearer ${token}` },
-    next: { revalidate: opts.revalidate ?? 60 },
+    ...(revalidate > 0
+      ? { next: { revalidate, tags: opts.tags ?? [] } }
+      : { cache: "no-store" as const }),
     signal: opts.signal,
   });
   if (!res.ok) {
@@ -164,8 +186,13 @@ async function adminDelete(path: string, opts: MutationOptions = {}): Promise<vo
   }
 }
 
+// Cached briefly: every dashboard render reads it for the game switcher.
 export function fetchAdminGames(opts?: FetchOptions): Promise<AdminGameList> {
-  return adminFetch<AdminGameList>("/v1/admin/games", opts);
+  return adminFetch<AdminGameList>("/v1/admin/games", {
+    revalidate: SHORT_REVALIDATE_SECONDS,
+    tags: [ADMIN_GAMES_TAG],
+    ...opts,
+  });
 }
 
 export function fetchAdminGame(gameId: string, opts?: FetchOptions): Promise<AdminGame> {
@@ -230,10 +257,11 @@ export function fetchAdminGameConfig(
   gameId: string,
   opts?: FetchOptions,
 ): Promise<AdminGameConfig> {
-  // Operator config rarely changes; cache for 30s so back-to-back nav
-  // hits don't pound the server.
+  // Operator config rarely changes, so it is cached briefly; a caller
+  // that must see the stored value passes `revalidate: 0`.
   return adminFetch<AdminGameConfig>(`/v1/admin/games/${encodeURIComponent(gameId)}/config`, {
-    revalidate: 30,
+    revalidate: SHORT_REVALIDATE_SECONDS,
+    tags: [adminGameTag(gameId)],
     ...opts,
   });
 }
@@ -416,8 +444,8 @@ export function clearAdminMemberPermissionOverride(
   );
 }
 
-// Operators expect fresh state when opening the "view overrides" dialog, so
-// this helper forces `revalidate: 0`.
+// Uncached like every admin read without a revalidate window, so the
+// "view overrides" dialog always opens on the stored state.
 export function listAdminMemberPermissionOverrides(
   gameId: string,
   groupId: string,
@@ -426,7 +454,7 @@ export function listAdminMemberPermissionOverrides(
 ): Promise<AdminMemberPermissionOverride[]> {
   return adminFetch<AdminMemberPermissionOverride[]>(
     `/v1/admin/games/${encodeURIComponent(gameId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions`,
-    { ...opts, revalidate: opts?.revalidate ?? 0 },
+    opts,
   );
 }
 
@@ -521,9 +549,10 @@ export function fetchAdminGamePermissions(
   gameId: string,
   opts?: FetchOptions,
 ): Promise<AdminPermissionDef[]> {
+  // The catalog changes rarely, so it is cached briefly.
   return adminFetch<AdminPermissionDef[]>(
     `/v1/admin/games/${encodeURIComponent(gameId)}/permissions`,
-    opts,
+    { revalidate: SHORT_REVALIDATE_SECONDS, tags: [adminGameTag(gameId)], ...opts },
   );
 }
 
@@ -736,9 +765,9 @@ export function fetchAdminGamePermissionUsage(
   );
 }
 
-// All three params are required; `revalidate: 0` is forced so "Run again"
-// always hits the server (the underlying singleton permission cache still
-// bounds load to one resolver call per (gameId, groupId, userId, permission)
+// All three params are required. Uncached, so "Run again" always hits
+// the server (the underlying singleton permission cache still bounds
+// load to one resolver call per (gameId, groupId, userId, permission)
 // per 60 seconds).
 export function fetchAdminPermissionCheck(
   gameId: string,
@@ -754,7 +783,7 @@ export function fetchAdminPermissionCheck(
   }
   return adminFetch<AdminPermissionCheckResult>(
     `/v1/admin/games/${encodeURIComponent(gameId)}/permissions/check?${qs.toString()}`,
-    { ...opts, revalidate: opts?.revalidate ?? 0 },
+    opts,
   );
 }
 
@@ -773,8 +802,5 @@ export function fetchAdminGamePlayers(
   if (params.offset !== undefined) qs.set("offset", String(params.offset));
   const path = `/v1/admin/games/${encodeURIComponent(gameId)}/players`;
   const search = qs.toString();
-  return adminFetch<AdminPlayerList>(search ? `${path}?${search}` : path, {
-    revalidate: 0,
-    ...opts,
-  });
+  return adminFetch<AdminPlayerList>(search ? `${path}?${search}` : path, opts);
 }

@@ -38,6 +38,7 @@ import {
   updateAdminRole,
 } from "../../../../../../lib/admin";
 import { getInviteBaseUrl } from "../../../../../../lib/junjo";
+import { revalidateGameData } from "../../../../../../lib/revalidate";
 
 // Server Actions backing the MembersTable row actions. The four
 // `useActionState`-shaped actions back the dialogs (kick, edit notes,
@@ -48,10 +49,10 @@ import { getInviteBaseUrl } from "../../../../../../lib/junjo";
 // form submission.
 
 function refreshGroup(gameId: string, groupId: string) {
-  // Targeted revalidation. The MembersTable is rendered inside this route's
-  // Suspense boundary, so refreshing this path expires the 60s cache that
-  // `fetchAdminGroupMembers` uses on the server.
+  // Re-renders this group's page so the open tab shows the write, and
+  // drops the game's cached reads (the games list counts, the catalog).
   revalidatePath(`/games/${gameId}/groups/${groupId}`);
+  revalidateGameData(gameId);
 }
 
 function describeError(err: unknown): string {

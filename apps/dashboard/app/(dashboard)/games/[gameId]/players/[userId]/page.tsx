@@ -11,6 +11,7 @@ import type {
   UserModeration,
 } from "@junjo.io/sdk";
 import Link from "next/link";
+import { Suspense } from "react";
 
 import { ActivityLine } from "../../../../../../components/dashboard/activity-line";
 import { PageHeader } from "../../../../../../components/dashboard/page-header";
@@ -59,6 +60,9 @@ interface GroupInfo {
   roles: Map<string, AdminRole>;
 }
 
+// Null when friends are off for the game.
+type FriendsView = { items: Friendship[]; more: boolean } | null;
+
 async function loadGroups(gameId: string, members: Member[]): Promise<Map<string, GroupInfo>> {
   const ids = [...new Set(members.map((m) => m.groupId as string))];
   const entries = await Promise.all(
@@ -73,14 +77,23 @@ async function loadGroups(gameId: string, members: Member[]): Promise<Map<string
   return new Map(entries);
 }
 
-// Audit entries naming any of the person's ids, newest first.
-async function loadActivity(gameId: string, ids: string[]): Promise<AdminAuditEntry[]> {
+// One id's audit entries; an empty list when the request fails.
+function loadActivityFor(gameId: string, targetId: string): Promise<AdminAuditEntry[]> {
+  return fetchAdminGameAudit(gameId, { targetId, limit: 30 }, { revalidate: 0 })
+    .then((p) => p.items)
+    .catch(() => [] as AdminAuditEntry[]);
+}
+
+// Audit entries naming any of the person's ids, newest first. `started`
+// holds requests already in flight, keyed by id, so they are not sent
+// twice.
+async function loadActivity(
+  gameId: string,
+  ids: string[],
+  started: Map<string, Promise<AdminAuditEntry[]>>,
+): Promise<AdminAuditEntry[]> {
   const pages = await Promise.all(
-    ids.map((targetId) =>
-      fetchAdminGameAudit(gameId, { targetId, limit: 30 }, { revalidate: 0 })
-        .then((p) => p.items)
-        .catch(() => [] as AdminAuditEntry[]),
-    ),
+    ids.map((targetId) => started.get(targetId) ?? loadActivityFor(gameId, targetId)),
   );
   const byId = new Map<string, AdminAuditEntry>();
   for (const e of pages.flat()) byId.set(e.id, e);
@@ -100,6 +113,29 @@ function Figure({ value, label }: { value: string; label: string }) {
     <div className="flex flex-col-reverse">
       <dt className="mt-1 text-sm text-muted-foreground">{label}</dt>
       <dd className="font-condensed text-2xl font-semibold leading-none">{value}</dd>
+    </div>
+  );
+}
+
+// A figure whose value is still loading: the label, over a muted block
+// the height of the value.
+function FigurePlaceholder({ label }: { label: string }) {
+  return (
+    <div className="flex flex-col-reverse" aria-hidden>
+      <dt className="mt-1 text-sm text-muted-foreground">{label}</dt>
+      <dd className="h-6 w-16 animate-pulse rounded bg-muted" />
+    </div>
+  );
+}
+
+// A section body that is still loading: a few muted rows.
+function SectionPlaceholder({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="flex flex-col gap-3 py-1" aria-hidden>
+      {Array.from({ length: rows }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: placeholder rows never reorder.
+        <div key={i} className="h-4 w-full max-w-md animate-pulse rounded bg-muted" />
+      ))}
     </div>
   );
 }
@@ -145,75 +181,15 @@ function historyRows(
   return rows.sort((a, b) => b.at.getTime() - a.at.getTime());
 }
 
-export default async function PlayerPage(props: PageProps) {
-  const params = await props.params;
-  const gameId = params.gameId;
-  const userId = decodeURIComponent(params.userId) as UserId;
-
-  let identities: LinkedIdentity[];
-  let moderation: UserModeration;
-  let members: Member[];
-  let banHistory: BanHistoryEntry[];
-  let sanctionHistory: SanctionHistoryEntry[];
-  try {
-    const junjo = gameClient(gameId);
-    [identities, moderation, members, banHistory, sanctionHistory] = await Promise.all([
-      junjo.identities.list(userId),
-      junjo.bans.moderation(userId),
-      junjo.members.listForUser(userId, { gameId: gameId as never }),
-      junjo.bans.history(userId, { limit: 50 }).then((p) => p.items),
-      junjo.sanctions.history(userId, { limit: 50 }).then((p) => p.items),
-    ]);
-  } catch (err) {
-    return (
-      <>
-        <PageHeader title={userId} />
-        <main className="flex-1 px-6 pb-12 pt-4">
-          <Notice
-            title={
-              err instanceof AdminDisabledError
-                ? "Cross-game access is off"
-                : "Could not load this player"
-            }
-            body={
-              err instanceof AdminDisabledError
-                ? "Set JUNJO_ADMIN_TOKEN on the dashboard and the server to open players."
-                : err instanceof Error
-                  ? err.message
-                  : "The player request failed."
-            }
-          />
-        </main>
-      </>
-    );
-  }
-
-  const junjo = gameClient(gameId);
-  const allIds = identities.length > 0 ? identities.map((i) => i.userId as string) : [userId];
-  const [groups, accessList, activity, friends] = await Promise.all([
-    loadGroups(gameId, members),
-    Promise.all(
-      members.map((m) => junjo.members.getAccess(m.groupId as GroupId, m.userId).catch(() => null)),
-    ),
-    loadActivity(gameId, allIds),
-    // Null when friends are off for the game.
-    junjo.friends
-      .list(userId, { limit: 100 })
-      .then((p) => ({ items: p.items, more: p.nextCursor !== null }))
-      .catch(() => null as { items: Friendship[]; more: boolean } | null),
-  ]);
+function membershipViews(
+  members: Member[],
+  groups: Map<string, GroupInfo>,
+  accessList: (MemberAccess | null)[],
+  base: string,
+): MembershipView[] {
   const accessByGroup = new Map<string, MemberAccess>();
   for (const a of accessList) if (a) accessByGroup.set(a.groupId as string, a);
-  const self = identities.find((i) => i.userId === userId);
-  const name = self?.displayName ?? identities.find((i) => i.displayName)?.displayName ?? null;
-  const history = historyRows(banHistory, sanctionHistory, groups);
-  const base = `/games/${encodeURIComponent(gameId)}`;
-  const firstSeen = identities.reduce<Date | null>(
-    (min, i) => (min === null || i.linkedAt < min ? i.linkedAt : min),
-    null,
-  );
-  const activeGroups = members.filter((m) => m.status === "active").length;
-  const memberships: MembershipView[] = members
+  return members
     .slice()
     .sort((a, b) => (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1))
     .map((m) => {
@@ -245,6 +221,194 @@ export default async function PlayerPage(props: PageProps) {
         metadata: JSON.stringify(m.metadata ?? {}, null, 2),
       };
     });
+}
+
+// The sections below each await their own data, so each streams in as
+// soon as its requests settle instead of the page waiting on the slowest.
+
+async function LastActivityFigure({ activity }: { activity: Promise<AdminAuditEntry[]> }) {
+  const entries = await activity;
+  return (
+    <Figure value={entries[0] ? relativeTime(entries[0].createdAt) : "-"} label="last activity" />
+  );
+}
+
+async function FriendsFigure({ friends }: { friends: Promise<FriendsView> }) {
+  const view = await friends;
+  return (
+    <Figure
+      value={
+        view === null ? "off" : `${numberFormat.format(view.items.length)}${view.more ? "+" : ""}`
+      }
+      label="friends"
+    />
+  );
+}
+
+async function FriendsList({ friends, base }: { friends: Promise<FriendsView>; base: string }) {
+  const view = await friends;
+  if (view === null) return <Notice title="Friends are off for this game" />;
+  if (view.items.length === 0) return <Notice title="No friends yet" />;
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
+      {view.items.map((f) => (
+        <li key={f.id}>
+          <Link
+            href={`${base}/players/${encodeURIComponent(f.junjoUserId)}`}
+            className="hover:underline"
+          >
+            {f.displayName ?? <span className="font-mono text-xs">{f.junjoUserId}</span>}
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+async function GroupsList({
+  memberships,
+  gameId,
+  userId,
+}: {
+  memberships: Promise<MembershipView[]>;
+  gameId: string;
+  userId: string;
+}) {
+  const views = await memberships;
+  if (views.length === 0) return <Notice title="In no groups" />;
+  return (
+    <ul className="divide-y divide-border/60">
+      {views.map((m) => (
+        <MembershipPanel key={m.groupId} gameId={gameId} pagePlayerId={userId} m={m} />
+      ))}
+    </ul>
+  );
+}
+
+async function ActivityList({ activity }: { activity: Promise<AdminAuditEntry[]> }) {
+  const entries = await activity;
+  if (entries.length === 0) return <Notice title="No activity on record" />;
+  return (
+    <ul className="divide-y divide-border/60">
+      {entries.map((e) => (
+        <ActivityLine key={e.id} entry={e} />
+      ))}
+    </ul>
+  );
+}
+
+async function ModerationHistory({
+  bans,
+  sanctions,
+  groups,
+}: {
+  bans: BanHistoryEntry[];
+  sanctions: SanctionHistoryEntry[];
+  groups: Promise<Map<string, GroupInfo>>;
+}) {
+  // Group-scoped bans name their group, so the history waits on the
+  // group lookups.
+  const history = historyRows(bans, sanctions, await groups);
+  if (history.length === 0) return <Notice title="Nothing on record" />;
+  return (
+    <ul className="max-w-3xl divide-y divide-border/60">
+      {history.map((h) => (
+        <li key={h.key} className="flex items-baseline gap-3 py-2 text-sm">
+          <span
+            aria-hidden
+            className={`mt-1.5 h-1.5 w-1.5 shrink-0 self-start rounded-full ${
+              h.tone === "ban" ? "bg-destructive" : h.tone === "sanction" ? "bg-warn" : "bg-allow"
+            }`}
+          />
+          <p className="min-w-0 flex-1">
+            <span className="font-medium">{h.text}</span>
+            {h.detail ? <span className="text-muted-foreground">: {h.detail}</span> : null}
+          </p>
+          <time
+            dateTime={h.at.toISOString()}
+            className="shrink-0 text-xs tabular-nums text-muted-foreground"
+          >
+            {dateTimeFormat.format(h.at)}
+          </time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export default async function PlayerPage(props: PageProps) {
+  const params = await props.params;
+  const gameId = params.gameId;
+  const userId = decodeURIComponent(params.userId) as UserId;
+
+  let junjo: Junjo;
+  let identities: LinkedIdentity[];
+  let moderation: UserModeration;
+  let members: Member[];
+  let banHistory: BanHistoryEntry[];
+  let sanctionHistory: SanctionHistoryEntry[];
+  let friends: Promise<FriendsView>;
+  let ownActivity: Promise<AdminAuditEntry[]>;
+  try {
+    junjo = gameClient(gameId);
+    // Started with the first wave but not awaited by it: neither needs
+    // anything the first wave returns. Both settle to a value on failure.
+    friends = junjo.friends
+      .list(userId, { limit: 100 })
+      .then((p): FriendsView => ({ items: p.items, more: p.nextCursor !== null }))
+      .catch((): FriendsView => null);
+    ownActivity = loadActivityFor(gameId, userId);
+    [identities, moderation, members, banHistory, sanctionHistory] = await Promise.all([
+      junjo.identities.list(userId),
+      junjo.bans.moderation(userId),
+      junjo.members.listForUser(userId, { gameId: gameId as never }),
+      junjo.bans.history(userId, { limit: 50 }).then((p) => p.items),
+      junjo.sanctions.history(userId, { limit: 50 }).then((p) => p.items),
+    ]);
+  } catch (err) {
+    return (
+      <>
+        <PageHeader title={userId} />
+        <main className="flex-1 px-6 pb-12 pt-4">
+          <Notice
+            title={
+              err instanceof AdminDisabledError
+                ? "Cross-game access is off"
+                : "Could not load this player"
+            }
+            body={
+              err instanceof AdminDisabledError
+                ? "Set JUNJO_ADMIN_TOKEN on the dashboard and the server to open players."
+                : err instanceof Error
+                  ? err.message
+                  : "The player request failed."
+            }
+          />
+        </main>
+      </>
+    );
+  }
+
+  const base = `/games/${encodeURIComponent(gameId)}`;
+  const allIds = identities.length > 0 ? identities.map((i) => i.userId as string) : [userId];
+  // The second wave needs the first wave's members and ids. Each request
+  // settles to a value on failure, so these never reject.
+  const groups = loadGroups(gameId, members);
+  const accessList = Promise.all(
+    members.map((m) => junjo.members.getAccess(m.groupId as GroupId, m.userId).catch(() => null)),
+  );
+  const memberships = Promise.all([groups, accessList]).then(([g, a]) =>
+    membershipViews(members, g, a, base),
+  );
+  const activity = loadActivity(gameId, allIds, new Map([[userId as string, ownActivity]]));
+
+  const self = identities.find((i) => i.userId === userId);
+  const name = self?.displayName ?? identities.find((i) => i.displayName)?.displayName ?? null;
+  const firstSeen = identities.reduce<Date | null>(
+    (min, i) => (min === null || i.linkedAt < min ? i.linkedAt : min),
+    null,
+  );
+  const activeGroups = members.filter((m) => m.status === "active").length;
 
   return (
     <>
@@ -266,19 +430,13 @@ export default async function PlayerPage(props: PageProps) {
         <div className="flex max-w-screen-xl flex-col gap-10">
           <dl className="flex flex-wrap gap-x-12 gap-y-4">
             <Figure value={firstSeen ? dateFormat.format(firstSeen) : "-"} label="first seen" />
-            <Figure
-              value={activity[0] ? relativeTime(activity[0].createdAt) : "-"}
-              label="last activity"
-            />
+            <Suspense fallback={<FigurePlaceholder label="last activity" />}>
+              <LastActivityFigure activity={activity} />
+            </Suspense>
             <Figure value={numberFormat.format(activeGroups)} label="active groups" />
-            <Figure
-              value={
-                friends === null
-                  ? "off"
-                  : `${numberFormat.format(friends.items.length)}${friends.more ? "+" : ""}`
-              }
-              label="friends"
-            />
+            <Suspense fallback={<FigurePlaceholder label="friends" />}>
+              <FriendsFigure friends={friends} />
+            </Suspense>
           </dl>
           <Section title="Standing">
             <PlayerModeration
@@ -352,87 +510,29 @@ export default async function PlayerPage(props: PageProps) {
             </Section>
 
             <Section title="Friends">
-              {friends === null ? (
-                <Notice title="Friends are off for this game" />
-              ) : friends.items.length === 0 ? (
-                <Notice title="No friends yet" />
-              ) : (
-                <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
-                  {friends.items.map((f) => (
-                    <li key={f.id}>
-                      <Link
-                        href={`${base}/players/${encodeURIComponent(f.junjoUserId)}`}
-                        className="hover:underline"
-                      >
-                        {f.displayName ?? (
-                          <span className="font-mono text-xs">{f.junjoUserId}</span>
-                        )}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <Suspense fallback={<SectionPlaceholder rows={2} />}>
+                <FriendsList friends={friends} base={base} />
+              </Suspense>
             </Section>
           </div>
 
           <Section title="Groups">
-            {memberships.length === 0 ? (
-              <Notice title="In no groups" />
-            ) : (
-              <ul className="divide-y divide-border/60">
-                {memberships.map((m) => (
-                  <MembershipPanel key={m.groupId} gameId={gameId} pagePlayerId={userId} m={m} />
-                ))}
-              </ul>
-            )}
+            <Suspense fallback={<SectionPlaceholder />}>
+              <GroupsList memberships={memberships} gameId={gameId} userId={userId} />
+            </Suspense>
           </Section>
 
           <div className="grid gap-10 xl:grid-cols-2">
             <Section title="Activity">
-              {activity.length === 0 ? (
-                <Notice title="No activity on record" />
-              ) : (
-                <ul className="divide-y divide-border/60">
-                  {activity.map((e) => (
-                    <ActivityLine key={e.id} entry={e} />
-                  ))}
-                </ul>
-              )}
+              <Suspense fallback={<SectionPlaceholder />}>
+                <ActivityList activity={activity} />
+              </Suspense>
             </Section>
 
             <Section title="Moderation history">
-              {history.length === 0 ? (
-                <Notice title="Nothing on record" />
-              ) : (
-                <ul className="max-w-3xl divide-y divide-border/60">
-                  {history.map((h) => (
-                    <li key={h.key} className="flex items-baseline gap-3 py-2 text-sm">
-                      <span
-                        aria-hidden
-                        className={`mt-1.5 h-1.5 w-1.5 shrink-0 self-start rounded-full ${
-                          h.tone === "ban"
-                            ? "bg-destructive"
-                            : h.tone === "sanction"
-                              ? "bg-warn"
-                              : "bg-allow"
-                        }`}
-                      />
-                      <p className="min-w-0 flex-1">
-                        <span className="font-medium">{h.text}</span>
-                        {h.detail ? (
-                          <span className="text-muted-foreground">: {h.detail}</span>
-                        ) : null}
-                      </p>
-                      <time
-                        dateTime={h.at.toISOString()}
-                        className="shrink-0 text-xs tabular-nums text-muted-foreground"
-                      >
-                        {dateTimeFormat.format(h.at)}
-                      </time>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <Suspense fallback={<SectionPlaceholder />}>
+                <ModerationHistory bans={banHistory} sanctions={sanctionHistory} groups={groups} />
+              </Suspense>
             </Section>
           </div>
         </div>

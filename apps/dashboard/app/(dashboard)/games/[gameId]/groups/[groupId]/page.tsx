@@ -193,6 +193,59 @@ function failureBody(err: unknown, what: string): string {
   return err instanceof Error ? err.message : `The ${what} request failed.`;
 }
 
+// Each tab's request, shared by the tab body and preloadTab below. The
+// two make the identical request within one render, which Next
+// deduplicates into one, so the preload costs nothing extra.
+function loadMembers(gameId: string, groupId: string, query: MembersQueryState) {
+  return fetchAdminGroupMembers(gameId, groupId, {
+    limit: query.limit,
+    offset: query.offset,
+    status: query.status,
+    q: query.q.length > 0 ? query.q : undefined,
+  });
+}
+
+function loadAudit(gameId: string, groupId: string, query: AuditQueryState) {
+  return fetchAdminGroupAudit(gameId, groupId, {
+    limit: query.limit,
+    before: query.before,
+    actions: query.actions.length > 0 ? query.actions : undefined,
+  });
+}
+
+// Starts the active tab's requests without waiting on them, so they run
+// alongside the group fetch the header needs instead of after it. The
+// tab body awaits the same requests; a failure surfaces there.
+function preloadTab(
+  tab: GroupDetailTab,
+  gameId: string,
+  groupId: string,
+  query: MembersQueryState,
+  auditQuery: AuditQueryState,
+): void {
+  const started: Promise<unknown>[] = [];
+  switch (tab) {
+    case "roles":
+      started.push(fetchAdminGroupRoles(gameId, groupId));
+      break;
+    case "permissions":
+      started.push(fetchAdminGroupRoles(gameId, groupId), fetchAdminGamePermissions(gameId));
+      break;
+    case "audit":
+      started.push(loadAudit(gameId, groupId, auditQuery));
+      break;
+    case "relationships":
+      started.push(fetchAdminGroupRelationships(gameId, groupId));
+      break;
+    case "sub-groups":
+      started.push(fetchAdminGroupChildren(gameId, groupId));
+      break;
+    default:
+      started.push(loadMembers(gameId, groupId, query));
+  }
+  for (const p of started) p.catch(() => undefined);
+}
+
 // Every tab body below shares the group fetch's 404 contract: a missing
 // group already resolved to notFound() in the page, so a failure here is
 // a transient backend error or a race with a delete.
@@ -222,11 +275,7 @@ async function AuditBody({
 }) {
   let page: AdminGroupAuditPage;
   try {
-    page = await fetchAdminGroupAudit(gameId, groupId, {
-      limit: query.limit,
-      before: query.before,
-      actions: query.actions.length > 0 ? query.actions : undefined,
-    });
+    page = await loadAudit(gameId, groupId, query);
   } catch (err) {
     if (err instanceof AdminDisabledError) return <AdminOffNotice what="the audit log" />;
     return <Notice title="Could not load the audit log" body={failureBody(err, "audit")} />;
@@ -247,10 +296,18 @@ async function RelationshipsBody({ gameId, groupId }: { gameId: string; groupId:
   return <RelationshipsTable relationships={relationships} gameId={gameId} groupId={groupId} />;
 }
 
-async function SubGroupsBody({ gameId, group }: { gameId: string; group: AdminGroup }) {
+async function SubGroupsBody({
+  gameId,
+  groupId,
+  group,
+}: {
+  gameId: string;
+  groupId: string;
+  group: AdminGroup;
+}) {
   let children: AdminGroup[];
   try {
-    children = await fetchAdminGroupChildren(gameId, group.id);
+    children = await fetchAdminGroupChildren(gameId, groupId);
   } catch (err) {
     if (err instanceof AdminDisabledError) return <AdminOffNotice what="sub-groups" />;
     return <Notice title="Could not load sub-groups" body={failureBody(err, "sub-groups")} />;
@@ -287,12 +344,7 @@ async function MembersBody({
 }) {
   let page: AdminGroupMemberList;
   try {
-    page = await fetchAdminGroupMembers(gameId, groupId, {
-      limit: query.limit,
-      offset: query.offset,
-      status: query.status,
-      q: query.q.length > 0 ? query.q : undefined,
-    });
+    page = await loadMembers(gameId, groupId, query);
   } catch (err) {
     if (err instanceof AdminDisabledError) return <AdminOffNotice what="members" />;
     return <Notice title="Could not load members" body={failureBody(err, "members")} />;
@@ -323,8 +375,11 @@ export default async function GroupDetailPage(props: GroupDetailPageProps) {
     </Link>
   );
 
-  // The group heads the page, so it loads before the tabs. The fetch is
-  // cached, so generateMetadata and this call share one request.
+  // The group heads the page and decides the 404, so the page waits on
+  // it; the active tab's requests start first and run alongside it.
+  // generateMetadata makes the same group request, which Next
+  // deduplicates into this one.
+  preloadTab(activeTab, params.gameId, params.groupId, query, auditQuery);
   let group: AdminGroup;
   try {
     group = await fetchAdminGroup(params.gameId, params.groupId);
@@ -385,7 +440,7 @@ export default async function GroupDetailPage(props: GroupDetailPageProps) {
               </Suspense>
             ) : activeTab === "sub-groups" ? (
               <Suspense fallback={<TabSkeleton rows={3} />}>
-                <SubGroupsBody gameId={params.gameId} group={group} />
+                <SubGroupsBody gameId={params.gameId} groupId={params.groupId} group={group} />
               </Suspense>
             ) : (
               <Suspense key={membersKey} fallback={<TabSkeleton />}>

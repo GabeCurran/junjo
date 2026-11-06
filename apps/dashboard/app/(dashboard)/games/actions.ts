@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { AdminDisabledError, createAdminGame } from "../../../lib/admin";
+import { revalidateGameData } from "../../../lib/revalidate";
 
 // Mirrors `createGameBody` in `packages/server/src/routes/admin.schema.ts`
 // (1-200 chars). Validating client-side avoids an unnecessary network round
@@ -33,6 +34,7 @@ export async function createGameAction(
   try {
     const game = await createAdminGame(parsed.data.name);
     revalidatePath("/games");
+    revalidateGameData(game.id);
     return { ok: true, gameId: game.id };
   } catch (err) {
     if (err instanceof AdminDisabledError) {

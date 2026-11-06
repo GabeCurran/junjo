@@ -123,8 +123,8 @@ async function AuditBody({
   query: GameAuditQueryState;
 }) {
   // Game-name fetch and audit-page fetch run in parallel via Promise.all.
-  // The game fetch hits the same 60s revalidate cache the game detail
-  // page populates, so it is effectively free. Single-fail handling:
+  // The game fetch is shared with the game layout's identical request
+  // in this render. Single-fail handling:
   // if the game lookup throws not_found we 404; if either throws
   // AdminDisabledError we render the disabled empty state.
   let game: AdminGame;

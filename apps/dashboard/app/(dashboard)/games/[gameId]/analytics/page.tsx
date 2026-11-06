@@ -112,10 +112,10 @@ async function AnalyticsBody({
 }) {
   // Resolve the game once, so a missing / cross-game / soft-deleted id
   // 404s the page rather than rendering an empty shell pointed at a game
-  // that does not exist. The `fetchAdminGame` call hits the same 60s
-  // revalidate cache the game detail page populates, so it is effectively
-  // free. Pair it with the churn fetch via `Promise.all` so the slower
-  // network leg dominates instead of the sum of both.
+  // that does not exist. The game layout makes the same `fetchAdminGame`
+  // request in this render, so Next deduplicates it into one. Pair it
+  // with the churn fetch via `Promise.all` so the slower network leg
+  // dominates instead of the sum of both.
   const fromIso = resolveRangeFrom(query);
   const toIso = resolveRangeTo(query);
 
@@ -125,14 +125,12 @@ async function AnalyticsBody({
   let roleDistribution: AdminRoleDistribution;
   let permissionUsage: AdminPermissionUsage;
   try {
-    // Six independent fetches in parallel: the game lookup hits the same
-    // 60s revalidate cache the game detail page populates so it is
-    // effectively free; the five analytics fetches each hit their own
-    // revalidate slot. The 12.5 charts (role distribution + permission
-    // usage) ignore `fromIso` / `toIso` deliberately - they answer
-    // "what is currently deployed?" not "what changed in this window?"
-    // Their meta lines say "as of now" so the snapshot semantics stay
-    // visible when the range changes.
+    // Six independent fetches in parallel: the game lookup is shared
+    // with the game layout's identical request in this render. The 12.5
+    // charts (role distribution + permission usage) ignore `fromIso` /
+    // `toIso` deliberately - they answer "what is currently deployed?"
+    // not "what changed in this window?" Their meta lines say "as of
+    // now" so the snapshot semantics stay visible when the range changes.
     [, churn, growth, memberActivity, roleDistribution, permissionUsage] = await Promise.all([
       fetchAdminGame(gameId),
       fetchAdminGameGroupChurn(gameId, { from: fromIso, to: toIso }),
