@@ -17,7 +17,13 @@ import { StrictMode } from "react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
-import { JunjoStreamClosedError, SubscriptionHub, isStreamClosedError } from "./subscriptionHub.js";
+import {
+  JunjoStreamClosedError,
+  STREAM_TEARDOWN_DELAY_MS,
+  SubscriptionHub,
+  isStreamClosedError,
+} from "./subscriptionHub.js";
+import { passTeardownDelay, useTeardownTimers } from "./testTimers.js";
 import { useGroup } from "./useGroup.js";
 import { useInvitations } from "./useInvitations.js";
 import type { UseInvitationsResult } from "./useInvitations.js";
@@ -150,6 +156,7 @@ async function flush(): Promise<void> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -211,6 +218,7 @@ describe("SubscriptionHub", () => {
   });
 
   it("closes the underlying stream only when the last listener unsubscribes", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     const hub = new SubscriptionHub(h.client);
 
@@ -224,6 +232,7 @@ describe("SubscriptionHub", () => {
     expect(close).not.toHaveBeenCalled();
 
     unsubB();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -263,6 +272,7 @@ describe("SubscriptionHub", () => {
   });
 
   it("closes a stream whose handshake resolves after every listener left", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     const hub = new SubscriptionHub(h.client);
     let resolveSubscribe!: (sub: Subscription) => void;
@@ -279,6 +289,7 @@ describe("SubscriptionHub", () => {
 
     resolveSubscribe({ close });
     await Promise.resolve();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -462,12 +473,14 @@ describe("StrictMode", () => {
     await waitFor(() => expect(state.current?.loading).toBe(false));
     await flush();
 
-    // Churn is acceptable (StrictMode double-invokes effects); a leak
-    // is not: every stream but one must have been closed.
+    // A leak is not acceptable: every stream but one must have been
+    // closed. The deferred teardown also removes the churn: the
+    // double-invoked effect rejoins the stream it just left.
     const live = h.captures.filter((c) => c.close.mock.calls.length === 0);
     const dead = h.captures.filter((c) => c.close.mock.calls.length > 0);
     expect(live).toHaveLength(1);
     expect(dead).toHaveLength(h.captures.length - 1);
+    expect(h.captures).toHaveLength(1);
 
     // Events on a torn-down stream go nowhere.
     const joiner = makeMember("user_b");
@@ -481,6 +494,249 @@ describe("StrictMode", () => {
       live[0]?.handler(memberJoined(joiner));
     });
     expect(state.current?.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+  });
+});
+
+describe("deferred teardown", () => {
+  it("keeps the stream for a listener that rejoins within the delay", async () => {
+    useTeardownTimers();
+    const h = makeHarness();
+    const hub = new SubscriptionHub(h.client);
+    const received: JunjoEvent[] = [];
+
+    const unsub = hub.subscribe(GROUP_ID, { onEvent: vi.fn() });
+    await Promise.resolve();
+    unsub();
+    act(() => {
+      vi.advanceTimersByTime(STREAM_TEARDOWN_DELAY_MS - 1);
+    });
+    const unsubAgain = hub.subscribe(GROUP_ID, { onEvent: (e) => received.push(e) });
+    passTeardownDelay();
+
+    expect(h.subscribe).toHaveBeenCalledTimes(1);
+    expect(h.captures[0]?.close).not.toHaveBeenCalled();
+    const event = memberJoined(makeMember("user_a"));
+    h.captures[0]?.handler(event);
+    expect(received).toEqual([event]);
+
+    unsubAgain();
+    passTeardownDelay();
+    expect(h.captures[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes at once when the delay is 0", async () => {
+    const h = makeHarness();
+    const hub = new SubscriptionHub(h.client, 0);
+    const unsub = hub.subscribe(GROUP_ID, { onEvent: vi.fn() });
+    await Promise.resolve();
+    unsub();
+    expect(h.captures[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stream error during the delay tears down at once and the next subscribe reopens", async () => {
+    useTeardownTimers();
+    const h = makeHarness();
+    const hub = new SubscriptionHub(h.client);
+    const unsub = hub.subscribe(GROUP_ID, { onEvent: vi.fn() });
+    await Promise.resolve();
+    unsub();
+
+    h.captures[0]?.opts?.onError?.(new Error("stream dropped"));
+    expect(h.captures[0]?.close).toHaveBeenCalledTimes(1);
+
+    hub.subscribe(GROUP_ID, { onEvent: vi.fn() });
+    expect(h.subscribe).toHaveBeenCalledTimes(2);
+    passTeardownDelay();
+    expect(h.captures[1]?.close).not.toHaveBeenCalled();
+  });
+
+  it("a remount on the same group keeps one stream", async () => {
+    useTeardownTimers();
+    const h = makeHarness();
+    h.list.mockResolvedValue(page([]));
+    function Probe() {
+      useMembers(GROUP_ID);
+      return null;
+    }
+    function Tree({ show }: { show: boolean }) {
+      return <JunjoProvider client={h.client}>{show ? <Probe /> : null}</JunjoProvider>;
+    }
+
+    const { rerender } = render(<Tree show={true} />);
+    await flush();
+    rerender(<Tree show={false} />);
+    rerender(<Tree show={true} />);
+    await flush();
+    passTeardownDelay();
+
+    expect(h.subscribe).toHaveBeenCalledTimes(1);
+    expect(h.captures[0]?.close).not.toHaveBeenCalled();
+  });
+});
+
+// Holds a mocked SDK call open until the test releases it.
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("subscribe-then-fetch", () => {
+  it("useGroup opens the stream before the fetch settles and replays events onto the snapshot", async () => {
+    const h = makeHarness();
+    const group = deferred<Group>();
+    const members = deferred<Page<Member>>();
+    h.get.mockReturnValue(group.promise);
+    h.list.mockReturnValue(members.promise);
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+    expect(h.subscribe).toHaveBeenCalledTimes(1);
+    expect(result.current.loading).toBe(true);
+    await flush();
+
+    // Lands before the snapshot: held, not dropped and not applied to
+    // the empty pre-fetch state.
+    const joiner = makeMember("user_b");
+    act(() => {
+      h.captures[0]?.handler(memberJoined(joiner));
+    });
+    expect(result.current.members).toEqual([]);
+
+    await act(async () => {
+      group.resolve(makeGroup());
+      members.resolve(page([makeMember("user_a")]));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+
+    // Once the snapshot is in, events apply as they arrive.
+    act(() => {
+      h.captures[0]?.handler({
+        id: "evt_left",
+        type: "member.left",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: joiner.userId,
+        reason: "left",
+        memberVersion: 2,
+      });
+    });
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_a"]);
+  });
+
+  it("useGroup keeps a stream failure that arrives while the fetch is in flight", async () => {
+    const h = makeHarness();
+    const members = deferred<Page<Member>>();
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockReturnValue(members.promise);
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+    await flush();
+    act(() => {
+      h.captures[0]?.opts?.onClose?.();
+    });
+
+    await act(async () => {
+      members.resolve(page([makeMember("user_a")]));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(isStreamClosedError(result.current.error)).toBe(true);
+    expect(result.current.members).toHaveLength(1);
+  });
+
+  it("useGroup replays held events onto the existing state when the fetch fails", async () => {
+    const h = makeHarness();
+    const members = deferred<Page<Member>>();
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockReturnValue(members.promise);
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+    await flush();
+    act(() => {
+      h.captures[0]?.handler(memberJoined(makeMember("user_b")));
+    });
+
+    await act(async () => {
+      members.reject(new Error("list failed"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.error?.message).toBe("list failed"));
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_b"]);
+  });
+
+  it("useMembers replays an event that lands before the snapshot instead of losing it", async () => {
+    const h = makeHarness();
+    const members = deferred<Page<Member>>();
+    h.list.mockReturnValue(members.promise);
+
+    const { result } = renderHook(() => useMembers(GROUP_ID), { wrapper: wrapper(h.client) });
+    expect(h.subscribe).toHaveBeenCalledTimes(1);
+    await flush();
+    act(() => {
+      h.captures[0]?.handler(memberJoined(makeMember("user_b")));
+    });
+    expect(result.current.members).toEqual([]);
+
+    await act(async () => {
+      members.resolve(page([makeMember("user_a")]));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b"]);
+  });
+
+  it("useMembers holds events during a refetch and applies them after it", async () => {
+    const h = makeHarness();
+    h.list.mockResolvedValueOnce(page([makeMember("user_a")]));
+    const { result } = renderHook(() => useMembers(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const second = deferred<Page<Member>>();
+    h.list.mockReturnValueOnce(second.promise);
+    let refetching!: Promise<void>;
+    act(() => {
+      refetching = result.current.refetch();
+    });
+    act(() => {
+      h.captures[0]?.handler(memberJoined(makeMember("user_c")));
+    });
+
+    await act(async () => {
+      second.resolve(page([makeMember("user_a"), makeMember("user_b")]));
+      await refetching;
+    });
+    expect(result.current.members.map((m) => m.userId)).toEqual(["user_a", "user_b", "user_c"]);
+  });
+
+  it("useMembers drops events held for a group it has left", async () => {
+    const h = makeHarness();
+    const first = deferred<Page<Member>>();
+    h.list.mockReturnValueOnce(first.promise);
+    h.list.mockResolvedValueOnce(page([]));
+
+    const { result, rerender } = renderHook(({ id }: { id: GroupId }) => useMembers(id), {
+      initialProps: { id: GROUP_ID },
+      wrapper: wrapper(h.client),
+    });
+    await flush();
+    act(() => {
+      h.captures[0]?.handler(memberJoined(makeMember("user_old")));
+    });
+
+    rerender({ id: ALT_GROUP_ID });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      first.resolve(page([makeMember("user_stale")]));
+      await Promise.resolve();
+    });
+    expect(result.current.members).toEqual([]);
   });
 });
 
@@ -551,6 +807,7 @@ describe("shared subscription via hooks", () => {
   });
 
   it("keeps the stream open until the last hook unmounts, then closes it once", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.list.mockResolvedValue(page([]));
     h.invitationsList.mockResolvedValue(page([]));
@@ -576,6 +833,7 @@ describe("shared subscription via hooks", () => {
     expect(close).not.toHaveBeenCalled();
 
     unmount();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
     expect(h.subscribe).toHaveBeenCalledTimes(1);
   });

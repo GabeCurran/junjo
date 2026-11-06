@@ -1,4 +1,5 @@
 import type { Sanction, UserId } from "@junjo.io/sdk";
+import { EMPTY_LIST } from "./empty.js";
 import { useAsync } from "./useAsync.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -24,7 +25,7 @@ export function useSanctions(userId: UserId): UseSanctionsResult {
   const junjo = useJunjo();
   const state = useAsync(junjo, () => junjo.sanctions.forUser(userId), `sanctions|${userId}`);
   return {
-    sanctions: state.data ?? [],
+    sanctions: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,

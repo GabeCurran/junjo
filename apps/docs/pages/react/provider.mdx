@@ -153,7 +153,7 @@ The live hooks in the group family ([`useGroup`](/react/use-group), [`useMembers
 
 - The first hook that mounts for a `groupId` opens a single `groups.subscribe` stream.
 - Every other hook for the same `groupId` under the same provider attaches to that stream. A group page rendering all four hooks costs one server connection, not four.
-- The stream is refcounted: the last attached hook to unmount closes it.
+- The stream is refcounted: it closes one second after the last attached hook unmounts. A hook that attaches within that second (a remount, a move between views of the same group, React StrictMode's double-invoked effects) reuses the open stream instead of closing and reopening it. A stream error or server close still tears the stream down at once.
 
 The hub shares the client's lifecycle: passing a different `client` to `JunjoProvider` rebuilds the hub, and the hooks resubscribe through the new one. Two providers (or two clients) never share streams.
 

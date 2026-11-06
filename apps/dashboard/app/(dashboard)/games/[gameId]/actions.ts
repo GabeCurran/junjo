@@ -12,6 +12,7 @@ import {
   revokeAdminApiKey,
   updateAdminApiKey,
 } from "../../../../lib/admin";
+import { revalidateGameData } from "../../../../lib/revalidate";
 
 export interface CreateApiKeyResult {
   ok: boolean;
@@ -73,6 +74,7 @@ export async function createApiKeyAction(
       ...(canExport ? { canExport } : {}),
     });
     revalidatePath(`/games/${gameId}`);
+    revalidateGameData(gameId);
     return { ok: true, apiKey };
   } catch (err) {
     if (err instanceof AdminDisabledError) {
@@ -103,6 +105,7 @@ export async function revokeApiKeyAction(
   try {
     const apiKey = await revokeAdminApiKey(gameId, keyId);
     revalidatePath(`/games/${gameId}`);
+    revalidateGameData(gameId);
     return { ok: true, apiKey };
   } catch (err) {
     if (err instanceof AdminDisabledError) {
@@ -133,6 +136,7 @@ export async function updateApiKeyAction(
   try {
     const apiKey = await updateAdminApiKey(gameId, keyId, readKeyInput(formData));
     revalidatePath(`/games/${gameId}`);
+    revalidateGameData(gameId);
     return { ok: true, apiKey };
   } catch (err) {
     if (err instanceof AdminDisabledError) {

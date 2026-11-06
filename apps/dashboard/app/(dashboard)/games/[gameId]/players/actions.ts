@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 
 import { AdminDisabledError, kickAdminGroupMember } from "../../../../../lib/admin";
 import { gameClient } from "../../../../../lib/game-client";
+import { revalidateGameData } from "../../../../../lib/revalidate";
 
 type RoleId = Parameters<Junjo["members"]["assignRole"]>[2];
 
@@ -59,6 +60,7 @@ export async function banPlayerAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, userId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -73,6 +75,7 @@ export async function liftBanAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, userId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -96,6 +99,7 @@ export async function addSanctionAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, userId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -111,6 +115,7 @@ export async function liftSanctionAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, userId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -126,6 +131,7 @@ export async function setDisplayNameAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, pagePlayerId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -147,6 +153,7 @@ export async function assignRoleAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, pagePlayerId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -166,6 +173,7 @@ export async function removeRoleAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, pagePlayerId));
+  revalidateGameData(gameId);
   return { ok: true };
 }
 
@@ -183,5 +191,6 @@ export async function kickFromGroupAction(
     return failure(err);
   }
   revalidatePath(playerPath(gameId, pagePlayerId));
+  revalidateGameData(gameId);
   return { ok: true };
 }

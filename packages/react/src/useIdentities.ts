@@ -1,4 +1,5 @@
 import type { LinkedIdentity, UserId } from "@junjo.io/sdk";
+import { EMPTY_LIST } from "./empty.js";
 import { useAsync } from "./useAsync.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -21,7 +22,7 @@ export function useIdentities(userId: UserId): UseIdentitiesResult {
   const junjo = useJunjo();
   const state = useAsync(junjo, () => junjo.identities.list(userId), `identities|${userId}`);
   return {
-    identities: state.data ?? [],
+    identities: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,

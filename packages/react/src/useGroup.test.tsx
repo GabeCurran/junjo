@@ -15,6 +15,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
+import { passTeardownDelay, useTeardownTimers } from "./testTimers.js";
 import { useGroup } from "./useGroup.js";
 import { useMutation } from "./useMutation.js";
 
@@ -108,6 +109,7 @@ function wrapper(client: Junjo) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -215,6 +217,7 @@ describe("useGroup", () => {
   });
 
   it("closes the subscription on unmount", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.get.mockResolvedValue(makeGroup());
     h.list.mockResolvedValue(membersPage([]));
@@ -225,10 +228,12 @@ describe("useGroup", () => {
     const close = h.captures[0]?.close;
     expect(close).toBeDefined();
     unmount();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("re-fetches and re-subscribes when groupId changes", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     const groupA = makeGroup({ id: GROUP_ID, name: "Alpha" });
     const groupB = makeGroup({ id: ALT_GROUP_ID, name: "Beta" });
@@ -247,6 +252,7 @@ describe("useGroup", () => {
     rerender({ id: ALT_GROUP_ID });
 
     await waitFor(() => expect(result.current.group?.id).toBe(ALT_GROUP_ID));
+    passTeardownDelay();
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(h.get).toHaveBeenLastCalledWith(ALT_GROUP_ID);
     expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID, { status: ["active"] });
@@ -677,6 +683,7 @@ describe("useGroup", () => {
   });
 
   it("closes a subscription that resolves after unmount", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.get.mockResolvedValue(makeGroup());
     h.list.mockResolvedValue(membersPage([]));
@@ -698,6 +705,7 @@ describe("useGroup", () => {
       resolveSubscribe({ close });
       await Promise.resolve();
     });
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 

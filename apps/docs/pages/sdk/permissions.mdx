@@ -168,7 +168,7 @@ The cache is in-memory and per-server-process; it is not a Redis dependency. A h
 
 `can`, `check`, and `checkBatch` are cached in the client for 5 seconds, **on by default**.
 
-This exists because of a specific failure mode. A realtime app re-resolves the same permissions for every subscriber whenever clients reconnect at once: a redeploy, a laptop waking, a phone coming back from background, a flaky connection reconnecting a set of SSE hubs. That burst is what exhausts the rate limit, and the symptom is misleading: permission checks start failing, which reads as an authorization bug rather than a throttling one. A short TTL collapses the burst into one request per distinct question.
+This exists because of a specific failure mode. A realtime app re-resolves the same permissions for every subscriber whenever clients reconnect at once: a redeploy, a laptop waking, a phone coming back from background, a flaky connection reconnecting a set of SSE hubs. That burst is what exhausts the rate limit, and the symptom is misleading: permission checks start failing, which reads as an authorization bug rather than a throttling one. A short TTL collapses the burst into one request per distinct question, and concurrent identical checks share one request while it is in flight, so the burst costs one request even before the first answer lands.
 
 ```ts
 const junjo = new Junjo({
@@ -190,6 +190,8 @@ const junjo = new Junjo({
 | `staleWhileRateLimitedMs` | `60000` | How far past the TTL a stale answer may still be served. |
 
 `serveStaleOnRateLimit` is the second half of the same problem. A `429` on a permission check throws, and a caller that treats a throw as "denied" turns a throttle into a phantom authorization failure. Riding it out on a recently-expired answer keeps behavior stable through the burst; the SDK never invents an answer it did not previously receive, and once the stale window elapses the `429` propagates.
+
+Sharing an in-flight request does not tie callers together: a call's own `signal` or `timeoutMs` ends only that call's wait, and the request keeps running for the others. It is aborted once every caller sharing it has stopped waiting. `checkBatch` sends a check repeated within one call once and answers every position that asked for it.
 
 Call `junjo.clearPermissionCache()` after a mutation whose effect you need to see immediately, or set `ttlMs: 0` to keep only the stale-on-429 behavior.
 

@@ -1,5 +1,6 @@
 import type { JunjoEvent } from "@junjo.io/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { STABLE_STREAM_MS } from "./gameEvents.js";
 import { type GameSubscription, Junjo, JunjoError } from "./index.js";
 
 interface PushController {
@@ -474,7 +475,7 @@ describe("events.subscribe: reconnect", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
-  it("backs off with full jitter, keeps retrying 5xx and network errors, and resets after success", async () => {
+  it("backs off with full jitter, keeps retrying 5xx and network errors, and resets once a stream delivers", async () => {
     const server = track(
       makeServer()
         .ok("1")
@@ -507,10 +508,60 @@ describe("events.subscribe: reconnect", () => {
     expect(attempts).toEqual([1, 2, 3, 4, 5, 6]);
     expect(server.fetch).toHaveBeenCalledTimes(7);
 
+    server.last().push(":heartbeat\nid: 2\n\n");
     server.last().end();
     await flush();
     expect(attempts[attempts.length - 1]).toBe(1);
     expect(delays[delays.length - 1]).toBe(50);
+  });
+
+  it("keeps backing off when a reconnected stream drops before proving itself", async () => {
+    const server = track(makeServer().ok("1").ok("1").ok("1").ok("1"));
+    const attempts: number[] = [];
+    const delays: number[] = [];
+    await subscribe(makeJunjo(server), () => {}, {
+      reconnect: { initialDelayMs: 100, maxDelayMs: 1000 },
+      onReconnecting: ({ attempt, delayMs }) => {
+        attempts.push(attempt);
+        delays.push(delayMs);
+      },
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      server.last().end();
+      await flush();
+      await vi.advanceTimersByTimeAsync(delays[delays.length - 1] ?? 0);
+      await flush();
+    }
+    expect(server.fetch).toHaveBeenCalledTimes(4);
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(delays).toEqual([50, 100, 200]);
+  });
+
+  it("resets the backoff once a reconnected stream stays open long enough", async () => {
+    const server = track(makeServer().ok("1").ok("1").ok("1"));
+    const attempts: number[] = [];
+    const delays: number[] = [];
+    await subscribe(makeJunjo(server), () => {}, {
+      reconnect: { initialDelayMs: 100, maxDelayMs: 1000 },
+      onReconnecting: ({ attempt, delayMs }) => {
+        attempts.push(attempt);
+        delays.push(delayMs);
+      },
+    });
+
+    server.last().end();
+    await flush();
+    await vi.advanceTimersByTimeAsync(delays[0] ?? 0);
+    await flush();
+    expect(server.fetch).toHaveBeenCalledTimes(2);
+
+    // Quiet but healthy: no frame, yet open past the stability window.
+    await vi.advanceTimersByTimeAsync(STABLE_STREAM_MS);
+    server.last().end();
+    await flush();
+    expect(attempts).toEqual([1, 1]);
+    expect(delays).toEqual([50, 50]);
   });
 
   it("uses the full delay range when random() varies", async () => {

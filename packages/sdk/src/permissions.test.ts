@@ -469,15 +469,14 @@ describe("permission checks with a context", () => {
   it("checkBatch sends each entry's context and only the route's fields", async () => {
     const fetchMock = makeFetch(async (req) => {
       const body = (await req.json()) as { checks: unknown[] };
+      // An empty context is the same check as no context, so it is sent once.
       expect(body.checks).toEqual([
         { userId: ALICE, groupId: GROUP, permission: FLY, context: { world: "creative" } },
-        { userId: ALICE, groupId: GROUP, permission: FLY },
         { userId: ALICE, groupId: GROUP, permission: FLY },
       ]);
       return jsonResponse({
         results: [
           { allowed: true, source: "role", context: { world: "creative" } },
-          { allowed: false, source: "role" },
           { allowed: false, source: "role" },
         ],
       });
@@ -487,8 +486,10 @@ describe("permission checks with a context", () => {
       { userId: ALICE, groupId: GROUP, permission: FLY },
       { userId: ALICE, groupId: GROUP, permission: FLY, context: {} },
     ]);
+    expect(results).toHaveLength(3);
     expect(results[0]?.context).toEqual({ world: "creative" });
     expect(results[1]).not.toHaveProperty("context");
+    expect(results[2]).toEqual(results[1]);
   });
 
   it("checkBatch shares the cache with check per context", async () => {

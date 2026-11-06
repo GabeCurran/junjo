@@ -7,6 +7,7 @@ import {
   fetchAdminGameConfig,
   updateAdminGameConfig,
 } from "../../../../../lib/admin";
+import { revalidateGameData } from "../../../../../lib/revalidate";
 
 export interface UpdateGameConfigResult {
   ok: boolean;
@@ -20,6 +21,7 @@ export async function updateGameConfigAction(
   try {
     await updateAdminGameConfig(gameId, patch);
     revalidatePath(`/games/${gameId}/settings`);
+    revalidateGameData(gameId);
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

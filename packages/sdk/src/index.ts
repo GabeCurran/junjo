@@ -17,7 +17,7 @@ import { type ExportOptions, type ExportRecord, exportGame } from "./export.js";
 import { FriendsApi } from "./friends.js";
 import { GameEventsApi } from "./gameEvents.js";
 import { GroupsApi } from "./groups.js";
-import { HttpClient } from "./http.js";
+import { DEFAULT_TIMEOUT_MS, HttpClient } from "./http.js";
 import { IdentitiesApi } from "./identities.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
@@ -26,6 +26,7 @@ import { appendContextParams, hasContext, wireContext } from "./permissionContex
 import { PermissionsApi } from "./permissions.js";
 import { RolesApi } from "./roles.js";
 import { SanctionsApi } from "./sanctions.js";
+import { SharedRequests } from "./sharedRequest.js";
 import { WebhooksApi } from "./webhooks.js";
 
 // =====================================================================
@@ -82,7 +83,8 @@ export interface JunjoConfig {
    * default with a 5 second TTL. Realtime apps re-resolve the same
    * permissions for every subscriber whenever clients reconnect (a
    * redeploy, a laptop waking, phones coming back from background),
-   * and that burst is what exhausts the rate limit. Pass
+   * and that burst is what exhausts the rate limit. While it is on,
+   * concurrent identical checks also share one request. Pass
    * `{ enabled: false }` to resolve every check against the server.
    */
   permissionCache?: PermissionCacheOptions;
@@ -225,6 +227,8 @@ export class Junjo {
   private readonly http: HttpClient;
   private readonly authAdapter: AuthAdapter | undefined;
   private readonly permissionCache: PermissionCache;
+  private readonly checkRequests = new SharedRequests<PermissionCheckResult>();
+  private readonly timeoutMs: number;
 
   constructor(config: JunjoConfig) {
     let apiKey: string | undefined;
@@ -277,6 +281,7 @@ export class Junjo {
     this.permissions = new PermissionsApi(this.http);
     this.authAdapter = config.authAdapter;
     this.permissionCache = new PermissionCache(config.permissionCache);
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   /**
@@ -309,7 +314,10 @@ export class Junjo {
    * with `inherit`, the group the decision came from.
    *
    * Answers are cached client-side for a few seconds unless the cache
-   * is disabled; see `permissionCache` on {@link JunjoConfig}.
+   * is disabled; see `permissionCache` on {@link JunjoConfig}. While
+   * the cache is on, concurrent calls for the same check share one
+   * request. A call's `signal` and `timeoutMs` end only that call's
+   * wait; the shared request carries on for the other callers.
    */
   async check(
     userId: UserId,
@@ -325,22 +333,33 @@ export class Junjo {
     const params = new URLSearchParams({ userId, groupId, permission });
     if (inherit) params.set("inherit", "true");
     appendContextParams(params, opts?.context);
+    const path = `/v1/permissions/check?${params.toString()}`;
 
-    let wire: WirePermissionCheckResult;
     try {
-      wire = await this.http.get<WirePermissionCheckResult>(
-        `/v1/permissions/check?${params.toString()}`,
-        { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      if (!this.permissionCache.enabled) {
+        const wire = await this.http.get<WirePermissionCheckResult>(path, {
+          signal: opts?.signal,
+          timeoutMs: opts?.timeoutMs,
+        });
+        return deserializeCheckResult(wire);
+      }
+      // The shared request has no timeout of its own: each caller's
+      // wait carries one, and the request is aborted once every caller
+      // has stopped waiting.
+      return await this.checkRequests.run(
+        key,
+        async (signal) =>
+          deserializeCheckResult(
+            await this.http.get<WirePermissionCheckResult>(path, { signal, timeoutMs: 0 }),
+          ),
+        { signal: opts?.signal, timeoutMs: opts?.timeoutMs ?? this.timeoutMs },
+        (result) => this.permissionCache.set(key, result),
       );
     } catch (err) {
       const stale = this.staleOnRateLimit(err, key);
       if (stale) return stale;
       throw err;
     }
-
-    const result = deserializeCheckResult(wire);
-    this.permissionCache.set(key, result);
-    return result;
   }
 
   /**
@@ -351,7 +370,9 @@ export class Junjo {
    * to that entry.
    *
    * Cached entries are answered locally and only the remainder is sent,
-   * so a partially warm batch still costs at most one request. An
+   * so a partially warm batch still costs at most one request. A check
+   * repeated within one call is sent once and answers every position
+   * that asked for it. An
    * unknown group id fails the whole call with `not_found`, matching
    * the single check. At most {@link CHECK_BATCH_MAX_ENTRIES} entries
    * per call; longer inputs are split across sequential requests.
@@ -367,14 +388,26 @@ export class Junjo {
     const keys = checks.map((c) =>
       this.permissionCache.key(c.userId, c.groupId, c.permission, inherit, c.context),
     );
+    // One wire entry per distinct key: a repeated check rides on the
+    // first occurrence's answer, and `repeats` copies it back into
+    // every position that asked.
     const pending: number[] = [];
+    const firstIndex = new Map<string, number>();
+    const repeats: [index: number, source: number][] = [];
     for (let i = 0; i < checks.length; i++) {
-      const cached = this.permissionCache.get(keys[i] as string);
+      const key = keys[i] as string;
+      const cached = this.permissionCache.get(key);
       if (cached) {
         results[i] = cached;
-      } else {
-        pending.push(i);
+        continue;
       }
+      const first = firstIndex.get(key);
+      if (first !== undefined) {
+        repeats.push([i, first]);
+        continue;
+      }
+      firstIndex.set(key, i);
+      pending.push(i);
     }
 
     for (let offset = 0; offset < pending.length; offset += CHECK_BATCH_MAX_ENTRIES) {
@@ -418,12 +451,17 @@ export class Junjo {
       });
     }
 
+    for (const [index, source] of repeats) results[index] = results[source];
     return results as PermissionCheckResult[];
   }
 
-  /** Drops every locally cached permission answer. */
+  /**
+   * Drops every locally cached permission answer. A check already in
+   * flight still answers its callers but no longer fills the cache.
+   */
   clearPermissionCache(): void {
     this.permissionCache.clear();
+    this.checkRequests.forget();
   }
 
   // A 429 on a permission check surfaces to the caller as a thrown

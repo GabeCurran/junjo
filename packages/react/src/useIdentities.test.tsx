@@ -178,4 +178,16 @@ describe("useIdentities", () => {
     expect(result.current.identities[0]?.namespace).toBe("game");
     expect(result.current.identities[0]?.displayName).toBe("Alice");
   });
+
+  it("keeps the empty list identity stable across renders while loading", () => {
+    const h = makeHarness();
+    h.list.mockReturnValue(new Promise<LinkedIdentity[]>(() => {}));
+    const { result, rerender } = renderHook(() => useIdentities(USER_ID), {
+      wrapper: wrapper(h.client),
+    });
+    const first = result.current.identities;
+    rerender();
+    expect(result.current.identities).toBe(first);
+    expect(first).toEqual([]);
+  });
 });

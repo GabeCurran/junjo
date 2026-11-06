@@ -1,6 +1,7 @@
 import type { Group, GroupId, JunjoEvent, Member } from "@junjo.io/shared";
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { upsertJoined, withRoleChange } from "./memberRows.js";
+import { PendingEvents } from "./pendingEvents.js";
 import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -142,6 +143,7 @@ export function useGroup(groupId: GroupId): UseGroupResult {
   // finally cannot clear a flag a newer generation owns (which would
   // let a duplicate page request slip through).
   const inflightMoreRef = useRef<number | null>(null);
+  const [pending] = useState(() => new PendingEvents());
 
   const groupRef = useRef(state.group);
   groupRef.current = state.group;
@@ -159,10 +161,28 @@ export function useGroup(groupId: GroupId): UseGroupResult {
     };
   }, []);
 
+  // The reducer empties the roster and clears membersHasMore on
+  // group.deleted; the pagination cursor must die with them or a
+  // programmatic fetchMoreMembers afterwards would fire with a dead
+  // cursor.
+  const applyEvent = useCallback((event: JunjoEvent) => {
+    if (event.type === "group.deleted") membersCursorRef.current = null;
+    dispatch({ type: "event", event });
+  }, []);
+
+  // Applies what the stream delivered during a fetch, in arrival
+  // order, on top of whatever the fetch left in state.
+  const replayHeld = useCallback(() => {
+    const held = pending.drain();
+    for (const event of held.events) applyEvent(event);
+    if (held.failure !== null) dispatch({ type: "stream_error", error: held.failure });
+  }, [pending, applyEvent]);
+
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
     membersCursorRef.current = null;
     inflightMoreRef.current = null;
+    pending.begin();
     dispatch({ type: "fetch_start" });
     try {
       const [group, page] = await Promise.all([
@@ -181,14 +201,16 @@ export function useGroup(groupId: GroupId): UseGroupResult {
         members: page.items,
         membersHasMore: page.nextCursor !== null,
       });
+      replayHeld();
     } catch (err) {
       if (generation !== generationRef.current) return;
       dispatch({
         type: "fetch_error",
         error: err instanceof Error ? err : new Error(String(err)),
       });
+      replayHeld();
     }
-  }, [junjo, groupId]);
+  }, [junjo, groupId, pending, replayHeld]);
 
   const fetchMoreMembers = useCallback(async (): Promise<void> => {
     if (membersCursorRef.current === null) return;
@@ -219,41 +241,33 @@ export function useGroup(groupId: GroupId): UseGroupResult {
   }, [junjo, groupId]);
 
   useEffect(() => {
-    let cancelled = false;
-    let unsubscribe: (() => void) | null = null;
-
-    // Fetch-then-subscribe ordering is deliberate: an event landing on
-    // the empty pre-fetch state would be clobbered by fetch_success.
-    // Streaming failures (handshake rejection, mid-stream drop, server
-    // close) all surface as stream_error via the hub's listener
-    // callbacks; the hub tears down its shared stream and this hook
-    // recovers on remount / groupId change as before.
-    void (async () => {
-      await refetch();
-      if (cancelled) return;
-      unsubscribe = hub.subscribe(groupId, {
-        onEvent: (event) => {
-          // The reducer empties the roster and clears membersHasMore on
-          // group.deleted; the pagination cursor must die with them or
-          // a programmatic fetchMoreMembers afterwards would fire with
-          // a dead cursor.
-          if (event.type === "group.deleted") membersCursorRef.current = null;
-          dispatch({ type: "event", event });
-        },
-        onError: (err) => {
-          dispatch({ type: "stream_error", error: err });
-        },
-        onClose: () => {
-          dispatch({ type: "stream_error", error: new JunjoStreamClosedError() });
-        },
-      });
-    })();
+    // Subscribe-then-fetch: the stream opens alongside the fetch rather
+    // than after it. Events that land before the snapshot are held and
+    // replayed on top of it (see PendingEvents), so none is lost or
+    // overwritten by the snapshot. Streaming failures (handshake
+    // rejection, mid-stream drop, server close) all surface as
+    // stream_error via the hub's listener callbacks; the hub tears down
+    // its shared stream and this hook recovers on remount / groupId
+    // change as before.
+    const unsubscribe = hub.subscribe(groupId, {
+      onEvent: (event) => {
+        if (!pending.hold(event)) applyEvent(event);
+      },
+      onError: (err) => {
+        if (!pending.holdFailure(err)) dispatch({ type: "stream_error", error: err });
+      },
+      onClose: () => {
+        const err = new JunjoStreamClosedError();
+        if (!pending.holdFailure(err)) dispatch({ type: "stream_error", error: err });
+      },
+    });
+    void refetch();
 
     return () => {
-      cancelled = true;
-      unsubscribe?.();
+      unsubscribe();
+      pending.clear();
     };
-  }, [hub, groupId, refetch]);
+  }, [hub, groupId, refetch, pending, applyEvent]);
 
   return {
     group: state.group,

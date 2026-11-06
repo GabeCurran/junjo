@@ -57,13 +57,26 @@ interface Entry {
   // Set by teardown. A handshake that resolves after teardown closes
   // itself; callbacks arriving after teardown are dropped.
   closed: boolean;
+  // Pending teardown armed when the last listener left; a listener
+  // that joins before it fires cancels it and keeps the stream.
+  teardownTimer: ReturnType<typeof setTimeout> | undefined;
 }
+
+/**
+ * How long a group stream stays open after its last listener leaves.
+ * A listener that joins within this window reuses the open stream, so
+ * a remount or a move between views of the same group does not close
+ * and reopen the connection.
+ */
+export const STREAM_TEARDOWN_DELAY_MS = 1000;
 
 /**
  * Refcounted per-group SSE fan-out. The first listener for a groupId
  * opens ONE `junjo.groups.subscribe` stream; later listeners share it;
  * the last unsubscribe closes it. Three hooks on one group page cost
- * one server connection instead of three.
+ * one server connection instead of three. The last unsubscribe closes
+ * the stream after {@link STREAM_TEARDOWN_DELAY_MS}, not at once, so a
+ * listener that rejoins within that window keeps the same stream.
  *
  * Failure policy (matches the SDK's no-replay stance, no silent
  * auto-reconnect): on a stream error the hub tears the shared stream
@@ -77,17 +90,24 @@ interface Entry {
 export class SubscriptionHub {
   private readonly entries = new Map<GroupId, Entry>();
 
-  constructor(private readonly junjo: Junjo) {}
+  constructor(
+    private readonly junjo: Junjo,
+    private readonly teardownDelayMs: number = STREAM_TEARDOWN_DELAY_MS,
+  ) {}
 
   /**
    * Registers a listener on the group's shared stream, opening it if
    * this is the first listener. Returns an idempotent unsubscribe; the
-   * last unsubscribe closes the underlying stream.
+   * last unsubscribe closes the underlying stream once the teardown
+   * delay passes with no listener rejoining.
    */
   subscribe(groupId: GroupId, listener: HubListener): () => void {
     let entry = this.entries.get(groupId);
     if (entry === undefined) {
       entry = this.open(groupId);
+    } else if (entry.teardownTimer !== undefined) {
+      clearTimeout(entry.teardownTimer);
+      entry.teardownTimer = undefined;
     }
     entry.listeners.add(listener);
     let removed = false;
@@ -99,12 +119,17 @@ export class SubscriptionHub {
       // replaced it. Only mutate the entry this listener joined.
       if (this.entries.get(groupId) !== entry) return;
       entry.listeners.delete(listener);
-      if (entry.listeners.size === 0) this.teardown(groupId, entry);
+      if (entry.listeners.size === 0) this.scheduleTeardown(groupId, entry);
     };
   }
 
   private open(groupId: GroupId): Entry {
-    const entry: Entry = { listeners: new Set(), subscription: null, closed: false };
+    const entry: Entry = {
+      listeners: new Set(),
+      subscription: null,
+      closed: false,
+      teardownTimer: undefined,
+    };
     this.entries.set(groupId, entry);
     void this.junjo.groups
       .subscribe(
@@ -164,11 +189,25 @@ export class SubscriptionHub {
     }
   }
 
+  private scheduleTeardown(groupId: GroupId, entry: Entry): void {
+    if (this.teardownDelayMs <= 0) {
+      this.teardown(groupId, entry);
+      return;
+    }
+    if (entry.teardownTimer !== undefined) clearTimeout(entry.teardownTimer);
+    entry.teardownTimer = setTimeout(() => {
+      entry.teardownTimer = undefined;
+      if (entry.listeners.size === 0) this.teardown(groupId, entry);
+    }, this.teardownDelayMs);
+  }
+
   // Drops the shared stream. Listeners stay on the (now-orphaned) entry
   // so a teardown-then-fan sequence can still notify them.
   private teardown(groupId: GroupId, entry: Entry): void {
     if (entry.closed) return;
     entry.closed = true;
+    if (entry.teardownTimer !== undefined) clearTimeout(entry.teardownTimer);
+    entry.teardownTimer = undefined;
     if (this.entries.get(groupId) === entry) this.entries.delete(groupId);
     entry.subscription?.close();
     entry.subscription = null;
