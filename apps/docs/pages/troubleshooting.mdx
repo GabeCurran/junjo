@@ -59,7 +59,7 @@ Things to check when 429s surprise you:
 - Self-host behind a proxy: without `TRUST_PROXY=true` every request appears to come from the proxy's IP and shares one source bucket.
 - `err.retryAfterSeconds === undefined` while `status` is 429 usually means an intermediary rewrote `Retry-After` into HTTP-date form; both the TypeScript and Roblox parsers accept only integer seconds.
 - Passcode joins have their own stricter limiter (see the 403 section); it also answers 429.
-- `429 too_many_streams` is not a rate limit: the key already holds 10 open game streams (or the game 200) on that instance. Look for streams that are opened per request or never closed; one game stream per process is usually enough.
+- `429 too_many_streams` is not a rate limit: the key already holds 10 open game streams (or the game 200), or 500 open group streams (or the game 2,000), on that instance. Look for streams that are opened per request or never closed; one game stream per process is usually enough.
 
 ## network_error, timeout, cancelled
 

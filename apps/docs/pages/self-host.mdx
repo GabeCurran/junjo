@@ -182,7 +182,7 @@ node packages/server/dist/index.js
 
 | Name | Required | Default | Notes |
 |------|----------|---------|-------|
-| `DATABASE_URL` | yes | | Postgres connection string. Format: `postgres://user:pass@host:port/db?schema=public`. |
+| `DATABASE_URL` | yes | | Postgres connection string. Format: `postgres://user:pass@host:port/db?schema=public`. Set the Prisma pool size with `connection_limit` in the query string; see [Connection pool](#connection-pool). |
 | `PORT` | no | `8787` | HTTP listen port. Must be a positive integer. |
 | `NODE_ENV` | no | `development` | One of `development`, `test`, `production`. Outside production, the Prisma client is cached on `globalThis` so `tsx watch` does not leak connections on hot reload. |
 | `JUNJO_BASE_URL` | no | | Public base URL of this deployment. Parsed and validated at startup but reserved: no self-hosted server code path reads it today (the cloud dashboard consumes it). Unrelated to the SDK's `inviteBaseUrl`, which is client-side config; `inviteByLink` uses only `inviteBaseUrl` and throws `invalid_config` without it. Safe to leave unset. |
@@ -194,9 +194,15 @@ node packages/server/dist/index.js
 | `EVENT_STREAM_POLL_MS` | no | `1000` | How often each game with open game streams reads the event log without a local write to wake it. This is how events written through other server instances reach this one's streams. `0` disables polling, which is correct only for a single-instance deployment. |
 | `WEBHOOK_ALLOW_PRIVATE_HOSTS` | no | `false` | When unset or `false`, `POST /v1/webhooks` and `PATCH /v1/webhooks/:id` reject URLs whose hostname is loopback, link-local (including the cloud metadata endpoint), RFC1918 private, RFC6598 CGNAT, IPv6 ULA, or `0.0.0.0`. The check is lexical (no DNS resolution). Set to `true` or `1` only for self-host development where receivers run on the same machine. |
 | `LOG_LEVEL` | no | `info` | Minimum level the structured logger emits. One of `error`, `warn`, `info`, `debug`, `silent`. Production (`NODE_ENV=production`) writes one JSON object per line on stdout; any other environment pretty-prints via `pino-pretty`. Pipe the production stream into your log aggregator (Datadog, Loki, CloudWatch, ELK) and filter on `level`, `service`, `msg`, plus per-line context fields like `deliveryId` (webhook worker), `path`/`method` (unhandled errors), `signal` (shutdown). |
+| `PERMISSION_CACHE_MAX_ENTRIES` | no | `100000` | Upper bound on the answers the per-process permission check cache holds. Past it the least recently used answer is evicted; expired answers are also swept once a minute. Each answer is a few hundred bytes, so the default caps the cache at a few tens of MB. Must be a positive integer. |
+| `WEBHOOK_DELIVERY_RETENTION_DAYS` | no | `30` | How long delivered and failed webhook deliveries are kept before the hourly delivery sweeper deletes them (1 to 3650). Pending deliveries are never deleted. Audit entries are not affected. |
 | `JUNJO_MAX_PAGE_SIZE` | no | `100` | Upper bound on the `limit` query parameter for every list endpoint (`/v1/groups`, `/v1/groups/:id/members`, `/v1/groups/:id/invitations`, audit, friends, admin lists, etc.). Defaults to `100`, matching cloud's abuse-protection ceiling. Self-hosters with smaller fleets or trusted clients can raise this; the SDK and webhook delivery worker honor whatever value the server accepts, so no client-side change is needed beyond passing a higher `limit`. Must be a positive integer. |
 
 Validation lives in [`packages/server/src/env.ts`](https://github.com/GabeCurran/junjo/blob/main/packages/server/src/env.ts). Missing or malformed values throw a single readable error at startup; the process exits non-zero before binding the port.
+
+### Connection pool
+
+Prisma opens a pool per server process. Without `connection_limit` in `DATABASE_URL` it sizes the pool at twice the CPU count plus one, which a container often reports as the host's CPU count rather than its own share. Set it explicitly, for example `postgres://user:pass@host:5432/junjo?connection_limit=10`, and keep the total across every instance (`connection_limit` times the instance count) below the database's `max_connections`, leaving room for migrations and your own tooling. Ten per instance is a sound start; raise it when request latency shows time spent waiting for a connection. A transaction-mode pooler in front of Postgres (PgBouncer and similar) lets many instances share fewer server connections; Prisma then needs `pgbouncer=true` in the connection string.
 
 There is no `JUNJO_API_KEY` env var on the server. API keys are per-game database rows that the server validates against the `ApiKey` table; the server itself has no master key. Issue keys with `npm run db:seed` (see below).
 
@@ -240,7 +246,7 @@ Junjo does not ship a backup tool. Use whatever your Postgres provider gives you
 
 For a per-game copy that does not need database access, give an API key `canExport` and read [`GET /v1/export`](/api-reference/export): one NDJSON file with every group, member, role, ban, sanction and friend record of the game, and no credentials.
 
-The two operationally interesting tables are `WebhookDelivery` (the queue the worker drains; rows are short-lived after a delivery succeeds) and `AuditEntry` (the durable audit log; grows monotonically). Neither needs special handling.
+The two operationally interesting tables are `WebhookDelivery` (the queue the worker drains; delivered and failed rows are deleted after `WEBHOOK_DELIVERY_RETENTION_DAYS`) and `AuditEntry` (the durable audit log; grows monotonically and is never deleted by the server). Neither needs special handling.
 
 ## Issuing and rotating API keys
 
@@ -319,11 +325,13 @@ These `setInterval` schedulers run inside the server process:
 
 - **Soft-delete sweeper** (one tick per hour): deletes `Group` rows whose `softDeletedAt` is older than 7 days. The interval handle is `unref`'d so it never keeps the process alive on its own.
 - **Idle-group sweeper** (one tick per 10 minutes): soft-deletes live groups whose kind sets `idleDeleteHours` and whose membership has not changed for that long, emitting `group.deleted` for each. It does nothing for games that set no [kind limits](/api-reference/groups#kind-limits).
-- **Webhook delivery worker** (one tick per 5 seconds, batch=50): polls `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api-reference/webhooks.mdx`](/api-reference/webhooks).
+- **Webhook delivery worker** (one tick per 5 seconds, batch=50): claims `WebhookDelivery` rows whose `nextAttemptAt` has elapsed, signs and POSTs them, and transitions row state. A tick still running when the next one is due makes that one skip, so ticks never overlap. Up to 8 endpoints are served at once, each with at most one request in flight. Retry policy is exponential backoff (1m / 5m / 30m / 2h / 8h) up to 6 attempts; 4xx responses (except 408 / 429) are treated as permanent failure. Documented in [`apps/docs/pages/api-reference/webhooks.mdx`](/api-reference/webhooks).
+- **Webhook delivery sweeper** (one tick per hour): deletes delivered and failed deliveries older than `WEBHOOK_DELIVERY_RETENTION_DAYS` in batches of 5,000.
+- **Permission cache sweeper** (one tick per minute): drops expired answers from the in-process permission check cache.
 
-Both shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
+All of them shut down cleanly on `SIGINT` and `SIGTERM`. Container runtimes that send `SIGTERM` on stop (Docker, Kubernetes, Nomad) get clean shutdown for free.
 
-The webhook worker drains its in-flight delivery before the HTTP listener closes. On `SIGTERM` the worker stops scheduling new ticks and stops picking new rows from the current batch, but the `deliverOne` call already in flight is allowed to run to completion so the receiver gets a stable response and the row state is persisted (`delivered` / `pending` / `failed` per the usual transition rules). The drain is capped at 30 seconds so a hung receiver cannot block process exit beyond the `terminationGracePeriod` Kubernetes (and the `--time` flag on `docker stop`) ship with by default. Set `terminationGracePeriodSeconds: 35` (or higher) on the pod spec to leave a small margin above the 30s drain ceiling.
+The webhook worker drains its in-flight delivery before the HTTP listener closes. On `SIGTERM` the worker stops scheduling new ticks and stops picking new rows from the current batch (their claims are released for the next process to take), but the deliveries already in flight are allowed to run to completion so the receiver gets a stable response and the row state is persisted (`delivered` / `pending` / `failed` per the usual transition rules). The drain is capped at 30 seconds so a hung receiver cannot block process exit beyond the `terminationGracePeriod` Kubernetes (and the `--time` flag on `docker stop`) ship with by default. Set `terminationGracePeriodSeconds: 35` (or higher) on the pod spec to leave a small margin above the 30s drain ceiling.
 
 ### Webhook delivery flow
 
@@ -331,13 +339,13 @@ The full enqueue-then-drain shape, end to end, is diagrammed in [`api-reference/
 
 ### Horizontal scaling
 
-The V1 server is single-process. Both background workers run on every instance, which is correct (the soft-delete sweeper's `deleteMany` is idempotent; the webhook worker's row updates are atomic) but wastes work. If you run more than one instance:
+The V1 server is single-process. Every background worker runs on every instance, which is correct (the sweepers' deletes are idempotent; the webhook worker claims rows atomically) but repeats some work. If you run more than one instance:
 
 - Each instance runs its own soft-delete sweep every hour. The `deleteMany` against `softDeletedAt < cutoff` is idempotent, so duplicates are silently no-ops; the only cost is the extra query.
-- Each instance polls the webhook queue. The `WebhookDelivery.update` that transitions a row from `pending` to `sent` is atomic, so the same row will not be POSTed twice; the worst case is two instances racing on the same batch and one losing the update with no row changed.
+- Each instance polls the webhook queue. A claim locks the due rows with `FOR UPDATE SKIP LOCKED` and moves their `nextAttemptAt` 15 minutes ahead in the same statement, so two instances never claim the same row and the same delivery is not POSTed twice while its claim holds. A claim left behind by a crashed instance expires after those 15 minutes and the row is retried.
 - The **game stream** works across instances: every instance reads the shared event log, delivering its own writes immediately and other instances' writes within `EVENT_STREAM_POLL_MS` (default 1 second). Each instance also runs the event log sweeper; its deletes are idempotent.
 - **Group streams** are per-process. A group stream connected to instance A does not see events written through instance B. For multi-instance group streams you need a sticky-session load balancer or a transport-level bus behind the `EventHub` interface; clients that must not miss events should use the game stream.
-- The game stream limits (10 open streams per key, 200 per game) and the rate limiters are counted per instance.
+- The game stream limits (10 open streams per key, 200 per game), the group stream limits (500 per key, 2,000 per game), the permission check cache and the rate limiters are counted per instance.
 
 The path to scaling out cleanly: run one instance, add the second when you actually need it, and at that point either flip on sticky sessions or wire in the cross-process bus. Do not pre-build for it.
 
