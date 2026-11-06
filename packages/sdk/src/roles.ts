@@ -15,6 +15,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { contextQuery, hasContext, wireContext } from "./permissionContext.js";
+import { type WireContextInheritance, deserializeContextInheritance } from "./permissions.js";
 import { parseWireDate } from "./wire.js";
 
 export interface WireRole {
@@ -72,6 +73,8 @@ export function deserializeRole(w: WireRole): Role {
 export interface WireRoleGraph {
   groupId: string;
   mode: PermissionMode;
+  // Optional on the wire: servers that predate it omit it.
+  contexts?: WireContextInheritance;
   defaultRoleId: string | null;
   roles: WireRole[];
 }
@@ -80,6 +83,7 @@ export function deserializeRoleGraph(w: WireRoleGraph): RoleGraph {
   return {
     groupId: w.groupId as GroupId,
     mode: w.mode,
+    contexts: deserializeContextInheritance(w.contexts),
     defaultRoleId: w.defaultRoleId === null ? null : (w.defaultRoleId as RoleId),
     roles: w.roles.map(deserializeRole),
   };
@@ -201,8 +205,9 @@ export class RolesApi {
   }
 
   /**
-   * Reads every role in a group together with the group's permission
-   * mode and default role, in one call. Holds everything a local
+   * Reads every role in a group together with the game's permission
+   * mode and context inheritance and the group's default role, in one
+   * call. Holds everything a local
    * resolver needs to evaluate the group's permissions.
    */
   async getGraph(

@@ -513,3 +513,32 @@ describe("permission checks with a context", () => {
     expect(results.map((r) => r.allowed)).toEqual([true, false]);
   });
 });
+
+describe("junjo.permissions.config", () => {
+  function client(fetchMock: ReturnType<typeof makeFetch>) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+  }
+
+  it("GETs /v1/permissions/config and returns the mode and inheritance", async () => {
+    const contexts = { world: { inherit: { nether: ["overworld"] } } };
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      expect(new URL(req.url).pathname).toBe("/v1/permissions/config");
+      expect(req.headers.get("authorization")).toBe("Bearer test_key");
+      return jsonResponse({ mode: "nodes", contexts });
+    });
+    const config = await client(fetchMock).permissions.config();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(config).toEqual({ mode: "nodes", contexts });
+  });
+
+  it("reads an absent contexts field as no inheritance", async () => {
+    const fetchMock = makeFetch(async () => jsonResponse({ mode: "exact" }));
+    const config = await client(fetchMock).permissions.config();
+    expect(config).toEqual({ mode: "exact", contexts: {} });
+  });
+});

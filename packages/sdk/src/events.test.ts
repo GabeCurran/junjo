@@ -273,6 +273,12 @@ const WIRE_FIXTURES: Record<JunjoEventType, WireJunjoEvent> = {
     displayName: "Alice",
     changed: ["displayName"],
   } as WireJunjoEvent,
+  "permissions.config.updated": {
+    ...userBase,
+    type: "permissions.config.updated",
+    mode: "nodes",
+    contexts: { world: { inherit: { nether: ["overworld"] } } },
+  } as WireJunjoEvent,
 };
 
 describe("deserializeEvent completeness", () => {
@@ -291,7 +297,7 @@ describe("deserializeEvent completeness", () => {
     for (const type of allTypes) {
       expect(deserializeEvent(WIRE_FIXTURES[type])).toBeDefined();
     }
-    expect(allTypes).toHaveLength(29);
+    expect(allTypes).toHaveLength(30);
   });
 
   it("carries userId and the changed fields on member.updated", () => {
@@ -448,6 +454,22 @@ describe("deserializeEvent completeness", () => {
     } as WireJunjoEvent);
     if (cleared.type !== "identity.updated") throw new Error("wrong type");
     expect(cleared.displayName).toBeNull();
+  });
+
+  it("deserializes permissions.config.updated with the new mode and inheritance", () => {
+    const event = deserializeEvent(WIRE_FIXTURES["permissions.config.updated"]);
+    if (event.type !== "permissions.config.updated") throw new Error("wrong type");
+    expect(event.mode).toBe("nodes");
+    expect(event.contexts).toEqual({ world: { inherit: { nether: ["overworld"] } } });
+    expect("groupId" in event).toBe(false);
+    const empty = deserializeEvent({
+      ...WIRE_FIXTURES["permissions.config.updated"],
+      mode: "exact",
+      contexts: {},
+    } as WireJunjoEvent);
+    if (empty.type !== "permissions.config.updated") throw new Error("wrong type");
+    expect(empty.mode).toBe("exact");
+    expect(empty.contexts).toEqual({});
   });
 
   it("user-scoped events carry no groupId", () => {

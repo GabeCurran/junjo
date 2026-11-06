@@ -643,6 +643,19 @@ describe("roles.getGraph", () => {
     expect(graph.roles[1]?.parents).toEqual(["role_1"]);
     expect(graph.roles[1]?.entries).toEqual([]);
     expect(graph.roles[1]?.metadata).toEqual({});
+    // A server that predates `contexts` omits it.
+    expect(graph.contexts).toEqual({});
+  });
+
+  it("carries the game's context inheritance", async () => {
+    const contexts = {
+      world: { inherit: { nether: ["overworld"], end: ["nether", "overworld"] } },
+    };
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ groupId: "grp_1", mode: "nodes", contexts, defaultRoleId: null, roles: [] }),
+    );
+    const graph = await newClient(fetchMock).roles.getGraph("grp_1" as GroupId);
+    expect(graph.contexts).toEqual(contexts);
   });
 
   it("preserves a null defaultRoleId", async () => {
