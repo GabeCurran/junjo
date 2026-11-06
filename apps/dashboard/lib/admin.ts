@@ -27,6 +27,7 @@ import type {
   AdminPermissionDef,
   AdminPermissionMode,
   AdminPermissionUsage,
+  AdminPlayerList,
   AdminRole,
   AdminRoleDistribution,
   AdminStats,
@@ -41,6 +42,7 @@ import type {
   FetchAdminGroupsParams,
   FetchAdminMemberActivityParams,
   FetchAdminPermissionCheckParams,
+  FetchAdminPlayersParams,
   KickAdminGroupMemberInput,
   SetAdminGroupParentInput,
   SetAdminGroupRelationshipInput,
@@ -752,4 +754,25 @@ export function fetchAdminPermissionCheck(
     `/v1/admin/games/${encodeURIComponent(gameId)}/permissions/check?${qs.toString()}`,
     { ...opts, revalidate: opts?.revalidate ?? 0 },
   );
+}
+
+export function fetchAdminGamePlayers(
+  gameId: string,
+  params: FetchAdminPlayersParams = {},
+  opts?: FetchOptions,
+): Promise<AdminPlayerList> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);
+  if (params.namespace) qs.set("namespace", params.namespace);
+  if (params.standing) qs.set("standing", params.standing);
+  if (params.sort) qs.set("sort", params.sort);
+  if (params.order) qs.set("order", params.order);
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(params.offset));
+  const path = `/v1/admin/games/${encodeURIComponent(gameId)}/players`;
+  const search = qs.toString();
+  return adminFetch<AdminPlayerList>(search ? `${path}?${search}` : path, {
+    revalidate: 0,
+    ...opts,
+  });
 }

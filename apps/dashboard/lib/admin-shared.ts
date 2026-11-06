@@ -618,3 +618,43 @@ export interface AdminGroupKindLimits {
   idleDeleteHours?: number;
 }
 export const ADMIN_GROUP_KIND_MAX_LENGTH = 64;
+
+// GET /v1/admin/games/:gameId/players.
+export interface AdminPlayerId {
+  userId: string;
+  namespace: string | null;
+  displayName: string | null;
+  linkedAt: string;
+}
+
+export interface AdminPlayer {
+  personId: string;
+  userIds: AdminPlayerId[];
+  displayName: string | null;
+  firstSeenAt: string;
+  lastActivityAt: string | null;
+  activeGroupCount: number;
+  ban: { reason: string | null; expiresAt: string | null } | null;
+  sanctions: { type: string; expiresAt: string | null }[];
+}
+
+export interface AdminPlayerList {
+  items: AdminPlayer[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type AdminPlayerSort = "firstSeen" | "lastActivity" | "name";
+export type AdminPlayerStanding = "banned" | "sanctioned";
+export const ADMIN_PLAYERS_PAGE_SIZE = 50;
+
+export interface FetchAdminPlayersParams {
+  q?: string;
+  namespace?: string;
+  standing?: AdminPlayerStanding;
+  sort?: AdminPlayerSort;
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}

@@ -178,9 +178,11 @@
    * properties. The next-themes provider must have
    * disableTransitionOnChange OFF for this to fire (see
    * app/layout.tsx). */
-  *,
-  *::before,
-  *::after {
+  /* Only after the first paint (ThemeReady adds the class); otherwise a
+   * page load fades body from the light defaults into the dark theme. */
+  .theme-ready *,
+  .theme-ready *::before,
+  .theme-ready *::after {
     transition-property: background-color, border-color, color, fill, stroke, text-decoration-color !important;
     transition-duration: 400ms;
     transition-timing-function: ease;
