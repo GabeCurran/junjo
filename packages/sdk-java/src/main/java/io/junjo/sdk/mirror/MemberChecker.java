@@ -6,7 +6,6 @@ import io.junjo.sdk.model.MemberPermissionOverride;
 import io.junjo.sdk.model.MemberStatus;
 import io.junjo.sdk.model.PermissionCheckResult;
 import io.junjo.sdk.model.PermissionEntry;
-import io.junjo.sdk.model.PermissionSource;
 import io.junjo.sdk.permissions.PermissionResolver;
 import io.junjo.sdk.permissions.PermissionResolver.CompiledOverrides;
 import io.junjo.sdk.permissions.PermissionResolver.ResolverRole;
@@ -25,10 +24,11 @@ import java.util.TreeSet;
 
 /**
  * Repeated permission checks for one member of one group, in one context. Gives the same answers
- * as {@link GameMirror#check(String, String, String, Context)} with that context, but normalizes
- * the member's overrides and the context's inheritance chains once and reuses them until the
- * member's access or the group's graph changes; it always reads the mirror's current state, so it
- * never goes stale. A checker taken without a context checks in {@link Context#GLOBAL}.
+ * as {@link GameMirror#check(String, String, String, Context)} with that context, but prepares the
+ * member's overrides, held role layers and the context's inheritance chains once, and memoizes
+ * answers (see {@link PermissionResolver.Prepared}), until the member's access or the group's
+ * graph changes; it always reads the mirror's current state, so it never goes stale. A checker
+ * taken without a context checks in {@link Context#GLOBAL}.
  *
  * <p>{@link #excludingRoles(Collection)} derives a checker that answers as if the member did not
  * hold some roles, and {@link #excludingOverrides()} one that answers as if the member had no
@@ -46,13 +46,10 @@ public final class MemberChecker {
     private volatile Compiled compiled;
 
     // The inputs one compiled form was built from; compared by identity, since state objects are
-    // replaced, never mutated. held is the role list checks start from, exclusions applied.
+    // replaced, never mutated, so a prepared answer cannot outlive the graph or access it came
+    // from. held is the role list checks start from, exclusions applied.
     private record Compiled(
-            GameMirror.GroupState group,
-            MemberAccess access,
-            CompiledOverrides overrides,
-            Map<String, Map<String, Integer>> chains,
-            List<String> held) {}
+            GameMirror.GroupState group, MemberAccess access, List<String> held, PermissionResolver.Prepared prepared) {}
 
     MemberChecker(GameMirror mirror, String userId, String groupId, Context context) {
         this(mirror, userId, groupId, context, Set.of(), false);
@@ -135,24 +132,22 @@ public final class MemberChecker {
 
     /** Empty when the group's graph or the member's access is not loaded. */
     public Optional<PermissionCheckResult> check(String permission) {
-        GameMirror.Lookup in = mirror.lookup(userId, groupId);
-        if (in == null) return Optional.empty();
-        if (in.access() != null && in.access().status() != MemberStatus.ACTIVE) {
-            return Optional.of(PermissionCheckResult.of(false, PermissionSource.NONE));
-        }
-        if (in.access() == null && !mirror.defaultRoleApplies(in.group())) {
-            return Optional.of(PermissionCheckResult.of(false, PermissionSource.NONE));
-        }
-        Compiled c = compile(in);
-        PermissionResolver.GroupResolver resolver = in.group().resolver();
-        return Optional.of(PermissionResolver.resolve(
-                resolver.mode(), c.overrides().global(), c.overrides().contextual(), c.held(),
-                resolver.roles(), permission, c.chains()));
+        return Optional.ofNullable(result(permission));
     }
 
     /** YES or NO, or UNKNOWN when not loaded. */
     public Answer can(String permission) {
-        return check(permission).map(r -> Answer.of(r.allowed())).orElse(Answer.UNKNOWN);
+        PermissionCheckResult r = result(permission);
+        return r == null ? Answer.UNKNOWN : Answer.of(r.allowed());
+    }
+
+    // Null when not loaded.
+    private PermissionCheckResult result(String permission) {
+        GameMirror.Lookup in = mirror.lookup(userId, groupId);
+        if (in == null) return null;
+        if (in.access() != null && in.access().status() != MemberStatus.ACTIVE) return GameMirror.NOT_HELD;
+        if (in.access() == null && !mirror.defaultRoleApplies(in.group())) return GameMirror.NOT_HELD;
+        return compile(in).prepared().check(permission);
     }
 
     /**
@@ -204,7 +199,7 @@ public final class MemberChecker {
             for (String id : direct) if (!excluded.contains(id)) held.add(id);
             held = List.copyOf(held);
         }
-        c = new Compiled(in.group(), in.access(), overrides, resolver.inheritance().chains(context), held);
+        c = new Compiled(in.group(), in.access(), held, resolver.prepare(overrides, held, context));
         compiled = c;
         return c;
     }

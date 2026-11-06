@@ -12,6 +12,7 @@ import io.junjo.sdk.model.Role;
 import io.junjo.sdk.model.RoleGraph;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -23,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Local permission resolution, the same algorithm the server runs and held to the same shared
@@ -140,18 +142,37 @@ public final class PermissionResolver {
      * specificity rank (lower wins).
      */
     public static List<String> candidateKeys(PermissionMode mode, String permission) {
+        return List.of(candidates(mode, permission));
+    }
+
+    // The candidate keys in specificity order, without duplicates. In nodes mode: the key, then the
+    // key cut at each dot from the right with the wildcard appended, then the bare wildcard. Only
+    // the first cut can repeat the key, when the key itself ends in a wildcard segment.
+    private static String[] candidates(PermissionMode mode, String permission) {
         String key = normalizeKey(mode, permission);
-        if (mode == PermissionMode.EXACT) return List.of(key);
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        out.add(key);
-        if (!key.equals(WILDCARD)) {
-            String[] segments = key.split("\\.", -1);
-            for (int i = segments.length - 1; i >= 1; i--) {
-                out.add(String.join(".", java.util.Arrays.copyOfRange(segments, 0, i)) + "." + WILDCARD);
-            }
-            out.add(WILDCARD);
+        if (mode == PermissionMode.EXACT || key.equals(WILDCARD)) return new String[] {key};
+        int dots = 0;
+        for (int i = 0; i < key.length(); i++) {
+            if (key.charAt(i) == '.') dots++;
         }
-        return List.copyOf(out);
+        String[] out = new String[dots + 2];
+        int n = 0;
+        out[n++] = key;
+        for (int dot = key.lastIndexOf('.'); dot >= 0; dot = dot == 0 ? -1 : key.lastIndexOf('.', dot - 1)) {
+            String cut = key.substring(0, dot + 1) + WILDCARD;
+            if (n == 1 && cut.equals(key)) continue;
+            out[n++] = cut;
+        }
+        out[n++] = WILDCARD;
+        return n == out.length ? out : Arrays.copyOf(out, n);
+    }
+
+    // The specificity rank of a key among the candidates, or -1 when it is not one.
+    private static int rankOf(String[] candidates, String key) {
+        for (int i = 0; i < candidates.length; i++) {
+            if (candidates[i].equals(key)) return i;
+        }
+        return -1;
     }
 
     /**
@@ -210,58 +231,85 @@ public final class PermissionResolver {
             String permission,
             Map<String, Map<String, Integer>> chains) {
         Objects.requireNonNull(permission, "permission");
-        List<String> candidates = candidateKeys(mode, permission);
-        Map<String, Integer> rankOf = new HashMap<>();
-        for (int i = 0; i < candidates.size(); i++) rankOf.put(candidates.get(i), i);
-
-        SourceBest own = sourceBest(overrides, contextOverrides, candidates, rankOf, chains);
-        if (own != null) {
-            boolean allowed = own.deny == null;
-            return new PermissionCheckResult(allowed, PermissionSource.OVERRIDE, null, null,
-                    allowed ? own.grant : own.deny);
-        }
+        String[] candidates = candidates(mode, permission);
+        PermissionCheckResult own = ownAnswer(overrides, contextOverrides, candidates, chains);
+        if (own != null) return own;
 
         Set<String> visited = new HashSet<>();
-        List<String> layer = new ArrayList<>();
+        List<String> layer = firstLayer(directRoleIds, roles);
+        for (int depth = 0; !layer.isEmpty() && depth <= MAX_ROLE_DEPTH; depth++) {
+            visited.addAll(layer);
+            PermissionCheckResult decided = layerAnswer(layer, roles, candidates, chains);
+            if (decided != null) return decided;
+            layer = nextLayer(layer, roles, visited);
+        }
+        return DEFAULT_ANSWER;
+    }
+
+    private static final PermissionCheckResult DEFAULT_ANSWER = PermissionCheckResult.of(false, PermissionSource.DEFAULT);
+
+    // The directly held roles that exist, each once, in the order given.
+    private static List<String> firstLayer(List<String> directRoleIds, Map<String, ResolverRole> roles) {
+        List<String> layer = new ArrayList<>(directRoleIds.size());
         for (String id : new LinkedHashSet<>(directRoleIds)) {
             if (roles.containsKey(id)) layer.add(id);
         }
-        for (int depth = 0; !layer.isEmpty() && depth <= MAX_ROLE_DEPTH; depth++) {
-            visited.addAll(layer);
+        return layer;
+    }
 
-            List<LayerHit> hits = new ArrayList<>();
-            Score top = null;
-            for (String id : layer) {
-                ResolverRole role = roles.get(id);
-                SourceBest best = sourceBest(role.entries(), role.contextEntries(), candidates, rankOf, chains);
-                if (best == null) continue;
-                hits.add(new LayerHit(id, role.priority(), best));
-                if (top == null || best.score.compareTo(top) < 0) top = best.score;
+    // The parents of a layer that exist and sit in no earlier layer, each once, in order.
+    private static List<String> nextLayer(List<String> layer, Map<String, ResolverRole> roles, Set<String> visited) {
+        LinkedHashSet<String> next = new LinkedHashSet<>();
+        for (String id : layer) {
+            for (String parent : roles.get(id).parents()) {
+                if (!visited.contains(parent) && roles.containsKey(parent)) next.add(parent);
             }
-
-            if (top != null) {
-                LayerHit denier = null;
-                LayerHit granter = null;
-                for (LayerHit hit : hits) {
-                    if (hit.best.score.compareTo(top) != 0) continue;
-                    if (hit.best.deny != null && (denier == null || outranks(hit, denier))) denier = hit;
-                    if (hit.best.grant != null && (granter == null || outranks(hit, granter))) granter = hit;
-                }
-                if (denier != null) {
-                    return new PermissionCheckResult(false, PermissionSource.ROLE, denier.id, null, denier.best.deny);
-                }
-                return new PermissionCheckResult(true, PermissionSource.ROLE, granter.id, null, granter.best.grant);
-            }
-
-            LinkedHashSet<String> next = new LinkedHashSet<>();
-            for (String id : layer) {
-                for (String parent : roles.get(id).parents()) {
-                    if (!visited.contains(parent) && roles.containsKey(parent)) next.add(parent);
-                }
-            }
-            layer = new ArrayList<>(next);
         }
-        return PermissionCheckResult.of(false, PermissionSource.DEFAULT);
+        return new ArrayList<>(next);
+    }
+
+    // The overrides' answer, or null when no override applies.
+    private static PermissionCheckResult ownAnswer(
+            Map<String, Boolean> overrides,
+            List<PermissionEntry> contextOverrides,
+            String[] candidates,
+            Map<String, Map<String, Integer>> chains) {
+        SourceBest own = sourceBest(overrides, contextOverrides, candidates, chains);
+        if (own == null) return null;
+        boolean allowed = own.deny == null;
+        return new PermissionCheckResult(allowed, PermissionSource.OVERRIDE, null, null, allowed ? own.grant : own.deny);
+    }
+
+    // The answer of one layer of roles, or null when no entry of the layer applies.
+    private static PermissionCheckResult layerAnswer(
+            List<String> layer,
+            Map<String, ResolverRole> roles,
+            String[] candidates,
+            Map<String, Map<String, Integer>> chains) {
+        int size = layer.size();
+        SourceBest[] bests = null;
+        Score top = null;
+        for (int i = 0; i < size; i++) {
+            ResolverRole role = roles.get(layer.get(i));
+            SourceBest best = sourceBest(role.entries(), role.contextEntries(), candidates, chains);
+            if (best == null) continue;
+            if (bests == null) bests = new SourceBest[size];
+            bests[i] = best;
+            if (top == null || best.score.compareTo(top) < 0) top = best.score;
+        }
+        if (top == null) return null;
+        int denier = -1;
+        int granter = -1;
+        for (int i = 0; i < size; i++) {
+            SourceBest best = bests[i];
+            if (best == null || best.score.compareTo(top) != 0) continue;
+            if (best.deny != null && (denier < 0 || outranks(layer, roles, i, denier))) denier = i;
+            if (best.grant != null && (granter < 0 || outranks(layer, roles, i, granter))) granter = i;
+        }
+        if (denier >= 0) {
+            return new PermissionCheckResult(false, PermissionSource.ROLE, layer.get(denier), null, bests[denier].deny);
+        }
+        return new PermissionCheckResult(true, PermissionSource.ROLE, layer.get(granter), null, bests[granter].grant);
     }
 
     // An applicable entry's place in the precedence: context keys matched, chain distance sum,
@@ -288,26 +336,25 @@ public final class PermissionResolver {
         }
     }
 
-    private record LayerHit(String id, long priority, SourceBest best) {}
-
     private static SourceBest sourceBest(
             Map<String, Boolean> global,
             List<PermissionEntry> contextual,
-            List<String> candidates,
-            Map<String, Integer> rankOf,
+            String[] candidates,
             Map<String, Map<String, Integer>> chains) {
         SourceBest best = null;
         // Global entries all score zero on context, so only the most specific one matters.
-        for (int i = 0; i < candidates.size(); i++) {
-            Boolean value = global.get(candidates.get(i));
-            if (value == null) continue;
-            best = consider(best, new Score(0, 0, i), value, Context.GLOBAL);
-            break;
+        if (!global.isEmpty()) {
+            for (int i = 0; i < candidates.length; i++) {
+                Boolean value = global.get(candidates[i]);
+                if (value == null) continue;
+                best = consider(best, globalScore(i), value, Context.GLOBAL);
+                break;
+            }
         }
         if (!contextual.isEmpty() && !chains.isEmpty()) {
             for (PermissionEntry entry : contextual) {
-                Integer rank = rankOf.get(entry.permission());
-                if (rank == null) continue;
+                int rank = rankOf(candidates, entry.permission());
+                if (rank < 0) continue;
                 Score score = contextScore(entry.context(), chains, rank);
                 if (score == null) continue;
                 best = consider(best, score, entry.value(), entry.context());
@@ -350,10 +397,115 @@ public final class PermissionResolver {
         return new Score(keys, distance, rank);
     }
 
-    // Higher priority first, then the greater role id (UTF-16 code unit order, as the server).
-    private static boolean outranks(LayerHit a, LayerHit b) {
-        if (a.priority != b.priority) return a.priority > b.priority;
-        return a.id.compareTo(b.id) > 0;
+    // Scores are immutable, so the global ones of the usual ranks are shared.
+    private static final Score[] GLOBAL_SCORES = new Score[16];
+
+    static {
+        for (int i = 0; i < GLOBAL_SCORES.length; i++) GLOBAL_SCORES[i] = new Score(0, 0, i);
+    }
+
+    private static Score globalScore(int rank) {
+        return rank < GLOBAL_SCORES.length ? GLOBAL_SCORES[rank] : new Score(0, 0, rank);
+    }
+
+    // Whether the role at index a of the layer outranks the one at index b: higher priority first,
+    // then the greater role id (UTF-16 code unit order, as the server).
+    private static boolean outranks(List<String> layer, Map<String, ResolverRole> roles, int a, int b) {
+        long pa = roles.get(layer.get(a)).priority();
+        long pb = roles.get(layer.get(b)).priority();
+        if (pa != pb) return pa > pb;
+        return layer.get(a).compareTo(layer.get(b)) > 0;
+    }
+
+    /**
+     * Prepares one active member's checks in one context, for a caller that checks many
+     * permissions with the same inputs. Its answers equal
+     * {@link #resolve(PermissionMode, Map, List, List, Map, String, Map)} with these inputs. The
+     * collections are copied.
+     *
+     * @param overrides the member's global overrides, normalized key to value
+     * @param contextOverrides the member's contextual overrides, keys normalized
+     * @param roles every role of the group by id, entries normalized
+     * @param chains the check context's chains, as {@link ContextInheritance#chains} computes them
+     */
+    public static Prepared prepare(
+            PermissionMode mode,
+            Map<String, Boolean> overrides,
+            List<PermissionEntry> contextOverrides,
+            List<String> directRoleIds,
+            Map<String, ResolverRole> roles,
+            Map<String, Map<String, Integer>> chains) {
+        Objects.requireNonNull(mode, "mode");
+        Map<String, Map<String, Integer>> frozen = new HashMap<>();
+        chains.forEach((k, v) -> frozen.put(k, Map.copyOf(v)));
+        return new Prepared(mode, Map.copyOf(overrides), List.copyOf(contextOverrides), List.copyOf(directRoleIds),
+                Collections.unmodifiableMap(new LinkedHashMap<>(roles)), Collections.unmodifiableMap(frozen));
+    }
+
+    /**
+     * One active member's checks in one context, prepared for repetition: the role layers are
+     * walked once, and answers are kept in a memo of at most {@link #MEMO_LIMIT} permissions,
+     * emptied when it is full. Answers equal
+     * {@link PermissionResolver#resolve(PermissionMode, Map, List, List, Map, String, Map)} with
+     * the inputs it was prepared from. Membership and status gating are the caller's job.
+     * Thread-safe.
+     */
+    public static final class Prepared {
+        /** The most answers one prepared check keeps. */
+        public static final int MEMO_LIMIT = 256;
+
+        private final PermissionMode mode;
+        private final Map<String, Boolean> overrides;
+        private final List<PermissionEntry> contextOverrides;
+        private final Map<String, ResolverRole> roles;
+        private final Map<String, Map<String, Integer>> chains;
+        private final List<List<String>> layers;
+        private final ConcurrentHashMap<String, PermissionCheckResult> memo = new ConcurrentHashMap<>();
+
+        // The inputs are immutable and owned by the caller's compiled state; they are not copied.
+        private Prepared(
+                PermissionMode mode,
+                Map<String, Boolean> overrides,
+                List<PermissionEntry> contextOverrides,
+                List<String> directRoleIds,
+                Map<String, ResolverRole> roles,
+                Map<String, Map<String, Integer>> chains) {
+            this.mode = mode;
+            this.overrides = overrides;
+            this.contextOverrides = contextOverrides;
+            this.roles = roles;
+            this.chains = chains;
+            List<List<String>> out = new ArrayList<>();
+            Set<String> visited = new HashSet<>();
+            List<String> layer = firstLayer(directRoleIds, roles);
+            for (int depth = 0; !layer.isEmpty() && depth <= MAX_ROLE_DEPTH; depth++) {
+                visited.addAll(layer);
+                out.add(List.copyOf(layer));
+                layer = nextLayer(layer, roles, visited);
+            }
+            this.layers = List.copyOf(out);
+        }
+
+        /** Resolves one permission, from the memo when it holds the answer. */
+        public PermissionCheckResult check(String permission) {
+            PermissionCheckResult r = memo.get(Objects.requireNonNull(permission, "permission"));
+            if (r != null) return r;
+            r = compute(permission);
+            if (memo.size() >= MEMO_LIMIT) memo.clear();
+            memo.put(permission, r);
+            return r;
+        }
+
+        private PermissionCheckResult compute(String permission) {
+            String[] candidates = candidates(mode, permission);
+            PermissionCheckResult own = ownAnswer(overrides, contextOverrides, candidates, chains);
+            if (own != null) return own;
+            for (List<String> layer : layers) {
+                PermissionCheckResult decided = layerAnswer(layer, roles, candidates, chains);
+                if (decided != null) return decided;
+            }
+            return DEFAULT_ANSWER;
+        }
     }
 
     /**
@@ -502,6 +654,18 @@ public final class PermissionResolver {
             if (access.status() != MemberStatus.ACTIVE) return PermissionCheckResult.of(false, PermissionSource.NONE);
             CompiledOverrides o = CompiledOverrides.of(mode, access.overrides());
             return resolve(mode, o.global(), o.contextual(), access.roleIds(), roles, permission, context, inheritance);
+        }
+
+        /**
+         * Prepares an active member's checks in a context against this graph; see
+         * {@link Prepared}. The resolver's roles are used as they are, not copied.
+         *
+         * @param overrides the member's overrides, normalized
+         */
+        public Prepared prepare(CompiledOverrides overrides, List<String> directRoleIds, Context context) {
+            Objects.requireNonNull(context, "context");
+            return new Prepared(mode, overrides.global(), overrides.contextual(), List.copyOf(directRoleIds), roles,
+                    inheritance.chains(context));
         }
 
         /** Checks an active member from raw inputs with no context; override keys are normalized here. */

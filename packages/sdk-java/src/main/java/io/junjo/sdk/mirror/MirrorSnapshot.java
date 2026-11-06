@@ -116,39 +116,44 @@ final class MirrorSnapshot {
         if (!FORMAT.equals(Json.optStr(o, "format")) || Json.optLong(o, "version", -1) != VERSION) {
             throw new IllegalStateException("not a version " + VERSION + " mirror snapshot");
         }
-        State s = State.EMPTY.withPosition(Json.str(o, "position")).withContexts(Wire.contexts(o));
+        // One draft for the whole file, so each map is built once rather than copied per entry.
+        ContextInheritance contexts = Wire.contexts(o);
+        GameMirror.Draft d = State.EMPTY.edit().position(Json.str(o, "position")).contexts(contexts);
         for (JsonObject g : Json.objects(Json.arr(o, "groups"), "groups")) {
             RoleGraph graph = Wire.roleGraph(g);
-            s = s.withGroup(graph.groupId(), compile.apply(graph, s.contexts()));
+            d.putGroup(graph.groupId(), compile.apply(graph, contexts));
         }
         List<Ban> bans = new ArrayList<>();
         for (JsonObject b : Json.objects(Json.arr(o, "bans"), "bans")) bans.add(ban(b));
         Map<String, Long> banVersions = longs(Json.obj(o, "banVersions"));
-        s = s.withBans(bans);
-        s = s.withBanMaps(s.bans(), banVersions);
+        // The bans record their ids as rendered; the saved versions then replace the derived ones.
+        d.replaceBans(bans);
+        Map<String, Ban> byUser = new HashMap<>();
+        for (Ban b : bans) byUser.put(b.userId(), b);
+        d.banMaps(byUser, banVersions);
         List<Sanction> sanctions = new ArrayList<>();
         for (JsonObject x : Json.objects(Json.arr(o, "sanctions"), "sanctions")) sanctions.add(sanction(x));
         SanctionState st = SanctionState.of(sanctions);
-        s = s.withSanctions(new SanctionState(st.byUser(), longs(Json.obj(o, "sanctionVersions"))));
+        d.sanctions(new SanctionState(st.byUser(), longs(Json.obj(o, "sanctionVersions"))));
         for (JsonObject m : Json.objects(Json.arr(o, "members"), "members")) {
             JsonObject a = Json.optObj(m, "access");
             MemberAccess access = a == null ? null : Wire.access(a);
-            s = s.withMember(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
+            d.putMember(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
                     new MemberEntry(true, access, access == null ? 0 : access.version()));
         }
         JsonArray retained = Json.optArr(o, "retained");
         if (retained != null) {
             for (JsonObject m : Json.objects(retained, "retained")) {
                 JsonObject a = Json.optObj(m, "access");
-                s = s.withRetained(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
+                d.putRetained(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
                         new RetainedMember(a == null ? null : Wire.access(a), Json.instant(m, "lastConnectedAt")));
             }
         }
         for (JsonObject p : Json.objects(Json.arr(o, "people"), "people")) {
-            s = s.withPerson(new Person(Json.strList(p, "ids"), Json.optStr(p, "rendered")));
+            d.person(new Person(Json.strList(p, "ids"), Json.optStr(p, "rendered")));
         }
-        for (String id : Json.strList(o, "renderedIds")) s = s.withRendered(id);
-        return Optional.of(s.markReady());
+        for (String id : Json.strList(o, "renderedIds")) d.rendered(id);
+        return Optional.of(d.markReady().freeze());
     }
 
     private static Map<String, Long> longs(JsonObject o) {

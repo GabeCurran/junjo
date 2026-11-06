@@ -21,6 +21,7 @@ import io.junjo.sdk.model.LinkedIdentity;
 import io.junjo.sdk.model.ListBansOptions;
 import io.junjo.sdk.model.ListSanctionsOptions;
 import io.junjo.sdk.model.MemberAccess;
+import io.junjo.sdk.model.MemberStatus;
 import io.junjo.sdk.model.Page;
 import io.junjo.sdk.model.PermissionCheckResult;
 import io.junjo.sdk.model.PermissionSource;
@@ -41,6 +42,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -51,8 +53,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,6 +81,17 @@ import java.util.function.Function;
  * ({@link Answer#UNKNOWN} or an empty Optional) rather than guessing. The {@code onChange},
  * {@code onError} and {@code onResync} callbacks run on the applier thread and must not block:
  * nothing else is applied while they run.
+ *
+ * <p>Bursts: the reloads that events ask for wait while further events are queued behind them,
+ * up to a short bound, so a burst reloads each role graph once and reads its tracked members in
+ * batched requests. They always run before any task that is not an event, such as
+ * {@link #sync()} or {@link #track(String, String)}, and {@link #position()} does not move past an
+ * event until its reloads have been applied. A burst of changes to one graph is reported to
+ * {@code onChange} once, after the reload that covers them all.
+ *
+ * <p>Checks: each tracked member keeps its prepared checks, per context checked, with a bounded
+ * memo of answers. They are bound to the loaded access and role graph by identity, so a reload
+ * replaces them and an answer can never outlive the state it came from.
  *
  * <p>Ids: a person may hold several linked ids, and the server names a person in events and lists
  * by one rendered id. The mirror records every known person's ids, so a read by any linked id
@@ -158,6 +172,12 @@ public final class GameMirror implements AutoCloseable {
     private static final int PAGE_SIZE = 100;
     /** Tracks that arrive within this window share one batched access read. */
     private static final long TRACK_BATCH_WINDOW_MS = 10;
+    /**
+     * Reloads asked for by events wait while more events are queued behind them, so a burst
+     * shares one reload per graph and one batched read per group of members; they run before any
+     * other task, and at the latest once this much time has passed since the first one waited.
+     */
+    private static final long COALESCE_MAX_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
     /** The longest gap between two prunes of retained members. */
     private static final long RETAIN_PRUNE_MAX_MS = 60_000;
     private static final String CLOSED_MESSAGE = "mirror closed";
@@ -180,6 +200,7 @@ public final class GameMirror implements AutoCloseable {
     private final Duration retainWindow;
     private final DurableFiles.Disk disk;
     private final JunjoLogger logger;
+    private final LinkedBlockingQueue<Runnable> applierQueue = new LinkedBlockingQueue<>();
     private final ExecutorService applier;
     private final AtomicLong skipped = new AtomicLong();
     private final AtomicBoolean startCalled = new AtomicBoolean();
@@ -201,6 +222,13 @@ public final class GameMirror implements AutoCloseable {
     private boolean snapshotDirty;
     private boolean snapshotSaveScheduled;
     private final Map<String, Set<MemberKey>> pendingTracks = new HashMap<>();
+    // Reloads events asked for that have not run yet, and the newest position seen meanwhile.
+    // Applier-confined. The published position stays at the last event whose changes are all
+    // applied, so position() and the snapshot never run ahead of the state.
+    private final Set<String> deferredGroups = new LinkedHashSet<>();
+    private final Set<MemberKey> deferredMembers = new LinkedHashSet<>();
+    private String deferredPosition;
+    private long deferredSince;
     private boolean trackFlushScheduled;
     private boolean inheritanceChanged;
 
@@ -224,7 +252,8 @@ public final class GameMirror implements AutoCloseable {
         this.disk = b.disk;
         this.override = b.inheritance;
         this.logger = transport.logger();
-        this.applier = Executors.newSingleThreadExecutor(Threads.daemonFactory("junjo-mirror"));
+        this.applier = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS, applierQueue, Threads.daemonFactory("junjo-mirror"));
     }
 
     public static Builder builder(JunjoClient client) {
@@ -332,11 +361,20 @@ public final class GameMirror implements AutoCloseable {
      * inheritance. Otherwise as {@link #check(String, String, String)}.
      */
     public Optional<PermissionCheckResult> check(String userId, String groupId, String permission, Context context) {
+        return Optional.ofNullable(result(userId, groupId, permission, context));
+    }
+
+    // Null when the group's graph or the member's access is not loaded. Answers come from the
+    // member entry's prepared checks, which belong to that entry and are rebuilt when the graph
+    // is replaced, so they cannot outlive the state they were prepared from.
+    private PermissionCheckResult result(String userId, String groupId, String permission, Context context) {
         Objects.requireNonNull(context, "context");
         Lookup in = lookup(userId, groupId);
-        if (in == null) return Optional.empty();
-        if (in.access() == null) return Optional.of(nonMember(in.group(), permission, context));
-        return Optional.of(in.group().resolver().check(in.access(), permission, context));
+        if (in == null) return null;
+        MemberAccess access = in.access();
+        if (access == null && !defaultRoleApplies(in.group())) return NOT_HELD;
+        if (access != null && access.status() != MemberStatus.ACTIVE) return NOT_HELD;
+        return in.entry().plans().prepared(in.group(), access, context).check(permission);
     }
 
     /** YES or NO, or UNKNOWN when the graph or the member is not loaded. */
@@ -346,7 +384,8 @@ public final class GameMirror implements AutoCloseable {
 
     /** YES or NO in a context, or UNKNOWN when the graph or the member is not loaded. */
     public Answer can(String userId, String groupId, String permission, Context context) {
-        return check(userId, groupId, permission, context).map(r -> Answer.of(r.allowed())).orElse(Answer.UNKNOWN);
+        PermissionCheckResult r = result(userId, groupId, permission, context);
+        return r == null ? Answer.UNKNOWN : Answer.of(r.allowed());
     }
 
     /** A checker for repeated checks of one member with no context; see {@link MemberChecker}. */
@@ -409,11 +448,11 @@ public final class GameMirror implements AutoCloseable {
 
     // Every held graph compiled again with the state's effective inheritance.
     private State recompiled(State s) {
-        State out = s;
+        Draft d = s.edit();
         for (Map.Entry<String, GroupState> g : s.groups().entrySet()) {
-            out = out.withGroup(g.getKey(), compileGroup(g.getValue().graph(), s.contexts()));
+            d.putGroup(g.getKey(), compileGroup(g.getValue().graph(), s.contexts()));
         }
-        return out;
+        return d.freeze();
     }
 
     // Records the server inheritance in a state not published yet. When that changes what checks
@@ -667,8 +706,12 @@ public final class GameMirror implements AutoCloseable {
 
     // The keys the person holding this id could be retained under in the group.
     private static List<MemberKey> personKeys(State s, String userId, String groupId) {
+        return personKeys(s.people(), userId, groupId);
+    }
+
+    private static List<MemberKey> personKeys(Map<String, Person> people, String userId, String groupId) {
         List<MemberKey> keys = new ArrayList<>();
-        for (String id : idsWith(s, userId)) keys.add(new MemberKey(groupId, id));
+        for (String id : idsWith(people, userId)) keys.add(new MemberKey(groupId, id));
         return keys;
     }
 
@@ -701,7 +744,10 @@ public final class GameMirror implements AutoCloseable {
 
     // ------------------------------------------------------------------ lookups shared with MemberChecker
 
-    record Lookup(GroupState group, MemberAccess access) {}
+    record Lookup(GroupState group, MemberAccess access, MemberEntry entry) {}
+
+    /** The answer for a member who is not active, or a user with no membership and no default role. */
+    static final PermissionCheckResult NOT_HELD = PermissionCheckResult.of(false, PermissionSource.NONE);
 
     // Null when the group's graph or the member's access is not loaded.
     Lookup lookup(String userId, String groupId) {
@@ -711,28 +757,30 @@ public final class GameMirror implements AutoCloseable {
         if (g == null) return null;
         MemberEntry m = findMember(s, userId, groupId);
         if (m == null || !m.loaded()) return null;
-        return new Lookup(g, m.access());
+        return new Lookup(g, m.access(), m);
     }
 
     boolean defaultRoleApplies(GroupState g) {
         return defaultRoleForNonMembers && g.graph().defaultRoleId() != null;
     }
 
-    // The answer for a user with no membership row: none, or the default role when opted in.
-    PermissionCheckResult nonMember(GroupState g, String permission, Context context) {
-        if (!defaultRoleApplies(g)) return PermissionCheckResult.of(false, PermissionSource.NONE);
-        return g.resolver().check(List.of(g.graph().defaultRoleId()), List.of(), permission, context);
+    private static Collection<String> idsOf(State s, String userId) {
+        return idsOf(s.people(), userId);
     }
 
-    private static Collection<String> idsOf(State s, String userId) {
-        Person p = s.people().get(userId);
+    private static Collection<String> idsOf(Map<String, Person> people, String userId) {
+        Person p = people.get(userId);
         return p == null ? List.of(userId) : p.ids();
     }
 
     private static Collection<String> idsWith(State s, String userId) {
+        return idsWith(s.people(), userId);
+    }
+
+    private static Collection<String> idsWith(Map<String, Person> people, String userId) {
         Set<String> ids = new LinkedHashSet<>();
         ids.add(userId);
-        ids.addAll(idsOf(s, userId));
+        ids.addAll(idsOf(people, userId));
         return ids;
     }
 
@@ -803,19 +851,86 @@ public final class GameMirror implements AutoCloseable {
     // ------------------------------------------------------------------ applier
 
     private boolean submit(Runnable task) {
+        return submit(task, false);
+    }
+
+    // An event task may leave reloads deferred; see Applied.
+    private boolean submitEvent(Runnable task) {
+        return submit(task, true);
+    }
+
+    private boolean submit(Runnable task, boolean event) {
         if (closed) return false;
         try {
-            applier.execute(() -> {
-                if (closed) return;
-                try {
-                    task.run();
-                } catch (Throwable t) {
-                    report(Transport.unwrap(t));
-                }
-            });
+            applier.execute(new Applied(task, event));
             return true;
         } catch (RejectedExecutionException e) {
             return false;
+        }
+    }
+
+    // One applier task. After it runs, deferred reloads run unless the next queued task is
+    // another event, so they never cross a task that is not an event (a barrier, a track, a
+    // snapshot save), and never wait longer than COALESCE_MAX_NANOS or past a full batch.
+    private final class Applied implements Runnable {
+        private final Runnable task;
+        private final boolean event;
+
+        Applied(Runnable task, boolean event) {
+            this.task = task;
+            this.event = event;
+        }
+
+        @Override
+        public void run() {
+            if (closed) return;
+            try {
+                task.run();
+            } catch (Throwable t) {
+                report(Transport.unwrap(t));
+            }
+            if (!hasDeferred() || closed) return;
+            boolean nextIsEvent = applierQueue.peek() instanceof Applied next && next.event;
+            boolean due = System.nanoTime() - deferredSince >= COALESCE_MAX_NANOS
+                    || deferredMembers.size() >= MembersApi.ACCESS_BATCH_MAX;
+            if (nextIsEvent && !due) return;
+            try {
+                flushDeferred();
+            } catch (Throwable t) {
+                report(Transport.unwrap(t));
+            }
+        }
+    }
+
+    private boolean hasDeferred() {
+        return deferredPosition != null || !deferredGroups.isEmpty() || !deferredMembers.isEmpty();
+    }
+
+    private void deferGroupReload(String groupId) {
+        if (!state.groups().containsKey(groupId)) return;
+        if (!hasDeferred()) deferredSince = System.nanoTime();
+        deferredGroups.add(groupId);
+    }
+
+    private void deferMemberReload(MemberKey key) {
+        if (!hasDeferred()) deferredSince = System.nanoTime();
+        deferredMembers.add(key);
+    }
+
+    // Runs the deferred reloads: each graph once, then the members in batched reads, then
+    // publishes the newest position the events reached.
+    private void flushDeferred() {
+        List<String> groups = new ArrayList<>(deferredGroups);
+        List<MemberKey> members = new ArrayList<>(deferredMembers);
+        String position = deferredPosition;
+        deferredGroups.clear();
+        deferredMembers.clear();
+        deferredPosition = null;
+        for (String groupId : groups) reloadGroupIfHeld(groupId);
+        reloadMembers(members);
+        if (position != null) {
+            state = state.withPosition(position);
+            markDirty();
         }
     }
 
@@ -903,10 +1018,7 @@ public final class GameMirror implements AutoCloseable {
         next = next.withBans(drainPages(c -> client.bans().list(new ListBansOptions(PAGE_SIZE, c, false))))
                 .withSanctions(SanctionState.of(
                         drainPages(c -> client.sanctions().list(new ListSanctionsOptions(null, PAGE_SIZE, c)))));
-        for (Map.Entry<MemberKey, MemberEntry> e : old.members().entrySet()) {
-            next = next.withMember(e.getKey(), e.getValue());
-        }
-        return next.markReady();
+        return next.withMembers(old.members()).markReady();
     }
 
     private void subscribe(String position) throws Exception {
@@ -918,7 +1030,7 @@ public final class GameMirror implements AutoCloseable {
                 .onReconnected(p -> streamState = StreamState.CONNECTED)
                 .onError(this::streamFailed);
         GameSubscription sub = await(
-                client.events().subscribe((event, pos) -> submit(() -> apply(event, pos)), streamOptions.build()),
+                client.events().subscribe((event, pos) -> submitEvent(() -> apply(event, pos)), streamOptions.build()),
                 loadTimeout);
         if (closed) {
             sub.close();
@@ -933,13 +1045,14 @@ public final class GameMirror implements AutoCloseable {
         if (!state.ready()) return;
         lastEventAt = clock.instant();
         switch (event) {
-            case JunjoEvent.RoleCreated e -> reloadGroupIfHeld(e.groupId());
-            case JunjoEvent.RoleUpdated e -> reloadGroupIfHeld(e.groupId());
-            case JunjoEvent.RoleDeleted e -> reloadGroupIfHeld(e.groupId());
-            case JunjoEvent.PermissionGranted e -> reloadGroupIfHeld(e.groupId());
-            case JunjoEvent.PermissionRevoked e -> reloadGroupIfHeld(e.groupId());
-            case JunjoEvent.GroupUpdated e -> reloadGroupIfHeld(e.groupId());
+            case JunjoEvent.RoleCreated e -> deferGroupReload(e.groupId());
+            case JunjoEvent.RoleUpdated e -> deferGroupReload(e.groupId());
+            case JunjoEvent.RoleDeleted e -> deferGroupReload(e.groupId());
+            case JunjoEvent.PermissionGranted e -> deferGroupReload(e.groupId());
+            case JunjoEvent.PermissionRevoked e -> deferGroupReload(e.groupId());
+            case JunjoEvent.GroupUpdated e -> deferGroupReload(e.groupId());
             case JunjoEvent.GroupDeleted e -> {
+                deferredGroups.remove(e.groupId());
                 state = state.withoutGroup(e.groupId());
                 changed(MirrorChange.Kind.ROLE_GRAPH, null, e.groupId());
             }
@@ -965,7 +1078,8 @@ public final class GameMirror implements AutoCloseable {
                 // Types outside the filter carry nothing the mirror holds.
             }
         }
-        state = state.withPosition(position);
+        if (hasDeferred()) deferredPosition = position;
+        else state = state.withPosition(position);
         markDirty();
     }
 
@@ -978,7 +1092,7 @@ public final class GameMirror implements AutoCloseable {
         for (Map.Entry<String, GroupState> g : state.groups().entrySet()) {
             if (g.getValue().graph().mode() != e.mode()) stale.add(g.getKey());
         }
-        for (String groupId : stale) reloadGroupIfHeld(groupId);
+        for (String groupId : stale) deferGroupReload(groupId);
     }
 
     private void applyMember(JunjoEvent.MemberScoped e) {
@@ -992,7 +1106,7 @@ public final class GameMirror implements AutoCloseable {
             skipped.incrementAndGet();
             return;
         }
-        reloadMember(key, 0);
+        deferMemberReload(key);
     }
 
     // A retained member is never reloaded. An event that may be newer than its retained access
@@ -1157,7 +1271,25 @@ public final class GameMirror implements AutoCloseable {
     }
 
     private void reloadAllMembers() {
-        for (MemberKey key : new ArrayList<>(state.members().keySet())) reloadMember(key, 0);
+        reloadMembers(new ArrayList<>(state.members().keySet()));
+    }
+
+    // Reloads members with one batched access read per group and batch, in the order given; a
+    // group with a single member to reload uses the single read.
+    private void reloadMembers(Collection<MemberKey> keys) {
+        if (keys.isEmpty()) return;
+        Map<String, List<MemberKey>> byGroup = new LinkedHashMap<>();
+        for (MemberKey k : keys) byGroup.computeIfAbsent(k.groupId(), g -> new ArrayList<>()).add(k);
+        for (Map.Entry<String, List<MemberKey>> e : byGroup.entrySet()) {
+            List<MemberKey> group = e.getValue();
+            if (group.size() == 1) {
+                reloadMember(group.get(0), 0);
+                continue;
+            }
+            for (int i = 0; i < group.size(); i += MembersApi.ACCESS_BATCH_MAX) {
+                loadMembers(e.getKey(), group.subList(i, Math.min(group.size(), i + MembersApi.ACCESS_BATCH_MAX)));
+            }
+        }
     }
 
     // Coalesces the first loads of tracked members: every track queued within the window, per
@@ -1215,7 +1347,7 @@ public final class GameMirror implements AutoCloseable {
             }
             return;
         }
-        for (int i = 0; i < keys.size(); i++) applyLoaded(keys.get(i), entries.get(i));
+        applyLoaded(keys, entries);
     }
 
     private void reloadMember(MemberKey key, int attempt) {
@@ -1240,30 +1372,48 @@ public final class GameMirror implements AutoCloseable {
         applyLoaded(key, entry);
     }
 
-    // Publishes a loaded member, reports what changed, then completes its track
-    // waiters, so a caller resuming from track() has already seen the change.
     private void applyLoaded(MemberKey key, MemberEntry entry) {
-        MemberEntry old = state.members().get(key);
-        if (old == null) return;
-        State s = state.withMember(key, entry);
-        if (entry.access() != null) {
-            String rendered = entry.access().userId();
-            if (!rendered.equals(key.userId())) s = s.withPersonMerged(key.userId(), rendered);
-            s = s.withRendered(rendered);
+        applyLoaded(List.of(key), List.of(entry));
+    }
+
+    // Publishes loaded members in one state, then, member by member, reports what changed and
+    // completes the track waiters, so a caller resuming from track() has already seen the change.
+    // Keys still tracked are applied in order, each seeing the people the earlier ones recorded.
+    private void applyLoaded(List<MemberKey> keys, List<MemberEntry> entries) {
+        Draft d = state.edit();
+        MemberEntry[] olds = new MemberEntry[keys.size()];
+        for (int i = 0; i < keys.size(); i++) {
+            MemberKey key = keys.get(i);
+            MemberEntry entry = entries.get(i);
+            MemberEntry old = d.members().get(key);
+            if (old == null) continue;
+            olds[i] = old;
+            d.putMember(key, entry);
+            if (entry.access() != null) {
+                String rendered = entry.access().userId();
+                if (!rendered.equals(key.userId())) d.personMerged(key.userId(), rendered);
+                d.rendered(rendered);
+            }
+            // A tracked person needs no retained entry; the merge above may have shown one is theirs.
+            d.removeRetained(personKeys(d.people(), key.userId(), key.groupId()));
         }
-        // A tracked person needs no retained entry; the merge above may have shown one is theirs.
-        state = s.withoutRetained(personKeys(s, key.userId(), key.groupId()));
-        MemberAccess before = old.access();
-        MemberAccess after = entry.access();
-        if (!Objects.equals(withoutName(before), withoutName(after))) {
-            changed(MirrorChange.Kind.ACCESS, key.userId(), key.groupId());
+        state = d.freeze();
+        for (int i = 0; i < keys.size(); i++) {
+            MemberEntry old = olds[i];
+            if (old == null) continue;
+            MemberKey key = keys.get(i);
+            MemberAccess before = old.access();
+            MemberAccess after = entries.get(i).access();
+            if (!Objects.equals(withoutName(before), withoutName(after))) {
+                changed(MirrorChange.Kind.ACCESS, key.userId(), key.groupId());
+            }
+            if (old.loaded() && !Objects.equals(nameOf(before), nameOf(after))) {
+                changed(MirrorChange.Kind.DISPLAY_NAME, key.userId(), key.groupId());
+            }
+            markDirty();
+            List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
+            if (waiters != null) for (CompletableFuture<Void> w : waiters) w.complete(null);
         }
-        if (old.loaded() && !Objects.equals(nameOf(before), nameOf(after))) {
-            changed(MirrorChange.Kind.DISPLAY_NAME, key.userId(), key.groupId());
-        }
-        markDirty();
-        List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
-        if (waiters != null) for (CompletableFuture<Void> w : waiters) w.complete(null);
     }
 
     private static String nameOf(MemberAccess a) {
@@ -1276,8 +1426,8 @@ public final class GameMirror implements AutoCloseable {
     }
 
     private void reloadMembersOf(Set<String> ids) {
-        for (MemberKey key : new ArrayList<>(state.members().keySet())) {
-            if (ids.contains(key.userId())) reloadMember(key, 0);
+        for (MemberKey key : state.members().keySet()) {
+            if (ids.contains(key.userId())) deferMemberReload(key);
         }
     }
 
@@ -1461,8 +1611,17 @@ public final class GameMirror implements AutoCloseable {
 
     record MemberKey(String groupId, String userId) {}
 
-    record MemberEntry(boolean loaded, MemberAccess access, long version) {
+    /**
+     * A tracked member's loaded state.
+     *
+     * @param plans the prepared checks of this access, which live and die with the entry
+     */
+    record MemberEntry(boolean loaded, MemberAccess access, long version, MemberPlans plans) {
         static final MemberEntry PENDING = new MemberEntry(false, null, 0);
+
+        MemberEntry(boolean loaded, MemberAccess access, long version) {
+            this(loaded, access, version, new MemberPlans());
+        }
     }
 
     record GroupState(RoleGraph graph, GroupResolver resolver) {}
@@ -1492,7 +1651,8 @@ public final class GameMirror implements AutoCloseable {
     }
 
     // An immutable snapshot. Every "with" returns a copy; the maps are never mutated after
-    // construction, which is what makes lock-free reads safe.
+    // construction, which is what makes lock-free reads safe. A change of several parts goes
+    // through one Draft, so each map it touches is copied once however many entries change.
     record State(
             boolean ready,
             String position,
@@ -1507,6 +1667,10 @@ public final class GameMirror implements AutoCloseable {
             ContextInheritance contexts) {
         static final State EMPTY = new State(false, null, Map.of(), Map.of(), Map.of(), SanctionState.EMPTY, Map.of(),
                 Map.of(), Set.of(), Map.of(), ContextInheritance.NONE);
+
+        Draft edit() {
+            return new Draft(this);
+        }
 
         // The server's context inheritance.
         State withContexts(ContextInheritance c) {
@@ -1525,126 +1689,339 @@ public final class GameMirror implements AutoCloseable {
         }
 
         State withGroup(String id, GroupState g) {
-            Map<String, GroupState> m = new HashMap<>(groups);
-            m.put(id, g);
-            return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, members, people,
-                    renderedIds, retained, contexts);
+            return edit().putGroup(id, g).freeze();
         }
 
         State withoutGroup(String id) {
-            Map<String, GroupState> m = new HashMap<>(groups);
-            m.remove(id);
-            Map<MemberKey, MemberEntry> mem = new HashMap<>(members);
-            mem.keySet().removeIf(k -> k.groupId().equals(id));
-            Map<MemberKey, RetainedMember> ret = new HashMap<>(retained);
-            ret.keySet().removeIf(k -> k.groupId().equals(id));
-            return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, Map.copyOf(mem),
-                    people, renderedIds, Map.copyOf(ret), contexts);
+            return edit().removeGroup(id).freeze();
         }
 
         State withMember(MemberKey key, MemberEntry e) {
-            Map<MemberKey, MemberEntry> m = new HashMap<>(members);
-            m.put(key, e);
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds, retained, contexts);
+            return edit().putMember(key, e).freeze();
+        }
+
+        State withMembers(Map<MemberKey, MemberEntry> entries) {
+            return edit().putMembers(entries).freeze();
         }
 
         State withoutMember(MemberKey key) {
-            Map<MemberKey, MemberEntry> m = new HashMap<>(members);
-            m.remove(key);
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds, retained, contexts);
+            return edit().removeMember(key).freeze();
         }
 
         State withRetained(MemberKey key, RetainedMember r) {
-            Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
-            m.put(key, r);
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                    renderedIds, Map.copyOf(m), contexts);
+            return edit().putRetained(key, r).freeze();
         }
 
         // Drops the retained entries under any of these keys; returns this state when none is held.
         State withoutRetained(Collection<MemberKey> keys) {
-            if (retained.isEmpty()) return this;
-            Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
-            if (!m.keySet().removeAll(keys)) return this;
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                    renderedIds, Map.copyOf(m), contexts);
+            Draft d = edit().removeRetained(keys);
+            return d.changed() ? d.freeze() : this;
         }
 
         State withBans(Collection<Ban> list) {
-            Map<String, Ban> b = new HashMap<>();
-            Map<String, Long> v = new HashMap<>();
-            Set<String> r = new HashSet<>(renderedIds);
-            for (Ban ban : list) {
-                b.put(ban.userId(), ban);
-                r.add(ban.userId());
-                if (ban.version() > 0) v.put(ban.userId(), ban.version());
-            }
-            return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    Set.copyOf(r), retained, contexts);
+            return edit().replaceBans(list).freeze();
         }
 
         State withBan(String userId, Ban ban, long version) {
-            Map<String, Ban> b = new HashMap<>(bans);
-            Map<String, Long> v = new HashMap<>(moderationVersions);
-            if (ban == null) b.remove(userId);
-            else b.put(userId, ban);
-            if (version > 0) v.put(userId, version);
-            return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds, retained, contexts);
+            return edit().putBan(userId, ban, version).freeze();
         }
 
         State withBanMaps(Map<String, Ban> b, Map<String, Long> v) {
-            return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds, retained, contexts);
+            return edit().banMaps(b, v).freeze();
         }
 
         State withSanctions(SanctionState next) {
-            Set<String> r = new HashSet<>(renderedIds);
-            r.addAll(next.byUser().keySet());
-            return new State(ready, position, groups, bans, moderationVersions, next, members, people, Set.copyOf(r),
-                    retained, contexts);
+            return edit().sanctions(next).freeze();
         }
 
         // Records the person under every id they hold, replacing what each id named before.
         State withPerson(Person p) {
-            Map<String, Person> m = new HashMap<>(people);
-            for (String id : p.ids()) m.put(id, p);
-            Set<String> r = renderedIds;
-            if (p.rendered() != null && !renderedIds.contains(p.rendered())) {
-                Set<String> copy = new HashSet<>(renderedIds);
-                copy.add(p.rendered());
-                r = Set.copyOf(copy);
-            }
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, Map.copyOf(m), r,
-                    retained, contexts);
+            return edit().person(p).freeze();
         }
 
-        // Two ids name the same person, and the server renders that person as {@code rendered}.
+        // Two ids name the same person, and the server renders that person as the given id.
         State withPersonMerged(String id, String rendered) {
-            Set<String> ids = new LinkedHashSet<>();
-            Person a = people.get(id);
-            Person b = people.get(rendered);
-            if (a != null) ids.addAll(a.ids());
-            if (b != null) ids.addAll(b.ids());
-            ids.add(id);
-            ids.add(rendered);
-            return withPerson(new Person(List.copyOf(ids), rendered));
+            return edit().personMerged(id, rendered).freeze();
         }
 
         // An id seen where the server renders ids; the person it belongs to learns its key.
         State withRendered(String id) {
-            State s = this;
-            if (!renderedIds.contains(id)) {
-                Set<String> r = new HashSet<>(renderedIds);
-                r.add(id);
-                s = new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                        Set.copyOf(r), retained, contexts);
-            }
-            Person p = s.people().get(id);
-            if (p != null && !id.equals(p.rendered())) s = s.withPerson(new Person(p.ids(), id));
+            Draft d = edit().rendered(id);
+            return d.changed() ? d.freeze() : this;
+        }
+    }
+
+    // A state being changed. Each map is copied on its first write and sealed by freeze(), which
+    // also marks it shared again, so a draft keeps working after a freeze without ever mutating
+    // a map a published state holds. Confined to one thread.
+    static final class Draft {
+        private boolean ready;
+        private String position;
+        private ContextInheritance contexts;
+        private SanctionState sanctions;
+        private Map<String, GroupState> groups;
+        private Map<String, Ban> bans;
+        private Map<String, Long> versions;
+        private Map<MemberKey, MemberEntry> members;
+        private Map<String, Person> people;
+        private Set<String> rendered;
+        private Map<MemberKey, RetainedMember> retained;
+        private boolean groupsOwned;
+        private boolean bansOwned;
+        private boolean versionsOwned;
+        private boolean membersOwned;
+        private boolean peopleOwned;
+        private boolean renderedOwned;
+        private boolean retainedOwned;
+        private boolean changed;
+
+        Draft(State s) {
+            ready = s.ready();
+            position = s.position();
+            contexts = s.contexts();
+            sanctions = s.sanctions();
+            groups = s.groups();
+            bans = s.bans();
+            versions = s.moderationVersions();
+            members = s.members();
+            people = s.people();
+            rendered = s.renderedIds();
+            retained = s.retained();
+        }
+
+        // Whether any write happened since the draft was made.
+        boolean changed() {
+            return changed;
+        }
+
+        State freeze() {
+            State s = new State(ready, position, seal(groups, groupsOwned), seal(bans, bansOwned),
+                    seal(versions, versionsOwned), sanctions, seal(members, membersOwned), seal(people, peopleOwned),
+                    renderedOwned ? Collections.unmodifiableSet(rendered) : rendered,
+                    seal(retained, retainedOwned), contexts);
+            groups = s.groups();
+            bans = s.bans();
+            versions = s.moderationVersions();
+            members = s.members();
+            people = s.people();
+            rendered = s.renderedIds();
+            retained = s.retained();
+            groupsOwned = false;
+            bansOwned = false;
+            versionsOwned = false;
+            membersOwned = false;
+            peopleOwned = false;
+            renderedOwned = false;
+            retainedOwned = false;
             return s;
+        }
+
+        private static <K, V> Map<K, V> seal(Map<K, V> m, boolean owned) {
+            return owned ? Collections.unmodifiableMap(m) : m;
+        }
+
+        // Reads of the draft as it stands.
+
+        Map<MemberKey, MemberEntry> members() {
+            return members;
+        }
+
+        Map<String, Person> people() {
+            return people;
+        }
+
+        // Writes.
+
+        Draft position(String p) {
+            position = p;
+            changed = true;
+            return this;
+        }
+
+        Draft contexts(ContextInheritance c) {
+            contexts = c;
+            changed = true;
+            return this;
+        }
+
+        Draft markReady() {
+            ready = true;
+            changed = true;
+            return this;
+        }
+
+        Draft putGroup(String id, GroupState g) {
+            ownGroups().put(id, g);
+            return this;
+        }
+
+        Draft removeGroup(String id) {
+            ownGroups().remove(id);
+            ownMembers().keySet().removeIf(k -> k.groupId().equals(id));
+            ownRetained().keySet().removeIf(k -> k.groupId().equals(id));
+            return this;
+        }
+
+        Draft putMember(MemberKey key, MemberEntry e) {
+            ownMembers().put(key, e);
+            return this;
+        }
+
+        Draft putMembers(Map<MemberKey, MemberEntry> entries) {
+            if (!entries.isEmpty()) ownMembers().putAll(entries);
+            return this;
+        }
+
+        Draft removeMember(MemberKey key) {
+            ownMembers().remove(key);
+            return this;
+        }
+
+        Draft putRetained(MemberKey key, RetainedMember r) {
+            ownRetained().put(key, r);
+            return this;
+        }
+
+        // Writes only when one of the keys is held.
+        Draft removeRetained(Collection<MemberKey> keys) {
+            if (retained.isEmpty()) return this;
+            boolean held = false;
+            for (MemberKey k : keys) {
+                if (retained.containsKey(k)) {
+                    held = true;
+                    break;
+                }
+            }
+            if (held) ownRetained().keySet().removeAll(keys);
+            return this;
+        }
+
+        // Replaces every ban; the ids they name are rendered ids.
+        Draft replaceBans(Collection<Ban> list) {
+            Map<String, Ban> b = new HashMap<>();
+            Map<String, Long> v = new HashMap<>();
+            for (Ban ban : list) {
+                b.put(ban.userId(), ban);
+                addRendered(ban.userId());
+                if (ban.version() > 0) v.put(ban.userId(), ban.version());
+            }
+            return banMaps(b, v);
+        }
+
+        Draft putBan(String userId, Ban ban, long version) {
+            if (ban == null) ownBans().remove(userId);
+            else ownBans().put(userId, ban);
+            if (version > 0) ownVersions().put(userId, version);
+            return this;
+        }
+
+        Draft banMaps(Map<String, Ban> b, Map<String, Long> v) {
+            bans = new HashMap<>(b);
+            versions = new HashMap<>(v);
+            bansOwned = true;
+            versionsOwned = true;
+            changed = true;
+            return this;
+        }
+
+        // The sanctions; the ids they are keyed by are rendered ids.
+        Draft sanctions(SanctionState next) {
+            sanctions = next;
+            changed = true;
+            for (String id : next.byUser().keySet()) addRendered(id);
+            return this;
+        }
+
+        // Records the person under every id they hold, replacing what each id named before.
+        Draft person(Person p) {
+            Map<String, Person> m = ownPeople();
+            for (String id : p.ids()) m.put(id, p);
+            if (p.rendered() != null) addRendered(p.rendered());
+            return this;
+        }
+
+        // Two ids name the same person, and the server renders that person as renderedId.
+        Draft personMerged(String id, String renderedId) {
+            Set<String> ids = new LinkedHashSet<>();
+            Person a = people.get(id);
+            Person b = people.get(renderedId);
+            if (a != null) ids.addAll(a.ids());
+            if (b != null) ids.addAll(b.ids());
+            ids.add(id);
+            ids.add(renderedId);
+            return person(new Person(List.copyOf(ids), renderedId));
+        }
+
+        // An id seen where the server renders ids; the person it belongs to learns its key.
+        Draft rendered(String id) {
+            addRendered(id);
+            Person p = people.get(id);
+            if (p != null && !id.equals(p.rendered())) person(new Person(p.ids(), id));
+            return this;
+        }
+
+        private void addRendered(String id) {
+            if (rendered.contains(id)) return;
+            if (!renderedOwned) {
+                rendered = new HashSet<>(rendered);
+                renderedOwned = true;
+            }
+            rendered.add(id);
+            changed = true;
+        }
+
+        private Map<String, GroupState> ownGroups() {
+            changed = true;
+            if (!groupsOwned) {
+                groups = new HashMap<>(groups);
+                groupsOwned = true;
+            }
+            return groups;
+        }
+
+        private Map<String, Ban> ownBans() {
+            changed = true;
+            if (!bansOwned) {
+                bans = new HashMap<>(bans);
+                bansOwned = true;
+            }
+            return bans;
+        }
+
+        private Map<String, Long> ownVersions() {
+            changed = true;
+            if (!versionsOwned) {
+                versions = new HashMap<>(versions);
+                versionsOwned = true;
+            }
+            return versions;
+        }
+
+        private Map<MemberKey, MemberEntry> ownMembers() {
+            changed = true;
+            if (!membersOwned) {
+                members = new HashMap<>(members);
+                membersOwned = true;
+            }
+            return members;
+        }
+
+        private Map<String, Person> ownPeople() {
+            changed = true;
+            if (!peopleOwned) {
+                people = new HashMap<>(people);
+                peopleOwned = true;
+            }
+            return people;
+        }
+
+        private Map<MemberKey, RetainedMember> ownRetained() {
+            changed = true;
+            if (!retainedOwned) {
+                retained = new HashMap<>(retained);
+                retainedOwned = true;
+            }
+            return retained;
         }
     }
 

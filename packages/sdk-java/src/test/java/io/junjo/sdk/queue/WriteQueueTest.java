@@ -314,6 +314,90 @@ class WriteQueueTest {
     }
 
     @Test
+    void concurrentEnqueuesShareForcesAndKeepJournalOrder() throws Exception {
+        Path journal = dir.resolve("q.jsonl");
+        AtomicInteger forces = new AtomicInteger();
+        DurableFiles.Disk slow = channel -> {
+            forces.incrementAndGet();
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            channel.force(true);
+        };
+        server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 503,
+                FakeServer.error("internal", 503, "x")));
+        WriteQueue q1 = queue(journal).disk(slow).retryBackoff(Duration.ofSeconds(30), Duration.ofSeconds(30)).open();
+        int before = forces.get();
+        int threads = 8;
+        int each = 10;
+        List<Thread> workers = new ArrayList<>();
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
+        for (int t = 0; t < threads; t++) {
+            int id = t;
+            Thread w = new Thread(() -> {
+                try {
+                    for (int i = 0; i < each; i++) q1.enqueue(QueuedWrite.assignRole("g", "u" + id, "r" + i, null));
+                } catch (Throwable e) {
+                    failures.add(e);
+                }
+            });
+            workers.add(w);
+            w.start();
+        }
+        for (Thread w : workers) w.join();
+        assertTrue(failures.isEmpty(), failures.toString());
+        int used = forces.get() - before;
+        assertTrue(used < threads * each / 2, "forces were shared: " + used + " for " + threads * each);
+        List<String> inMemory = q1.pending().stream().map(e -> e.id()).toList();
+        assertEquals(threads * each, inMemory.size());
+        q1.close(Duration.ofMillis(100));
+
+        try (WriteQueue q2 = queue(journal).retryBackoff(Duration.ofSeconds(30), Duration.ofSeconds(30)).open()) {
+            assertEquals(inMemory, q2.pending().stream().map(e -> e.id()).toList(),
+                    "the journal replays in the order entries joined the queue");
+            for (int t = 0; t < threads; t++) {
+                String user = "/u" + t + "/";
+                List<String> roles = q2.pending().stream().map(e -> e.write().path())
+                        .filter(p -> p.contains(user)).toList();
+                for (int i = 0; i < each; i++) assertTrue(roles.get(i).endsWith("/r" + i), "per-thread order");
+            }
+        }
+    }
+
+    @Test
+    void successDoneRecordsAreNotForcedButReachDiskAtClose() throws Exception {
+        Path journal = dir.resolve("q.jsonl");
+        AtomicInteger forces = new AtomicInteger();
+        DurableFiles.Disk counting = channel -> {
+            forces.incrementAndGet();
+            channel.force(true);
+        };
+        server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 200, MEMBER));
+        WriteQueue q = queue(journal).disk(counting).open();
+        int before = forces.get();
+        q.enqueue(QueuedWrite.assignRole("g", "u", "r0", null));
+        assertTrue(q.flush(Duration.ofSeconds(10)));
+        assertEquals(1, forces.get() - before, "the put is forced, its success done record is not");
+        q.close();
+        try (WriteQueue again = queue(journal).open()) {
+            assertEquals(0, again.size(), "closing forced the done record");
+        }
+
+        // A refusal's done record is forced, so the refused entry is not dead-lettered twice.
+        server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 404,
+                FakeServer.error("not_found", 404, "gone")));
+        try (WriteQueue r = queue(journal).disk(counting).open()) {
+            int start = forces.get();
+            r.enqueue(QueuedWrite.assignRole("g", "u", "r1", null));
+            assertTrue(r.flush(Duration.ofSeconds(10)));
+            assertEquals(1, rejections.size());
+            assertTrue(forces.get() - start >= 3, "the put, the dead letter and the done record are forced");
+        }
+    }
+
+    @Test
     void compactionThatCannotReplaceTheJournalKeepsTheOldOne() throws Exception {
         Path journal = dir.resolve("q.jsonl");
         server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 200, MEMBER));
