@@ -1,17 +1,25 @@
 import type {
+  DisplayNameMatch,
   IdentityLinkResult,
   IdentityUnlinkResult,
   LinkCode,
   LinkedIdentity,
   UserId,
 } from "@junjo.io/shared";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { parseWireDate } from "./wire.js";
 
 interface WireLinkedIdentity {
   userId: string;
   namespace: string | null;
   linkedAt: string;
+  displayName?: string | null;
+}
+
+interface WireDisplayNameMatch {
+  userId: string;
+  displayName: string;
+  displayNameUpdatedAt: string;
 }
 
 interface WireLinkCode {
@@ -36,6 +44,7 @@ function deserializeLinkedIdentity(w: WireLinkedIdentity): LinkedIdentity {
     userId: w.userId as UserId,
     namespace: w.namespace,
     linkedAt: parseWireDate(w.linkedAt, "linkedAt"),
+    displayName: w.displayName ?? null,
   };
 }
 
@@ -75,19 +84,60 @@ export class IdentitiesApi {
   }
 
   /**
+   * Sets the display name (1 to 64 characters) of exactly `userId`, or
+   * clears it with null; the person's other ids keep theirs. An id the
+   * game has never seen becomes a new person first. Returns the id as
+   * an identity list item. An unchanged name writes nothing and emits
+   * no event; a change emits `identity.updated`. Throws `bad_request`
+   * for an empty or over-long name.
+   */
+  async setDisplayName(
+    userId: UserId,
+    displayName: string | null,
+    opts?: WriteOptions,
+  ): Promise<LinkedIdentity> {
+    const wire = await this.http.put<WireLinkedIdentity>(
+      `/v1/users/${encodeURIComponent(userId)}/display-name`,
+      { displayName },
+      writeOptions(opts),
+    );
+    return deserializeLinkedIdentity(wire);
+  }
+
+  /**
+   * Ids whose display name equals `name` ignoring case, most recently
+   * named first, at most 20. Each `userId` is the matching id itself,
+   * never swapped for another id of its person. `namespace` restricts
+   * the match to ids in that namespace.
+   */
+  async findByName(
+    name: string,
+    opts?: { namespace?: string; signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<DisplayNameMatch[]> {
+    const params = new URLSearchParams({ name });
+    if (opts?.namespace !== undefined) params.set("namespace", opts.namespace);
+    const wire = await this.http.get<{ items: WireDisplayNameMatch[] }>(
+      `/v1/identities/by-name?${params.toString()}`,
+      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+    );
+    return wire.items.map((w) => ({
+      userId: w.userId as UserId,
+      displayName: w.displayName,
+      displayNameUpdatedAt: parseWireDate(w.displayNameUpdatedAt, "displayNameUpdatedAt"),
+    }));
+  }
+
+  /**
    * Issues a single-use link code for `userId`, creating the person if
    * the id is new. A new code cancels the id's earlier codes. Throws
    * `banned` for a banned id and `rate_limit_exceeded` (with
    * `retryAfterSeconds`) when the id requests codes too quickly.
    */
-  async requestLinkCode(
-    userId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<LinkCode> {
+  async requestLinkCode(userId: UserId, opts?: WriteOptions): Promise<LinkCode> {
     const wire = await this.http.post<WireLinkCode>(
       `/v1/users/${encodeURIComponent(userId)}/link-codes`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return { code: wire.code, expiresAt: parseWireDate(wire.expiresAt, "expiresAt") };
   }
@@ -104,12 +154,12 @@ export class IdentitiesApi {
    */
   async redeemLinkCode(
     input: RedeemLinkCodeInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<IdentityLinkResult> {
     const wire = await this.http.post<WireIdentityLinked>(
       "/v1/link-codes/redeem",
       { code: input.code, userId: input.userId },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return {
       userId: wire.userId as UserId,
@@ -125,14 +175,11 @@ export class IdentitiesApi {
    * for an id the game has never seen, `bad_request` when it is the
    * person's only id, and `banned` while any game or group ban is active.
    */
-  async unlink(
-    userId: UserId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<IdentityUnlinkResult> {
+  async unlink(userId: UserId, opts?: WriteOptions): Promise<IdentityUnlinkResult> {
     const wire = await this.http.post<WireIdentityUnlinked>(
       `/v1/users/${encodeURIComponent(userId)}/unlink`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return {
       userId: wire.userId as UserId,

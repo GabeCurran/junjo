@@ -12,7 +12,7 @@ import type {
   UpdateRoleInput,
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { parseWireDate } from "./wire.js";
 
 export interface WireRole {
@@ -118,15 +118,11 @@ function asRoleList(roles: Role[]): RoleList {
 export class RolesApi {
   constructor(private readonly http: HttpClient) {}
 
-  async create(
-    groupId: GroupId,
-    input: CreateRoleInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Role> {
+  async create(groupId: GroupId, input: CreateRoleInput, opts?: WriteOptions): Promise<Role> {
     const wire = await this.http.post<WireRole>(
       `/v1/groups/${encodeURIComponent(groupId)}/roles`,
       buildCreateBody(input),
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeRole(wire);
   }
@@ -144,23 +140,21 @@ export class RolesApi {
     }
   }
 
-  async update(
-    id: RoleId,
-    input: UpdateRoleInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Role> {
-    const wire = await this.http.patch<WireRole>(`/v1/roles/${encodeURIComponent(id)}`, input, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async update(id: RoleId, input: UpdateRoleInput, opts?: WriteOptions): Promise<Role> {
+    const wire = await this.http.patch<WireRole>(
+      `/v1/roles/${encodeURIComponent(id)}`,
+      input,
+      writeOptions(opts),
+    );
     return deserializeRole(wire);
   }
 
-  async delete(id: RoleId, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
-    await this.http.delete<unknown>(`/v1/roles/${encodeURIComponent(id)}`, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async delete(id: RoleId, opts?: WriteOptions): Promise<void> {
+    await this.http.delete<unknown>(
+      `/v1/roles/${encodeURIComponent(id)}`,
+      undefined,
+      writeOptions(opts),
+    );
   }
 
   /**
@@ -211,14 +205,14 @@ export class RolesApi {
   async grantPermission(
     roleId: RoleId,
     permission: PermissionKey,
-    opts?: { value?: boolean; signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions & { value?: boolean },
   ): Promise<Role> {
     const body: { permission: PermissionKey; value?: boolean } = { permission };
     if (opts?.value !== undefined) body.value = opts.value;
     const wire = await this.http.post<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/permissions`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeRole(wire);
   }
@@ -227,15 +221,11 @@ export class RolesApi {
    * Replaces the role's whole entry list, grants and denies, in one
    * atomic write. Keys absent from `entries` are removed from the role.
    */
-  async setEntries(
-    roleId: RoleId,
-    entries: PermissionEntry[],
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Role> {
+  async setEntries(roleId: RoleId, entries: PermissionEntry[], opts?: WriteOptions): Promise<Role> {
     const wire = await this.http.put<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/entries`,
       { entries: entries.map((e) => ({ permission: e.permission, value: e.value })) },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeRole(wire);
   }
@@ -245,15 +235,11 @@ export class RolesApi {
    * group; a list that would form an inheritance cycle is rejected
    * with JunjoError code "parent_cycle".
    */
-  async setParents(
-    roleId: RoleId,
-    parents: RoleId[],
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<Role> {
+  async setParents(roleId: RoleId, parents: RoleId[], opts?: WriteOptions): Promise<Role> {
     const wire = await this.http.put<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/parents`,
       { parents },
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeRole(wire);
   }
@@ -261,12 +247,12 @@ export class RolesApi {
   async revokePermission(
     roleId: RoleId,
     permission: PermissionKey,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<Role> {
     const wire = await this.http.delete<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}`,
       undefined,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeRole(wire);
   }

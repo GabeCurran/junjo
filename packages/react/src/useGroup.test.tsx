@@ -92,6 +92,7 @@ function makeMember(userId: string, overrides: Partial<Member> = {}): Member {
     notesPrivate: null,
     joinedAt: new Date("2026-04-28T00:00:00.000Z"),
     bannedUntil: null,
+    version: 1,
     ...overrides,
   };
 }
@@ -270,6 +271,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -298,6 +300,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -308,6 +311,64 @@ describe("useGroup", () => {
 
     expect(result.current.members).toHaveLength(1);
     expect(result.current.members[0]?.roles).toEqual(["role_new"]);
+  });
+
+  it("keeps a loaded displayName when member.joined replaces the row", async () => {
+    const h = makeHarness();
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockResolvedValue(membersPage([makeMember("user_a", { displayName: "Alice" })]));
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.members[0]?.displayName).toBe("Alice"));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    // The event's member snapshot carries no displayName.
+    const replacement = makeMember("user_a", { roles: ["role_new" as RoleId], version: 2 });
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.joined",
+        memberVersion: 2,
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: replacement.userId,
+        member: replacement,
+      });
+    });
+
+    expect(result.current.members[0]?.roles).toEqual(["role_new"]);
+    expect(result.current.members[0]?.displayName).toBe("Alice");
+  });
+
+  it("keeps a newer displayName from the event over the loaded one", async () => {
+    const h = makeHarness();
+    h.get.mockResolvedValue(makeGroup());
+    h.list.mockResolvedValue(membersPage([makeMember("user_a", { displayName: "Alice" })]));
+
+    const { result } = renderHook(() => useGroup(GROUP_ID), { wrapper: wrapper(h.client) });
+
+    await waitFor(() => expect(result.current.members[0]?.displayName).toBe("Alice"));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    const replacement = makeMember("user_a", { displayName: null });
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "member.joined",
+        memberVersion: 2,
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        userId: replacement.userId,
+        member: replacement,
+      });
+    });
+
+    expect(result.current.members[0]?.displayName).toBeNull();
   });
 
   it("removes a member on member.left", async () => {
@@ -327,6 +388,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "member.left",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -356,6 +418,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "role.changed",
+        memberVersion: 2,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -367,6 +430,7 @@ describe("useGroup", () => {
     });
 
     expect(result.current.members[0]?.roles).toEqual(["role_two", "role_three"]);
+    expect(result.current.members[0]?.version).toBe(2);
   });
 
   it("ignores role.changed for an unknown user", async () => {
@@ -385,6 +449,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "role.changed",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -497,6 +562,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "member.banned",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -525,6 +591,7 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "member.unbanned",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
@@ -933,6 +1000,7 @@ describe("useGroup", () => {
       const event: JunjoEvent = {
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         userId: "user_c" as UserId,
@@ -972,6 +1040,7 @@ describe("useGroup", () => {
       const joined: JunjoEvent = {
         id: "evt_1",
         type: "member.joined",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         userId: "user_c" as UserId,

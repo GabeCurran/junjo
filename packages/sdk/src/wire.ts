@@ -13,3 +13,9 @@ export function parseWireDate(value: string, field: string): Date {
   }
   return date;
 }
+
+// A caller-supplied time as the ISO 8601 string the wire carries; a
+// string passes through unchanged.
+export function toWireDate(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}

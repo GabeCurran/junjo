@@ -30,6 +30,7 @@ function makeIdentity(userId: string, namespace: string | null, day: number): Li
     userId: userId as UserId,
     namespace,
     linkedAt: new Date(`2026-11-0${day}T00:00:00.000Z`),
+    displayName: null,
   };
 }
 
@@ -153,7 +154,12 @@ describe("useIdentities", () => {
       return new Response(
         JSON.stringify({
           items: [
-            { userId: "game:alice", namespace: "game", linkedAt: "2026-11-01T00:00:00.000Z" },
+            {
+              userId: "game:alice",
+              namespace: "game",
+              linkedAt: "2026-11-01T00:00:00.000Z",
+              displayName: "Alice",
+            },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -170,5 +176,6 @@ describe("useIdentities", () => {
     expect(result.current.error).toBeNull();
     expect(result.current.identities[0]?.linkedAt).toBeInstanceOf(Date);
     expect(result.current.identities[0]?.namespace).toBe("game");
+    expect(result.current.identities[0]?.displayName).toBe("Alice");
   });
 });

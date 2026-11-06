@@ -8,7 +8,7 @@ import type {
   UserId,
 } from "@junjo.io/shared";
 import type { HttpClient } from "./http.js";
-import { parseWireDate } from "./wire.js";
+import { parseWireDate, toWireDate } from "./wire.js";
 
 export interface WireAuditEntry {
   id: string;
@@ -52,7 +52,7 @@ export class AuditApi {
     const params = new URLSearchParams();
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     if (opts?.before !== undefined) {
-      params.set("before", opts.before instanceof Date ? opts.before.toISOString() : opts.before);
+      params.set("before", toWireDate(opts.before));
     }
     if (opts?.actions !== undefined) {
       for (const action of opts.actions) params.append("actions", action);

@@ -13,7 +13,7 @@ import type {
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
 import { UNKNOWN_EVENT_TYPE, type WireJunjoEvent, deserializeEvent } from "./events.js";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 import { paginate } from "./pagination.js";
 import { parseWireDate } from "./wire.js";
 
@@ -365,7 +365,7 @@ export class WebhookEndpointsApi {
    */
   async create(
     input: CreateWebhookEndpointInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<WebhookEndpointWithSecret> {
     const body: Record<string, unknown> = { url: input.url };
     if (input.events !== undefined) body.events = input.events;
@@ -374,10 +374,11 @@ export class WebhookEndpointsApi {
     if (input.preferredNamespaces !== undefined) {
       body.preferredNamespaces = input.preferredNamespaces;
     }
-    const wire = await this.http.post<WireWebhookEndpointWithSecret>("/v1/webhooks", body, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+    const wire = await this.http.post<WireWebhookEndpointWithSecret>(
+      "/v1/webhooks",
+      body,
+      writeOptions(opts),
+    );
     return deserializeEndpointWithSecret(wire);
   }
 
@@ -426,7 +427,7 @@ export class WebhookEndpointsApi {
   async update(
     id: WebhookEndpointId,
     input: UpdateWebhookEndpointInput,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: WriteOptions,
   ): Promise<WebhookEndpoint> {
     const body: Record<string, unknown> = {};
     if (input.url !== undefined) body.url = input.url;
@@ -439,7 +440,7 @@ export class WebhookEndpointsApi {
     const wire = await this.http.patch<WireWebhookEndpoint>(
       `/v1/webhooks/${encodeURIComponent(id)}`,
       body,
-      { signal: opts?.signal, timeoutMs: opts?.timeoutMs },
+      writeOptions(opts),
     );
     return deserializeEndpoint(wire);
   }
@@ -448,14 +449,12 @@ export class WebhookEndpointsApi {
    * Hard delete; pending deliveries are cascaded by the database.
    * Calling on a missing id throws `JunjoError` with `code: "not_found"`.
    */
-  async delete(
-    id: WebhookEndpointId,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<void> {
-    await this.http.delete<void>(`/v1/webhooks/${encodeURIComponent(id)}`, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async delete(id: WebhookEndpointId, opts?: WriteOptions): Promise<void> {
+    await this.http.delete<void>(
+      `/v1/webhooks/${encodeURIComponent(id)}`,
+      undefined,
+      writeOptions(opts),
+    );
   }
 }
 

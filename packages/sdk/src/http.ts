@@ -29,6 +29,7 @@ interface ServerErrorBody {
   status?: number;
   message?: string;
   requestId?: string;
+  details?: unknown;
 }
 
 /** Per-request options accepted by every {@link HttpClient} method. */
@@ -38,6 +39,54 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Overrides the client-level timeout for this request. 0 disables. */
   timeoutMs?: number;
+}
+
+/**
+ * Options accepted by every method that writes. The SDK never retries
+ * on its own; these make a caller's own retry safe.
+ */
+export interface WriteOptions {
+  /** Cancels the request; surfaces as JunjoError code "cancelled". */
+  signal?: AbortSignal;
+  /** Overrides the client-level timeout for this request. 0 disables. */
+  timeoutMs?: number;
+  /**
+   * Sent as the `Idempotency-Key` header: 1 to 255 printable ASCII
+   * characters, no spaces. A repeat with the same key and the same
+   * request returns the first answer without running the write again;
+   * the same key with a different request fails with
+   * `idempotency_key_reused`, and a repeat while the first is still
+   * running fails with `idempotency_key_in_progress`. The server keeps
+   * keys for 24 hours and ignores them on requests without an API key.
+   */
+  idempotencyKey?: string;
+}
+
+/**
+ * Options for writes the server can make conditional on a version: the
+ * member-scoped writes (member version) and game ban create and lift
+ * (moderation version).
+ */
+export interface ConditionalWriteOptions extends WriteOptions {
+  /**
+   * The version the write expects, sent as `If-Match: "<version>"`. A
+   * string that is already a quoted entity tag is sent unchanged. A
+   * mismatch fails with `precondition_failed` and writes nothing.
+   */
+  ifMatch?: number | string;
+}
+
+// Maps write options onto transport options. A string `ifMatch` is
+// quoted unless it already is, so an ETag value and a bare version
+// produce the same header.
+export function writeOptions(opts?: ConditionalWriteOptions): RequestOptions {
+  const headers: Record<string, string> = {};
+  if (opts?.idempotencyKey !== undefined) headers["idempotency-key"] = opts.idempotencyKey;
+  if (opts?.ifMatch !== undefined) {
+    const tag = String(opts.ifMatch).trim();
+    headers["if-match"] = /^".*"$/.test(tag) ? tag : `"${tag}"`;
+  }
+  return { signal: opts?.signal, timeoutMs: opts?.timeoutMs, headers };
 }
 
 // Composes the caller's signal with the client timeout and remembers
@@ -186,7 +235,10 @@ export class HttpClient {
     );
   }
 
-  /** The body is forwarded to fetch unencoded; the caller owns serialization. */
+  /**
+   * The body is forwarded to fetch unencoded; the caller owns
+   * serialization. Extra `headers` are spread first, as in `request`.
+   */
   async postRaw<T>(
     path: string,
     body: string | ReadableStream<Uint8Array>,
@@ -199,6 +251,7 @@ export class HttpClient {
       {
         method: "POST",
         headers: {
+          ...(opts.headers ?? {}),
           ...this.authHeaders(),
           "content-type": contentType,
         },
@@ -214,17 +267,23 @@ export class HttpClient {
    * The client timeout deliberately does NOT apply: an SSE response
    * stays open indefinitely by design, and a fetch signal covers the
    * whole response lifetime, not just connection establishment. The
-   * caller's signal is the cancellation surface.
+   * caller's signal is the cancellation surface. Extra `headers` are
+   * spread first, so the credential and `accept` stay SDK-owned.
+   * `accept` defaults to `text/event-stream`.
    */
-  async openStream(path: string, opts?: { signal?: AbortSignal }): Promise<Response> {
+  async openStream(
+    path: string,
+    opts?: { signal?: AbortSignal; headers?: Record<string, string>; accept?: string },
+  ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
         method: "GET",
         headers: {
+          ...(opts?.headers ?? {}),
           ...this.authHeaders(),
-          accept: "text/event-stream",
+          accept: opts?.accept ?? "text/event-stream",
         },
         signal: opts?.signal,
       });
@@ -246,7 +305,7 @@ export class HttpClient {
   }
 
   // Reads the canonical error envelope ({ code, status, message,
-  // requestId? }) off a non-2xx response and throws the matching
+  // requestId?, details? }) off a non-2xx response and throws the matching
   // JunjoError. A body that is not the envelope (an HTML 502 from a
   // proxy, an empty body) throws code "unknown" with the transport
   // status, never a fabricated server code. The server's code is
@@ -275,6 +334,14 @@ export class HttpClient {
       (typeof parsed.message === "string" && parsed.message) ||
       res.statusText ||
       `request failed with HTTP ${res.status}`;
+    // `details` is surfaced only when it is a plain object, so a caller
+    // can index it without guarding against arrays or primitives.
+    const details =
+      parsed.details !== null &&
+      typeof parsed.details === "object" &&
+      !Array.isArray(parsed.details)
+        ? (parsed.details as Record<string, unknown>)
+        : undefined;
     throw new JunjoError(
       message,
       typeof parsed.code === "string" ? (parsed.code as JunjoError["code"]) : "unknown",
@@ -282,6 +349,7 @@ export class HttpClient {
       {
         ...(requestId !== undefined ? { requestId } : {}),
         ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+        ...(details !== undefined ? { details } : {}),
       },
     );
   }

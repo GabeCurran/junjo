@@ -504,6 +504,7 @@ describe("useRoles", () => {
       handler({
         id: "evt_1",
         type: "role.changed",
+        memberVersion: 1,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),

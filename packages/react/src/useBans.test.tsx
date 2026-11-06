@@ -35,6 +35,8 @@ function makeBan(userId: string, overrides: Partial<Ban> = {}): Ban {
     expiresAt: null,
     reason: null,
     bannedBy: null,
+    issuer: null,
+    version: 1,
     ...overrides,
   };
 }

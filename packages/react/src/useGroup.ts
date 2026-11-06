@@ -1,5 +1,6 @@
 import type { Group, GroupId, JunjoEvent, Member } from "@junjo.io/shared";
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { upsertJoined, withRoleChange } from "./memberRows.js";
 import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -100,27 +101,16 @@ function reducer(state: State, action: Action): State {
 
 function applyEvent(state: State, event: JunjoEvent): State {
   switch (event.type) {
-    case "member.joined": {
-      const idx = state.members.findIndex((m) => m.userId === event.userId);
-      if (idx >= 0) {
-        const next = state.members.slice();
-        next[idx] = event.member;
-        return { ...state, members: next };
-      }
-      return { ...state, members: [...state.members, event.member] };
-    }
+    case "member.joined":
+      return { ...state, members: upsertJoined(state.members, event.member) };
     case "member.left":
       return { ...state, members: state.members.filter((m) => m.userId !== event.userId) };
     case "role.changed": {
       const idx = state.members.findIndex((m) => m.userId === event.userId);
-      if (idx < 0) return state;
       const member = state.members[idx];
       if (member === undefined) return state;
-      const removedSet = new Set<string>(event.removed);
-      const remaining = member.roles.filter((r) => !removedSet.has(r));
-      const additions = event.added.filter((r) => !remaining.includes(r));
       const next = state.members.slice();
-      next[idx] = { ...member, roles: [...remaining, ...additions] };
+      next[idx] = withRoleChange(member, event);
       return { ...state, members: next };
     }
     case "member.banned":

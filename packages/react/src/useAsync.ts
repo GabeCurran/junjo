@@ -1,10 +1,10 @@
 import type { Junjo } from "@junjo.io/sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Shared fetch + refetch core for hooks over user-scoped reads. These
-// have no per-group SSE channel (their events flow through webhooks
-// only), so consumers refetch on mutation completion or on an
-// operator-triggered refresh.
+// Shared fetch + refetch core for hooks over user-scoped reads. No
+// group stream carries their events, so consumers refetch after a
+// mutation, on an operator-triggered refresh, or from a game stream
+// handler.
 
 export interface FetchState<T> {
   data: T | null;

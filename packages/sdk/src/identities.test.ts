@@ -28,12 +28,14 @@ const gameIdentity = {
   userId: "game:7f3c",
   namespace: "game",
   linkedAt: "2026-11-01T10:00:00.000Z",
+  displayName: "Alice",
 };
 
 const webIdentity = {
   userId: "web:alice",
   namespace: "web",
   linkedAt: "2026-11-02T10:00:00.000Z",
+  displayName: null,
 };
 
 const bareIdentity = {
@@ -58,9 +60,13 @@ describe("client.identities.list", () => {
       userId: "game:7f3c",
       namespace: "game",
       linkedAt: new Date("2026-11-01T10:00:00.000Z"),
+      displayName: "Alice",
     });
     expect(identities[1]?.linkedAt).toBeInstanceOf(Date);
+    expect(identities[1]?.displayName).toBeNull();
     expect(identities[2]?.namespace).toBeNull();
+    // An item without the field (an older server) reads as no name.
+    expect(identities[2]?.displayName).toBeNull();
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
@@ -215,7 +221,12 @@ describe("client.identities.unlink", () => {
     expect(result.userId).toBe("game:7f3c");
     expect(result.unlinkedUserId).toBe("web:alice");
     expect(result.identities).toEqual([
-      { userId: "game:7f3c", namespace: "game", linkedAt: new Date(gameIdentity.linkedAt) },
+      {
+        userId: "game:7f3c",
+        namespace: "game",
+        linkedAt: new Date(gameIdentity.linkedAt),
+        displayName: "Alice",
+      },
     ]);
   });
 
@@ -226,6 +237,96 @@ describe("client.identities.unlink", () => {
     await expect(client(fetchMock).identities.unlink("web:ghost" as UserId)).rejects.toMatchObject({
       code: "not_found",
       status: 404,
+    });
+  });
+});
+
+describe("client.identities.setDisplayName", () => {
+  it("PUTs the name for exactly that id and returns the identity", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("PUT");
+      expect(new URL(req.url).pathname).toBe("/v1/users/web%3Aalice/display-name");
+      expect(await req.json()).toEqual({ displayName: "Alice" });
+      expect(req.headers.get("idempotency-key")).toBe("dn-1");
+      return jsonResponse({ ...webIdentity, displayName: "Alice" });
+    });
+    const identity = await client(fetchMock).identities.setDisplayName(
+      "web:alice" as UserId,
+      "Alice",
+      { idempotencyKey: "dn-1" },
+    );
+    expect(identity).toEqual({
+      userId: "web:alice",
+      namespace: "web",
+      linkedAt: new Date(webIdentity.linkedAt),
+      displayName: "Alice",
+    });
+  });
+
+  it("sends an explicit null to clear the name", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({ displayName: null });
+      return jsonResponse(webIdentity);
+    });
+    const identity = await client(fetchMock).identities.setDisplayName("web:alice" as UserId, null);
+    expect(identity.displayName).toBeNull();
+  });
+
+  it("surfaces bad_request for a refused name", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({ code: "bad_request", status: 400, message: "too long" }, 400),
+    );
+    await expect(
+      client(fetchMock).identities.setDisplayName("web:alice" as UserId, "x".repeat(65)),
+    ).rejects.toMatchObject({ code: "bad_request", status: 400 });
+  });
+});
+
+describe("client.identities.findByName", () => {
+  it("GETs by-name with the name encoded and decodes the matches", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("GET");
+      const u = new URL(req.url);
+      expect(u.pathname).toBe("/v1/identities/by-name");
+      expect(u.searchParams.get("name")).toBe("Steve & co");
+      expect(u.searchParams.has("namespace")).toBe(false);
+      return jsonResponse({
+        items: [
+          {
+            userId: "mc:069a",
+            displayName: "Steve & co",
+            displayNameUpdatedAt: "2026-11-09T12:00:00.000Z",
+          },
+        ],
+      });
+    });
+    const matches = await client(fetchMock).identities.findByName("Steve & co");
+    expect(matches).toEqual([
+      {
+        userId: "mc:069a",
+        displayName: "Steve & co",
+        displayNameUpdatedAt: new Date("2026-11-09T12:00:00.000Z"),
+      },
+    ]);
+  });
+
+  it("passes the namespace filter", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).searchParams.get("namespace")).toBe("mc");
+      return jsonResponse({ items: [] });
+    });
+    expect(await client(fetchMock).identities.findByName("Steve", { namespace: "mc" })).toEqual([]);
+  });
+
+  it("throws invalid_wire_data on a malformed displayNameUpdatedAt", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        items: [{ userId: "mc:1", displayName: "S", displayNameUpdatedAt: "nope" }],
+      }),
+    );
+    await expect(client(fetchMock).identities.findByName("S")).rejects.toMatchObject({
+      code: "invalid_wire_data",
+      message: expect.stringContaining("displayNameUpdatedAt"),
     });
   });
 });

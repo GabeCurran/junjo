@@ -13,8 +13,8 @@ export interface UseIdentitiesResult {
 /**
  * The linked ids of one person (`identities.list`). The endpoint
  * returns the full set in one response, so there is no pagination
- * state. Identity events are delivered by webhook only, so refetch
- * after a link or unlink. An id the game has never seen yields an
+ * state. No group stream carries identity events, so refetch after a
+ * link or unlink, or on an `identity.*` event from the game stream. An id the game has never seen yields an
  * empty list.
  */
 export function useIdentities(userId: UserId): UseIdentitiesResult {

@@ -1,7 +1,7 @@
 import type { GroupId, Invitation, Page, PageOptions } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
 import { type WireInvitation, deserializeInvitation } from "./groups.js";
-import type { HttpClient } from "./http.js";
+import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
 
 /** Options for {@link InvitationsApi.list}. */
 export interface ListInvitationsOptions extends PageOptions {
@@ -58,10 +58,11 @@ export class InvitationsApi {
     }
   }
 
-  async revoke(code: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
-    await this.http.delete<unknown>(`/v1/invitations/${encodeURIComponent(code)}`, undefined, {
-      signal: opts?.signal,
-      timeoutMs: opts?.timeoutMs,
-    });
+  async revoke(code: string, opts?: WriteOptions): Promise<void> {
+    await this.http.delete<unknown>(
+      `/v1/invitations/${encodeURIComponent(code)}`,
+      undefined,
+      writeOptions(opts),
+    );
   }
 }
