@@ -334,7 +334,7 @@ export function RelationshipsTable({ relationships, gameId, groupId }: Relations
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b border-border text-xs text-muted-foreground">
                   <th className="py-2 pr-4 text-left font-medium">Other group</th>
                   <th className="py-2 pr-4 text-left font-medium">Type</th>
                   <th className="py-2 pr-4 text-left font-medium">Since</th>

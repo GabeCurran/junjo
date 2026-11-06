@@ -222,10 +222,7 @@ export function AuditFeed({ page, query }: AuditFeedProps) {
               ))}
             </select>
             <div className="flex items-center gap-2">
-              <label
-                htmlFor={pageSizeSelectId}
-                className="text-xs uppercase tracking-wide text-muted-foreground"
-              >
+              <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
                 Rows
               </label>
               <select

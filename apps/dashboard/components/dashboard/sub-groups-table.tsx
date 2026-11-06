@@ -406,9 +406,7 @@ function ParentCard({ group, gameId }: { group: AdminGroup; gameId: string }) {
                 <Layers className="h-4 w-4" aria-hidden />
               </div>
               <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Parent
-                </span>
+                <span className="text-xs text-muted-foreground">Parent</span>
                 <span className="break-all font-mono text-sm">{group.parentGroupId}</span>
               </div>
             </div>
@@ -471,7 +469,7 @@ function ChildrenCard({
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b border-border text-xs text-muted-foreground">
                   <th className="py-2 pr-4 text-left font-medium">Name</th>
                   <th className="py-2 pr-4 text-left font-medium">Kind</th>
                   <th className="py-2 pr-4 text-right font-medium">Members</th>

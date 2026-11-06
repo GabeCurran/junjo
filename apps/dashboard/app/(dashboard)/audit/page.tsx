@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import Link from "next/link";
 
-import { Topbar } from "../../../components/dashboard/topbar";
+import { PageHeader } from "../../../components/dashboard/page-header";
 
 export const metadata = {
   title: "Audit | Junjo Dashboard",
@@ -10,7 +10,7 @@ export const metadata = {
 export default function AuditPage() {
   return (
     <>
-      <Topbar title="Audit" description="Audit logs are scoped per game." />
+      <PageHeader title="Audit" meta="Audit logs are scoped per game." />
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
           <h2 className="text-lg font-semibold">Audit logs are game-scoped</h2>

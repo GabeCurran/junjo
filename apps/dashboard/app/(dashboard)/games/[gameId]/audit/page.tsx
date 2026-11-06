@@ -12,7 +12,7 @@ import {
   resolveBefore,
   resolveSince,
 } from "../../../../../components/dashboard/game-audit-feed-helpers";
-import { Topbar } from "../../../../../components/dashboard/topbar";
+import { PageHeader } from "../../../../../components/dashboard/page-header";
 import {
   Card,
   CardContent,
@@ -218,9 +218,9 @@ export default async function GameAuditPage(props: AuditPageProps) {
 
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Audit log"
-        description="Every state change recorded across this game's groups, with action / actor / target / date-range filters and CSV export."
+        meta="Every state change recorded across this game's groups, with action / actor / target / date-range filters and CSV export."
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}`}

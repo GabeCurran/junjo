@@ -98,7 +98,7 @@ function AuditRow({ entry }: AuditRowProps) {
             </span>
           </span>
           {entry.groupSoftDeleted ? (
-            <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="rounded-full border border-border px-1.5 text-[10px] text-muted-foreground">
               soft-deleted
             </span>
           ) : null}
@@ -336,10 +336,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={actionSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={actionSelectId} className="text-xs text-muted-foreground">
               Action
             </label>
             <select
@@ -362,10 +359,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={actorInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={actorInputId} className="text-xs text-muted-foreground">
               Actor user id
             </label>
             <input
@@ -385,10 +379,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={targetInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={targetInputId} className="text-xs text-muted-foreground">
               Target id
             </label>
             <input
@@ -408,10 +399,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={pageSizeSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
               Rows per page
             </label>
             <select
@@ -438,10 +426,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
 
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={sinceInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={sinceInputId} className="text-xs text-muted-foreground">
               From (inclusive)
             </label>
             <input
@@ -458,10 +443,7 @@ export function GameAuditFeed({ page, query, gameName }: GameAuditFeedProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={endInputId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={endInputId} className="text-xs text-muted-foreground">
               To (exclusive)
             </label>
             <input

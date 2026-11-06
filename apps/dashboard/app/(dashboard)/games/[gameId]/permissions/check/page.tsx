@@ -2,8 +2,8 @@
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
+import { PageHeader } from "../../../../../../components/dashboard/page-header";
 import { PermissionCheckTester } from "../../../../../../components/dashboard/permission-check-tester";
-import { Topbar } from "../../../../../../components/dashboard/topbar";
 import { fetchAdminGame } from "../../../../../../lib/admin";
 
 interface PermissionCheckPageProps {
@@ -28,9 +28,9 @@ export default async function PermissionCheckPage(props: PermissionCheckPageProp
   const params = await props.params;
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Permission check"
-        description="Resolve a (user, group, permission) triple to debug authorization. The answer matches what your runtime junjo.can() call sees."
+        meta="Resolve a (user, group, permission) triple to debug authorization. The answer matches what your runtime junjo.can() call sees."
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}`}

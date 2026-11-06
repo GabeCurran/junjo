@@ -60,7 +60,7 @@ export function RolesTable({ roles, gameId, groupId }: RolesTableProps) {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b border-border text-xs text-muted-foreground">
                   <th className="py-2 pr-4 text-left font-medium">Name</th>
                   <th className="py-2 pr-4 text-left font-medium">Priority</th>
                   <th className="py-2 pr-4 text-left font-medium">Color</th>

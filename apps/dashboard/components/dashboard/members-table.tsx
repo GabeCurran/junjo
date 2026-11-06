@@ -359,10 +359,7 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <label
-                htmlFor={pageSizeSelectId}
-                className="text-xs uppercase tracking-wide text-muted-foreground"
-              >
+              <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
                 Rows
               </label>
               <select
@@ -403,10 +400,7 @@ export function MembersTable({ data, query, gameId, groupId }: MembersTableProps
             <table className="w-full">
               <thead>
                 {table.getHeaderGroups().map((hg) => (
-                  <tr
-                    key={hg.id}
-                    className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground"
-                  >
+                  <tr key={hg.id} className="border-b border-border text-xs text-muted-foreground">
                     {hg.headers.map((header) => (
                       <th key={header.id} className="py-2 pr-4 text-left font-medium">
                         {header.isPlaceholder

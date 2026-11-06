@@ -1,9 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
-import { KeyRound } from "lucide-react";
-
 import { type AdminApiKey, AdminDisabledError, fetchAdminApiKeys } from "../../lib/admin";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Notice, Section } from "../ui/section";
 import { CreateApiKeyDialog } from "./create-api-key-dialog";
 import { EditApiKeyDialog } from "./edit-api-key-dialog";
 import { RevokeApiKeyDialog } from "./revoke-api-key-dialog";
@@ -21,20 +19,13 @@ interface SectionShellProps {
 
 function SectionShell({ gameId, children }: SectionShellProps) {
   return (
-    <Card>
-      <CardHeader className="flex-col gap-3 space-y-0 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-0 sm:p-6">
-        <div className="min-w-0 space-y-1.5">
-          <CardTitle className="text-base">API keys</CardTitle>
-          <CardDescription>
-            Server-side keys for SDK calls. The full secret is shown exactly once on issuance.
-          </CardDescription>
-        </div>
-        <div className="flex-shrink-0">
-          <CreateApiKeyDialog gameId={gameId} />
-        </div>
-      </CardHeader>
-      <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">{children}</CardContent>
-    </Card>
+    <Section
+      title="API keys"
+      meta="The full secret is shown once, when the key is created."
+      actions={<CreateApiKeyDialog gameId={gameId} />}
+    >
+      {children}
+    </Section>
   );
 }
 
@@ -47,11 +38,7 @@ interface EmptyStateProps {
 function EmptyState({ gameId, title, body }: EmptyStateProps) {
   return (
     <SectionShell gameId={gameId}>
-      <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-card/50 p-10 text-center">
-        <KeyRound className="h-8 w-8 text-muted-foreground" aria-hidden />
-        <p className="mt-3 text-sm font-medium">{title}</p>
-        <p className="mt-1 max-w-md text-xs text-muted-foreground">{body}</p>
-      </div>
+      <Notice title={title} body={body} />
     </SectionShell>
   );
 }
@@ -64,7 +51,7 @@ interface ApiKeyRowProps {
 function ApiKeyRow({ gameId, apiKey }: ApiKeyRowProps) {
   const revoked = apiKey.revokedAt !== null;
   return (
-    <tr className="border-b border-border last:border-0">
+    <tr className="border-b border-border/60 last:border-0">
       <td className="py-3 pr-3 sm:pr-4">
         {apiKey.name ? <div className="text-sm font-medium">{apiKey.name}</div> : null}
         <span className="font-mono text-xs sm:text-sm">{apiKey.prefix}</span>
@@ -116,8 +103,8 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
       return (
         <EmptyState
           gameId={gameId}
-          title="Cross-game access is disabled"
-          body="Set JUNJO_ADMIN_TOKEN on this dashboard to load API keys."
+          title="Cross-game access is off"
+          body="Set JUNJO_ADMIN_TOKEN on the dashboard and the server to list keys."
         />
       );
     }
@@ -125,7 +112,7 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
       <EmptyState
         gameId={gameId}
         title="Could not load API keys"
-        body={err instanceof Error ? err.message : "unknown error fetching API keys"}
+        body={err instanceof Error ? err.message : "The API keys request failed."}
       />
     );
   }
@@ -135,7 +122,7 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
       <EmptyState
         gameId={gameId}
         title="No API keys yet"
-        body="Click 'Issue key' above to mint the first server-side API key for this game. The secret will be shown once on issuance and stored only as a scrypt hash."
+        body="Issue one for your game server; the SDK sends it on every call."
       />
     );
   }
@@ -143,9 +130,9 @@ export async function ApiKeysSection({ gameId }: ApiKeysSectionProps) {
   return (
     <SectionShell gameId={gameId}>
       <div className="overflow-x-auto">
-        <table className="w-full">
+        <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+            <tr className="border-b border-border text-xs text-muted-foreground">
               <th className="py-2 pr-3 text-left font-medium sm:pr-4">Key</th>
               <th className="hidden py-2 pr-4 text-left font-medium sm:table-cell">Created</th>
               <th className="hidden py-2 pr-4 text-left font-medium md:table-cell">Revoked</th>

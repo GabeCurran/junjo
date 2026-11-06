@@ -17,11 +17,11 @@ import {
   type MembersQueryState,
   MembersTable,
 } from "../../../../../../components/dashboard/members-table";
+import { PageHeader } from "../../../../../../components/dashboard/page-header";
 import { PermissionsMatrix } from "../../../../../../components/dashboard/permissions-matrix";
 import { RelationshipsTable } from "../../../../../../components/dashboard/relationships-table";
 import { RolesTable } from "../../../../../../components/dashboard/roles-table";
 import { SubGroupsTable } from "../../../../../../components/dashboard/sub-groups-table";
-import { Topbar } from "../../../../../../components/dashboard/topbar";
 import {
   Card,
   CardContent,
@@ -622,9 +622,9 @@ export default async function GroupDetailPage(props: GroupDetailPageProps) {
 
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Group detail"
-        description={getTabDescription(activeTab)}
+        meta={getTabDescription(activeTab)}
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}/groups`}

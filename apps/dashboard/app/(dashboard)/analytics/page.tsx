@@ -1,7 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import Link from "next/link";
 
-import { Topbar } from "../../../components/dashboard/topbar";
+import { PageHeader } from "../../../components/dashboard/page-header";
 
 export const metadata = {
   title: "Analytics | Junjo Dashboard",
@@ -10,9 +10,9 @@ export const metadata = {
 export default function AnalyticsPage() {
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Analytics"
-        description="Group churn, growth, member activity, and permission distributions."
+        meta="Group churn, growth, member activity, and permission distributions."
       />
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-screen-xl rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">

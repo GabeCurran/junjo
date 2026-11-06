@@ -2,7 +2,7 @@ import { ArrowLeft } from "lucide-react";
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Topbar } from "../../../../../components/dashboard/topbar";
+import { PageHeader } from "../../../../../components/dashboard/page-header";
 import { fetchAdminGame, fetchAdminGameConfig } from "../../../../../lib/admin";
 import { SettingsForm } from "./settings-form";
 
@@ -23,9 +23,9 @@ export default async function GameSettingsPage(props: PageProps) {
 
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Settings"
-        description={`Per-game configuration for ${game.name}. Toggles save on change.`}
+        meta={`Per-game configuration for ${game.name}. Toggles save on change.`}
         actions={
           <Link
             href={`/games/${encodeURIComponent(gameId)}`}

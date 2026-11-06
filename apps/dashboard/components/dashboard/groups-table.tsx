@@ -108,7 +108,7 @@ function SortHeader({ label, field, query, onChange }: SortHeaderProps) {
         onChange(field, nextOrder);
       }}
       className={cn(
-        "inline-flex items-center gap-1 text-xs uppercase tracking-wide",
+        "inline-flex items-center gap-1 text-xs",
         active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
@@ -354,10 +354,7 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <label
-              htmlFor={pageSizeSelectId}
-              className="text-xs uppercase tracking-wide text-muted-foreground"
-            >
+            <label htmlFor={pageSizeSelectId} className="text-xs text-muted-foreground">
               Rows
             </label>
             <select
@@ -391,10 +388,7 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
             <table className="w-full">
               <thead>
                 {table.getHeaderGroups().map((hg) => (
-                  <tr
-                    key={hg.id}
-                    className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground"
-                  >
+                  <tr key={hg.id} className="border-b border-border text-xs text-muted-foreground">
                     {hg.headers.map((header) => (
                       <th key={header.id} className="py-2 pr-4 text-left font-medium">
                         {header.isPlaceholder

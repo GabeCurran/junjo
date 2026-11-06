@@ -324,7 +324,7 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
           <tr className="border-b border-border bg-muted/40">
             <th
               scope="col"
-              className="sticky left-0 z-10 min-w-[12rem] bg-muted/40 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground"
+              className="sticky left-0 z-10 min-w-[12rem] bg-muted/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground"
             >
               Role
             </th>
@@ -340,7 +340,7 @@ function MatrixTable({ roles, keys, catalogKeys, pending, stateOf, onToggle }: M
                   <div className="flex flex-col gap-1">
                     <span className="truncate font-mono text-xs text-foreground">{key}</span>
                     {inCatalog ? null : (
-                      <Badge variant="outline" className="w-fit text-[10px] uppercase">
+                      <Badge variant="outline" className="w-fit text-xs">
                         Local
                       </Badge>
                     )}

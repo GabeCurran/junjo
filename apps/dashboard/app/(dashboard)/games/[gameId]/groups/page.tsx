@@ -8,7 +8,7 @@ import {
   type GroupsQueryState,
   GroupsTable,
 } from "../../../../../components/dashboard/groups-table";
-import { Topbar } from "../../../../../components/dashboard/topbar";
+import { PageHeader } from "../../../../../components/dashboard/page-header";
 import {
   Card,
   CardContent,
@@ -208,9 +208,9 @@ export default async function GroupsPage(props: GroupsPageProps) {
 
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Groups"
-        description="Search, filter, and sort every group in this game."
+        meta="Search, filter, and sort every group in this game."
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}`}

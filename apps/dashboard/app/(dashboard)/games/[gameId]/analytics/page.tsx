@@ -19,7 +19,7 @@ import { GroupGrowthChart } from "../../../../../components/analytics/group-grow
 import { MemberActivityHeatmap } from "../../../../../components/analytics/member-activity-heatmap";
 import { PermissionUsageChart } from "../../../../../components/analytics/permission-usage-chart";
 import { RoleDistributionChart } from "../../../../../components/analytics/role-distribution-chart";
-import { Topbar } from "../../../../../components/dashboard/topbar";
+import { PageHeader } from "../../../../../components/dashboard/page-header";
 import {
   Card,
   CardContent,
@@ -246,9 +246,9 @@ export default async function GameAnalyticsPage(props: AnalyticsPageProps) {
 
   return (
     <>
-      <Topbar
+      <PageHeader
         title="Analytics"
-        description="Group churn, growth over time, member activity, and role / permission distributions."
+        meta="Group churn, growth over time, member activity, and role / permission distributions."
         actions={
           <Link
             href={`/games/${encodeURIComponent(params.gameId)}`}
