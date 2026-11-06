@@ -1,0 +1,134 @@
+package io.junjo.sdk.internal;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import io.junjo.sdk.JunjoException;
+import io.junjo.sdk.events.EventType;
+import io.junjo.sdk.events.JunjoEvent;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+class SseAndDecoderTest {
+    static SseReader reader(String text) {
+        return new SseReader(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)), 4096);
+    }
+
+    @Test
+    void parsesEventAndHeartbeatFrames() throws IOException {
+        SseReader r = reader("event: game.user.banned\ndata: {\"a\":1}\nid: 42\n\n"
+                + ":heartbeat\nid: 57\n\n"
+                + ":heartbeat\n\n"
+                + "data: one\ndata: two\n\n");
+        SseReader.Frame f1 = r.next();
+        assertEquals("game.user.banned", f1.event());
+        assertEquals("{\"a\":1}", f1.data());
+        assertEquals("42", f1.id());
+        SseReader.Frame hb = r.next();
+        assertNull(hb.data());
+        assertNull(hb.event());
+        assertEquals("57", hb.id(), "a heartbeat's id-only frame carries the position");
+        SseReader.Frame multi = r.next();
+        assertEquals("one\ntwo", multi.data(), "a comment-only heartbeat yields no frame");
+        assertNull(r.next());
+    }
+
+    @Test
+    void acceptsCrLfAndBareCrAndNoSpaceAfterColon() throws IOException {
+        SseReader r = reader("id:5\r\ndata:x\r\n\r\nid: 6\rdata: y\r\r");
+        SseReader.Frame a = r.next();
+        assertEquals("5", a.id());
+        assertEquals("x", a.data());
+        SseReader.Frame b = r.next();
+        assertEquals("6", b.id());
+        assertEquals("y", b.data());
+        assertNull(r.next());
+    }
+
+    @Test
+    void discardsAPartialTrailingFrame() throws IOException {
+        SseReader r = reader("id: 1\n\nid: 2\ndata: half");
+        assertEquals("1", r.next().id());
+        assertNull(r.next());
+    }
+
+    @Test
+    void capsTheFrameSize() {
+        StringBuilder big = new StringBuilder("data: ");
+        big.append("x".repeat(5000));
+        SseReader r = reader(big + "\n\n");
+        JunjoException e = assertThrows(JunjoException.class, r::next);
+        assertEquals(JunjoException.INVALID_WIRE_DATA, e.code());
+    }
+
+    static String event(String type, String fields) {
+        return """
+                {"type":"%s","id":"e1","gameId":"gm","occurredAt":"2026-11-06T12:00:00.000Z",%s}"""
+                .formatted(type, fields);
+    }
+
+    @Test
+    void decodesKnownTypesWithVersions() {
+        JunjoEvent.MemberUpdated mu = assertInstanceOf(JunjoEvent.MemberUpdated.class, EventDecoder.decode(event(
+                "member.updated", """
+                "groupId":"g","userId":"ns:u","changed":["overrides"],"memberVersion":9""")));
+        assertEquals(9, mu.memberVersion());
+        assertEquals(List.of("overrides"), mu.changed());
+        assertEquals("e1", mu.id());
+        assertEquals(EventType.MEMBER_UPDATED, mu.type());
+
+        JunjoEvent.GameUserBanned gb = assertInstanceOf(JunjoEvent.GameUserBanned.class, EventDecoder.decode(event(
+                "game.user.banned", """
+                "junjoUserId":"j","userId":"ns:u","reason":"r","expiresAt":null,"moderationVersion":3""")));
+        assertEquals(3, gb.moderationVersion());
+        assertNull(gb.expiresAt());
+
+        JunjoEvent.RoleChanged rc = assertInstanceOf(JunjoEvent.RoleChanged.class, EventDecoder.decode(event(
+                "role.changed", """
+                "groupId":"g","userId":"u","added":["r"],"removed":[],"actorUserId":null""")));
+        assertEquals(0, rc.memberVersion(), "an event without a member version reads as 0");
+    }
+
+    @Test
+    void decodesSanctionAndIdentityEvents() {
+        JunjoEvent.GameUserSanctioned s = assertInstanceOf(JunjoEvent.GameUserSanctioned.class,
+                EventDecoder.decode(event("game.user.sanctioned", """
+                        "userId":"ns:u","sanctionType":"mute","reason":null,"expiresAt":"2026-11-09T13:00:00Z",
+                        "moderationVersion":5""")));
+        assertEquals("mute", s.sanctionType());
+        assertEquals(5, s.moderationVersion());
+        JunjoEvent.GameUserUnsanctioned u = assertInstanceOf(JunjoEvent.GameUserUnsanctioned.class,
+                EventDecoder.decode(event("game.user.unsanctioned", """
+                        "userId":"ns:u","sanctionType":"mute","moderationVersion":6""")));
+        assertEquals(6, u.moderationVersion());
+        JunjoEvent.IdentityUpdated i = assertInstanceOf(JunjoEvent.IdentityUpdated.class,
+                EventDecoder.decode(event("identity.updated", """
+                        "userId":"ns:u","changedUserId":"web:u","displayName":"Steve","changed":["displayName"]""")));
+        assertEquals("web:u", i.changedUserId());
+        assertEquals(List.of("displayName"), i.changed());
+    }
+
+    @Test
+    void everyEventTypeRoundTripsItsWireName() {
+        for (EventType t : EventType.values()) assertEquals(t, EventType.fromWire(t.wire()).orElseThrow());
+        assertTrue(EventType.fromWire("future.thing").isEmpty());
+    }
+
+    @Test
+    void unknownTypeDecodesToNull() {
+        assertNull(EventDecoder.decode(event("future.thing", "\"x\":1")));
+    }
+
+    @Test
+    void malformedEventIsInvalidWireData() {
+        JunjoException e = assertThrows(JunjoException.class,
+                () -> EventDecoder.decode(event("member.updated", "\"x\":1")));
+        assertEquals(JunjoException.INVALID_WIRE_DATA, e.code());
+    }
+}
