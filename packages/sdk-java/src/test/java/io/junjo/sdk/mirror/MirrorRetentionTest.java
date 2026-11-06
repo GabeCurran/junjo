@@ -279,7 +279,8 @@ class MirrorRetentionTest {
         down.set(false);
         await(() -> mirror.can("ns:u1", "g1", "area.door") == Answer.NO, "the fresh access");
         assertEquals(6, mirror.access("ns:u1", "g1").orElseThrow().version());
-        assertTrue(changes.contains(new MirrorChange(MirrorChange.Kind.ACCESS, "ns:u1", "g1")));
+        // The change is reported just after the state that holds it is published.
+        await(() -> changes.contains(new MirrorChange(MirrorChange.Kind.ACCESS, "ns:u1", "g1")), "the change");
     }
 
     @Test

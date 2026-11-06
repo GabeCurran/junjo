@@ -16,6 +16,7 @@ import io.junjo.sdk.internal.Safe;
 import io.junjo.sdk.internal.Threads;
 import io.junjo.sdk.internal.Transport;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -46,7 +47,16 @@ import java.util.function.Consumer;
  * <p>Durability: {@link #enqueue} appends the entry to a journal and forces it to disk before
  * returning, so an entry the caller saw accepted is never lost; when the force fails the append
  * is rolled back and {@code enqueue} throws. Every journal line carries a CRC32 of its text.
- * Completion appends a {@code done} record. On open the journal is replayed and compacted:
+ * Concurrent enqueues share forces: one force covers every entry written before it began, and the
+ * force runs outside the queue's lock, so neither other enqueues nor the drain wait on the disk.
+ * {@code enqueue} still blocks for one force, so call it from a thread that may wait on the disk,
+ * not from one that must never stall.
+ *
+ * <p>Completion appends a {@code done} record. A success's done record is not forced on its own:
+ * the next force, or closing the queue, carries it to disk. One lost to a crash first only makes
+ * the entry pending again, and it is resent with its idempotency key. The done record of a
+ * conflict or a refusal is forced, so a refused entry is not dead-lettered twice. On open the
+ * journal is replayed and compacted:
  * rewritten with only the pending entries to a temporary file that is forced, atomically moved
  * over the journal, and followed by a force of the directory. When the file system cannot move
  * atomically the old journal is kept and an ERROR is logged; it stays correct, only larger.
@@ -104,11 +114,28 @@ public final class WriteQueue implements AutoCloseable {
     private final Object lock = new Object();
     private final Deque<Entry> queue = new ArrayDeque<>();
     private FileChannel channel;
+    // Journal bookkeeping, under the lock. written is the journal's length including lines not
+    // forced yet, durable the length a completed force covers. A failed force truncates the
+    // journal back to durable and starts a new epoch, which fails every line written in the old
+    // one that was not durable yet. unforced holds the entries written but not yet covered by a
+    // force, in journal order; they join the queue, still in that order, once one covers them.
+    private long written;
+    private long durable;
+    private int epoch;
+    private boolean forcing;
+    private IOException forceFailure;
+    private final Deque<Unforced> unforced = new ArrayDeque<>();
     private int doneSinceCompact;
     private boolean accepting;
     private boolean stopNow;
     private CompletableFuture<HttpResult> inFlight;
     private Thread drainThread;
+
+    // An entry whose put record ends at byte end of the journal.
+    private record Unforced(Entry entry, long end) {}
+
+    // Where one record ends: the journal length after it, and the epoch it was written in.
+    private record Mark(long end, int epoch) {}
 
     /** One pending entry. {@code idempotencyKey} is sent with every attempt. */
     public record Entry(String id, String idempotencyKey, QueuedWrite write, Instant enqueuedAt) {}
@@ -145,7 +172,8 @@ public final class WriteQueue implements AutoCloseable {
     // ------------------------------------------------------------------ public API
 
     /**
-     * Appends a write. Returns only after the entry is forced to disk.
+     * Appends a write. Returns only after the entry is forced to disk, which blocks the calling
+     * thread for one force; enqueues from several threads share forces.
      *
      * @throws IOException when the journal cannot be written or forced; the entry is then not
      *     queued
@@ -154,12 +182,13 @@ public final class WriteQueue implements AutoCloseable {
     public Entry enqueue(QueuedWrite write) throws IOException {
         Objects.requireNonNull(write, "write");
         Entry entry = new Entry(UUID.randomUUID().toString(), UUID.randomUUID().toString(), write, Instant.now());
+        Mark mark;
         synchronized (lock) {
             if (!accepting) throw new IllegalStateException("write queue is closed");
-            append(putRecord(entry));
-            queue.addLast(entry);
-            lock.notifyAll();
+            mark = write(putRecord(entry));
+            unforced.addLast(new Unforced(entry, mark.end()));
         }
+        forceThrough(mark);
         return entry;
     }
 
@@ -240,6 +269,13 @@ public final class WriteQueue implements AutoCloseable {
         if (current != null) current.cancel(true);
         if (t != null) t.join(DRAIN_STOP_WAIT.toMillis());
         synchronized (lock) {
+            // An enqueue accepted before closing may still be forcing; its outcome comes first.
+            long deadline = System.nanoTime() + DRAIN_STOP_WAIT.toNanos();
+            while (forcing || !unforced.isEmpty()) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0) break;
+                TimeUnit.NANOSECONDS.timedWait(lock, left);
+            }
             closeChannel();
             return flushed && queue.isEmpty();
         }
@@ -324,22 +360,23 @@ public final class WriteQueue implements AutoCloseable {
         }
         channel = FileChannel.open(journal, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                 StandardOpenOption.APPEND);
+        written = channel.size();
+        durable = written;
         doneSinceCompact = 0;
     }
 
-    // Appends one record and forces it to disk. Called with the lock held. A failed write or force
-    // rolls the file back to its previous length, so a record the caller was told failed cannot
-    // be replayed later.
-    private void append(String json) throws IOException {
+    // Appends one record without forcing it. Called with the lock held. A failed write rolls the
+    // file back to its previous length, so a record the caller was told failed cannot be
+    // replayed later.
+    private Mark write(String json) throws IOException {
         if (channel == null) throw new IOException("write queue journal is closed");
-        long before = channel.size();
+        ByteBuffer buf = ByteBuffer.wrap(DurableFiles.line(json).getBytes(StandardCharsets.UTF_8));
+        int length = buf.remaining();
         try {
-            DurableFiles.writeFully(channel, DurableFiles.line(json));
-            disk.force(channel);
+            while (buf.hasRemaining()) channel.write(buf);
         } catch (IOException e) {
             try {
-                channel.truncate(before);
-                disk.force(channel);
+                channel.truncate(written);
             } catch (IOException rollback) {
                 e.addSuppressed(rollback);
                 Safe.log(logger, JunjoLogger.Level.ERROR,
@@ -347,6 +384,83 @@ public final class WriteQueue implements AutoCloseable {
             }
             throw e;
         }
+        written += length;
+        return new Mark(written, epoch);
+    }
+
+    // Returns once a force covers the record, forcing the journal itself when no other thread is.
+    // Called without the lock. The force runs outside the lock and covers everything written
+    // before it began, so threads that wrote meanwhile share the next one. Throws when a force
+    // failed before the record was covered: the record was then rolled back. Interrupts are
+    // remembered, not acted on, because the outcome must be known before returning.
+    private void forceThrough(Mark mark) throws IOException {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                FileChannel ch;
+                long target;
+                synchronized (lock) {
+                    while (true) {
+                        if (epoch != mark.epoch()) {
+                            throw new IOException("the write queue journal could not be forced", forceFailure);
+                        }
+                        if (durable >= mark.end()) return;
+                        if (!forcing) break;
+                        try {
+                            lock.wait();
+                        } catch (InterruptedException e) {
+                            interrupted = true;
+                        }
+                    }
+                    forcing = true;
+                    ch = channel;
+                    target = written;
+                }
+                IOException failure = null;
+                try {
+                    if (ch == null) throw new IOException("write queue journal is closed");
+                    disk.force(ch);
+                } catch (IOException e) {
+                    failure = e;
+                } catch (RuntimeException e) {
+                    failure = new IOException("the write queue journal force failed", e);
+                }
+                synchronized (lock) {
+                    forcing = false;
+                    if (failure == null) {
+                        durable = target;
+                        while (!unforced.isEmpty() && unforced.peekFirst().end() <= target) {
+                            queue.addLast(unforced.pollFirst().entry());
+                        }
+                    } else {
+                        rollBack(failure);
+                    }
+                    lock.notifyAll();
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    // After a failed force: drops every line that no force covered, and fails their writers.
+    // Called with the lock held. The done records among them only make their entries pending
+    // again on the next open, where they are resent with their idempotency keys.
+    private void rollBack(IOException failure) {
+        try {
+            if (channel != null) {
+                channel.truncate(durable);
+                disk.force(channel);
+            }
+        } catch (IOException | RuntimeException rollback) {
+            failure.addSuppressed(rollback);
+            Safe.log(logger, JunjoLogger.Level.ERROR,
+                    "write queue journal rollback failed; the record may be replayed", rollback);
+        }
+        written = durable;
+        epoch++;
+        forceFailure = failure;
+        unforced.clear();
     }
 
     private void appendDeadLetter(String json) throws IOException {
@@ -357,8 +471,17 @@ public final class WriteQueue implements AutoCloseable {
         }
     }
 
+    // Forces what is written, the unforced done records among it, then closes the journal.
     private void closeChannel() {
         if (channel == null) return;
+        if (!forcing && written > durable) {
+            try {
+                disk.force(channel);
+                durable = written;
+            } catch (IOException e) {
+                Safe.log(logger, JunjoLogger.Level.WARN, "forcing the write queue journal at close failed", e);
+            }
+        }
         try {
             channel.close();
         } catch (IOException e) {
@@ -563,32 +686,40 @@ public final class WriteQueue implements AutoCloseable {
             case REJECTED -> onRejected;
             default -> onSuccess;
         };
-        synchronized (lock) {
-            if (r.kind() != Kind.SUCCESS) {
-                try {
-                    appendDeadLetter(deadRecord(head, outcome, r.status(), r.body()));
-                } catch (IOException ex) {
-                    Safe.log(logger, JunjoLogger.Level.ERROR,
-                            "write queue dead-letter write failed; the entry stays queued", ex);
-                    Safe.accept(logger, "onError", onError, ex);
-                    return false;
-                }
-            }
+        // Only the drain thread writes the dead-letter file once the queue is open, so it needs no lock.
+        if (r.kind() != Kind.SUCCESS) {
             try {
-                append(doneRecord(head, outcome));
+                appendDeadLetter(deadRecord(head, outcome, r.status(), r.body()));
+            } catch (IOException ex) {
+                Safe.log(logger, JunjoLogger.Level.ERROR,
+                        "write queue dead-letter write failed; the entry stays queued", ex);
+                Safe.accept(logger, "onError", onError, ex);
+                return false;
+            }
+        }
+        Mark mark = null;
+        synchronized (lock) {
+            try {
+                mark = write(doneRecord(head, outcome));
                 doneSinceCompact++;
             } catch (IOException ex) {
-                // The done record did not reach disk; the entry leaves memory anyway so the queue
-                // moves on, and a restart resends it with the same idempotency key.
-                Safe.log(logger, JunjoLogger.Level.ERROR, "write queue journal write failed", ex);
-                Safe.accept(logger, "onError", onError, ex);
+                journalWriteFailed(ex);
+            }
+        }
+        if (mark != null && r.kind() != Kind.SUCCESS) {
+            try {
+                forceThrough(mark);
+            } catch (IOException ex) {
+                journalWriteFailed(ex);
             }
         }
         Safe.accept(logger, "on" + Character.toUpperCase(outcome.charAt(0)) + outcome.substring(1), cb,
                 new Outcome(head, r.status(), r.error()));
         synchronized (lock) {
             queue.pollFirst();
-            if (doneSinceCompact >= compactThreshold) {
+            // Compaction rewrites the queue only, so it waits while an enqueue's put is not
+            // covered by a force yet; a later completion tries again.
+            if (doneSinceCompact >= compactThreshold && !forcing && unforced.isEmpty()) {
                 try {
                     rewrite();
                 } catch (IOException ex) {
@@ -599,6 +730,13 @@ public final class WriteQueue implements AutoCloseable {
             lock.notifyAll();
         }
         return true;
+    }
+
+    // The done record did not reach disk; the entry leaves memory anyway so the queue moves on,
+    // and a restart resends it with the same idempotency key.
+    private void journalWriteFailed(IOException ex) {
+        Safe.log(logger, JunjoLogger.Level.ERROR, "write queue journal write failed", ex);
+        Safe.accept(logger, "onError", onError, ex);
     }
 
     // ------------------------------------------------------------------ builder

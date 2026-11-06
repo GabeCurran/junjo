@@ -219,6 +219,60 @@ class GameMirrorTest {
         assertTrue(changes.contains(new MirrorChange(MirrorChange.Kind.ACCESS, "ns:u1", "g1")));
     }
 
+    int queuedApplierTasks() throws Exception {
+        java.lang.reflect.Field f = GameMirror.class.getDeclaredField("applierQueue");
+        f.setAccessible(true);
+        return ((java.util.Collection<?>) f.get(mirror)).size();
+    }
+
+    @Test
+    void aBurstOfEventsSharesOneGraphReloadAndOneBatchedMemberRead() throws Exception {
+        startAndTrack();
+        join(mirror.track("ns:u2", "g1"));
+        join(mirror.track("ns:u3", "g1"));
+        String graphPath = "/v1/groups/g1/role-graph";
+        String batchPath = "/v1/groups/g1/members/access";
+        int graphs = server.requests("GET", graphPath).size();
+        String position = mirror.position();
+
+        // A slow batched read holds the applier while the burst queues up behind it.
+        CompletableFuture<Void> slow = mirror.track("ns:slow", "g1");
+        await(() -> server.requests("POST", batchPath).stream().anyMatch(r -> r.body().contains("ns:slow")),
+                "the slow read started");
+        int batches = server.requests("POST", batchPath).size();
+        for (int i = 0; i < 5; i++) {
+            push("permission.granted", String.valueOf(11 + i),
+                    "\"groupId\":\"g1\",\"roleId\":\"vip\",\"permission\":\"p" + i + "\"");
+        }
+        String[] users = {"ns:u1", "ns:u2", "ns:u3"};
+        for (int i = 0; i < users.length; i++) {
+            push("role.changed", String.valueOf(16 + i), "\"groupId\":\"g1\",\"userId\":\"" + users[i]
+                    + "\",\"added\":[\"vip\"],\"removed\":[],\"actorUserId\":null");
+        }
+        await(() -> {
+            try {
+                return queuedApplierTasks() >= 8;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }, "the burst is queued");
+        CompletableFuture<Void> barrier = mirror.sync();
+        changes.clear();
+        assertEquals(position, mirror.position(), "nothing of the burst is applied yet");
+        slowRelease.countDown();
+        join(slow);
+        join(barrier);
+
+        // The barrier runs after the deferred reloads, and the position covers the whole burst.
+        assertEquals("18", mirror.position());
+        assertEquals(graphs + 1, server.requests("GET", graphPath).size(), "one graph reload for five grants");
+        List<FakeServer.Req> reads = server.requests("POST", batchPath);
+        assertEquals(batches + 1, reads.size(), "one batched read for three members");
+        for (String u : users) assertTrue(reads.get(reads.size() - 1).body().contains(u), u);
+        assertTrue(changes.contains(new MirrorChange(MirrorChange.Kind.ROLE_GRAPH, null, "g1")));
+        assertEquals(Answer.YES, mirror.can("ns:u1", "g1", "area.door"));
+    }
+
     @Test
     void readAccessorsExposeTheLoadedState() throws Exception {
         startAndTrack();

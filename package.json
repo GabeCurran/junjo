@@ -35,7 +35,7 @@
     "prepare": "simple-git-hooks"
   },
   "simple-git-hooks": {
-    "pre-commit": "npx biome check --staged --no-errors-on-unmatched",
+    "pre-commit": "npx --no-install @biomejs/biome check --staged --no-errors-on-unmatched",
     "commit-msg": "node scripts/check-commit-msg.mjs $1"
   },
   "devDependencies": {
