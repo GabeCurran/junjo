@@ -1,6 +1,7 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 import { Suspense } from "react";
 
+import { LiveRefresh } from "../../../components/dashboard/live-refresh";
 import { PageHeader } from "../../../components/dashboard/page-header";
 import { RecentActivityFeed } from "../../../components/dashboard/recent-activity-feed";
 import { StatsCards } from "../../../components/dashboard/stats-cards";
@@ -24,9 +25,12 @@ export default function DashboardHomePage() {
             <StatsCards />
           </Suspense>
           <section aria-labelledby="activity-heading" className="max-w-3xl">
-            <h2 id="activity-heading" className="mb-3 text-lg font-semibold">
-              Recent activity
-            </h2>
+            <div className="mb-3 flex items-center justify-between gap-4">
+              <h2 id="activity-heading" className="text-lg font-semibold">
+                Recent activity
+              </h2>
+              <LiveRefresh storageKey="junjo.live.overview" />
+            </div>
             <Suspense fallback={<Placeholder className="h-64 w-full" />}>
               <RecentActivityFeed />
             </Suspense>

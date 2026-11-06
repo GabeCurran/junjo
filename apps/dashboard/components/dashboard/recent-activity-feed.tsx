@@ -6,7 +6,7 @@ import { ActivityLine } from "./activity-line";
 export async function RecentActivityFeed() {
   let entries: AdminAuditEntry[];
   try {
-    entries = (await fetchRecentAudit(30)).items;
+    entries = (await fetchRecentAudit(30, { revalidate: 0 })).items;
   } catch (err) {
     if (err instanceof AdminDisabledError) {
       return (

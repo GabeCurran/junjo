@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { ActivityLine } from "../../../../components/dashboard/activity-line";
 import { ApiKeysSection } from "../../../../components/dashboard/api-keys-section";
 import { GameFigures } from "../../../../components/dashboard/game-detail-header";
+import { LiveRefresh } from "../../../../components/dashboard/live-refresh";
 import { PageHeader } from "../../../../components/dashboard/page-header";
 import { Notice, Section } from "../../../../components/ui/section";
 import {
@@ -37,7 +38,7 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 
 async function GameActivity({ game }: { game: AdminGame }) {
   try {
-    const page = await fetchAdminGameAudit(game.id, { limit: 15 });
+    const page = await fetchAdminGameAudit(game.id, { limit: 15 }, { revalidate: 0 });
     if (page.items.length === 0) {
       return <Notice title="No activity yet" body="Changes in this game show up here." />;
     }
@@ -117,9 +118,12 @@ export default async function GameDetailPage(props: GameDetailPageProps) {
             <Section
               title="Recent activity"
               actions={
-                <Link href={`${base}/audit`} className="text-sm text-primary hover:underline">
-                  Full audit log
-                </Link>
+                <>
+                  <LiveRefresh storageKey={`junjo.live.${game.id}`} />
+                  <Link href={`${base}/audit`} className="text-sm text-primary hover:underline">
+                    Full audit log
+                  </Link>
+                </>
               }
             >
               <Suspense fallback={<div className="h-48 animate-pulse rounded bg-muted" />}>
