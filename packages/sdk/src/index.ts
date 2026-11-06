@@ -4,6 +4,7 @@ import type {
   GroupId,
   PermissionCheckRequest,
   PermissionCheckResult,
+  PermissionContext,
   PermissionKey,
   PermissionSource,
   RoleId,
@@ -21,6 +22,7 @@ import { IdentitiesApi } from "./identities.js";
 import { InvitationsApi } from "./invitations.js";
 import { MembersApi } from "./members.js";
 import { PermissionCache, type PermissionCacheOptions } from "./permissionCache.js";
+import { appendContextParams, hasContext, wireContext } from "./permissionContext.js";
 import { RolesApi } from "./roles.js";
 import { SanctionsApi } from "./sanctions.js";
 import { WebhooksApi } from "./webhooks.js";
@@ -146,6 +148,7 @@ interface WirePermissionCheckResult {
   source: PermissionSource;
   viaRoleId?: string;
   viaGroupId?: string;
+  context?: Record<string, string>;
 }
 
 function deserializeCheckResult(wire: WirePermissionCheckResult): PermissionCheckResult {
@@ -155,11 +158,25 @@ function deserializeCheckResult(wire: WirePermissionCheckResult): PermissionChec
   };
   if (wire.viaRoleId !== undefined) result.viaRoleId = wire.viaRoleId as RoleId;
   if (wire.viaGroupId !== undefined) result.viaGroupId = wire.viaGroupId as GroupId;
+  const context = wireContext(wire.context);
+  if (context) result.context = context;
   return result;
 }
 
-/** Shared options for the permission-check methods. */
-export interface CheckOptions {
+// The request shape of one batch entry: only the fields the route
+// accepts, with `context` only when non-empty.
+function serializeCheckRequest(c: PermissionCheckRequest): PermissionCheckRequest {
+  const out: PermissionCheckRequest = {
+    userId: c.userId,
+    groupId: c.groupId,
+    permission: c.permission,
+  };
+  if (hasContext(c.context)) out.context = c.context;
+  return out;
+}
+
+/** Options for {@link Junjo.checkBatch}. */
+export interface CheckBatchOptions {
   /**
    * Resolve against the group's parents too, nearest first, stopping at
    * the first group that decides. Off by default: a check answers for
@@ -168,6 +185,17 @@ export interface CheckOptions {
   inherit?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
+}
+
+/** Options for {@link Junjo.check} and {@link Junjo.can}. */
+export interface CheckOptions extends CheckBatchOptions {
+  /**
+   * The check's context, sent as `context.<key>=<value>` query
+   * parameters. Absent or empty means only global entries apply.
+   * Answers are cached per canonical context, so values that differ
+   * only in ASCII case share one answer.
+   */
+  context?: PermissionContext;
 }
 
 /** Maximum entries the server accepts in one {@link Junjo.checkBatch}. */
@@ -287,12 +315,13 @@ export class Junjo {
     opts?: CheckOptions,
   ): Promise<PermissionCheckResult> {
     const inherit = opts?.inherit ?? false;
-    const key = this.permissionCache.key(userId, groupId, permission, inherit);
+    const key = this.permissionCache.key(userId, groupId, permission, inherit, opts?.context);
     const cached = this.permissionCache.get(key);
     if (cached) return cached;
 
     const params = new URLSearchParams({ userId, groupId, permission });
     if (inherit) params.set("inherit", "true");
+    appendContextParams(params, opts?.context);
 
     let wire: WirePermissionCheckResult;
     try {
@@ -314,7 +343,9 @@ export class Junjo {
   /**
    * Resolves many checks in one round-trip
    * (POST /v1/permissions/check-batch). Results come back positionally:
-   * `results[i]` answers `checks[i]`.
+   * `results[i]` answers `checks[i]`. Each entry carries its own
+   * optional `context`; absent or empty means only global entries apply
+   * to that entry.
    *
    * Cached entries are answered locally and only the remainder is sent,
    * so a partially warm batch still costs at most one request. An
@@ -324,14 +355,14 @@ export class Junjo {
    */
   async checkBatch(
     checks: PermissionCheckRequest[],
-    opts?: CheckOptions,
+    opts?: CheckBatchOptions,
   ): Promise<PermissionCheckResult[]> {
     if (checks.length === 0) return [];
     const inherit = opts?.inherit ?? false;
 
     const results = new Array<PermissionCheckResult | undefined>(checks.length);
     const keys = checks.map((c) =>
-      this.permissionCache.key(c.userId, c.groupId, c.permission, inherit),
+      this.permissionCache.key(c.userId, c.groupId, c.permission, inherit, c.context),
     );
     const pending: number[] = [];
     for (let i = 0; i < checks.length; i++) {
@@ -346,7 +377,7 @@ export class Junjo {
     for (let offset = 0; offset < pending.length; offset += CHECK_BATCH_MAX_ENTRIES) {
       const slice = pending.slice(offset, offset + CHECK_BATCH_MAX_ENTRIES);
       const body: { checks: PermissionCheckRequest[]; inherit?: boolean } = {
-        checks: slice.map((i) => checks[i] as PermissionCheckRequest),
+        checks: slice.map((i) => serializeCheckRequest(checks[i] as PermissionCheckRequest)),
       };
       if (inherit) body.inherit = true;
 
@@ -525,6 +556,7 @@ export {
   DEFAULT_STALE_WHILE_RATE_LIMITED_MS,
 } from "./permissionCache.js";
 export type { PermissionCacheOptions } from "./permissionCache.js";
+export { permissionContextKey } from "./permissionContext.js";
 export { RolesApi } from "./roles.js";
 export type { RoleList } from "./roles.js";
 export { SanctionsApi } from "./sanctions.js";
@@ -588,6 +620,8 @@ export type {
   PermissionCheckBatchResult,
   PermissionCheckRequest,
   PermissionCheckResult,
+  PermissionContext,
+  PermissionEntry,
   PermissionKey,
   PermissionSource,
   Role,

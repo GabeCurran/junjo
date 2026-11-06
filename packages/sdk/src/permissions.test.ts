@@ -394,3 +394,122 @@ describe("junjo.checkBatch", () => {
     expect(results[1]).toMatchObject({ allowed: false });
   });
 });
+
+describe("permission checks with a context", () => {
+  const ALICE = "user_alice" as UserId;
+  const GROUP = "grp_net" as GroupId;
+  const FLY = "essentials.fly" as PermissionKey;
+
+  function client(fetchMock: unknown, cache = false) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+      permissionCache: { enabled: cache },
+    });
+  }
+
+  it("sends context.<key> query params and decodes the deciding context", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const url = new URL(req.url);
+      expect(url.searchParams.get("context.world")).toBe("Creative");
+      expect(url.searchParams.get("context.server")).toBe("eu");
+      return jsonResponse({
+        allowed: true,
+        source: "role",
+        viaRoleId: "role_admin",
+        context: { world: "creative" },
+      });
+    });
+    const result = await client(fetchMock).check(ALICE, GROUP, FLY, {
+      context: { world: "Creative", server: "eu" },
+    });
+    expect(result).toEqual({
+      allowed: true,
+      source: "role",
+      viaRoleId: "role_admin",
+      context: { world: "creative" },
+    });
+  });
+
+  it("sends no context params and no result context for a global check", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const names = [...new URL(req.url).searchParams.keys()];
+      expect(names.some((n) => n.startsWith("context."))).toBe(false);
+      return jsonResponse({ allowed: false, source: "none" });
+    });
+    const result = await client(fetchMock).check(ALICE, GROUP, FLY, { context: {} });
+    expect(result).not.toHaveProperty("context");
+  });
+
+  it("passes the context through can()", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).searchParams.get("context.world")).toBe("creative");
+      return jsonResponse({ allowed: true, source: "role", context: { world: "creative" } });
+    });
+    expect(await client(fetchMock).can(ALICE, GROUP, FLY, { context: { world: "creative" } })).toBe(
+      true,
+    );
+  });
+
+  it("caches per canonical context", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const world = new URL(req.url).searchParams.get("context.world");
+      return jsonResponse({ allowed: world?.toLowerCase() === "creative", source: "role" });
+    });
+    const junjo = client(fetchMock, true);
+    expect(await junjo.can(ALICE, GROUP, FLY, { context: { world: "creative" } })).toBe(true);
+    expect(await junjo.can(ALICE, GROUP, FLY, { context: { world: "Creative" } })).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await junjo.can(ALICE, GROUP, FLY, { context: { world: "survival" } })).toBe(false);
+    expect(await junjo.can(ALICE, GROUP, FLY)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("checkBatch sends each entry's context and only the route's fields", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as { checks: unknown[] };
+      expect(body.checks).toEqual([
+        { userId: ALICE, groupId: GROUP, permission: FLY, context: { world: "creative" } },
+        { userId: ALICE, groupId: GROUP, permission: FLY },
+        { userId: ALICE, groupId: GROUP, permission: FLY },
+      ]);
+      return jsonResponse({
+        results: [
+          { allowed: true, source: "role", context: { world: "creative" } },
+          { allowed: false, source: "role" },
+          { allowed: false, source: "role" },
+        ],
+      });
+    });
+    const results = await client(fetchMock).checkBatch([
+      { userId: ALICE, groupId: GROUP, permission: FLY, context: { world: "creative" } },
+      { userId: ALICE, groupId: GROUP, permission: FLY },
+      { userId: ALICE, groupId: GROUP, permission: FLY, context: {} },
+    ]);
+    expect(results[0]?.context).toEqual({ world: "creative" });
+    expect(results[1]).not.toHaveProperty("context");
+  });
+
+  it("checkBatch shares the cache with check per context", async () => {
+    let batches = 0;
+    const fetchMock = makeFetch(async (req) => {
+      if (new URL(req.url).pathname === "/v1/permissions/check") {
+        return jsonResponse({ allowed: true, source: "role" });
+      }
+      batches++;
+      const body = (await req.json()) as { checks: { context?: unknown }[] };
+      expect(body.checks).toHaveLength(1);
+      expect(body.checks[0]?.context).toEqual({ world: "nether" });
+      return jsonResponse({ results: [{ allowed: false, source: "role" }] });
+    });
+    const junjo = client(fetchMock, true);
+    await junjo.check(ALICE, GROUP, FLY, { context: { world: "Creative" } });
+    const results = await junjo.checkBatch([
+      { userId: ALICE, groupId: GROUP, permission: FLY, context: { world: "creative" } },
+      { userId: ALICE, groupId: GROUP, permission: FLY, context: { world: "nether" } },
+    ]);
+    expect(batches).toBe(1);
+    expect(results.map((r) => r.allowed)).toEqual([true, false]);
+  });
+});

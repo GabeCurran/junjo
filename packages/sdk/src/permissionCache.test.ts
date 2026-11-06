@@ -52,6 +52,22 @@ describe("PermissionCache", () => {
     expect(cache.key("u", "g", "p", true)).not.toBe(cache.key("u", "g", "p", false));
   });
 
+  it("keys each canonical context separately", () => {
+    const cache = new PermissionCache();
+    const global = cache.key("u", "g", "p", false);
+    expect(cache.key("u", "g", "p", false, {})).toBe(global);
+    expect(cache.key("u", "g", "p", false, { world: "nether" })).not.toBe(global);
+    expect(cache.key("u", "g", "p", false, { world: "Nether" })).toBe(
+      cache.key("u", "g", "p", false, { world: "nether" }),
+    );
+    expect(cache.key("u", "g", "p", false, { world: "a", server: "b" })).toBe(
+      cache.key("u", "g", "p", false, { server: "b", world: "a" }),
+    );
+    expect(cache.key("u", "g", "p", false, { world: "end" })).not.toBe(
+      cache.key("u", "g", "p", false, { world: "nether" }),
+    );
+  });
+
   it("does not let one tuple encode to another tuple's key", () => {
     const cache = new PermissionCache();
     expect(cache.key("alice x", "g", "read", false)).not.toBe(

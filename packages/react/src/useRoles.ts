@@ -45,17 +45,27 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// Sets the entry for `permission` to a grant, inserting it in key order
-// when absent, so `entries` stays sorted the way the server returns it.
+// permission.granted and permission.revoked describe a key's global
+// entry only; an entry with a context for the same key is a separate
+// entry and is left alone.
+function isGlobalEntryFor(e: PermissionEntry, permission: PermissionKey): boolean {
+  return (
+    e.permission === permission && (e.context === undefined || Object.keys(e.context).length === 0)
+  );
+}
+
+// Sets the global entry for `permission` to a grant, inserting it when
+// absent ahead of the key's contextual entries, so `entries` stays
+// sorted the way the server returns it: by key, global entry first.
 function withGrantEntry(entries: PermissionEntry[], permission: PermissionKey): PermissionEntry[] {
-  const idx = entries.findIndex((e) => e.permission === permission);
+  const idx = entries.findIndex((e) => isGlobalEntryFor(e, permission));
   if (idx >= 0) {
     if (entries[idx]?.value === true) return entries;
     const next = entries.slice();
     next[idx] = { permission, value: true };
     return next;
   }
-  const at = entries.findIndex((e) => e.permission > permission);
+  const at = entries.findIndex((e) => e.permission >= permission);
   const next = entries.slice();
   next.splice(at < 0 ? next.length : at, 0, { permission, value: true });
   return next;
@@ -106,13 +116,13 @@ function applyEvent(state: State, event: JunjoEvent): State {
       const role = state.roles[idx];
       if (role === undefined) return state;
       const hasPermission = role.permissions.includes(event.permission);
-      const hasEntry = role.entries.some((e) => e.permission === event.permission);
+      const hasEntry = role.entries.some((e) => isGlobalEntryFor(e, event.permission));
       if (!hasPermission && !hasEntry) return state;
       const next = state.roles.slice();
       next[idx] = {
         ...role,
         permissions: role.permissions.filter((p) => p !== event.permission),
-        entries: role.entries.filter((e) => e.permission !== event.permission),
+        entries: role.entries.filter((e) => !isGlobalEntryFor(e, event.permission)),
       };
       return { ...state, roles: next };
     }
