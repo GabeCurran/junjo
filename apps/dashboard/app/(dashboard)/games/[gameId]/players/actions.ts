@@ -1,11 +1,13 @@
 // @license All Rights Reserved (see apps/dashboard/LICENSE)
 "use server";
 
-import { JunjoError, type UserId } from "@junjo.io/sdk";
+import { type GroupId, type Junjo, JunjoError, type UserId } from "@junjo.io/sdk";
 import { revalidatePath } from "next/cache";
 
-import { AdminDisabledError } from "../../../../../lib/admin";
+import { AdminDisabledError, kickAdminGroupMember } from "../../../../../lib/admin";
 import { gameClient } from "../../../../../lib/game-client";
+
+type RoleId = Parameters<Junjo["members"]["assignRole"]>[2];
 
 export interface PlayerActionResult {
   ok: boolean;
@@ -120,6 +122,63 @@ export async function setDisplayNameAction(
 ): Promise<PlayerActionResult> {
   try {
     await gameClient(gameId).identities.setDisplayName(userId, displayName);
+  } catch (err) {
+    return failure(err);
+  }
+  revalidatePath(playerPath(gameId, pagePlayerId));
+  return { ok: true };
+}
+
+// Membership writes carry the member version the page loaded, so a
+// change made elsewhere in the meantime is refused, not overwritten.
+export async function assignRoleAction(
+  gameId: string,
+  pagePlayerId: string,
+  groupId: string,
+  userId: UserId,
+  roleId: string,
+  version: number,
+): Promise<PlayerActionResult> {
+  try {
+    await gameClient(gameId).members.assignRole(groupId as GroupId, userId, roleId as RoleId, {
+      ifMatch: version,
+    });
+  } catch (err) {
+    return failure(err);
+  }
+  revalidatePath(playerPath(gameId, pagePlayerId));
+  return { ok: true };
+}
+
+export async function removeRoleAction(
+  gameId: string,
+  pagePlayerId: string,
+  groupId: string,
+  userId: UserId,
+  roleId: string,
+  version: number,
+): Promise<PlayerActionResult> {
+  try {
+    await gameClient(gameId).members.removeRole(groupId as GroupId, userId, roleId as RoleId, {
+      ifMatch: version,
+    });
+  } catch (err) {
+    return failure(err);
+  }
+  revalidatePath(playerPath(gameId, pagePlayerId));
+  return { ok: true };
+}
+
+export async function kickFromGroupAction(
+  gameId: string,
+  pagePlayerId: string,
+  groupId: string,
+  userId: UserId,
+  reason: string,
+): Promise<PlayerActionResult> {
+  try {
+    const trimmed = reason.trim();
+    await kickAdminGroupMember(gameId, groupId, userId, trimmed ? { reason: trimmed } : {});
   } catch (err) {
     return failure(err);
   }

@@ -596,6 +596,84 @@ No body required.
 | `not_found` | 404 | No key with the supplied id exists, or the key exists but belongs to a different game. |
 | `invalid_admin_token` | 401 | Standard admin token failure. |
 
+## GET /v1/admin/games/:gameId/players
+
+Lists the people in a game, one row per person, with search, filters, sort and offset-based pagination. Backs the dashboard's player browser. A person is a Junjo user holding at least one id in the game; ids linked to the same person appear together on one row.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `gameId` | string | The `Game.id` to list players for. |
+
+### Query parameters
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int 1-100 | 50 | Page size. |
+| `offset` | int >= 0 | 0 | Number of matching people to skip before the page. |
+| `q` | string 1-255 | - | Case-insensitive substring match against every id and display name the person holds in this game. Matched literally: `%` and `_` are ordinary characters. |
+| `namespace` | string | - | Only people holding an id in this namespace (the text before the first `:`). Same format as a declared namespace. |
+| `standing` | `"banned" \| "sanctioned"` | - | `banned`: an active game ban. `sanctioned`: at least one active sanction. |
+| `sort` | `"firstSeen" \| "lastActivity" \| "name"` | `firstSeen` | Sort field. |
+| `order` | `"asc" \| "desc"` | `desc` | Sort direction. |
+
+### Response
+
+`200 OK` with a `WireAdminPlayerList`:
+
+```ts
+interface WireAdminPlayerId {
+  userId: string;
+  namespace: string | null;     // Text before the first ":", or null
+  displayName: string | null;   // This id's own display name
+  linkedAt: string;             // ISO 8601
+}
+
+interface WireAdminPlayer {
+  personId: string;             // JunjoUser id; a stable row key only
+  userIds: WireAdminPlayerId[]; // This game's ids, earliest linked first
+  displayName: string | null;   // Most recently set name among userIds
+  firstSeenAt: string;          // ISO 8601; earliest id creation in this game
+  lastActivityAt: string | null;// ISO 8601; see Behavior
+  activeGroupCount: number;
+  ban: { reason: string | null; expiresAt: string | null } | null;
+  sanctions: { type: string; expiresAt: string | null }[];
+}
+
+interface WireAdminPlayerList {
+  items: WireAdminPlayer[];
+  total: number;                // Matching people BEFORE pagination
+  limit: number;
+  offset: number;
+}
+```
+
+### Behavior
+
+- Strictly scoped to the game: ids, display names, bans, sanctions, memberships and audit entries from other games never contribute, even for a person who plays several games.
+- `lastActivityAt` is the time of the newest audit entry in this game whose `targetId` is one of the person's ids, or whose `actorUserId` is the person. Null when there is none.
+- `activeGroupCount` counts memberships with status `active` in groups of this game that are not soft-deleted.
+- `ban` and `sanctions` show active entries only. Expiry is lazy, so a ban or sanction whose `expiresAt` has passed is omitted (and does not match `standing`) even though its row still exists. Sanctions are listed newest first.
+- `sort=firstSeen` orders by `firstSeenAt`. `sort=name` orders by the display name, falling back to the earliest linked id when the person has none, ignoring case. `sort=lastActivity` orders by `lastActivityAt`; people with no activity sort last in both directions. Ties break on `personId` ascending so a given offset returns the same rows on every call.
+- `q`, `namespace` and `standing` are AND-combined. Each row still lists all of the person's ids, not only the one that matched.
+- Built as one aggregate query over the game's ids plus four batched lookups for the page. `sort=lastActivity` does one index lookup per id in the game to order everyone, so it is the most expensive sort on a large game; the other sorts look up activity for the page only.
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `not_found` | 404 | The `gameId` path parameter does not match any game. |
+| `bad_request` | 400 | Query validation failed. |
+| `invalid_admin_token` | 401 | Standard admin token failure. |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $JUNJO_ADMIN_TOKEN" \
+  "https://api.junjo.io/v1/admin/games/$GAME_ID/players?q=steve&standing=banned&sort=lastActivity"
+```
+
 ## GET /v1/admin/games/:gameId/groups
 
 Lists every (non-soft-deleted) group in a game. Backs the dashboard's per-game group browser (TanStack Table) with search, filter, sort, and offset-based pagination.
