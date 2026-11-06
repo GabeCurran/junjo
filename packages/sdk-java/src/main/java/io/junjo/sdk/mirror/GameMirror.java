@@ -1037,7 +1037,8 @@ public final class GameMirror implements AutoCloseable {
         applyLoaded(key, entry);
     }
 
-    // Publishes a loaded member, completes its track waiters and reports what changed.
+    // Publishes a loaded member, reports what changed, then completes its track
+    // waiters, so a caller resuming from track() has already seen the change.
     private void applyLoaded(MemberKey key, MemberEntry entry) {
         MemberEntry old = state.members().get(key);
         if (old == null) return;
@@ -1048,8 +1049,6 @@ public final class GameMirror implements AutoCloseable {
             s = s.withRendered(rendered);
         }
         state = s;
-        List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
-        if (waiters != null) for (CompletableFuture<Void> w : waiters) w.complete(null);
         MemberAccess before = old.access();
         MemberAccess after = entry.access();
         if (!Objects.equals(withoutName(before), withoutName(after))) {
@@ -1059,6 +1058,8 @@ public final class GameMirror implements AutoCloseable {
             changed(MirrorChange.Kind.DISPLAY_NAME, key.userId(), key.groupId());
         }
         markDirty();
+        List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
+        if (waiters != null) for (CompletableFuture<Void> w : waiters) w.complete(null);
     }
 
     private static String nameOf(MemberAccess a) {
