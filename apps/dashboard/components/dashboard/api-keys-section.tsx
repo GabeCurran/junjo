@@ -73,6 +73,9 @@ function ApiKeyRow({ gameId, apiKey }: ApiKeyRowProps) {
             Prefers {apiKey.preferredNamespaces.join(", ")}
           </div>
         ) : null}
+        {apiKey.canExport ? (
+          <div className="mt-0.5 text-xs text-muted-foreground">Can export</div>
+        ) : null}
       </td>
       <td className="hidden py-3 pr-4 text-xs text-muted-foreground sm:table-cell">
         {dateFormatter.format(new Date(apiKey.createdAt))}

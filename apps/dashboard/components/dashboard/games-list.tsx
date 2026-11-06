@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { AdminDisabledError, type AdminGame, fetchAdminGames } from "../../lib/admin";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { CreateGameDialog } from "./create-game-dialog";
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 
@@ -20,11 +21,16 @@ interface ListShellProps {
 function ListShell({ children }: ListShellProps) {
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-base">All games</CardTitle>
-        <CardDescription>
-          Every game registered on this Junjo deployment, newest first.
-        </CardDescription>
+      {/* The create action lives here rather than in the Topbar, which
+          is hidden at desktop widths. */}
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <div className="space-y-1.5">
+          <CardTitle className="text-base">All games</CardTitle>
+          <CardDescription>
+            Every game registered on this Junjo deployment, newest first.
+          </CardDescription>
+        </div>
+        <CreateGameDialog />
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>

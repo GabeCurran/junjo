@@ -62,7 +62,7 @@ export function EditApiKeyDialog({ gameId, apiKey }: EditApiKeyDialogProps) {
         <DialogHeader>
           <DialogTitle>Edit API key</DialogTitle>
           <DialogDescription>
-            Changes the label and namespace preference of key{" "}
+            Changes the label, namespace preference and export permission of key{" "}
             <span className="font-mono">{apiKey.prefix}</span>. The secret stays the same, so
             clients using it keep working. Open event streams pick up a new preference within 30
             seconds.
@@ -75,6 +75,7 @@ export function EditApiKeyDialog({ gameId, apiKey }: EditApiKeyDialogProps) {
             idPrefix={fieldsId}
             defaultName={apiKey.name}
             defaultNamespaces={apiKey.preferredNamespaces}
+            defaultCanExport={apiKey.canExport}
           />
           {state.error ? (
             <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">

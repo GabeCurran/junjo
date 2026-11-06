@@ -37,7 +37,8 @@ export interface UpdateApiKeyResult {
 
 // The form sends namespaces as one free-text field; commas and
 // whitespace both separate entries. Validation (pattern, count, repeats)
-// is left to the server so the two cannot drift.
+// is left to the server so the two cannot drift. An unchecked checkbox
+// is absent from the form data, so `canExport` is always stated.
 function readKeyInput(formData: FormData): AdminApiKeyInput {
   const rawName = formData.get("name");
   const rawNamespaces = formData.get("preferredNamespaces");
@@ -46,7 +47,8 @@ function readKeyInput(formData: FormData): AdminApiKeyInput {
     typeof rawNamespaces === "string"
       ? rawNamespaces.split(/[\s,]+/).filter((ns) => ns.length > 0)
       : [];
-  return { name: name.length > 0 ? name : null, preferredNamespaces };
+  const canExport = formData.get("canExport") === "on";
+  return { name: name.length > 0 ? name : null, preferredNamespaces, canExport };
 }
 
 // `useActionState`-compatible Server Action for issuing a new API key. The
@@ -64,10 +66,11 @@ export async function createApiKeyAction(
     return { ok: false, error: "missing gameId" };
   }
   try {
-    const { name, preferredNamespaces } = readKeyInput(formData);
+    const { name, preferredNamespaces, canExport } = readKeyInput(formData);
     const apiKey = await createAdminApiKey(gameId, {
       ...(name !== null ? { name } : {}),
       ...(preferredNamespaces && preferredNamespaces.length > 0 ? { preferredNamespaces } : {}),
+      ...(canExport ? { canExport } : {}),
     });
     revalidatePath(`/games/${gameId}`);
     return { ok: true, apiKey };

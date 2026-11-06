@@ -27,11 +27,14 @@ test.describe("dashboard happy path", () => {
     const gameName = `E2E Game ${Date.now().toString()}`;
 
     await page.goto("/games");
-    await expect(page.getByRole("heading", { name: /Games/ }).first()).toBeVisible();
+    await expect(page.getByText("All games", { exact: true }).first()).toBeVisible();
 
+    // An open dialog hides the page behind it from the accessibility
+    // tree, so the dialog's own controls are found inside the dialog.
     await page.getByRole("button", { name: "Create game" }).click();
-    await page.getByLabel("Name").fill(gameName);
-    await page.getByRole("button", { name: "Create game" }).nth(1).click();
+    const createDialog = page.getByRole("dialog", { name: "Create a game" });
+    await createDialog.getByLabel("Name").fill(gameName);
+    await createDialog.getByRole("button", { name: "Create game" }).click();
 
     const gameRow = page.getByRole("row").filter({ hasText: gameName }).first();
     await expect(gameRow).toBeVisible({ timeout: 15_000 });
@@ -40,7 +43,7 @@ test.describe("dashboard happy path", () => {
     await expect(page.getByRole("heading", { name: gameName }).first()).toBeVisible();
 
     await page.getByRole("button", { name: "Issue key" }).click();
-    await page.getByRole("button", { name: "Issue key" }).nth(1).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Issue key" }).click();
     const secret = (await page.getByTestId("api-key-secret").innerText()).trim();
     expect(secret).toMatch(/^jk_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     await page.getByRole("button", { name: "Done" }).click();

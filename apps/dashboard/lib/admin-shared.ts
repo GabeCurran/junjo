@@ -68,6 +68,8 @@ export interface AdminApiKey {
   name: string | null;
   // Ordered namespace preference for user ids read through this key.
   preferredNamespaces: string[];
+  // Whether the key may read the game export.
+  canExport: boolean;
   createdAt: string;
   revokedAt: string | null;
 }
@@ -80,6 +82,7 @@ export const ADMIN_API_KEY_MAX_PREFERRED_NAMESPACES = 8;
 export interface AdminApiKeyInput {
   name?: string | null;
   preferredNamespaces?: string[];
+  canExport?: boolean;
 }
 
 export interface AdminApiKeyList {
