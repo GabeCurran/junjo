@@ -798,7 +798,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/roles/:id/permissions", () => {
 
     const stored = await prisma.rolePermission.findUnique({
       where: {
-        roleId_permissionKey: { roleId: role.id, permissionKey: "invite_member" },
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "invite_member",
+          contextKey: "",
+        },
       },
     });
     expect(stored).not.toBeNull();
@@ -907,7 +911,11 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /v1/roles/:id/permissions", () => {
     expect(res.status).toBe(404);
     const stored = await prisma.rolePermission.findUnique({
       where: {
-        roleId_permissionKey: { roleId: role.id, permissionKey: "invite_member" },
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "invite_member",
+          contextKey: "",
+        },
       },
     });
     expect(stored).toBeNull();
@@ -996,7 +1004,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/roles/:id/permissions/:permissio
 
     const stored = await prisma.rolePermission.findUnique({
       where: {
-        roleId_permissionKey: { roleId: role.id, permissionKey: "invite_member" },
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "invite_member",
+          contextKey: "",
+        },
       },
     });
     expect(stored).toBeNull();
@@ -1062,7 +1074,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/roles/:id/permissions/:permissio
     expect(res.status).toBe(404);
     const stored = await prisma.rolePermission.findUnique({
       where: {
-        roleId_permissionKey: { roleId: role.id, permissionKey: "invite_member" },
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "invite_member",
+          contextKey: "",
+        },
       },
     });
     expect(stored).not.toBeNull();
@@ -1075,7 +1091,11 @@ describe.skipIf(!TEST_DATABASE_URL)("DELETE /v1/roles/:id/permissions/:permissio
     expect(res.status).toBe(404);
     const stored = await prisma.rolePermission.findUnique({
       where: {
-        roleId_permissionKey: { roleId: role.id, permissionKey: "invite_member" },
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "invite_member",
+          contextKey: "",
+        },
       },
     });
     expect(stored).not.toBeNull();

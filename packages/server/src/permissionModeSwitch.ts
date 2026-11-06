@@ -12,15 +12,18 @@ type Tx = Prisma.TransactionClient;
 //
 // exact -> nodes: refused when a stored entry or override key contains
 // `*` (it would start matching as a wildcard), breaks the nodes key
-// rules, or collides with another key on the same role or member once
-// lowercased; also refused when two role names in one group differ
-// only by case. Otherwise every stored key is lowercased so it keeps
+// rules, or collides with another key on the same role or member in
+// the same context once lowercased; also refused when two role names in
+// one group differ only by case. Otherwise every stored key is lowercased so it keeps
 // matching the checks it matched before. Catalog keys that collide
 // after lowercasing are merged, since the catalog only lists keys.
 //
 // nodes -> exact: refused when a stored entry or override key contains
 // `*`, since it would stop matching as a wildcard. Keys are already
 // lowercase, so nothing is rewritten.
+//
+// Context values are folded on write in every mode, so a switch never
+// rewrites them.
 //
 // Returns how many entry and override keys were rewritten.
 
@@ -31,11 +34,12 @@ const LOWER = "abcdefghijklmnopqrstuvwxyz";
 interface KeyRow {
   owner: string;
   key: string;
+  contextKey: string;
 }
 
 function entryKeys(tx: Tx, gameId: string): Promise<KeyRow[]> {
   return tx.$queryRaw<KeyRow[]>(Prisma.sql`
-    SELECT rp."roleId" AS owner, rp."permissionKey" AS key
+    SELECT rp."roleId" AS owner, rp."permissionKey" AS key, rp."contextKey" AS "contextKey"
     FROM "RolePermission" rp
     JOIN "Role" r ON r.id = rp."roleId"
     JOIN "Group" g ON g.id = r."groupId"
@@ -45,7 +49,7 @@ function entryKeys(tx: Tx, gameId: string): Promise<KeyRow[]> {
 
 function overrideKeys(tx: Tx, gameId: string): Promise<KeyRow[]> {
   return tx.$queryRaw<KeyRow[]>(Prisma.sql`
-    SELECT o."groupMemberId" AS owner, o."permissionKey" AS key
+    SELECT o."groupMemberId" AS owner, o."permissionKey" AS key, o."contextKey" AS "contextKey"
     FROM "MemberPermissionOverride" o
     JOIN "GroupMember" m ON m.id = o."groupMemberId"
     JOIN "Group" g ON g.id = m."groupId"
@@ -71,7 +75,7 @@ function keyProblems(rows: KeyRow[], kind: string, to: PermissionMode): string[]
       problems.push(`${kind} ${row.owner} key ${JSON.stringify(row.key)} ${reason}`);
       continue;
     }
-    const slot = `${row.owner}\u0000${normalizePermissionKey("nodes", row.key)}`;
+    const slot = `${row.owner}\u0000${row.contextKey}\u0000${normalizePermissionKey("nodes", row.key)}`;
     const clash = folded.get(slot);
     if (clash !== undefined) {
       problems.push(

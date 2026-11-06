@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import { preferredNamespacesSchema } from "../config/schema.js";
+import { permissionContextSchema } from "../permissionContext.js";
 import { AUDIT_ACTIONS } from "./audit.schema.js";
 import { pageLimit } from "./page.schema.js";
 
@@ -103,8 +104,10 @@ export const adminUpdateMemberBody = z
     message: "at least one field is required",
   });
 
+// `context` absent or empty targets the global override.
 export const adminOverridePermissionBody = z.object({
   grant: z.boolean(),
+  context: permissionContextSchema.optional(),
 });
 
 // Mirrors the per-game `createInvitationBody`; same `expiresIn` regex,
@@ -165,6 +168,7 @@ export const adminUpdateRoleBody = z
 export const adminGrantPermissionBody = z.object({
   permission: z.string().min(1).max(ADMIN_PERMISSION_KEY_MAX_LENGTH),
   value: z.boolean().optional(),
+  context: permissionContextSchema.optional(),
 });
 
 // Mirrors the per-game `setRelationshipBody` / `clearRelationshipQuery`;

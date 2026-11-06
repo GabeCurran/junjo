@@ -408,7 +408,13 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/permissions/che
     // Delete the underlying RolePermission directly (no cache invalidation
     // hook); the cache should still serve the stale "allowed" answer.
     await prisma.rolePermission.delete({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: "guild.kick" } },
+      where: {
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "guild.kick",
+          contextKey: "",
+        },
+      },
     });
 
     const second = await checkPermission({

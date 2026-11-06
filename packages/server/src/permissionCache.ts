@@ -33,6 +33,9 @@ export interface PermissionCacheKeyOptions {
   // Inherited answers occupy a separate keyspace: the same triple can
   // resolve differently with and without the parent walk.
   inherit?: boolean;
+  // The check's canonical context key ("" or absent for global). Each
+  // context occupies its own keyspace for the same reason.
+  context?: string;
 }
 
 export interface PermissionCacheSetOptions extends PermissionCacheKeyOptions {
@@ -60,9 +63,10 @@ export class PermissionCache {
     groupId: string,
     userId: string,
     permission: string,
-    inherit: boolean,
+    opts: PermissionCacheKeyOptions,
   ): string {
-    const parts = [gameId, groupId, userId, permission];
+    const inherit = opts.inherit ?? false;
+    const parts = [gameId, groupId, userId, permission, opts.context ?? ""];
     let out = inherit ? "i" : "d";
     for (const p of parts) out += `|${p.length}:${p}`;
     return out;
@@ -85,7 +89,7 @@ export class PermissionCache {
     permission: string,
     opts: PermissionCacheKeyOptions = {},
   ): PermissionCheckResult | null {
-    const k = this.key(gameId, groupId, userId, permission, opts.inherit ?? false);
+    const k = this.key(gameId, groupId, userId, permission, opts);
     const entry = this.entries.get(k);
     if (!entry) return null;
     if (entry.expiresAt <= this.now()) {
@@ -103,7 +107,7 @@ export class PermissionCache {
     result: PermissionCheckResult,
     opts: PermissionCacheSetOptions = {},
   ): void {
-    const k = this.key(gameId, groupId, userId, permission, opts.inherit ?? false);
+    const k = this.key(gameId, groupId, userId, permission, opts);
     const previous = this.entries.get(k);
     if (previous) this.evict(k, previous);
 

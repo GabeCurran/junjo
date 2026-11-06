@@ -1,23 +1,47 @@
-import type { PermissionCheckResult, PermissionMode, RoleId } from "@junjo.io/shared";
+import type {
+  PermissionCheckResult,
+  PermissionContext,
+  PermissionMode,
+  RoleId,
+} from "@junjo.io/shared";
+import {
+  type ContextInheritance,
+  canonicalContextKey,
+  contextChain,
+  foldContextValue,
+} from "./permissionContext.js";
 
 // Pure permission resolution over already-loaded data. The server loads
 // the rows a check can reach and hands them here; client SDKs that
 // resolve locally implement the same algorithm, and both are held to
 // the shared conformance vectors in `packages/shared/conformance`.
 //
+// An entry applies to a check when its key is a candidate for the
+// permission and its context applies: a global entry always applies,
+// and an entry with context E applies when, for every (k, v) in E, the
+// check's context C has k and v is in the inheritance chain of C[k].
+// Its context score is (number of keys in E, sum of chain distances);
+// a global entry scores (0, 0).
+//
 // Precedence, applied in order:
 //   1. Layer. The member's own overrides first, then the roles the
 //      member holds directly, then their parents, then grandparents.
 //      A role reachable through several paths sits at its shortest
-//      distance. The first layer with any matching entry decides.
-//   2. Specificity, within the deciding layer. The exact key beats the
-//      longest matching wildcard, down to the bare wildcard.
-//   3. Deny wins between entries of equal layer and specificity.
+//      distance. The first layer with any applicable entry decides.
+//   2. Context, within the deciding layer. More matched keys win, then
+//      the smaller distance sum.
+//   3. Specificity, among the entries with the best context score. The
+//      exact key beats the longest matching wildcard, down to the bare
+//      wildcard.
+//   4. Deny wins between the entries that remain.
+//
+// With no check context only global entries apply.
 //
 // The mode only changes key matching. In "exact" mode keys are opaque
 // and case-sensitive. In "nodes" mode keys are dot-separated, case-
 // insensitive, a final `.*` segment matches one or more further
-// segments, and a bare `*` matches every key.
+// segments, and a bare `*` matches every key. Context values are folded
+// in every mode.
 
 export type { PermissionMode };
 
@@ -25,17 +49,33 @@ export type { PermissionMode };
 // matters against corrupted state.
 export const MAX_ROLE_DEPTH = 100;
 
+// An entry or override limited to a context. `permission` is the stored
+// (normalized) key; `context` is non-empty.
+export interface ResolverContextEntry {
+  permission: string;
+  value: boolean;
+  context: PermissionContext;
+}
+
 export interface ResolverRole {
   priority: number;
+  // Global entries, by stored key.
   entries: ReadonlyMap<string, boolean>;
+  contextEntries?: readonly ResolverContextEntry[];
   parents: readonly string[];
 }
 
 export interface ResolverInput {
   mode: PermissionMode;
+  // Global overrides, by stored key.
   overrides: ReadonlyMap<string, boolean>;
+  contextOverrides?: readonly ResolverContextEntry[];
   directRoleIds: readonly string[];
   roles: ReadonlyMap<string, ResolverRole>;
+  // The check's context. Absent or empty: only global entries apply.
+  context?: PermissionContext;
+  // The game's `permissions.contexts`.
+  contexts?: ContextInheritance;
 }
 
 const WILDCARD = "*";
@@ -90,14 +130,101 @@ export function candidateKeys(mode: PermissionMode, permission: string): string[
   return [...new Set(out)];
 }
 
-function bestCandidate(
-  entries: ReadonlyMap<string, boolean>,
-  candidates: readonly string[],
-): number {
-  for (let i = 0; i < candidates.length; i++) {
-    if (entries.has(candidates[i] as string)) return i;
+type Chains = ReadonlyMap<string, ReadonlyMap<string, number>>;
+
+// The inheritance chain of every key in the check's context.
+function contextChains(
+  context: PermissionContext | undefined,
+  contexts: ContextInheritance | undefined,
+): Chains {
+  const chains = new Map<string, Map<string, number>>();
+  if (!context) return chains;
+  for (const [key, value] of Object.entries(context)) {
+    chains.set(key, contextChain(contexts, key, foldContextValue(value)));
   }
-  return -1;
+  return chains;
+}
+
+// An applicable entry's place in the precedence: context keys matched,
+// chain distance sum, specificity rank.
+interface Score {
+  keys: number;
+  distance: number;
+  rank: number;
+}
+
+// Negative when `a` decides ahead of `b`.
+function compareScore(a: Score, b: Score): number {
+  if (a.keys !== b.keys) return b.keys - a.keys;
+  if (a.distance !== b.distance) return a.distance - b.distance;
+  return a.rank - b.rank;
+}
+
+// The best-scoring applicable entries of one role, or of the overrides.
+// `deny` / `grant` are undefined when no entry of that value has the
+// best score; otherwise they hold the context to report for it (null
+// for global), the smallest canonical key when several qualify.
+interface SourceBest {
+  score: Score;
+  deny: PermissionContext | null | undefined;
+  grant: PermissionContext | null | undefined;
+}
+
+function contextScore(
+  context: PermissionContext,
+  chains: Chains,
+): { keys: number; distance: number } | null {
+  let keys = 0;
+  let distance = 0;
+  for (const [key, value] of Object.entries(context)) {
+    const d = chains.get(key)?.get(foldContextValue(value));
+    if (d === undefined) return null;
+    keys++;
+    distance += d;
+  }
+  return { keys, distance };
+}
+
+function sourceBest(
+  global: ReadonlyMap<string, boolean>,
+  contextual: readonly ResolverContextEntry[] | undefined,
+  candidates: readonly string[],
+  rankOf: ReadonlyMap<string, number>,
+  chains: Chains,
+): SourceBest | null {
+  let best: SourceBest | null = null;
+  const consider = (score: Score, value: boolean, context: PermissionContext | null) => {
+    if (best) {
+      const order = compareScore(score, best.score);
+      if (order > 0) return;
+      if (order < 0) best = { score, deny: undefined, grant: undefined };
+    } else {
+      best = { score, deny: undefined, grant: undefined };
+    }
+    const current: SourceBest = best;
+    const held = value ? current.grant : current.deny;
+    if (held === undefined || canonicalContextKey(context) < canonicalContextKey(held)) {
+      if (value) current.grant = context;
+      else current.deny = context;
+    }
+  };
+  // Global entries all score (0, 0), so only the most specific matters.
+  for (let i = 0; i < candidates.length; i++) {
+    const value = global.get(candidates[i] as string);
+    if (value === undefined) continue;
+    consider({ keys: 0, distance: 0, rank: i }, value, null);
+    break;
+  }
+  if (contextual && chains.size > 0) {
+    for (const entry of contextual) {
+      const rank = rankOf.get(entry.permission);
+      if (rank === undefined) continue;
+      const scored = contextScore(entry.context, chains);
+      if (!scored) continue;
+      consider({ ...scored, rank }, entry.value, entry.context);
+    }
+  }
+  return best;
 }
 
 // Higher priority first, then roleId descending: the same tie-break as
@@ -105,6 +232,26 @@ function bestCandidate(
 function outranks(a: { id: string; priority: number }, b: { id: string; priority: number }) {
   if (a.priority !== b.priority) return a.priority > b.priority;
   return a.id > b.id;
+}
+
+function withContext(
+  result: PermissionCheckResult,
+  context: PermissionContext | null | undefined,
+): PermissionCheckResult {
+  if (context && Object.keys(context).length > 0) {
+    const folded: PermissionContext = {};
+    for (const key of Object.keys(context).sort()) {
+      folded[key] = foldContextValue(context[key] as string);
+    }
+    result.context = folded;
+  }
+  return result;
+}
+
+interface LayerHit {
+  id: string;
+  priority: number;
+  best: SourceBest;
 }
 
 // Resolves one member's check. Membership and status gating happen in
@@ -115,11 +262,13 @@ export function resolveMemberPermission(
   permission: string,
 ): PermissionCheckResult {
   const candidates = candidateKeys(input.mode, permission);
+  const rankOf = new Map(candidates.map((key, i) => [key, i]));
+  const chains = contextChains(input.context, input.contexts);
 
-  const overrideRank = bestCandidate(input.overrides, candidates);
-  if (overrideRank !== -1) {
-    const value = input.overrides.get(candidates[overrideRank] as string) as boolean;
-    return { allowed: value, source: "override" };
+  const own = sourceBest(input.overrides, input.contextOverrides, candidates, rankOf, chains);
+  if (own) {
+    const allowed = own.deny === undefined;
+    return withContext({ allowed, source: "override" }, allowed ? own.grant : own.deny);
   }
 
   const visited = new Set<string>();
@@ -127,29 +276,36 @@ export function resolveMemberPermission(
   for (let depth = 0; layer.length > 0 && depth <= MAX_ROLE_DEPTH; depth++) {
     for (const id of layer) visited.add(id);
 
-    let rank = -1;
+    const hits: LayerHit[] = [];
+    let top: Score | null = null;
     for (const id of layer) {
-      const r = bestCandidate((input.roles.get(id) as ResolverRole).entries, candidates);
-      if (r !== -1 && (rank === -1 || r < rank)) rank = r;
+      const role = input.roles.get(id) as ResolverRole;
+      const best = sourceBest(role.entries, role.contextEntries, candidates, rankOf, chains);
+      if (!best) continue;
+      hits.push({ id, priority: role.priority, best });
+      if (!top || compareScore(best.score, top) < 0) top = best.score;
     }
 
-    if (rank !== -1) {
-      const key = candidates[rank] as string;
-      let denier: { id: string; priority: number } | null = null;
-      let granter: { id: string; priority: number } | null = null;
-      for (const id of layer) {
-        const role = input.roles.get(id) as ResolverRole;
-        const value = role.entries.get(key);
-        if (value === undefined) continue;
-        const candidate = { id, priority: role.priority };
-        if (value === false) {
-          if (!denier || outranks(candidate, denier)) denier = candidate;
-        } else if (!granter || outranks(candidate, granter)) {
-          granter = candidate;
-        }
+    if (top) {
+      const at: Score = top;
+      let denier: LayerHit | null = null;
+      let granter: LayerHit | null = null;
+      for (const hit of hits) {
+        if (compareScore(hit.best.score, at) !== 0) continue;
+        if (hit.best.deny !== undefined && (!denier || outranks(hit, denier))) denier = hit;
+        if (hit.best.grant !== undefined && (!granter || outranks(hit, granter))) granter = hit;
       }
-      const decider = (denier ?? granter) as { id: string };
-      return { allowed: denier === null, source: "role", viaRoleId: decider.id as RoleId };
+      if (denier) {
+        return withContext(
+          { allowed: false, source: "role", viaRoleId: denier.id as RoleId },
+          denier.best.deny,
+        );
+      }
+      const decider = granter as LayerHit;
+      return withContext(
+        { allowed: true, source: "role", viaRoleId: decider.id as RoleId },
+        decider.best.grant,
+      );
     }
 
     const next = new Set<string>();

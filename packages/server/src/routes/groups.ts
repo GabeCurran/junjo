@@ -49,6 +49,7 @@ import {
 } from "../identity.js";
 import { RateLimiter } from "../middleware/rateLimit.js";
 import { permissionCache } from "../permissionCache.js";
+import { contextFromRequestUrl } from "../permissionContext.js";
 import { isUniqueViolation, retryOnUniqueViolation } from "../prismaErrors.js";
 import { loadRoleDetails, loadRoleGraph } from "../roleDetails.js";
 import { clearMemberOverride, createRole, setMemberOverride } from "../roleWrites.js";
@@ -234,7 +235,7 @@ async function loadMemberAccess(
     }),
     prisma.memberPermissionOverride.findMany({
       where: { groupMemberId: { in: memberIds } },
-      orderBy: { permissionKey: "asc" },
+      orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }],
     }),
     renderPeople(
       prisma,
@@ -2358,7 +2359,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         .join("; ");
       throw Errors.badRequest(issues || "invalid request body");
     }
-    const { grant } = parsed.data;
+    const { grant, context } = parsed.data;
     const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
@@ -2380,6 +2381,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       externalUserId: userId,
       permission,
       grant,
+      context,
       ifMatch,
     });
 
@@ -2402,6 +2404,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const gameId = c.var.gameId;
 
     if (!permission) throw Errors.badRequest("permission must not be empty");
+    const context = contextFromRequestUrl(c.req.url);
     const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
@@ -2422,6 +2425,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       groupMemberId: member.id,
       externalUserId: userId,
       permission,
+      context,
       ifMatch,
     });
 
@@ -2481,7 +2485,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const overrides = await prisma.memberPermissionOverride.findMany({
       where: { groupMemberId: member.id },
-      orderBy: { permissionKey: "asc" },
+      orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }],
     });
     const shownId = await renderResolved(prisma, gameId, junjoUserId, userId);
 

@@ -1,13 +1,25 @@
-import type { GroupId, PermissionCheckResult, PermissionMode } from "@junjo.io/shared";
+import type {
+  GameConfigPermissions,
+  GroupId,
+  PermissionCheckResult,
+  PermissionContext,
+  PermissionMode,
+} from "@junjo.io/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
-import { loadPermissionMode } from "../config/loadGameConfig.js";
+import { loadPermissionConfig } from "../config/loadGameConfig.js";
 import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import {
+  canonicalContextKey,
+  contextFromRequestUrl,
+  contextFromStored,
+} from "../permissionContext.js";
+import {
   MAX_ROLE_DEPTH,
+  type ResolverContextEntry,
   type ResolverRole,
   candidateKeys,
   resolveMemberPermission,
@@ -17,22 +29,26 @@ import { MAX_PARENT_DEPTH } from "./groups.schema.js";
 import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.schema.js";
 
 // Request-scoped lookups shared by every check in one request: the
-// game's permission mode, read once, and external userId -> JunjoUser
-// id. A batch repeats the same userId across most of its entries and an
+// game's permission config (mode and context inheritance), read once,
+// and external userId -> JunjoUser id. A batch repeats the same userId across most of its entries and an
 // inherited walk repeats it at every level; without this each repeat is
 // another lookup.
 export class CheckContext {
   private readonly identities = new Map<string, string | null>();
-  private modePromise: Promise<PermissionMode> | null = null;
+  private configPromise: Promise<GameConfigPermissions> | null = null;
 
   constructor(
     private readonly prisma: Db,
     private readonly gameId: string,
   ) {}
 
-  mode(): Promise<PermissionMode> {
-    this.modePromise ??= loadPermissionMode(this.prisma, this.gameId);
-    return this.modePromise;
+  permissions(): Promise<GameConfigPermissions> {
+    this.configPromise ??= loadPermissionConfig(this.prisma, this.gameId);
+    return this.configPromise;
+  }
+
+  async mode(): Promise<PermissionMode> {
+    return (await this.permissions()).mode;
   }
 
   async resolve(externalUserId: string): Promise<string | null> {
@@ -44,8 +60,8 @@ export class CheckContext {
   }
 }
 
-// Memoizes one (group, user, permission) resolution for the span of a
-// request. A batch of sibling groups shares its ancestors, so without
+// Memoizes one (group, user, permission, context) resolution for the
+// span of a request. A batch of sibling groups shares its ancestors, so without
 // this the walk re-resolves the same parent once per entry: 100 shops
 // under one instance group resolve that instance 100 times.
 //
@@ -57,19 +73,23 @@ export class LevelMemo {
   // Length-prefixed for the same reason the caches are: these are
   // caller-supplied strings, and a delimiter-joined key lets one tuple
   // read another tuple's verdict.
-  private key(groupId: string, externalUserId: string, permission: string): string {
+  private key(groupId: string, externalUserId: string, permission: string, context: string) {
     let out = "";
-    for (const part of [groupId, externalUserId, permission]) out += `|${part.length}:${part}`;
+    for (const part of [groupId, externalUserId, permission, context]) {
+      out += `|${part.length}:${part}`;
+    }
     return out;
   }
 
+  // `context` is the check's canonical context key.
   async resolve(
     groupId: string,
     externalUserId: string,
     permission: string,
+    context: string,
     compute: () => Promise<PermissionCheckResult>,
   ): Promise<PermissionCheckResult> {
-    const k = this.key(groupId, externalUserId, permission);
+    const k = this.key(groupId, externalUserId, permission, context);
     const hit = this.entries.get(k);
     if (hit) return hit;
     const result = await compute();
@@ -123,7 +143,8 @@ async function loadReachableRoles(
 // membership or a non-active status returns `none`. Otherwise the
 // layered resolver in `permissionResolve.ts` decides from the member's
 // overrides and the roles reachable from their direct roles, reading
-// only the entries whose keys could match the queried permission.
+// only the entries whose keys could match the queried permission, and
+// only global entries when the check has no context.
 //
 // Non-active members (`left` / `kicked` / `invited`) intentionally do
 // NOT exercise permissions, even though their role rows survive the
@@ -131,11 +152,13 @@ async function loadReachableRoles(
 // status).
 async function resolveForJunjoUser(
   prisma: Db,
-  mode: PermissionMode,
+  config: GameConfigPermissions,
   groupId: string,
   junjoUserId: string,
   permission: string,
+  context: PermissionContext,
 ): Promise<PermissionCheckResult> {
+  const { mode, contexts } = config;
   const member = await prisma.groupMember.findUnique({
     where: { groupId_junjoUserId: { groupId, junjoUserId } },
     select: { id: true, status: true },
@@ -144,18 +167,31 @@ async function resolveForJunjoUser(
   if (member.status !== "active") return { allowed: false, source: "none" };
 
   const candidates = candidateKeys(mode, permission);
+  const globalOnly = Object.keys(context).length === 0;
+  const contextFilter = globalOnly ? { contextKey: "" } : {};
   const overrideRows = await prisma.memberPermissionOverride.findMany({
-    where: { groupMemberId: member.id, permissionKey: { in: candidates } },
-    select: { permissionKey: true, grant: true },
+    where: { groupMemberId: member.id, permissionKey: { in: candidates }, ...contextFilter },
+    select: { permissionKey: true, grant: true, context: true, contextKey: true },
   });
-  const overrides = new Map(overrideRows.map((o) => [o.permissionKey, o.grant]));
-  // The member layer decides before any role, so a matching override
-  // makes the role reads unnecessary.
-  if (overrides.size > 0) {
-    return resolveMemberPermission(
-      { mode, overrides, directRoleIds: [], roles: new Map() },
+  const overrides = new Map<string, boolean>();
+  const contextOverrides: ResolverContextEntry[] = [];
+  for (const o of overrideRows) {
+    const entryContext = o.contextKey === "" ? undefined : contextFromStored(o.context);
+    if (entryContext) {
+      contextOverrides.push({ permission: o.permissionKey, value: o.grant, context: entryContext });
+    } else {
+      overrides.set(o.permissionKey, o.grant);
+    }
+  }
+  // The member layer decides before any role, so an applicable override
+  // makes the role reads unnecessary. A contextual override that does
+  // not apply to this check leaves the member layer undecided.
+  if (overrideRows.length > 0) {
+    const own = resolveMemberPermission(
+      { mode, overrides, contextOverrides, directRoleIds: [], roles: new Map(), context, contexts },
       permission,
     );
+    if (own.source === "override") return own;
   }
 
   const reachable = await loadReachableRoles(prisma, groupId, member.id);
@@ -165,8 +201,8 @@ async function resolveForJunjoUser(
 
   const [entryRows, parentRows] = await Promise.all([
     prisma.rolePermission.findMany({
-      where: { roleId: { in: roleIds }, permissionKey: { in: candidates } },
-      select: { roleId: true, permissionKey: true, value: true },
+      where: { roleId: { in: roleIds }, permissionKey: { in: candidates }, ...contextFilter },
+      select: { roleId: true, permissionKey: true, value: true, context: true, contextKey: true },
     }),
     inherits
       ? prisma.roleParent.findMany({
@@ -177,8 +213,17 @@ async function resolveForJunjoUser(
   ]);
 
   const entries = new Map<string, Map<string, boolean>>();
+  const contextEntries = new Map<string, ResolverContextEntry[]>();
   const parents = new Map<string, string[]>();
   for (const e of entryRows) {
+    const entryContext = e.contextKey === "" ? undefined : contextFromStored(e.context);
+    if (entryContext) {
+      const list = contextEntries.get(e.roleId);
+      const entry = { permission: e.permissionKey, value: e.value, context: entryContext };
+      if (list) list.push(entry);
+      else contextEntries.set(e.roleId, [entry]);
+      continue;
+    }
     let m = entries.get(e.roleId);
     if (!m) {
       m = new Map();
@@ -196,6 +241,7 @@ async function resolveForJunjoUser(
     roles.set(row.id, {
       priority: row.priority,
       entries: entries.get(row.id) ?? new Map(),
+      contextEntries: contextEntries.get(row.id) ?? [],
       parents: parents.get(row.id) ?? [],
     });
   }
@@ -203,15 +249,19 @@ async function resolveForJunjoUser(
   return resolveMemberPermission(
     {
       mode,
-      overrides,
+      overrides: new Map(),
       directRoleIds: reachable.filter((r) => r.depth === 0).map((r) => r.id),
       roles,
+      context,
+      contexts,
     },
     permission,
   );
 }
 
 // Caller must enforce game scope on `groupId`; this function trusts it.
+// `permissionContext` is the check's context, already validated and
+// folded; empty means only global entries apply.
 export async function resolvePermission(
   prisma: Db,
   gameId: string,
@@ -219,11 +269,19 @@ export async function resolvePermission(
   externalUserId: string,
   permission: string,
   context?: CheckContext,
+  permissionContext: PermissionContext = {},
 ): Promise<PermissionCheckResult> {
   const ctx = context ?? new CheckContext(prisma, gameId);
   const junjoUserId = await ctx.resolve(externalUserId);
   if (!junjoUserId) return { allowed: false, source: "none" };
-  return resolveForJunjoUser(prisma, await ctx.mode(), groupId, junjoUserId, permission);
+  return resolveForJunjoUser(
+    prisma,
+    await ctx.permissions(),
+    groupId,
+    junjoUserId,
+    permission,
+    permissionContext,
+  );
 }
 
 interface ChainRow {
@@ -297,17 +355,32 @@ export async function resolvePermissionInherited(
   permission: string,
   context?: CheckContext,
   levels?: LevelMemo,
+  permissionContext: PermissionContext = {},
 ): Promise<InheritedResolution> {
   const memo = context ?? new CheckContext(prisma, gameId);
   const levelMemo = levels ?? new LevelMemo();
+  const contextKey = canonicalContextKey(permissionContext);
   const chain = await loadAncestorChain(prisma, gameId, groupId);
   const consulted: string[] = [];
   let direct: PermissionCheckResult | null = null;
 
   for (const levelGroupId of chain) {
     consulted.push(levelGroupId);
-    const result = await levelMemo.resolve(levelGroupId, externalUserId, permission, () =>
-      resolvePermission(prisma, gameId, levelGroupId, externalUserId, permission, memo),
+    const result = await levelMemo.resolve(
+      levelGroupId,
+      externalUserId,
+      permission,
+      contextKey,
+      () =>
+        resolvePermission(
+          prisma,
+          gameId,
+          levelGroupId,
+          externalUserId,
+          permission,
+          memo,
+          permissionContext,
+        ),
     );
     if (direct === null) direct = result;
     if (result.source === "override" || result.source === "role") {
@@ -349,6 +422,8 @@ export function checkPermissionHandler(
       throw Errors.badRequest(issues || "invalid query");
     }
     const { userId, groupId, permission, inherit } = parsed.data;
+    const permissionContext = contextFromRequestUrl(c.req.url);
+    const contextKey = canonicalContextKey(permissionContext);
 
     const group = await prisma.group.findFirst({
       where: { id: groupId, gameId, softDeletedAt: null },
@@ -359,12 +434,23 @@ export function checkPermissionHandler(
     // Checked before the cache so a malformed id rejects even when an
     // answer for that spelling was cached before its format was declared.
     await assertUserIdsWellFormed(prisma, gameId, [userId]);
-    const cached = cache.get(gameId, group.id, userId, permission, { inherit });
+    const cached = cache.get(gameId, group.id, userId, permission, {
+      inherit,
+      context: contextKey,
+    });
     if (cached) return c.json(cached);
 
     if (!inherit) {
-      const result = await resolvePermission(prisma, gameId, group.id, userId, permission);
-      cache.set(gameId, group.id, userId, permission, result);
+      const result = await resolvePermission(
+        prisma,
+        gameId,
+        group.id,
+        userId,
+        permission,
+        undefined,
+        permissionContext,
+      );
+      cache.set(gameId, group.id, userId, permission, result, { context: contextKey });
       return c.json(result);
     }
 
@@ -374,9 +460,13 @@ export function checkPermissionHandler(
       group.id,
       userId,
       permission,
+      undefined,
+      undefined,
+      permissionContext,
     );
     cache.set(gameId, group.id, userId, permission, result, {
       inherit: true,
+      context: contextKey,
       dependsOn: consulted.length > 0 ? consulted : [group.id],
     });
     return c.json(result);
@@ -427,7 +517,12 @@ export function checkPermissionBatchHandler(
     const levels = new LevelMemo();
     const results: PermissionCheckResult[] = [];
     for (const check of checks) {
-      const cached = cache.get(gameId, check.groupId, check.userId, check.permission, { inherit });
+      const permissionContext = check.context ?? {};
+      const contextKey = canonicalContextKey(permissionContext);
+      const cached = cache.get(gameId, check.groupId, check.userId, check.permission, {
+        inherit,
+        context: contextKey,
+      });
       if (cached) {
         results.push(cached);
         continue;
@@ -440,8 +535,11 @@ export function checkPermissionBatchHandler(
           check.userId,
           check.permission,
           context,
+          permissionContext,
         );
-        cache.set(gameId, check.groupId, check.userId, check.permission, result);
+        cache.set(gameId, check.groupId, check.userId, check.permission, result, {
+          context: contextKey,
+        });
         results.push(result);
         continue;
       }
@@ -453,9 +551,11 @@ export function checkPermissionBatchHandler(
         check.permission,
         context,
         levels,
+        permissionContext,
       );
       cache.set(gameId, check.groupId, check.userId, check.permission, result, {
         inherit: true,
+        context: contextKey,
         dependsOn: consulted.length > 0 ? consulted : [check.groupId],
       });
       results.push(result);

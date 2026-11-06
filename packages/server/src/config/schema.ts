@@ -8,6 +8,7 @@ import {
   USER_ID_NAMESPACE_PATTERN,
 } from "@junjo.io/shared";
 import { z } from "zod";
+import { normalizeContextInheritance } from "../permissionContext.js";
 
 // Validates a PATCH /v1/admin/games/:gameId/config payload. Every leaf
 // is optional (the merge layer fills in unspecified branches from the
@@ -65,9 +66,25 @@ const blocksPatchSchema = z
 // Changing `mode` is refused while stored keys would change meaning
 // under the new mode; that check needs the database, so the route runs
 // it rather than this schema.
+//
+// `contexts` is stated in full and replaces the stored map, like
+// `identity.formats`. It is validated and stored folded; see
+// `normalizeContextInheritance` for what is refused.
+const contextInheritanceSchema = z
+  .record(z.string(), z.object({ inherit: z.record(z.string(), z.array(z.string())) }).strict())
+  .transform((raw, ctx) => {
+    const result = normalizeContextInheritance(raw);
+    if ("error" in result) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: result.error });
+      return z.NEVER;
+    }
+    return result.contexts;
+  });
+
 const permissionsPatchSchema = z
   .object({
     mode: z.enum(PERMISSION_MODES).optional(),
+    contexts: contextInheritanceSchema.optional(),
   })
   .strict();
 

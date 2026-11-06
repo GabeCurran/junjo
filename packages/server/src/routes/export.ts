@@ -5,6 +5,7 @@ import { Errors } from "../errors.js";
 import { readStreamPosition } from "../eventLog.js";
 import { renderUserIds } from "../identity.js";
 import { logger } from "../logger.js";
+import { rowContextField } from "../permissionContext.js";
 import { userIdNamespace } from "../userIdFormat.js";
 
 // Rows read per query. Every kind is read in keyset-ordered batches of
@@ -104,7 +105,7 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
     const rows = await prisma.role.findMany({
       where: { group: { gameId }, ...idAfter(after) },
       include: {
-        rolePermissions: { orderBy: { permissionKey: "asc" } },
+        rolePermissions: { orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }] },
         parentLinks: { orderBy: { parentRoleId: "asc" } },
       },
       orderBy: { id: "asc" },
@@ -120,7 +121,11 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
         color: r.color,
         isDefault: r.isDefault,
         metadata: r.metadata,
-        entries: r.rolePermissions.map((p) => ({ permission: p.permissionKey, value: p.value })),
+        entries: r.rolePermissions.map((p) => ({
+          permission: p.permissionKey,
+          value: p.value,
+          ...rowContextField(p),
+        })),
         parents: r.parentLinks.map((l) => l.parentRoleId),
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
@@ -133,7 +138,7 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
       where: { group: { gameId }, ...idAfter(after) },
       include: {
         memberRoles: { orderBy: { roleId: "asc" } },
-        permissionOverrides: { orderBy: { permissionKey: "asc" } },
+        permissionOverrides: { orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }] },
       },
       orderBy: { id: "asc" },
       take: EXPORT_BATCH_SIZE,
@@ -155,6 +160,7 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
         overrides: m.permissionOverrides.map((o) => ({
           permission: o.permissionKey,
           value: o.grant,
+          ...rowContextField(o),
           setAt: o.setAt.toISOString(),
           setByPersonId: o.setByUserId,
         })),
