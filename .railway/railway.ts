@@ -8,7 +8,8 @@ export default defineRailway(() => {
     build: { builder: "DOCKERFILE" as const, dockerfilePath: "Dockerfile" },
     healthcheck: "/healthz",
     healthcheckTimeout: 300,
-    deploy: { restartPolicyType: "ON_FAILURE" as const, restartPolicyMaxRetries: 5 },
+    // Restarts on failure, Railway's default policy, so only the retry cap is set.
+    deploy: { restartPolicyMaxRetries: 5 },
   };
   const junjoServer = service("junjo-server", settings);
   const junjoDashboard = service("junjo-dashboard", settings);
