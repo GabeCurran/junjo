@@ -10,9 +10,32 @@ export function isUniqueViolation(err: unknown): boolean {
 
 // Postgres aborted the transaction to preserve its isolation level
 // (serialization failure / deadlock). The canonical response is to
-// retry the whole transaction.
+// retry the whole transaction. Prisma reports it as P2034 from model
+// queries and as P2010 carrying SQLSTATE 40001 or 40P01 from raw ones.
 export function isSerializationFailure(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code === "P2034") return true;
+  const sqlState = (err.meta as { code?: unknown } | undefined)?.code;
+  return err.code === "P2010" && (sqlState === "40001" || sqlState === "40P01");
+}
+
+// SQLSTATEs Postgres raises when a value holds U+0000, which neither
+// `text` (22021) nor `jsonb` (22P05) can store.
+const NUL_SQLSTATES = ["22021", "22P05"];
+
+// True when Postgres refused a value because it contains U+0000. Model
+// queries surface this as an unknown request error whose message names
+// the SQLSTATE; raw queries surface it as P2010 with the SQLSTATE in
+// `meta.code`.
+export function isNulCharacterError(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2010") {
+    const sqlState = (err.meta as { code?: unknown } | undefined)?.code;
+    return typeof sqlState === "string" && NUL_SQLSTATES.includes(sqlState);
+  }
+  if (err instanceof Prisma.PrismaClientUnknownRequestError) {
+    return NUL_SQLSTATES.some((state) => err.message.includes(`code: "${state}"`));
+  }
+  return false;
 }
 
 // Retries `fn` on serialization failures up to `attempts` total runs.

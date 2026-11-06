@@ -23,8 +23,24 @@ export const createGameBanBody = z
     // JunjoUser + ExternalIdentity for the actor if unknown (mirrors
     // the target-user upsert).
     actorUserId: z.string().min(1).optional(),
+    // When the ban started, for bans carried over from another system.
+    // The handler rejects values more than BANNED_AT_MAX_SKEW_MS ahead
+    // of the server clock.
+    bannedAt: z
+      .string()
+      .min(1)
+      .refine((s) => !Number.isNaN(Date.parse(s)), {
+        message: "bannedAt must be an ISO 8601 date",
+      })
+      .optional(),
+    // Who issued the ban when that is not a Junjo user. Stored verbatim.
+    issuer: z.string().min(1).max(128).optional(),
   })
   .strict();
+
+// How far ahead of the server clock an imported `bannedAt` may be,
+// allowing for clock skew between the caller and the server.
+export const BANNED_AT_MAX_SKEW_MS = 60_000;
 
 export type CreateGameBanBody = z.infer<typeof createGameBanBody>;
 

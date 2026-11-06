@@ -1,21 +1,20 @@
 import type { JunjoEvent, JunjoEventType } from "@junjo.io/shared";
 import { Prisma } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
+import type { Db } from "./db.js";
 import { pickRenderedId } from "./identity.js";
-
-type RenderClient = PrismaClient | Prisma.TransactionClient;
 
 // Paths inside each event type that hold an external user id naming a
 // person. Delivery rewrites exactly these to the id the subscriber's
 // namespace preference selects; everything else in the payload is sent
 // as emitted. Fields holding internal JunjoUser ids, and ids recorded
-// literally (invitation targets, the linked and unlinked ids on identity
-// events), are deliberately absent. The Record type forces every new
-// event type to declare its paths.
+// literally (invitation targets, the linked, unlinked and changed ids on
+// identity events), are deliberately absent. The Record type forces
+// every new event type to declare its paths.
 const USER_ID_PATHS: Record<JunjoEventType, readonly (readonly string[])[]> = {
   "member.joined": [["userId"], ["member", "userId"]],
   "member.left": [["userId"], ["kickedBy"]],
   "member.invited": [],
+  "member.updated": [["userId"]],
   "member.banned": [["userId"]],
   "member.unbanned": [["userId"]],
   "role.created": [],
@@ -36,8 +35,11 @@ const USER_ID_PATHS: Record<JunjoEventType, readonly (readonly string[])[]> = {
   "friend.unblocked": [["byJunjoUserId"], ["otherJunjoUserId"]],
   "game.user.banned": [["userId"]],
   "game.user.unbanned": [["userId"]],
+  "game.user.sanctioned": [["userId"]],
+  "game.user.unsanctioned": [["userId"]],
   "identity.linked": [["userId"]],
   "identity.unlinked": [["userId"]],
+  "identity.updated": [["userId"]],
 };
 
 // Emitted id -> every id of the same person in the event's game,
@@ -66,7 +68,7 @@ export function emittedUserIds(event: JunjoEvent): string[] {
 // One query for every emitted id across `events`, which must share a
 // game. Returns an empty table when no event names a user.
 export async function loadRenderTable(
-  client: RenderClient,
+  client: Db,
   gameId: string,
   events: readonly JunjoEvent[],
 ): Promise<RenderTable> {

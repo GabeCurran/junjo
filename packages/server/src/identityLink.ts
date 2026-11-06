@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { Errors } from "./errors.js";
+import { isActiveUntil } from "./expiry.js";
+import { mergedPerUserOverflow } from "./groupKinds.js";
 import { IDENTITY_ORDER } from "./identity.js";
 
 type Tx = Prisma.TransactionClient;
@@ -55,10 +57,6 @@ export interface Footprint {
   banned: boolean;
 }
 
-function isActive(expiresAt: Date | null, now: Date): boolean {
-  return expiresAt === null || expiresAt > now;
-}
-
 // An active game ban, or an active ban in any group of the game. The
 // same test link, unlink and code requests apply.
 export async function isBannedInGame(
@@ -78,8 +76,8 @@ export async function isBannedInGame(
     }),
   ]);
   return (
-    (gameBan !== null && isActive(gameBan.expiresAt, now)) ||
-    groupBans.some((m) => isActive(m.bannedUntil, now))
+    (gameBan !== null && isActiveUntil(gameBan.expiresAt, now)) ||
+    groupBans.some((m) => isActiveUntil(m.bannedUntil, now))
   );
 }
 
@@ -101,35 +99,49 @@ export async function loadFootprint(
   junjoUserId: string,
   now: Date = new Date(),
 ): Promise<Footprint> {
-  const [identities, memberships, relationships, tags, visibility, gameBans, history] =
-    await Promise.all([
-      tx.externalIdentity.findMany({ where: { junjoUserId }, select: { gameId: true } }),
-      tx.groupMember.findMany({
-        where: { junjoUserId },
-        select: {
-          status: true,
-          bannedUntil: true,
-          metadata: true,
-          notesPublic: true,
-          notesPrivate: true,
-          group: { select: { gameId: true, defaultRoleId: true } },
-          memberRoles: { select: { roleId: true, role: { select: { isDefault: true } } } },
-          _count: { select: { permissionOverrides: true } },
-        },
-      }),
-      tx.userRelationship.count({
-        where: { OR: [{ actorJunjoUserId: junjoUserId }, { targetJunjoUserId: junjoUserId }] },
-      }),
-      tx.friendTag.count({ where: { junjoUserId } }),
-      tx.userVisibility.count({ where: { junjoUserId } }),
-      tx.gameBan.findMany({ where: { junjoUserId }, select: { gameId: true, expiresAt: true } }),
-      tx.banHistory.count({ where: { junjoUserId } }),
-    ]);
+  const [
+    identities,
+    memberships,
+    relationships,
+    tags,
+    visibility,
+    gameBans,
+    history,
+    sanctions,
+    sanctionHistory,
+    moderated,
+  ] = await Promise.all([
+    tx.externalIdentity.findMany({ where: { junjoUserId }, select: { gameId: true } }),
+    tx.groupMember.findMany({
+      where: { junjoUserId },
+      select: {
+        status: true,
+        bannedUntil: true,
+        metadata: true,
+        notesPublic: true,
+        notesPrivate: true,
+        group: { select: { gameId: true, defaultRoleId: true } },
+        memberRoles: { select: { roleId: true, role: { select: { isDefault: true } } } },
+        _count: { select: { permissionOverrides: true } },
+      },
+    }),
+    tx.userRelationship.count({
+      where: { OR: [{ actorJunjoUserId: junjoUserId }, { targetJunjoUserId: junjoUserId }] },
+    }),
+    tx.friendTag.count({ where: { junjoUserId } }),
+    tx.userVisibility.count({ where: { junjoUserId } }),
+    tx.gameBan.findMany({ where: { junjoUserId }, select: { gameId: true, expiresAt: true } }),
+    tx.banHistory.count({ where: { junjoUserId } }),
+    tx.sanction.count({ where: { junjoUserId } }),
+    tx.sanctionHistory.count({ where: { junjoUserId } }),
+    tx.moderationState.count({ where: { junjoUserId, version: { gt: 0 } } }),
+  ]);
 
   const banned =
-    gameBans.some((b) => b.gameId === gameId && isActive(b.expiresAt, now)) ||
+    gameBans.some((b) => b.gameId === gameId && isActiveUntil(b.expiresAt, now)) ||
     memberships.some(
-      (m) => m.group.gameId === gameId && m.status === "banned" && isActive(m.bannedUntil, now),
+      (m) =>
+        m.group.gameId === gameId && m.status === "banned" && isActiveUntil(m.bannedUntil, now),
     );
 
   let holdsSomething =
@@ -139,7 +151,13 @@ export async function loadFootprint(
     tags > 0 ||
     visibility > 0 ||
     gameBans.length > 0 ||
-    history > 0;
+    history > 0 ||
+    // Sanctions and the moderation version live on the person and are
+    // deleted with an attached person, so holding any of them makes this
+    // side the survivor (or refuses the link) instead of losing them.
+    sanctions > 0 ||
+    sanctionHistory > 0 ||
+    moderated > 0;
 
   for (const m of memberships) {
     if (holdsSomething) break;
@@ -185,15 +203,21 @@ export interface LinkPlan {
   survivor: "issuer" | "redeemer";
 }
 
-// Applies decision 4: bans refuse; when both people hold something the
-// link is refused; otherwise the person holding something survives, and
-// the issuer survives a tie. Locks both people first.
+// Locks both people, then refuses the link when either is banned, when
+// both hold something, or when the merge would exceed a group kind's
+// maxPerUser. Otherwise the person holding something survives, and the
+// issuer survives a tie.
 export async function planLink(
   tx: Tx,
   gameId: string,
   issuerId: string,
   redeemerId: string,
 ): Promise<LinkPlan> {
+  // The maxPerUser count takes the same per-person advisory locks as
+  // joins, before the person rows: a join holds its advisory lock and
+  // then needs a key-share lock on the person row for its insert, so
+  // taking the person rows first here could deadlock with it.
+  const overflow = await mergedPerUserOverflow(tx, gameId, [issuerId, redeemerId]);
   await lockPeople(tx, [issuerId, redeemerId]);
   const [issuer, redeemer] = await Promise.all([
     loadFootprint(tx, gameId, issuerId),
@@ -205,6 +229,14 @@ export async function planLink(
   if (issuer.holdsSomething && redeemer.holdsSomething) {
     throw Errors.linkRefused(
       "both ids belong to people with roles, relationships or history; staff must merge them",
+    );
+  }
+  // Each side may sit within a kind's maxPerUser on its own while the
+  // merged person would not; the merge would otherwise leave them over.
+  if (overflow.length > 0) {
+    throw Errors.linkRefused(
+      `linking would put this person in more groups of kind ${overflow.join(", ")} than allowed`,
+      { reason: "group_limit_reached", kinds: overflow },
     );
   }
   return redeemer.holdsSomething
@@ -239,10 +271,12 @@ export async function mergePeople(
   const drop = attachedRows.filter((r) => survivorGroups.has(r.groupId)).map((r) => r.id);
   const move = attachedRows.filter((r) => !survivorGroups.has(r.groupId)).map((r) => r.id);
   if (drop.length > 0) await tx.groupMember.deleteMany({ where: { id: { in: drop } } });
+  // A moved row now belongs to another person, which is a change to the
+  // member, so its version rises. Dropped rows are deleted outright.
   if (move.length > 0) {
     await tx.groupMember.updateMany({
       where: { id: { in: move } },
-      data: { junjoUserId: survivorId },
+      data: { junjoUserId: survivorId, version: { increment: 1 } },
     });
   }
 

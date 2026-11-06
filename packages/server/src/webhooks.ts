@@ -1,5 +1,6 @@
 import type { JunjoEvent } from "@junjo.io/shared";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
+import type { Db } from "./db.js";
 import {
   type RenderTable,
   loadRenderTable,
@@ -7,8 +8,6 @@ import {
   renderEvent,
   renderIsIdentity,
 } from "./eventRender.js";
-
-export type WebhookDb = PrismaClient | Prisma.TransactionClient;
 
 // The JSON round-trip turns every `Date` into its ISO 8601 string and
 // strips non-serializable fields, matching the wire format consumers
@@ -55,10 +54,7 @@ function payloadsFor(
 // if the mutation rolls back, the staged deliveries vanish with it; if
 // it commits, the worker is guaranteed to see them). A top-level
 // PrismaClient still works for callers with no surrounding transaction.
-export async function enqueueWebhookDeliveries(
-  db: WebhookDb,
-  event: JunjoEvent,
-): Promise<string[]> {
+export async function enqueueWebhookDeliveries(db: Db, event: JunjoEvent): Promise<string[]> {
   const endpoints = await db.webhookEndpoint.findMany({
     where: {
       gameId: event.gameId,
@@ -92,10 +88,7 @@ export async function enqueueWebhookDeliveries(
 // delivery insert regardless of N, instead of 2N statements inside the
 // caller's transaction. Throws on mixed batches; that would need the
 // per-event path.
-export async function enqueueWebhookDeliveriesBatch(
-  db: WebhookDb,
-  events: JunjoEvent[],
-): Promise<void> {
+export async function enqueueWebhookDeliveriesBatch(db: Db, events: JunjoEvent[]): Promise<void> {
   const first = events[0];
   if (!first) return;
   for (const event of events) {

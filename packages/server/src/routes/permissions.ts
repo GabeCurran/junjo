@@ -2,6 +2,7 @@ import type { GroupId, PermissionCheckResult, PermissionMode } from "@junjo.io/s
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { loadPermissionMode } from "../config/loadGameConfig.js";
+import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
 import { findJunjoUserId } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
@@ -15,8 +16,6 @@ import { assertUserIdsWellFormed } from "../userIdFormat.js";
 import { MAX_PARENT_DEPTH } from "./groups.schema.js";
 import { checkPermissionBatchBody, checkPermissionQuery } from "./permissions.schema.js";
 
-type PermissionsClient = PrismaClient | Prisma.TransactionClient;
-
 // Request-scoped lookups shared by every check in one request: the
 // game's permission mode, read once, and external userId -> JunjoUser
 // id. A batch repeats the same userId across most of its entries and an
@@ -27,7 +26,7 @@ export class CheckContext {
   private modePromise: Promise<PermissionMode> | null = null;
 
   constructor(
-    private readonly prisma: PermissionsClient,
+    private readonly prisma: Db,
     private readonly gameId: string,
   ) {}
 
@@ -92,7 +91,7 @@ interface ReachableRoleRow {
 // bounded by `MAX_ROLE_DEPTH`, which only matters against corrupted
 // state because parent writes are cycle-checked.
 async function loadReachableRoles(
-  prisma: PermissionsClient,
+  prisma: Db,
   groupId: string,
   groupMemberId: string,
 ): Promise<ReachableRoleRow[]> {
@@ -131,7 +130,7 @@ async function loadReachableRoles(
 // transition (rows are kept for audit history; the resolver gates on
 // status).
 async function resolveForJunjoUser(
-  prisma: PermissionsClient,
+  prisma: Db,
   mode: PermissionMode,
   groupId: string,
   junjoUserId: string,
@@ -214,7 +213,7 @@ async function resolveForJunjoUser(
 
 // Caller must enforce game scope on `groupId`; this function trusts it.
 export async function resolvePermission(
-  prisma: PermissionsClient,
+  prisma: Db,
   gameId: string,
   groupId: string,
   externalUserId: string,
@@ -240,7 +239,7 @@ interface ChainRow {
 // (`setGroupParentSafely`), so the bound only matters against corrupted
 // state; the ids are deduped for the same reason.
 export async function loadAncestorChain(
-  prisma: PermissionsClient,
+  prisma: Db,
   gameId: string,
   groupId: string,
 ): Promise<string[]> {
@@ -291,7 +290,7 @@ export interface InheritedResolution {
 // returned unchanged, which preserves the `none` / `default` distinction
 // callers use to tell "not a member" from "member without the grant".
 export async function resolvePermissionInherited(
-  prisma: PermissionsClient,
+  prisma: Db,
   gameId: string,
   groupId: string,
   externalUserId: string,

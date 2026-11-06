@@ -28,6 +28,8 @@ export const AUDIT_ACTIONS = [
   "member.notes.updated",
   "game.user.banned",
   "game.user.unbanned",
+  "game.user.sanctioned",
+  "game.user.unsanctioned",
   "game.permissions.mode.set",
   "role.created",
   "role.updated",

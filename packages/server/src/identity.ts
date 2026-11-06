@@ -2,14 +2,13 @@ import type { PartialGameConfig } from "@junjo.io/shared";
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { resolveGameConfig } from "./config/defaults.js";
+import type { Db } from "./db.js";
 import { currentPreferredNamespaces } from "./requestContext.js";
 import {
   assertUserIdWellFormed,
   assertUserIdsWellFormed,
   userIdNamespace,
 } from "./userIdFormat.js";
-
-type IdentityClient = PrismaClient | Prisma.TransactionClient;
 
 // Race-safe via the `(gameId, externalUserId)` unique index. The loser of
 // a concurrent first-time create catches Prisma's P2002, lets its inner
@@ -78,7 +77,7 @@ export async function findOrCreateJunjoUser(
 // since the user might exist for other purposes). Malformed ids in a
 // declared namespace reject instead of answering "not found".
 export async function findJunjoUserId(
-  client: IdentityClient,
+  client: Db,
   gameId: string,
   externalUserId: string,
 ): Promise<string | null> {
@@ -118,7 +117,7 @@ export function pickRenderedId(ordered: readonly string[], preferred: readonly s
 // no id in this game are absent from the map. `preferred` defaults to
 // the current request's preference.
 export async function renderUserIds(
-  client: IdentityClient,
+  client: Db,
   gameId: string,
   junjoUserIds: Iterable<string>,
   preferred: readonly string[] = currentPreferredNamespaces(),
@@ -143,44 +142,79 @@ export async function renderUserIds(
   return out;
 }
 
-export async function renderUserId(
-  client: IdentityClient,
-  gameId: string,
-  junjoUserId: string,
-  preferred: readonly string[] = currentPreferredNamespaces(),
-): Promise<string | null> {
-  const map = await renderUserIds(client, gameId, [junjoUserId], preferred);
-  return map.get(junjoUserId) ?? null;
-}
-
-export interface ResolvedUser {
-  junjoUserId: string;
+export interface RenderedPerson {
   // The id responses name this person by.
-  renderedId: string;
+  userId: string;
+  // The rendered id's display name; when it has none, the most recently
+  // set name among the person's ids; else null.
+  displayName: string | null;
 }
 
-// `findJunjoUserId` plus the rendered id, which differs from the
-// requested id only for people with several ids in the game.
-export async function resolveUser(
-  client: IdentityClient,
+// `renderUserIds` plus each person's display name, from the same rows.
+export async function renderPeople(
+  client: Db,
   gameId: string,
-  externalUserId: string,
+  junjoUserIds: Iterable<string>,
   preferred: readonly string[] = currentPreferredNamespaces(),
-): Promise<ResolvedUser | null> {
-  const junjoUserId = await findJunjoUserId(client, gameId, externalUserId);
-  if (!junjoUserId) return null;
-  const renderedId = await renderUserId(client, gameId, junjoUserId, preferred);
-  return { junjoUserId, renderedId: renderedId ?? externalUserId };
+): Promise<Map<string, RenderedPerson>> {
+  const ids = [...new Set(junjoUserIds)];
+  if (ids.length === 0) return new Map();
+  const rows = await client.externalIdentity.findMany({
+    where: { gameId, junjoUserId: { in: ids } },
+    select: {
+      junjoUserId: true,
+      externalUserId: true,
+      displayName: true,
+      displayNameUpdatedAt: true,
+    },
+    orderBy: IDENTITY_ORDER,
+  });
+  const byPerson = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = byPerson.get(row.junjoUserId);
+    if (list) list.push(row);
+    else byPerson.set(row.junjoUserId, [row]);
+  }
+  const out = new Map<string, RenderedPerson>();
+  for (const [junjoUserId, ordered] of byPerson) {
+    const userId = pickRenderedId(
+      ordered.map((r) => r.externalUserId),
+      preferred,
+    );
+    out.set(junjoUserId, { userId, displayName: personDisplayName(ordered, userId) });
+  }
+  return out;
+}
+
+// The person-level display name rule over one person's identity rows.
+export function personDisplayName(
+  rows: readonly {
+    externalUserId: string;
+    displayName: string | null;
+    displayNameUpdatedAt: Date | null;
+  }[],
+  renderedId: string,
+): string | null {
+  const own = rows.find((r) => r.externalUserId === renderedId)?.displayName;
+  if (own) return own;
+  let latest: { name: string; at: number } | null = null;
+  for (const r of rows) {
+    if (!r.displayName) continue;
+    const at = r.displayNameUpdatedAt?.getTime() ?? 0;
+    if (!latest || at > latest.at) latest = { name: r.displayName, at };
+  }
+  return latest?.name ?? null;
 }
 
 // Rendered id for a person the caller just resolved or created from
 // `requestedId`. Falls back to `requestedId` if the person has no id in
 // the game (it was unlinked concurrently).
 export async function renderResolved(
-  client: IdentityClient,
+  client: Db,
   gameId: string,
   junjoUserId: string,
   requestedId: string,
 ): Promise<string> {
-  return (await renderUserId(client, gameId, junjoUserId)) ?? requestedId;
+  const map = await renderUserIds(client, gameId, [junjoUserId]);
+  return map.get(junjoUserId) ?? requestedId;
 }

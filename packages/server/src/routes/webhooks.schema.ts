@@ -12,6 +12,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "member.joined",
   "member.left",
   "member.invited",
+  "member.updated",
   "member.banned",
   "member.unbanned",
   "role.created",
@@ -32,8 +33,11 @@ export const WEBHOOK_EVENT_TYPES = [
   "friend.unblocked",
   "game.user.banned",
   "game.user.unbanned",
+  "game.user.sanctioned",
+  "game.user.unsanctioned",
   "identity.linked",
   "identity.unlinked",
+  "identity.updated",
 ] as const;
 
 export type WebhookEventTypeString = (typeof WEBHOOK_EVENT_TYPES)[number];

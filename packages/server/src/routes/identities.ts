@@ -1,6 +1,15 @@
-import type { GameId, IdentityLinkedEvent, IdentityUnlinkedEvent, UserId } from "@junjo.io/shared";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  DISPLAY_NAME_LOOKUP_LIMIT,
+  DISPLAY_NAME_MAX_LENGTH,
+  type GameId,
+  type IdentityLinkedEvent,
+  type IdentityUnlinkedEvent,
+  type IdentityUpdatedEvent,
+  type UserId,
+} from "@junjo.io/shared";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { Context, Handler } from "hono";
+import { NAMESPACE_FORMAT_MESSAGE, userIdNamespaceSchema } from "../config/schema.js";
 import { Errors } from "../errors.js";
 import { type EventHub, eventHub as defaultHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent } from "../events.js";
@@ -26,28 +35,32 @@ import { type ConsumeResult, RateLimiter } from "../middleware/rateLimit.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import { isUniqueViolation } from "../prismaErrors.js";
 import { currentRequestContext } from "../requestContext.js";
-import { parseBody } from "../roleWrites.js";
 import { assertUserIdsWellFormed, userIdNamespace } from "../userIdFormat.js";
-import { redeemLinkCodeBody } from "./identities.schema.js";
+import { parseBody } from "../validation.js";
+import { stampStreamPosition } from "./gameEvents.js";
+import { redeemLinkCodeBody, setDisplayNameBody } from "./identities.schema.js";
 
 export interface WireLinkedIdentity {
   userId: string;
   // Text before the id's first ":", or null when it has none.
   namespace: string | null;
   linkedAt: string;
+  // This id's own display name.
+  displayName: string | null;
 }
 
 export interface WireLinkedIdentityList {
   items: WireLinkedIdentity[];
 }
 
-type IdentityRow = { externalUserId: string; linkedAt: Date };
+type IdentityRow = { externalUserId: string; linkedAt: Date; displayName: string | null };
 
 export function serializeLinkedIdentity(row: IdentityRow): WireLinkedIdentity {
   return {
     userId: row.externalUserId,
     namespace: userIdNamespace(row.externalUserId),
     linkedAt: row.linkedAt.toISOString(),
+    displayName: row.displayName,
   };
 }
 
@@ -59,9 +72,108 @@ export async function loadLinkedIdentities(
 ): Promise<IdentityRow[]> {
   return prisma.externalIdentity.findMany({
     where: { gameId, junjoUserId },
-    select: { externalUserId: true, linkedAt: true },
+    select: { externalUserId: true, linkedAt: true, displayName: true },
     orderBy: IDENTITY_ORDER,
   });
+}
+
+// =====================================================================
+// Display names
+// =====================================================================
+
+export interface WireDisplayNameMatch {
+  userId: string;
+  displayName: string;
+  displayNameUpdatedAt: string;
+}
+
+// PUT /v1/users/:userId/display-name
+// Sets or clears the display name of exactly the id in the path, never
+// of the person's other ids; an unknown id becomes a new person first,
+// like other writes. A value equal to the stored one writes nothing and
+// emits nothing. Names change often, so no audit entry is written.
+export function setDisplayNameHandler(prisma: PrismaClient, hub: EventHub): Handler {
+  return async (c) => {
+    const userId = c.req.param("userId");
+    if (!userId) throw Errors.badRequest("userId is required");
+    const gameId = c.var.gameId;
+    const body = parseBody(setDisplayNameBody, await c.req.json().catch(() => null));
+    const displayName = body.displayName;
+
+    await findOrCreateJunjoUser(prisma, gameId, userId);
+    const outcome = await prisma.$transaction(async (tx) => {
+      // Locked so two concurrent writes of different names each compare
+      // against the value the other committed.
+      const rows = await tx.$queryRaw<
+        { displayName: string | null; linkedAt: Date; junjoUserId: string }[]
+      >(Prisma.sql`
+        SELECT "displayName", "linkedAt", "junjoUserId" FROM "ExternalIdentity"
+        WHERE "gameId" = ${gameId} AND "externalUserId" = ${userId}
+        FOR UPDATE
+      `);
+      const row = rows[0];
+      if (!row) throw Errors.notFound("user");
+      if (row.displayName === displayName) {
+        return { row: { ...row, externalUserId: userId }, event: null };
+      }
+      const updated = await tx.externalIdentity.update({
+        where: { gameId_externalUserId: { gameId, externalUserId: userId } },
+        data: { displayName, displayNameUpdatedAt: displayName === null ? null : new Date() },
+        select: { externalUserId: true, linkedAt: true, displayName: true, junjoUserId: true },
+      });
+      const event = await stageEvent<IdentityUpdatedEvent>(tx, {
+        type: "identity.updated",
+        gameId: gameId as GameId,
+        userId: userId as UserId,
+        changedUserId: userId as UserId,
+        displayName,
+        changed: ["displayName"],
+      });
+      return { row: updated, event };
+    });
+
+    if (outcome.event) publishStagedEvents(hub, outcome.event);
+    return c.json<WireLinkedIdentity>(serializeLinkedIdentity(outcome.row));
+  };
+}
+
+// GET /v1/identities/by-name?name=&namespace=
+// Ids whose own display name equals `name` ignoring case, optionally
+// only ids in `namespace`, most recently named first. Each match names
+// the matching id itself, not the person's rendered id, because the
+// caller asked by that id's name. Served by the expression index on
+// (gameId, lower(displayName)).
+export function findIdentitiesByNameHandler(prisma: PrismaClient): Handler {
+  return async (c) => {
+    const gameId = c.var.gameId;
+    const name = c.req.query("name");
+    if (name === undefined || name.length < 1 || name.length > DISPLAY_NAME_MAX_LENGTH) {
+      throw Errors.badRequest(`name must be 1-${DISPLAY_NAME_MAX_LENGTH} characters`);
+    }
+    const namespace = c.req.query("namespace");
+    if (namespace !== undefined && !userIdNamespaceSchema.safeParse(namespace).success) {
+      throw Errors.badRequest(NAMESPACE_FORMAT_MESSAGE);
+    }
+    const rows = await prisma.$queryRaw<
+      { externalUserId: string; displayName: string; displayNameUpdatedAt: Date | null }[]
+    >(Prisma.sql`
+      SELECT "externalUserId", "displayName", "displayNameUpdatedAt"
+      FROM "ExternalIdentity"
+      WHERE "gameId" = ${gameId}
+        AND "displayName" IS NOT NULL
+        AND lower("displayName") = lower(${name})
+        ${namespace === undefined ? Prisma.empty : Prisma.sql`AND starts_with("externalUserId", ${`${namespace}:`})`}
+      ORDER BY "displayNameUpdatedAt" DESC NULLS LAST, id DESC
+      LIMIT ${DISPLAY_NAME_LOOKUP_LIMIT}
+    `);
+    return c.json<{ items: WireDisplayNameMatch[] }>({
+      items: rows.map((r) => ({
+        userId: r.externalUserId,
+        displayName: r.displayName,
+        displayNameUpdatedAt: (r.displayNameUpdatedAt ?? new Date(0)).toISOString(),
+      })),
+    });
+  };
 }
 
 // GET /v1/users/:userId/identities. A never-seen id answers with an
@@ -71,6 +183,7 @@ export function listLinkedIdentitiesHandler(prisma: PrismaClient): Handler {
     const userId = c.req.param("userId");
     if (!userId) throw Errors.badRequest("userId is required");
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
 
     const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
     if (!junjoUserId) return c.json<WireLinkedIdentityList>({ items: [] });

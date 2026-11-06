@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
 import { EventHub } from "../eventHub";
 import { createApiKey, createGame } from "../seed";
+import { seedLinkedPerson, waitFor } from "../testHelpers";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const ADMIN_TOKEN = "test-admin-token-identity";
@@ -89,29 +90,6 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
     return prisma.group.create({
       data: { gameId, kind: "guild", name: "Wolves", visibility: "public", metadata: {} },
     });
-  }
-
-  // A person holding MC (linked first) and WEB (linked a minute later).
-  async function seedLinkedPerson(groupId?: string) {
-    const user = await prisma.junjoUser.create({ data: {} });
-    const t0 = new Date("2026-11-01T00:00:00.000Z");
-    await prisma.externalIdentity.create({
-      data: { gameId, junjoUserId: user.id, externalUserId: MC, linkedAt: t0 },
-    });
-    await prisma.externalIdentity.create({
-      data: {
-        gameId,
-        junjoUserId: user.id,
-        externalUserId: WEB,
-        linkedAt: new Date(t0.getTime() + 60_000),
-      },
-    });
-    if (groupId) {
-      await prisma.groupMember.create({
-        data: { groupId, junjoUserId: user.id, status: "active" },
-      });
-    }
-    return user;
   }
 
   describe("declared formats", () => {
@@ -246,7 +224,7 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
   describe("rendering a person with several ids", () => {
     it("names them by the earliest-linked id without a preference", async () => {
       const group = await seedGroup();
-      await seedLinkedPerson(group.id);
+      await seedLinkedPerson(prisma, gameId, MC, WEB, group.id);
 
       for (const asked of [MC, WEB]) {
         const res = await api(`/v1/users/${asked}/members`);
@@ -259,7 +237,7 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
 
     it("names them in the key's preferred namespace", async () => {
       const group = await seedGroup();
-      await seedLinkedPerson(group.id);
+      await seedLinkedPerson(prisma, gameId, MC, WEB, group.id);
 
       for (const asked of [MC, WEB]) {
         const items = await read(api(`/v1/users/${asked}/members`, { key: webKey }));
@@ -275,7 +253,7 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
 
     it("falls back to the earliest id when no preferred namespace matches", async () => {
       const group = await seedGroup();
-      await seedLinkedPerson(group.id);
+      await seedLinkedPerson(prisma, gameId, MC, WEB, group.id);
       const steam = await createApiKey(gameId, prisma);
       await prisma.apiKey.update({
         where: { id: steam.apiKey.id },
@@ -288,13 +266,18 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
     });
 
     it("lists a person's ids earliest-linked first", async () => {
-      await seedLinkedPerson();
+      await seedLinkedPerson(prisma, gameId, MC, WEB);
       const res = await api(`/v1/users/${WEB}/identities`);
       expect(res.status).toBe(200);
       const body = await read(res);
       expect(body.items).toEqual([
-        { userId: MC, namespace: "mc", linkedAt: "2026-11-01T00:00:00.000Z" },
-        { userId: WEB, namespace: "web", linkedAt: "2026-11-01T00:01:00.000Z" },
+        { userId: MC, namespace: "mc", linkedAt: "2026-11-01T00:00:00.000Z", displayName: null },
+        {
+          userId: WEB,
+          namespace: "web",
+          linkedAt: "2026-11-01T00:01:00.000Z",
+          displayName: null,
+        },
       ]);
     });
 
@@ -304,14 +287,14 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
     });
 
     it("renders one row per game on the admin user view", async () => {
-      const user = await seedLinkedPerson();
-      const body = await read(admin(`/v1/users/${user.id}/games`, "GET"));
+      const person = await seedLinkedPerson(prisma, gameId, MC, WEB);
+      const body = await read(admin(`/v1/users/${person}/games`, "GET"));
       expect(body.games).toEqual([{ gameId, externalUserId: MC, joinedGroupCount: 0 }]);
     });
 
     it("renders webhook payloads per endpoint preference", async () => {
       const group = await seedGroup();
-      await seedLinkedPerson(group.id);
+      await seedLinkedPerson(prisma, gameId, MC, WEB, group.id);
       const plain = await prisma.webhookEndpoint.create({
         data: { gameId, url: "https://example.com/a", secret: "s".repeat(32), events: [] },
       });
@@ -342,15 +325,12 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
 
     it("renders SSE events per stream preference", async () => {
       const group = await seedGroup();
-      await seedLinkedPerson(group.id);
+      await seedLinkedPerson(prisma, gameId, MC, WEB, group.id);
       const res = await api(`/v1/events/${group.id}`, { key: webKey });
       expect(res.status).toBe(200);
       const reader = res.body?.getReader();
       if (!reader) throw new Error("no body");
-      const deadline = Date.now() + 2000;
-      while (hub.subscriberCount(group.id as GroupId) === 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 5));
-      }
+      await waitFor(() => hub.subscriberCount(group.id as GroupId) > 0);
       const event: MemberLeftEvent = {
         id: "evt_render_1",
         type: "member.left",
@@ -359,10 +339,12 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
         occurredAt: new Date(),
         userId: MC as UserId,
         reason: "left",
+        memberVersion: 1,
       };
       hub.publish(event);
       let text = "";
       const decoder = new TextDecoder();
+      const deadline = Date.now() + 2000;
       while (!text.includes("\n\n") && Date.now() < deadline) {
         const chunk = await reader.read();
         if (chunk.done) break;

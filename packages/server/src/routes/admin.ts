@@ -10,8 +10,10 @@ import type {
   GroupId,
   GroupRelationshipChangedEvent,
   GroupUpdatedEvent,
+  MemberChangeField,
   MemberInvitedEvent,
   MemberLeftEvent,
+  MemberUpdatedEvent,
   UserId,
 } from "@junjo.io/shared";
 import { Prisma } from "@prisma/client";
@@ -37,6 +39,7 @@ import {
   toPublicGroupRelationship,
   toPublicInvitation,
 } from "../events.js";
+import { afterMembershipChange, loadKindLimits, lockGroupMembership } from "../groupKinds.js";
 import {
   IDENTITY_ORDER,
   findJunjoUserId,
@@ -57,7 +60,6 @@ import {
   clearMemberOverride,
   createRole,
   deleteRole,
-  parseBody,
   removeRoleEntry,
   replaceRoleEntries,
   setMemberOverride,
@@ -66,6 +68,7 @@ import {
   upsertRoleEntry,
 } from "../roleWrites.js";
 import { assertUserIdsWellFormed } from "../userIdFormat.js";
+import { parseBody } from "../validation.js";
 import {
   ADMIN_GROUPS_MEMBER_COUNT_MAX_ROWS,
   ADMIN_GROUP_GROWTH_DEFAULT_WINDOW_MS,
@@ -319,6 +322,8 @@ export interface WireAdminApiKey {
   prefix: string;
   name: string | null;
   preferredNamespaces: string[];
+  // Whether the key may read `GET /v1/export`.
+  canExport: boolean;
   createdAt: string;
   revokedAt: string | null;
 }
@@ -357,6 +362,7 @@ function toWireApiKey(row: ApiKey): WireAdminApiKey {
     prefix: row.prefix,
     name: row.name,
     preferredNamespaces: row.preferredNamespaces,
+    canExport: row.canExport,
     createdAt: row.createdAt.toISOString(),
     revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
   };
@@ -532,6 +538,7 @@ export function createAdminApiKeyHandler(prisma: PrismaClient): Handler {
         hashedSecret: raw.hashedSecret,
         name: body.name ?? null,
         preferredNamespaces: body.preferredNamespaces ?? [],
+        canExport: body.canExport ?? false,
       },
     });
 
@@ -682,13 +689,9 @@ export function listAdminGroupsForGameHandler(prisma: PrismaClient): Handler {
   };
 }
 
-// Idempotent on already-revoked: keeps the original `revokedAt`
-// (operators care about when the revoke happened, not when they retried).
-// Rows are never hard-deleted so the historic prefix resolves in audit
-// lookups.
-// Renames a key or changes its namespace preference without rotating
-// its secret. Allowed on revoked keys so their audit label can still be
-// corrected.
+// Renames a key, changes its namespace preference or its export
+// permission without rotating its secret. Allowed on revoked keys so
+// their audit label can still be corrected.
 export function updateAdminApiKeyHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -709,12 +712,17 @@ export function updateAdminApiKeyHandler(prisma: PrismaClient): Handler {
         ...(body.preferredNamespaces !== undefined
           ? { preferredNamespaces: body.preferredNamespaces }
           : {}),
+        ...(body.canExport !== undefined ? { canExport: body.canExport } : {}),
       },
     });
     return c.json<WireAdminApiKey>(toWireApiKey(updated));
   };
 }
 
+// Idempotent on already-revoked: keeps the first `revokedAt`, since
+// operators care about when the revoke happened, not when they retried.
+// Rows are never hard-deleted so the historic prefix resolves in audit
+// lookups.
 export function revokeAdminApiKeyHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1059,10 +1067,16 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
       return c.json<WireAdminGroupMember>(wire);
     }
 
-    const { row: updated, event } = await prisma.$transaction(async (tx) => {
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
+    const {
+      row: updated,
+      event,
+      groupDeleted,
+    } = await prisma.$transaction(async (tx) => {
+      const locked = await lockGroupMembership(tx, group.id);
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data: { status: "kicked", leftAt: new Date() },
+        data: { status: "kicked", leftAt: new Date(), version: { increment: 1 } },
       });
       await tx.auditEntry.create({
         data: {
@@ -1083,11 +1097,13 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
         groupId: group.id as GroupId,
         userId: userId as UserId,
         reason: "kicked",
+        memberVersion: result.version,
       });
-      return { row: result, event: staged };
+      const deleted = await afterMembershipChange(tx, locked, limits, true);
+      return { row: result, event: staged, groupDeleted: deleted };
     });
 
-    publishStagedEvents(hub, event);
+    publishStagedEvents(hub, event, ...(groupDeleted ? [groupDeleted] : []));
 
     const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
     return c.json<WireAdminGroupMember>(wire);
@@ -1097,9 +1113,9 @@ export function kickAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub)
 // Metadata replaces wholesale and is treated as a change whenever
 // supplied (jsonb may not preserve key order; matches `groups.update`).
 // Notes are diffed per-field; a notes-only PATCH that matches stored
-// values is a true no-op. No JunjoEvent fires (no metadata/notes event
-// in the union). Up to two audit entries per call.
-export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
+// values is a true no-op. Up to two audit entries and one
+// `member.updated` event per call.
+export function updateAdminGroupMemberHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1148,7 +1164,7 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data,
+        data: { ...data, version: { increment: 1 } },
       });
       if (metadataChanged) {
         await tx.auditEntry.create({
@@ -1180,10 +1196,22 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
           },
         });
       }
-      return result;
+      const changed: MemberChangeField[] = [];
+      if (metadataChanged) changed.push("metadata");
+      if (notesChanged) changed.push("notes");
+      const event = await stageEvent<MemberUpdatedEvent>(tx, {
+        type: "member.updated",
+        gameId: gameId as GameId,
+        groupId: group.id as GroupId,
+        userId: userId as UserId,
+        changed,
+        memberVersion: result.version,
+      });
+      return { result, event };
     });
+    publishStagedEvents(hub, updated.event);
 
-    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.id, userId);
+    const wire = await loadAdminGroupMemberAfterMutation(prisma, gameId, updated.result.id, userId);
     return c.json<WireAdminGroupMember>(wire);
   };
 }
@@ -1191,7 +1219,10 @@ export function updateAdminGroupMemberHandler(prisma: PrismaClient): Handler {
 // Idempotent on matching `grant`. First sight of a permission key
 // auto-registers `PermissionDef`. Cache is invalidated after commit so
 // the next `permissions.check` reflects the new value.
-export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+export function setAdminMemberPermissionOverrideHandler(
+  prisma: PrismaClient,
+  hub: EventHub,
+): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1224,7 +1255,7 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
       userId,
     );
 
-    const result = await setMemberOverride(prisma, {
+    const result = await setMemberOverride(prisma, hub, {
       gameId,
       groupId: group.id,
       groupMemberId: member.id,
@@ -1234,14 +1265,17 @@ export function setAdminMemberPermissionOverrideHandler(prisma: PrismaClient): H
     });
 
     return c.json<WireAdminMemberPermissionOverride>(
-      toWireAdminMemberPermissionOverride(result, group.id, shownId),
+      toWireAdminMemberPermissionOverride(result.row, group.id, shownId),
     );
   };
 }
 
 // Idempotent on missing row. The `PermissionDef` registry row is
 // preserved across clears (catalog is monotonic per game).
-export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient): Handler {
+export function clearAdminMemberPermissionOverrideHandler(
+  prisma: PrismaClient,
+  hub: EventHub,
+): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
     const groupId = c.req.param("groupId");
@@ -1254,7 +1288,7 @@ export function clearAdminMemberPermissionOverrideHandler(prisma: PrismaClient):
 
     const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
 
-    await clearMemberOverride(prisma, {
+    await clearMemberOverride(prisma, hub, {
       gameId,
       groupId: group.id,
       groupMemberId: member.id,
@@ -1378,8 +1412,6 @@ export function createAdminGroupInvitationHandler(prisma: PrismaClient, hub: Eve
   };
 }
 
-// Structural duplicate of `WireRole` from `routes/roles.ts`; admin
-// handlers do not import across the cloud-only boundary.
 // Same shape as the per-game role wire.
 export type WireAdminRole = WireRole;
 
@@ -1538,7 +1570,6 @@ export function setAdminRoleParentsHandler(prisma: PrismaClient, hub: EventHub):
   };
 }
 
-// The group's full role graph in one read.
 export function getAdminGroupRoleGraphHandler(prisma: PrismaClient): Handler {
   return async (c) => {
     const gameId = c.req.param("gameId");
@@ -1953,8 +1984,8 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
 }
 
 // Cycle detection walks the candidate parent's ancestor chain bounded
-// at `MAX_PARENT_DEPTH = 100` (see parentCycle.ts); self-parent and any cycle 400
-// `parent_cycle`. Dispatches `group.updated` (there is no dedicated
+// at `MAX_PARENT_DEPTH = 100` (see parentCycle.ts); self-parent and any
+// cycle 400 `parent_cycle`. Dispatches `group.updated` (there is no dedicated
 // `GroupParentChangedEvent` in the union).
 export function setAdminGroupParentHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {

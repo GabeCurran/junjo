@@ -25,17 +25,16 @@ import type {
   Invitation as PrismaInvitation,
   Role as PrismaRole,
 } from "@prisma/client";
+import type { Db } from "./db.js";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
+import { recordEvents } from "./eventLog.js";
 import { EMPTY_ROLE_DETAIL, type RoleDetail, grantedKeys } from "./roleDetails.js";
-import {
-  type WebhookDb,
-  enqueueWebhookDeliveries,
-  enqueueWebhookDeliveriesBatch,
-} from "./webhooks.js";
+import { enqueueWebhookDeliveries, enqueueWebhookDeliveriesBatch } from "./webhooks.js";
 
 // 24 hex chars (96 bits). Random so any emitter can mint one without a
-// DB round-trip; surfaces on the SSE `id:` line for future
-// replay-on-reconnect.
+// DB round-trip. Identifies the event on every surface; group streams
+// also send it on the SSE `id:` line. Ordering and resume use the
+// stream position the event log assigns, not this id.
 export function newEventId(): string {
   return randomBytes(12).toString("hex");
 }
@@ -76,6 +75,7 @@ export function toPublicMember(
     notesPrivate: member.notesPrivate,
     joinedAt: member.joinedAt,
     bannedUntil: member.bannedUntil,
+    version: member.version,
   };
 }
 
@@ -141,17 +141,18 @@ export function publishEvent<E extends JunjoEvent>(
 }
 
 // Transactional-outbox staging: mints the event and writes its webhook
-// delivery rows on the caller's transaction, so a rollback takes the
-// staged deliveries with it and a commit guarantees the worker sees
-// them. The caller MUST publish the returned event to the SSE hub only
-// after the transaction commits (SSE subscribers must never observe a
-// rolled-back mutation); `publishStagedEvents` is the usual way.
+// delivery rows and its event log row on the caller's transaction, so a
+// rollback takes both with it and a commit guarantees the worker and the
+// game streams see them. The caller MUST publish the returned event to
+// the hub only after the transaction commits (subscribers must never
+// observe a rolled-back mutation); `publishStagedEvents` is the usual way.
 export async function stageEvent<E extends JunjoEvent>(
-  db: WebhookDb,
+  db: Db,
   payload: Omit<E, "id" | "occurredAt">,
 ): Promise<E> {
   const event = mintEvent<E>(payload);
   await enqueueWebhookDeliveries(db, event);
+  await recordEvents(db, [event]);
   return event;
 }
 
@@ -160,33 +161,35 @@ export async function stageEvent<E extends JunjoEvent>(
 // bulk routes use this so their transaction stays a handful of
 // statements instead of scaling with row count.
 export async function stageEventsBatch<E extends JunjoEvent>(
-  db: WebhookDb,
+  db: Db,
   payloads: Omit<E, "id" | "occurredAt">[],
 ): Promise<E[]> {
   const events = payloads.map((p) => mintEvent<E>(p));
   await enqueueWebhookDeliveriesBatch(db, events);
+  await recordEvents(db, events);
   return events;
 }
 
-// Post-commit half of the stage/publish pair. Accepts the events a
-// transaction staged and fans them to transient SSE subscribers.
+// Post-commit half of the stage/publish pair. Fans the events a
+// transaction staged to group stream subscribers and wakes the game
+// streams of their games.
 export function publishStagedEvents(hub: EventHub, ...events: JunjoEvent[]): void {
   for (const event of events) hub.publish(event);
 }
 
-// Publishes to the SSE hub AND enqueues durable webhook deliveries in
-// the same call, with NO transactional tie to the caller's mutation.
-// Mutation routes should prefer stageEvent inside their transaction +
-// publishStagedEvents after commit; this remains for callers with no
-// surrounding transaction where the mutation and the enqueue cannot be
-// atomic anyway.
+// Enqueues durable webhook deliveries, logs the event and publishes it
+// to the hub in one call, with NO transactional tie to the caller's
+// mutation. Mutation routes should prefer stageEvent inside their
+// transaction + publishStagedEvents after commit; this remains for
+// callers with no surrounding transaction where the mutation and the
+// enqueue cannot be atomic anyway.
 export async function dispatchEvent<E extends JunjoEvent>(
   prisma: PrismaClient,
   hub: EventHub,
   payload: Omit<E, "id" | "occurredAt">,
 ): Promise<E> {
-  const event = publishEvent<E>(hub, payload);
-  await enqueueWebhookDeliveries(prisma, event);
+  const event = await stageEvent<E>(prisma, payload);
+  hub.publish(event);
   return event;
 }
 

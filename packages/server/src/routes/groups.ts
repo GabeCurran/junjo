@@ -6,16 +6,19 @@ import type {
   GroupUpdatedEvent,
   JunjoEvent,
   MemberBannedEvent,
+  MemberChangeField,
   MemberInvitedEvent,
   MemberJoinedEvent,
   MemberLeftEvent,
   MemberUnbannedEvent,
+  MemberUpdatedEvent,
   RoleChangedEvent,
   RoleId,
   UserId,
 } from "@junjo.io/shared";
-import type { Group, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
+import type { Group, GroupMember, GroupRelationship, Prisma, PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
+import { z } from "zod";
 import { hashSecret, verifySecret } from "../apiKey.js";
 import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
@@ -30,8 +33,17 @@ import {
   toPublicMember,
 } from "../events.js";
 import {
+  afterMembershipChange,
+  assertCanActivate,
+  kindLimitFailures,
+  loadKindLimits,
+  lockGroupMembership,
+  touchMemberActivity,
+} from "../groupKinds.js";
+import {
   findJunjoUserId,
   findOrCreateJunjoUser,
+  renderPeople,
   renderResolved,
   renderUserIds,
 } from "../identity.js";
@@ -42,9 +54,19 @@ import { loadRoleDetails, loadRoleGraph } from "../roleDetails.js";
 import { clearMemberOverride, createRole, setMemberOverride } from "../roleWrites.js";
 import { SOFT_DELETE_RETENTION_DAYS } from "../softDelete.js";
 import { assertUserIdsWellFormed, idFormatsFor, isUserIdWellFormed } from "../userIdFormat.js";
+import { parseBody } from "../validation.js";
+import {
+  assertVersion,
+  bumpMemberVersion,
+  lockMember,
+  lockMemberVersion,
+  readIfMatch,
+  setEtag,
+} from "../versions.js";
 import { listAuditForGroup } from "./audit.js";
 import { serializeBanHistoryEntry } from "./bans.js";
 import { listGroupBanHistoryQuery } from "./bans.schema.js";
+import { stampStreamPosition } from "./gameEvents.js";
 import {
   addMemberBody,
   banMemberBody,
@@ -65,10 +87,12 @@ import {
 } from "./groups.schema.js";
 import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./invitations.js";
 import { createInvitationBody, listInvitationsQuery } from "./invitations.schema.js";
+import { importMembersHandler } from "./memberImport.js";
 import {
   batchLoadMemberRoleIds,
   loadMemberRoleIds,
   serializeMember,
+  serializeMemberFor,
   serializeMemberPermissionOverride,
 } from "./members.js";
 import { listMembersQuery, overridePermissionBody, updateMemberBody } from "./members.schema.js";
@@ -175,11 +199,93 @@ export function serializeGroup(group: Group, memberCount: number): WireGroup {
 const PASSCODE_ATTEMPTS_PER_GROUP_USER = { perMinute: 5, burst: 5 };
 const PASSCODE_ATTEMPTS_PER_GROUP = { perMinute: 30, burst: 30 };
 
+export const MEMBER_ACCESS_BATCH_MAX = 100;
+
+const memberAccessBatchBody = z
+  .object({ userIds: z.array(z.string().min(1)).min(1).max(MEMBER_ACCESS_BATCH_MAX) })
+  .strict();
+
+// Access for each id in `requested`, in request order; null where the id
+// names no member of the group (unknown id, or no membership row). An id
+// of any of a person's linked ids finds their row, and the answer names
+// the person by the caller's rendering rule. A fixed number of queries
+// regardless of how many ids are asked for.
+async function loadMemberAccess(
+  prisma: PrismaClient,
+  gameId: string,
+  groupId: string,
+  requested: readonly string[],
+) {
+  await assertUserIdsWellFormed(prisma, gameId, requested);
+  const identities = await prisma.externalIdentity.findMany({
+    where: { gameId, externalUserId: { in: [...new Set(requested)] } },
+    select: { externalUserId: true, junjoUserId: true },
+  });
+  const personOf = new Map(identities.map((i) => [i.externalUserId, i.junjoUserId]));
+  const members = await prisma.groupMember.findMany({
+    where: { groupId, junjoUserId: { in: [...new Set(personOf.values())] } },
+    select: { id: true, junjoUserId: true, status: true, version: true, metadata: true },
+  });
+  const memberIds = members.map((m) => m.id);
+  const [roleRows, overrideRows, people] = await Promise.all([
+    prisma.memberRole.findMany({
+      where: { groupMemberId: { in: memberIds } },
+      select: { groupMemberId: true, roleId: true },
+    }),
+    prisma.memberPermissionOverride.findMany({
+      where: { groupMemberId: { in: memberIds } },
+      orderBy: { permissionKey: "asc" },
+    }),
+    renderPeople(
+      prisma,
+      gameId,
+      members.map((m) => m.junjoUserId),
+    ),
+  ]);
+  const memberOf = new Map(members.map((m) => [m.junjoUserId, m]));
+  const rolesOf = new Map<string, string[]>();
+  for (const row of roleRows) {
+    const list = rolesOf.get(row.groupMemberId);
+    if (list) list.push(row.roleId);
+    else rolesOf.set(row.groupMemberId, [row.roleId]);
+  }
+  const overridesOf = new Map<string, typeof overrideRows>();
+  for (const row of overrideRows) {
+    const list = overridesOf.get(row.groupMemberId);
+    if (list) list.push(row);
+    else overridesOf.set(row.groupMemberId, [row]);
+  }
+  return requested.map((userId) => {
+    const person = personOf.get(userId);
+    const member = person === undefined ? undefined : memberOf.get(person);
+    if (!member) return null;
+    const shown = people.get(member.junjoUserId);
+    const shownId = shown?.userId ?? userId;
+    return {
+      groupId,
+      userId: shownId,
+      status: member.status,
+      roleIds: rolesOf.get(member.id) ?? [],
+      overrides: (overridesOf.get(member.id) ?? []).map((o) =>
+        serializeMemberPermissionOverride(o, groupId, shownId),
+      ),
+      version: member.version,
+      displayName: shown?.displayName ?? null,
+      metadata: (member.metadata ?? {}) as Record<string, unknown>,
+    };
+  });
+}
+
 export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   const passcodeUserLimiter = new RateLimiter(PASSCODE_ATTEMPTS_PER_GROUP_USER);
   const passcodeGroupLimiter = new RateLimiter(PASSCODE_ATTEMPTS_PER_GROUP);
 
   const r = new Hono();
+
+  // The member row as committed, for responses after a write whose
+  // transaction may have changed it or lost a race to another writer.
+  const reloadMember = async (member: GroupMember): Promise<GroupMember> =>
+    (await prisma.groupMember.findUnique({ where: { id: member.id } })) ?? member;
 
   r.get("/", async (c) => {
     const gameId = c.var.gameId;
@@ -372,6 +478,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         return { group: created, member: null, event: null };
       }
 
+      // The creator becomes an active member, so the kind's per-person
+      // limit applies as on any other path that adds one.
+      const locked = await lockGroupMembership(tx, created.id);
+      await assertCanActivate(
+        tx,
+        locked,
+        await loadKindLimits(tx, gameId, created.kind),
+        creatorJunjoUserId,
+      );
+
       const member = await tx.groupMember.create({
         data: {
           groupId: created.id,
@@ -420,6 +536,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         groupId: created.id as GroupId,
         userId: body.creatorUserId as UserId,
         member: toPublicMember(member, body.creatorUserId, assignedRoleId ? [assignedRoleId] : []),
+        memberVersion: member.version,
       });
 
       return { group: created, member, event };
@@ -661,10 +778,35 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       event,
       memberCount,
     } = await prisma.$transaction(async (tx) => {
+      // Members may have joined other groups of the kind while this one
+      // was deleted; restoring must not leave any of them over maxPerUser.
+      // Restoring changes no group's member count, so maxMembers is moot.
+      const limits = await loadKindLimits(tx, gameId, existing.kind);
+      if (limits?.maxPerUser !== undefined) {
+        const members = await tx.groupMember.findMany({
+          where: { groupId: existing.id, status: "active" },
+          select: { junjoUserId: true },
+        });
+        const failures = await kindLimitFailures(
+          tx,
+          { id: existing.id, gameId, kind: existing.kind },
+          { maxPerUser: limits.maxPerUser },
+          members.map((m) => m.junjoUserId),
+        );
+        if (failures.size > 0) {
+          throw Errors.groupLimitReached(
+            `${failures.size} member(s) of this group already hold the most memberships allowed for kind ${existing.kind}`,
+            { members: failures.size },
+          );
+        }
+      }
       const result = await tx.group.update({
         where: { id: existing.id },
         data: { softDeletedAt: null },
       });
+      // A restored group starts a fresh idle period; otherwise the idle
+      // sweeper would delete it again on its next pass.
+      await touchMemberActivity(tx, result.id);
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -838,6 +980,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   r.get("/:id/members", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -888,7 +1031,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const hasMore = members.length > limit;
     const sliced = hasMore ? members.slice(0, limit) : members;
 
-    const idMap = await renderUserIds(
+    const people = await renderPeople(
       prisma,
       gameId,
       sliced.map((m) => m.junjoUserId),
@@ -900,9 +1043,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const items = [];
     for (const m of sliced) {
-      const externalUserId = idMap.get(m.junjoUserId);
-      if (!externalUserId) continue;
-      items.push(serializeMember(m, externalUserId, roleMap.get(m.id) ?? []));
+      const person = people.get(m.junjoUserId);
+      if (!person) continue;
+      items.push(serializeMember(m, person.userId, roleMap.get(m.id) ?? [], person.displayName));
     }
 
     const lastItem = sliced[sliced.length - 1];
@@ -932,9 +1075,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!member) throw Errors.notFound("member");
 
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(
-      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    setEtag(c, member.version);
+    return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
   });
 
   // Idempotent on already-left / already-kicked (no audit, no event).
@@ -989,6 +1131,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const actorJunjoUserId = actorUserId
       ? await findOrCreateJunjoUser(prisma, gameId, actorUserId)
       : null;
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
 
     // Retried rather than surfaced as a conflict: a concurrent add of
     // the same user (or the same role) rolls this transaction back, and
@@ -997,10 +1140,15 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     // retry cannot double-emit.
     const outcome = await retryOnUniqueViolation(() =>
       prisma.$transaction(async (tx) => {
+        const locked = await lockGroupMembership(tx, group.id);
         const existing = await tx.groupMember.findUnique({
           where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
         });
         const wasActive = existing?.status === "active";
+        if (!wasActive) {
+          await assertCanActivate(tx, locked, limits, junjoUserId);
+          await afterMembershipChange(tx, locked, limits, false);
+        }
 
         let member = existing;
         if (!existing) {
@@ -1012,17 +1160,21 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           // joinedAt. Matches the public join path.
           member = await tx.groupMember.update({
             where: { id: existing.id },
-            data: { status: "active", leftAt: null, bannedUntil: null },
+            data: { status: "active", leftAt: null, bannedUntil: null, version: { increment: 1 } },
           });
         }
         if (!member) throw new Error("member row missing after upsert");
 
-        // Roles held before this call. The member.joined event carries
-        // these, and any role added below is reported separately as
-        // role.changed, so the event stream reads the same as the
-        // join-then-assign sequence this route replaces.
+        // A role added below also emits role.changed at the same
+        // memberVersion as the member.joined snapshot, which includes it.
         const priorRoleIds = existing ? await loadMemberRoleIds(tx, member.id) : [];
         const roleAdded = role !== null && !priorRoleIds.includes(role.id);
+        // One write, one version step: a create or reactivation already
+        // moved it, so only a role added to an already-active member
+        // bumps here.
+        if (wasActive && roleAdded) {
+          member = { ...member, version: await bumpMemberVersion(tx, member.id) };
+        }
 
         const staged: JunjoEvent[] = [];
         if (!wasActive) {
@@ -1045,7 +1197,12 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
               gameId: gameId as GameId,
               groupId: group.id as GroupId,
               userId: userId as UserId,
-              member: toPublicMember(member, userId, priorRoleIds),
+              member: toPublicMember(
+                member,
+                userId,
+                roleAdded && role ? [...priorRoleIds, role.id] : priorRoleIds,
+              ),
+              memberVersion: member.version,
             }),
           );
         }
@@ -1076,6 +1233,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
               added: [role.id as RoleId],
               removed: [],
               actorUserId: (actorUserId as UserId | undefined) ?? null,
+              memberVersion: member.version,
             }),
           );
         }
@@ -1087,15 +1245,14 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (outcome.roleAdded) permissionCache.invalidateGroup(group.id);
     publishStagedEvents(hub, ...outcome.staged);
+    setEtag(c, outcome.member.version);
     return c.json(
-      serializeMember(
-        outcome.member,
-        await renderResolved(prisma, gameId, junjoUserId, userId),
-        outcome.roleIds,
-      ),
+      await serializeMemberFor(prisma, gameId, outcome.member, userId, outcome.roleIds),
       outcome.wasActive ? 200 : 201,
     );
   });
+
+  r.post("/:id/members/import", importMembersHandler(prisma, hub));
 
   r.post("/:id/join", async (c) => {
     const id = c.req.param("id");
@@ -1155,13 +1312,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     // told which scope blocked them beyond what the message says.
     const banState = await checkBanState(prisma, gameId, junjoUserId, group.id);
     if (banState.banned) throw Errors.banned(banErrorMessage(banState));
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
 
     const { member, event } = await prisma
       .$transaction(async (tx) => {
+        const locked = await lockGroupMembership(tx, group.id);
         const existing = await tx.groupMember.findUnique({
           where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
         });
         if (existing && existing.status === "active") throw Errors.alreadyMember();
+        await assertCanActivate(tx, locked, limits, junjoUserId);
+        await afterMembershipChange(tx, locked, limits, false);
 
         const result = existing
           ? await tx.groupMember.update({
@@ -1169,7 +1330,12 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
               // Reactivate from left/kicked. bannedUntil is cleared
               // defensively even though the ban check above already
               // rejects banned rows (state hygiene).
-              data: { status: "active", leftAt: null, bannedUntil: null },
+              data: {
+                status: "active",
+                leftAt: null,
+                bannedUntil: null,
+                version: { increment: 1 },
+              },
             })
           : await tx.groupMember.create({
               data: { groupId: group.id, junjoUserId, status: "active" },
@@ -1194,6 +1360,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           groupId: group.id as GroupId,
           userId: userId as UserId,
           member: toPublicMember(result, userId, []),
+          memberVersion: result.version,
         });
         return { member: result, event: staged };
       })
@@ -1207,10 +1374,8 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       });
 
     publishStagedEvents(hub, event);
-    return c.json(
-      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), []),
-      201,
-    );
+    setEtag(c, member.version);
+    return c.json(await serializeMemberFor(prisma, gameId, member, userId), 201);
   });
 
   r.post("/:id/leave", async (c) => {
@@ -1240,15 +1405,25 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     if (member.status !== "active") {
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(
-        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-      );
+      setEtag(c, member.version);
+      return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
     }
 
-    const { row: updated, event } = await prisma.$transaction(async (tx) => {
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
+    const {
+      row: updated,
+      event,
+      groupDeleted,
+    } = await prisma.$transaction(async (tx) => {
+      const locked = await lockGroupMembership(tx, group.id);
+      // A kick or ban may have landed since the read above.
+      if ((await lockMember(tx, member.id)).status !== "active") {
+        const current = await tx.groupMember.findUniqueOrThrow({ where: { id: member.id } });
+        return { row: current, event: null, groupDeleted: null };
+      }
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data: { status: "left", leftAt: new Date() },
+        data: { status: "left", leftAt: new Date(), version: { increment: 1 } },
       });
       await tx.auditEntry.create({
         data: {
@@ -1269,15 +1444,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         groupId: group.id as GroupId,
         userId: userId as UserId,
         reason: "left",
+        memberVersion: result.version,
       });
-      return { row: result, event: staged };
+      const deleted = await afterMembershipChange(tx, locked, limits, true);
+      return { row: result, event: staged, groupDeleted: deleted };
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    publishStagedEvents(hub, event);
-    return c.json(
-      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    publishStagedEvents(hub, ...[event, groupDeleted].filter((e) => e !== null));
+    setEtag(c, updated.version);
+    return c.json(await serializeMemberFor(prisma, gameId, updated, userId, roleIds));
   });
 
   // Idempotent on already-kicked / already-left. `actorUserId` is null
@@ -1296,6 +1472,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const reasonValue = parsed.data.reason ?? null;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1310,16 +1487,30 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!member) throw Errors.notFound("member");
 
     if (member.status !== "active") {
+      assertVersion(ifMatch, member.version);
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(
-        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-      );
+      setEtag(c, member.version);
+      return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
     }
 
-    const { row: updated, event } = await prisma.$transaction(async (tx) => {
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
+    const {
+      row: updated,
+      event,
+      groupDeleted,
+    } = await prisma.$transaction(async (tx) => {
+      const locked = await lockGroupMembership(tx, group.id);
+      const current = await lockMember(tx, member.id);
+      assertVersion(ifMatch, current.version);
+      // A ban or leave may have landed since the read above; a kick must
+      // not overwrite it.
+      if (current.status !== "active") {
+        const row = await tx.groupMember.findUniqueOrThrow({ where: { id: member.id } });
+        return { row, event: null, groupDeleted: null };
+      }
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data: { status: "kicked", leftAt: new Date() },
+        data: { status: "kicked", leftAt: new Date(), version: { increment: 1 } },
       });
       await tx.auditEntry.create({
         data: {
@@ -1340,15 +1531,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         groupId: group.id as GroupId,
         userId: userId as UserId,
         reason: "kicked",
+        memberVersion: result.version,
       });
-      return { row: result, event: staged };
+      const deleted = await afterMembershipChange(tx, locked, limits, true);
+      return { row: result, event: staged, groupDeleted: deleted };
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    publishStagedEvents(hub, event);
-    return c.json(
-      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    publishStagedEvents(hub, ...[event, groupDeleted].filter((e) => e !== null));
+    setEtag(c, updated.version);
+    return c.json(await serializeMemberFor(prisma, gameId, updated, userId, roleIds));
   });
 
   // Per-group ban. Distinct from kick: kicked members can rejoin via
@@ -1371,6 +1563,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const reasonValue = parsed.data.reason ?? null;
     const expiresAtValue = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1385,15 +1578,20 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const actorJunjoUserId = actorExternalId
       ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
       : null;
+    const limits = await loadKindLimits(prisma, gameId, group.kind);
 
     // retryOnUniqueViolation: a concurrent first-time ban (or a ban
     // racing a join) can land a GroupMember row between the findUnique
     // and the create; the rerun takes the update branch.
     const result = await retryOnUniqueViolation(() =>
       prisma.$transaction(async (tx) => {
+        const locked = await lockGroupMembership(tx, group.id);
         const existing = await tx.groupMember.findUnique({
           where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
         });
+        // A precondition applies to an existing member only; banning a
+        // person with no membership row creates one, as without If-Match.
+        if (existing) await lockMemberVersion(tx, existing.id, ifMatch);
         const member = existing
           ? await tx.groupMember.update({
               where: { id: existing.id },
@@ -1401,6 +1599,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
                 status: "banned",
                 bannedUntil: expiresAtValue,
                 leftAt: existing.leftAt ?? new Date(),
+                version: { increment: 1 },
               },
             })
           : await tx.groupMember.create({
@@ -1447,20 +1646,22 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           userId: userId as UserId,
           reason: reasonValue,
           bannedUntil: expiresAtValue,
+          memberVersion: member.version,
         });
-        return { member, event };
+        const groupDeleted = await afterMembershipChange(
+          tx,
+          locked,
+          limits,
+          existing?.status === "active",
+        );
+        return { member, event, groupDeleted };
       }),
     );
 
     const roleIds = await loadMemberRoleIds(prisma, result.member.id);
-    publishStagedEvents(hub, result.event);
-    return c.json(
-      serializeMember(
-        result.member,
-        await renderResolved(prisma, gameId, junjoUserId, userId),
-        roleIds,
-      ),
-    );
+    publishStagedEvents(hub, result.event, ...(result.groupDeleted ? [result.groupDeleted] : []));
+    setEtag(c, result.member.version);
+    return c.json(await serializeMemberFor(prisma, gameId, result.member, userId, roleIds));
   });
 
   // Reverse a per-group ban. Flips the row to `status="left"` so the
@@ -1482,6 +1683,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1489,21 +1691,28 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     if (!group) throw Errors.notFound("group");
 
     const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
-    if (!junjoUserId) throw Errors.notFound("ban");
+    if (!junjoUserId) throw Errors.banNotActive();
     const member = await prisma.groupMember.findUnique({
       where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
     });
-    if (!member || member.status !== "banned") throw Errors.notFound("ban");
+    if (!member || member.status !== "banned") throw Errors.banNotActive();
 
     const actorJunjoUserId = actorExternalId
       ? await findOrCreateJunjoUser(prisma, gameId, actorExternalId)
       : null;
 
     const { row: updated, event } = await prisma.$transaction(async (tx) => {
+      const locked = await lockGroupMembership(tx, group.id);
+      const current = await lockMember(tx, member.id);
+      // Checked before If-Match, as on the game ban route: a replayed
+      // lift of a ban that is already gone reads as done, not as stale.
+      if (current.status !== "banned") throw Errors.banNotActive();
+      assertVersion(ifMatch, current.version);
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data: { status: "left", bannedUntil: null },
+        data: { status: "left", bannedUntil: null, version: { increment: 1 } },
       });
+      await afterMembershipChange(tx, locked, null, false);
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -1531,15 +1740,15 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         gameId: gameId as GameId,
         groupId: group.id as GroupId,
         userId: userId as UserId,
+        memberVersion: result.version,
       });
       return { row: result, event: staged };
     });
 
     const roleIds = await loadMemberRoleIds(prisma, updated.id);
     publishStagedEvents(hub, event);
-    return c.json(
-      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    setEtag(c, updated.version);
+    return c.json(await serializeMemberFor(prisma, gameId, updated, userId, roleIds));
   });
 
   // GET /v1/groups/:id/bans/history
@@ -1644,6 +1853,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const body = parsed.data;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1678,16 +1888,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const notesChanged = Object.keys(notesAfter).length > 0;
 
     if (Object.keys(data).length === 0) {
+      assertVersion(ifMatch, member.version);
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(
-        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-      );
+      setEtag(c, member.version);
+      return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+      await lockMemberVersion(tx, member.id, ifMatch);
       const result = await tx.groupMember.update({
         where: { id: member.id },
-        data,
+        data: { ...data, version: { increment: 1 } },
       });
       if (metadataChanged) {
         await tx.auditEntry.create({
@@ -1719,13 +1930,24 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           },
         });
       }
-      return result;
+      const changed: MemberChangeField[] = [];
+      if (metadataChanged) changed.push("metadata");
+      if (notesChanged) changed.push("notes");
+      const event = await stageEvent<MemberUpdatedEvent>(tx, {
+        type: "member.updated",
+        gameId: gameId as GameId,
+        groupId: group.id as GroupId,
+        userId: userId as UserId,
+        changed,
+        memberVersion: result.version,
+      });
+      return { result, event };
     });
+    publishStagedEvents(hub, updated.event);
 
-    const roleIds = await loadMemberRoleIds(prisma, updated.id);
-    return c.json(
-      serializeMember(updated, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    const roleIds = await loadMemberRoleIds(prisma, updated.result.id);
+    setEtag(c, updated.result.version);
+    return c.json(await serializeMemberFor(prisma, gameId, updated.result, userId, roleIds));
   });
 
   // Existence checks (already-active, already-pending) batch in one
@@ -1940,6 +2162,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -1964,10 +2187,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { groupMemberId_roleId: { groupMemberId: member.id, roleId: role.id } },
     });
     if (existing) {
+      assertVersion(ifMatch, member.version);
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(
-        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-      );
+      setEtag(c, member.version);
+      return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
     }
 
     const actorJunjoUserId = actorExternalId
@@ -1976,9 +2199,11 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
 
     const event = await prisma
       .$transaction(async (tx) => {
+        await lockMemberVersion(tx, member.id, ifMatch);
         await tx.memberRole.create({
           data: { groupMemberId: member.id, roleId: role.id },
         });
+        const memberVersion = await bumpMemberVersion(tx, member.id);
         await tx.auditEntry.create({
           data: {
             gameId,
@@ -2000,6 +2225,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
           added: [role.id as RoleId],
           removed: [],
           actorUserId: (actorExternalId as UserId | null) ?? null,
+          memberVersion,
         });
       })
       .catch((err) => {
@@ -2015,10 +2241,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       publishStagedEvents(hub, event);
     }
 
+    const current = await reloadMember(member);
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(
-      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    setEtag(c, current.version);
+    return c.json(await serializeMemberFor(prisma, gameId, current, userId, roleIds));
   });
 
   // Idempotent on not-assigned, regardless of whether the role exists
@@ -2038,6 +2264,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const actorExternalId = parsed.data.actorUserId ?? null;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -2055,10 +2282,10 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       where: { groupMemberId_roleId: { groupMemberId: member.id, roleId } },
     });
     if (!existing) {
+      assertVersion(ifMatch, member.version);
       const roleIds = await loadMemberRoleIds(prisma, member.id);
-      return c.json(
-        serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-      );
+      setEtag(c, member.version);
+      return c.json(await serializeMemberFor(prisma, gameId, member, userId, roleIds));
     }
 
     const actorJunjoUserId = actorExternalId
@@ -2066,9 +2293,14 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       : null;
 
     const event = await prisma.$transaction(async (tx) => {
-      await tx.memberRole.delete({
-        where: { groupMemberId_roleId: { groupMemberId: member.id, roleId } },
+      await lockMemberVersion(tx, member.id, ifMatch);
+      // Guarded delete: a racing unassign removes the row first; the
+      // loser then matches nothing and leaves the version alone.
+      const deleted = await tx.memberRole.deleteMany({
+        where: { groupMemberId: member.id, roleId },
       });
+      if (deleted.count === 0) return null;
+      const memberVersion = await bumpMemberVersion(tx, member.id);
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -2090,16 +2322,18 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         added: [],
         removed: [roleId as RoleId],
         actorUserId: (actorExternalId as UserId | null) ?? null,
+        memberVersion,
       });
     });
-    permissionCache.invalidateGroup(group.id);
+    if (event) {
+      permissionCache.invalidateGroup(group.id);
+      publishStagedEvents(hub, event);
+    }
 
-    publishStagedEvents(hub, event);
-
+    const current = await reloadMember(member);
     const roleIds = await loadMemberRoleIds(prisma, member.id);
-    return c.json(
-      serializeMember(member, await renderResolved(prisma, gameId, junjoUserId, userId), roleIds),
-    );
+    setEtag(c, current.version);
+    return c.json(await serializeMemberFor(prisma, gameId, current, userId, roleIds));
   });
 
   // An override (in either direction) wins over any role-derived grant.
@@ -2125,6 +2359,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
       throw Errors.badRequest(issues || "invalid request body");
     }
     const { grant } = parsed.data;
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -2138,18 +2373,20 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member) throw Errors.notFound("member");
 
-    const result = await setMemberOverride(prisma, {
+    const result = await setMemberOverride(prisma, hub, {
       gameId,
       groupId: group.id,
       groupMemberId: member.id,
       externalUserId: userId,
       permission,
       grant,
+      ifMatch,
     });
 
+    setEtag(c, result.memberVersion);
     return c.json(
       serializeMemberPermissionOverride(
-        result,
+        result.row,
         group.id,
         await renderResolved(prisma, gameId, junjoUserId, userId),
       ),
@@ -2165,6 +2402,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const gameId = c.var.gameId;
 
     if (!permission) throw Errors.badRequest("permission must not be empty");
+    const ifMatch = readIfMatch(c);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
@@ -2178,14 +2416,16 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     });
     if (!member) throw Errors.notFound("member");
 
-    await clearMemberOverride(prisma, {
+    const memberVersion = await clearMemberOverride(prisma, hub, {
       gameId,
       groupId: group.id,
       groupMemberId: member.id,
       externalUserId: userId,
       permission,
+      ifMatch,
     });
 
+    setEtag(c, memberVersion);
     return c.body(null, 204);
   });
 
@@ -2195,35 +2435,31 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     const id = c.req.param("id");
     const userId = c.req.param("userId");
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
 
     const group = await prisma.group.findFirst({
       where: { id, gameId, softDeletedAt: null },
       select: { id: true },
     });
     if (!group) throw Errors.notFound("member");
-    const junjoUserId = await findJunjoUserId(prisma, gameId, userId);
-    if (!junjoUserId) throw Errors.notFound("member");
-    const member = await prisma.groupMember.findUnique({
-      where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
-      select: { id: true, status: true },
-    });
-    if (!member) throw Errors.notFound("member");
+    const [access] = await loadMemberAccess(prisma, gameId, group.id, [userId]);
+    if (!access) throw Errors.notFound("member");
+    setEtag(c, access.version);
+    return c.json(access);
+  });
 
-    const [roleIds, overrides, shownId] = await Promise.all([
-      loadMemberRoleIds(prisma, member.id),
-      prisma.memberPermissionOverride.findMany({
-        where: { groupMemberId: member.id },
-        orderBy: { permissionKey: "asc" },
-      }),
-      renderResolved(prisma, gameId, junjoUserId, userId),
-    ]);
-    return c.json({
-      groupId: group.id,
-      userId: shownId,
-      status: member.status,
-      roleIds,
-      overrides: overrides.map((o) => serializeMemberPermissionOverride(o, group.id, shownId)),
+  // Access for up to MEMBER_ACCESS_BATCH_MAX ids in one request, for
+  // caches that load many members at once.
+  r.post("/:id/members/access", async (c) => {
+    const gameId = c.var.gameId;
+    const { userIds } = parseBody(memberAccessBatchBody, await c.req.json().catch(() => null));
+    await stampStreamPosition(c, prisma, gameId);
+    const group = await prisma.group.findFirst({
+      where: { id: c.req.param("id"), gameId, softDeletedAt: null },
+      select: { id: true },
     });
+    if (!group) throw Errors.notFound("group");
+    return c.json({ items: await loadMemberAccess(prisma, gameId, group.id, userIds) });
   });
 
   r.get("/:id/members/:userId/permissions", async (c) => {
@@ -2280,6 +2516,7 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   r.get("/:id/roles", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
     const parsedQ = listRolesQuery.safeParse({ paged: c.req.query("paged") });
     if (!parsedQ.success) throw Errors.badRequest("invalid query");
     const { paged } = parsedQ.data;
@@ -2305,9 +2542,9 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
     return c.json(paged ? { items, nextCursor: null } : items);
   });
 
-  // The group's full role graph in one read.
   r.get("/:id/role-graph", async (c) => {
     const gameId = c.var.gameId;
+    await stampStreamPosition(c, prisma, gameId);
     const group = await prisma.group.findFirst({
       where: { id: c.req.param("id"), gameId, softDeletedAt: null },
       select: { id: true, defaultRoleId: true },

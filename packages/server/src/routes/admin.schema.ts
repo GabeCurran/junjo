@@ -344,6 +344,7 @@ export const adminCreateApiKeyBody = z
   .object({
     name: apiKeyNameSchema.optional(),
     preferredNamespaces: preferredNamespacesSchema.optional(),
+    canExport: z.boolean().optional(),
   })
   .strict();
 
@@ -352,9 +353,13 @@ export const adminUpdateApiKeyBody = z
   .object({
     name: z.union([apiKeyNameSchema, z.null()]).optional(),
     preferredNamespaces: preferredNamespacesSchema.optional(),
+    canExport: z.boolean().optional(),
   })
   .strict()
   .refine(
-    (body) => body.name !== undefined || body.preferredNamespaces !== undefined,
-    "body must include `name` or `preferredNamespaces`",
+    (body) =>
+      body.name !== undefined ||
+      body.preferredNamespaces !== undefined ||
+      body.canExport !== undefined,
+    "body must include `name`, `preferredNamespaces` or `canExport`",
   );

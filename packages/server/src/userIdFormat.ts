@@ -1,11 +1,9 @@
 import type { PartialGameConfig, UserIdFormat } from "@junjo.io/shared";
 import { Prisma } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
 import { resolveGameConfig } from "./config/defaults.js";
+import type { Db } from "./db.js";
 import { Errors } from "./errors.js";
 import { currentRequestContext } from "./requestContext.js";
-
-type FormatClient = PrismaClient | Prisma.TransactionClient;
 
 export type DeclaredFormats = Readonly<Record<string, UserIdFormat>>;
 
@@ -52,7 +50,7 @@ export function assertUserIdWellFormed(formats: DeclaredFormats, userId: string)
 
 // The game's declared formats, memoized on the request context so one
 // request pays at most one lookup per game. A missing game has none.
-export async function idFormatsFor(client: FormatClient, gameId: string): Promise<DeclaredFormats> {
+export async function idFormatsFor(client: Db, gameId: string): Promise<DeclaredFormats> {
   const ctx = currentRequestContext();
   const cached = ctx?.idFormats.get(gameId);
   if (cached) return cached;
@@ -67,7 +65,7 @@ export async function idFormatsFor(client: FormatClient, gameId: string): Promis
 // declared format. Games that declare nothing skip the check after the
 // (memoized) config read.
 export async function assertUserIdsWellFormed(
-  client: FormatClient,
+  client: Db,
   gameId: string,
   userIds: Iterable<string>,
 ): Promise<void> {
@@ -80,7 +78,7 @@ export async function assertUserIdsWellFormed(
 // most `limit` of them. Only namespaces whose format is new or changed
 // relative to `previous` are scanned.
 export async function findFormatConflicts(
-  client: FormatClient,
+  client: Db,
   gameId: string,
   previous: DeclaredFormats,
   formats: DeclaredFormats,

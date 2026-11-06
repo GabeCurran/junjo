@@ -30,13 +30,19 @@ import type {
   FriendshipState,
   GameId,
 } from "@junjo.io/shared";
-import type { Prisma, PrismaClient, UserRelationship } from "@prisma/client";
+import type { PrismaClient, UserRelationship } from "@prisma/client";
 import type { Handler } from "hono";
 import { gameIdsInScope, loadGameConfig } from "../config/loadGameConfig.js";
+import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser, renderUserIds } from "../identity.js";
+import {
+  findJunjoUserId,
+  findOrCreateJunjoUser,
+  renderPeople,
+  renderUserIds,
+} from "../identity.js";
 import { isUniqueViolation, retryOnSerializationFailure } from "../prismaErrors.js";
 import {
   addBlockBody,
@@ -66,6 +72,8 @@ export interface WireFriendship {
   gameId: string;
   junjoUserId: string;
   since: string; // respondedAt (or createdAt for auto-accepted rows)
+  // The friend's person-level display name; set on list entries only.
+  displayName?: string | null;
 }
 
 // Only set for POST /friend-requests when requestsRequired=false (the
@@ -573,7 +581,7 @@ export function acceptFriendRequestHandler(prisma: PrismaClient, hub: EventHub):
 // with the (sender, target) ids preserved. Runs on the caller's
 // transaction so the delete and the staged event commit atomically.
 async function deletePendingRequest(
-  db: PrismaClient | Prisma.TransactionClient,
+  db: Db,
   visibleGameIds: string[],
   id: string,
 ): Promise<UserRelationship> {
@@ -737,7 +745,15 @@ export function listFriendsHandler(prisma: PrismaClient): Handler {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     const externals = await externalsForRows(prisma, gameId, page);
-    const items = page.map((r) => toWireFriendshipFromActorPOV(r, externals));
+    const people = await renderPeople(
+      prisma,
+      gameId,
+      page.map((r) => r.targetJunjoUserId),
+    );
+    const items = page.map((r) => ({
+      ...toWireFriendshipFromActorPOV(r, externals),
+      displayName: people.get(r.targetJunjoUserId)?.displayName ?? null,
+    }));
     const last = hasMore ? rows[limit - 1] : null;
     const nextCursor = last?.respondedAt ? formatCursor(last.respondedAt, last.id) : null;
 

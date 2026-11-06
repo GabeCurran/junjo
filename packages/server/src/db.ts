@@ -1,4 +1,8 @@
-import { PrismaClient } from "@prisma/client";
+import { type Prisma, PrismaClient } from "@prisma/client";
+
+// Either the root client or an interactive transaction. Helpers that
+// accept it run inside the caller's transaction when given one.
+export type Db = PrismaClient | Prisma.TransactionClient;
 
 // `globalThis` cache survives the repeated re-imports under `tsx watch`,
 // which would otherwise leak a connection pool per file change.

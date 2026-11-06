@@ -5,13 +5,13 @@ import type { EventHub } from "../eventHub.js";
 import { loadRoleDetail, serializeRole } from "../roleDetails.js";
 import {
   deleteRole,
-  parseBody,
   removeRoleEntry,
   replaceRoleEntries,
   setRoleParents,
   updateRole,
   upsertRoleEntry,
 } from "../roleWrites.js";
+import { parseBody } from "../validation.js";
 import { grantPermissionBody, updateRoleBody } from "./roles.schema.js";
 
 export { type WireRole, serializeRole } from "../roleDetails.js";

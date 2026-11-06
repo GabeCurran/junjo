@@ -56,6 +56,34 @@ const EnvSchema = z.object({
         .int("JUNJO_MAX_PAGE_SIZE must be a positive integer")
         .positive("JUNJO_MAX_PAGE_SIZE must be a positive integer"),
     ),
+  // How long the event log keeps events for game streams to resume
+  // from. A stream asking to resume from an older position gets 410 and
+  // must load a fresh snapshot.
+  EVENT_LOG_RETENTION_HOURS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 24 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("EVENT_LOG_RETENTION_HOURS must be an integer from 1 to 8760")
+        .min(1, "EVENT_LOG_RETENTION_HOURS must be an integer from 1 to 8760")
+        .max(8760, "EVENT_LOG_RETENTION_HOURS must be an integer from 1 to 8760"),
+    ),
+  // How often each game with open game streams reads the event log
+  // without a local wake-up; this is how events written by other server
+  // processes reach this one's streams. 0 disables it, which is only
+  // correct for a single-process deployment.
+  EVENT_STREAM_POLL_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 1000 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("EVENT_STREAM_POLL_MS must be a non-negative integer")
+        .nonnegative("EVENT_STREAM_POLL_MS must be a non-negative integer"),
+    ),
   // Whether a trusted proxy fronts the server and APPENDS the client
   // address to x-forwarded-for (Railway, nginx, any standard LB). When
   // true, rate limiting keys keyless traffic on the rightmost

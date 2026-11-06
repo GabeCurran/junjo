@@ -111,7 +111,9 @@ function memberJoinedEvent(groupId: string, gameId: string, id = "evt_1"): Membe
       notesPrivate: null,
       joinedAt: new Date("2026-04-28T00:00:00.000Z"),
       bannedUntil: null,
+      version: 1,
     },
+    memberVersion: 1,
   };
 }
 

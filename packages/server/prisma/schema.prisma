@@ -42,8 +42,41 @@ model Game {
   banHistory         BanHistory[]
   auditEntries       AuditEntry[]
   linkCodes          LinkCode[]
+  eventCounter       GameEventCounter?
+  eventLog           EventLog[]
+  moderationStates   ModerationState[]
+  sanctions          Sanction[]
+  sanctionHistory    SanctionHistory[]
 
   @@index([networkId])
+}
+
+// Last stream position handed out for a game. Incremented in the same
+// transaction that writes the matching EventLog rows, so a rollback
+// returns the numbers and positions are gapless. The row lock it takes
+// is held until commit, which makes position order equal commit order
+// within a game.
+model GameEventCounter {
+  gameId String @id
+  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  seq    BigInt @default(0)
+}
+
+// Every event a game emits, in stream position order, kept for the
+// retention window so a game stream can resume from a position.
+// `payload` is the event as emitted; user ids are rendered per
+// subscriber at delivery.
+model EventLog {
+  gameId    String
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  seq       BigInt
+  eventId   String
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@id([gameId, seq])
+  @@index([createdAt])
 }
 
 model ApiKey {
@@ -58,13 +91,41 @@ model ApiKey {
   // Ordered namespace preference for rendering user ids in responses and
   // SSE events read through this key. Empty means no preference.
   preferredNamespaces String[]  @default([])
+  // Allows `GET /v1/export` with this key.
+  canExport           Boolean   @default(false)
   createdAt           DateTime  @default(now())
   revokedAt           DateTime?
 
-  auditEntries AuditEntry[]
-  linkCodes    LinkCode[]
+  auditEntries       AuditEntry[]
+  linkCodes          LinkCode[]
+  idempotencyRecords IdempotencyRecord[]
 
   @@index([gameId])
+}
+
+// One stored outcome of a request sent with an `Idempotency-Key`,
+// scoped to the key that sent it. `state` is "in_progress" while the
+// first request runs and "completed" once its response is stored; a 5xx
+// or a thrown error deletes the row so a retry runs again. Rows expire
+// 24 hours after `createdAt`; an in-progress row older than five minutes
+// is treated as abandoned and may be claimed by a retry.
+model IdempotencyRecord {
+  apiKeyId        String
+  apiKey          ApiKey    @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  key             String
+  // SHA-256 (hex) over the method, the path with its query, and the raw
+  // body bytes.
+  fingerprint     String
+  state           String
+  responseStatus  Int?
+  responseBody    String?
+  // The response headers a replay repeats (content type and entity tag).
+  responseHeaders Json?
+  createdAt       DateTime
+  completedAt     DateTime?
+
+  @@id([apiKeyId, key])
+  @@index([createdAt])
 }
 
 // Junjo's own user table. Powers cross-game shared identity in cloud:
@@ -83,22 +144,31 @@ model JunjoUser {
   userVisibilities   UserVisibility[]
   gameBans           GameBan[]
   banHistory         BanHistory[]
+  moderationStates   ModerationState[]
+  sanctions          Sanction[]
+  sanctionHistory    SanctionHistory[]
 }
 
 // Maps a dev's external user id (whatever external id the game's auth
 // provider issues) to a JunjoUser. Per game, so two different games
 // can use the same external id without colliding.
 model ExternalIdentity {
-  id             String    @id @default(cuid())
-  gameId         String
-  game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  junjoUserId    String
-  junjoUser      JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
-  externalUserId String
-  createdAt      DateTime  @default(now())
+  id                   String    @id @default(cuid())
+  gameId               String
+  game                 Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId          String
+  junjoUser            JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  externalUserId       String
+  createdAt            DateTime  @default(now())
   // When this id joined its current JunjoUser: creation time, reset on
   // link and unlink. Orders a person's ids for deterministic rendering.
-  linkedAt       DateTime  @default(now())
+  linkedAt             DateTime  @default(now())
+  // This id's own display name. The by-name lookup matches it ignoring
+  // case through an expression index on (gameId, lower(displayName))
+  // created in the migration, which the schema language cannot express.
+  displayName          String?
+  // When `displayName` was last set; null while it is unset.
+  displayNameUpdatedAt DateTime?
 
   linkCodes LinkCode[]
 
@@ -159,11 +229,14 @@ model Group {
   parentGroup   Group?    @relation("GroupParent", fields: [parentGroupId], references: [id])
   childGroups   Group[]   @relation("GroupParent")
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
   // Soft delete with 7-day undo. A nightly job hard-deletes rows whose
   // softDeletedAt is older than 7 days.
-  softDeletedAt DateTime?
+  softDeletedAt    DateTime?
+  // Last time a member became or stopped being active. The idle sweeper
+  // compares it with the kind's `idleDeleteHours`.
+  memberActivityAt DateTime  @default(now())
 
   members      GroupMember[]
   roles        Role[]
@@ -175,6 +248,8 @@ model Group {
 
   @@index([gameId, name])
   @@index([gameId, kind])
+  // Backs the idle-group sweeper's per-kind scan.
+  @@index([gameId, kind, memberActivityAt])
   @@index([parentGroupId])
   // Backs the keyset paginated `GET /v1/groups` listing
   // (`WHERE gameId AND softDeletedAt IS NULL ORDER BY createdAt DESC, id DESC`).
@@ -196,6 +271,11 @@ model GroupMember {
 
   joinedAt    DateTime  @default(now())
   leftAt      DateTime?
+  // Starts at 1 and rises by exactly one in the transaction of every
+  // write that changes the member (status, roles, overrides, metadata,
+  // notes, or the person it belongs to). No-op writes leave it alone.
+  // Conditional writes compare it against `If-Match`.
+  version     Int       @default(1)
   // Only meaningful when status="banned". Null = permanent ban; a value
   // in the past is treated as expired at read time (lazy expiry, no
   // sweeper). Cleared whenever the row transitions back to active.
@@ -582,6 +662,9 @@ model GameBan {
   // Resolved actor JunjoUser id; null when issued by server-side admin
   // with no auth-adapter actor wired (parallels AuditEntry.actorUserId).
   bannedByUserId String?
+  // Free-text name of whoever issued the ban when that is not a Junjo
+  // user. Stored and returned verbatim; never rendered or resolved.
+  issuer         String?
 
   @@unique([gameId, junjoUserId])
   @@index([gameId, expiresAt])
@@ -625,9 +708,80 @@ model BanHistory {
   // Resolved actor JunjoUser id when the dev's auth adapter is wired;
   // null otherwise (mirrors AuditEntry.actorUserId).
   actorJunjoUserId String?
+  // Snapshot of GameBan.issuer on game-scope "set" rows; null otherwise.
+  issuer           String?
 
   // "show me this user's ban history in this game"
   @@index([gameId, junjoUserId, eventAt(sort: Desc)])
   // "show me every ban event in this game in time order"
+  @@index([gameId, eventAt(sort: Desc)])
+}
+
+// Per-(game, person) moderation counter. Rises by exactly one in the
+// transaction of every game ban or sanction create, change or lift. A
+// person with no row has version 0. Conditional moderation writes
+// compare it against `If-Match`.
+model ModerationState {
+  gameId      String
+  game        Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId String
+  junjoUser   JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  version     Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@id([gameId, junjoUserId])
+  @@index([junjoUserId])
+}
+
+// =====================================================================
+// Sanctions (game-scoped, game-defined types)
+// =====================================================================
+
+// The current or last sanction of one type for one person. Like GameBan:
+// a lift deletes the row, an expired row counts as not sanctioned (lazy
+// expiry) and is replaced by the next create.
+model Sanction {
+  id             String    @id @default(cuid())
+  gameId         String
+  game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId    String
+  junjoUser      JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  type           String
+  reason         String?
+  // Free text, stored and returned verbatim.
+  issuer         String?
+  // Resolved actor JunjoUser id when the request named one.
+  issuedByUserId String?
+  startedAt      DateTime  @default(now())
+  expiresAt      DateTime?
+  // Reserved for scoping a sanction to part of a game; not accepted on
+  // the wire; always null.
+  context        String?
+
+  @@unique([gameId, junjoUserId, type])
+  // Backs the keyset paginated active listing.
+  @@index([gameId, startedAt(sort: Desc), id(sort: Desc)])
+  @@index([junjoUserId])
+}
+
+// Append-only sanction timeline, the sanction counterpart of BanHistory:
+// one "set" row per create or replace, one "lifted" row per lift.
+model SanctionHistory {
+  id               String    @id @default(cuid())
+  gameId           String
+  game             Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  junjoUserId      String
+  junjoUser        JunjoUser @relation(fields: [junjoUserId], references: [id], onDelete: Cascade)
+  type             String
+  kind             String
+  reason           String?
+  expiresAt        DateTime?
+  // The sanction's start on creates (or the stated start), the change
+  // time on replacements, the lift time on "lifted" rows.
+  eventAt          DateTime  @default(now())
+  actorJunjoUserId String?
+  issuer           String?
+
+  @@index([gameId, junjoUserId, eventAt(sort: Desc)])
   @@index([gameId, eventAt(sort: Desc)])
 }

@@ -1,11 +1,5 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
-
-// Lazy-expiry helper: a `bannedUntil` / `expiresAt` in the past means
-// the ban has lapsed. The server doesn't proactively flip rows; read
-// paths just treat them as not-banned. Null = permanent.
-function isActiveBan(expiresAt: Date | null, now: Date): boolean {
-  return expiresAt === null || expiresAt > now;
-}
+import type { Db } from "./db.js";
+import { isActiveUntil } from "./expiry.js";
 
 export interface BanCheckResult {
   // True when *some* active ban (game-level or per-group) blocks the
@@ -41,7 +35,7 @@ const NOT_BANNED: BanCheckResult = {
 // Pass it to also check the per-group `GroupMember.status="banned"`
 // row for this user.
 export async function checkBanState(
-  client: PrismaClient | Prisma.TransactionClient,
+  client: Db,
   gameId: string,
   junjoUserId: string,
   groupId?: string,
@@ -51,7 +45,7 @@ export async function checkBanState(
     where: { gameId_junjoUserId: { gameId, junjoUserId } },
     select: { reason: true, expiresAt: true },
   });
-  if (gameBan && isActiveBan(gameBan.expiresAt, now)) {
+  if (gameBan && isActiveUntil(gameBan.expiresAt, now)) {
     return {
       banned: true,
       scope: "game",
@@ -65,7 +59,7 @@ export async function checkBanState(
       where: { groupId_junjoUserId: { groupId, junjoUserId } },
       select: { status: true, bannedUntil: true },
     });
-    if (member?.status === "banned" && isActiveBan(member.bannedUntil, now)) {
+    if (member?.status === "banned" && isActiveUntil(member.bannedUntil, now)) {
       return {
         banned: true,
         scope: "group",

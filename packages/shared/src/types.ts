@@ -101,6 +101,85 @@ export interface Ban {
   reason: string | null;
   // Resolved actor external user id; null when issued server-side.
   bannedBy: UserId | null;
+  // Free-text issuer recorded with the ban when it was not issued by a
+  // Junjo user. Returned verbatim; never resolved or rendered.
+  issuer: string | null;
+  // The person's moderation version (see `UserModeration`).
+  version: number;
+}
+
+// A person's moderation state in a game. `version` is 0 for a person
+// never moderated and rises by one with every game ban create, change
+// or lift and every sanction issue or lift; conditional moderation
+// writes send it as `If-Match`. `ban` is the active game ban, or null.
+export interface UserModeration {
+  userId: UserId;
+  version: number;
+  ban: Ban | null;
+  // The person's active sanctions, newest first.
+  sanctions: Sanction[];
+}
+
+// =====================================================================
+// Sanctions (game-scoped, game-defined types)
+// =====================================================================
+
+// A sanction type: 1 to 32 characters, starting with a lowercase letter
+// or digit, then lowercase letters, digits, "_", "." or "-". "ban" is
+// reserved for the ban API.
+export const SANCTION_TYPE_PATTERN = "^[a-z0-9][a-z0-9_.-]{0,31}$";
+export const RESERVED_SANCTION_TYPES = ["ban"] as const;
+
+// A game-wide restriction of a person, of a type the game names. At most
+// one is active per person and type; it is active until lifted or until
+// `expiresAt` passes (lazy expiry).
+export interface Sanction {
+  id: string;
+  // The sanctioned person, rendered like every other user id.
+  userId: UserId;
+  type: string;
+  reason: string | null;
+  // Free-text issuer recorded verbatim; never resolved or rendered.
+  issuer: string | null;
+  // The person who issued it, when the request named one; rendered.
+  issuedBy: UserId | null;
+  startedAt: Date;
+  // Null = permanent.
+  expiresAt: Date | null;
+  // The person's moderation version, shared with bans.
+  version: number;
+}
+
+export interface CreateSanctionInput {
+  userId: UserId;
+  type: string;
+  reason?: string | null;
+  expiresAt?: Date | string | null;
+  // May lie in the past (imports); at most 60 seconds ahead of the server.
+  startedAt?: Date | string;
+  issuer?: string;
+  actorUserId?: UserId;
+}
+
+// Append-only sanction record: one "set" row per create or replace and
+// one "lifted" row per lift. Lazy expiry writes no row.
+export interface SanctionHistoryEntry {
+  id: string;
+  gameId: GameId;
+  userId: UserId;
+  type: string;
+  kind: "set" | "lifted";
+  // Snapshots at the moment of the event; null on lifts.
+  reason: string | null;
+  expiresAt: Date | null;
+  // When the sanction started (a create, or a stated `startedAt`), was
+  // replaced, or was lifted.
+  eventAt: Date;
+  // Who issued ("set") or lifted ("lifted") it, when the request named
+  // someone; rendered.
+  actorUserId: UserId | null;
+  // Free-text issuer on "set" rows; null otherwise.
+  issuer: string | null;
 }
 
 // Append-only ban-event record. One row per set/lift on either surface
@@ -125,6 +204,9 @@ export interface BanHistoryEntry {
   eventAt: Date;
   // Resolved actor external user id; null when issued server-side.
   actorUserId: UserId | null;
+  // Free-text issuer of a game ban; null on lifts, group rows and bans
+  // issued without one.
+  issuer: string | null;
 }
 
 // =====================================================================
@@ -153,6 +235,55 @@ export interface Member {
   // timestamp in the past means the ban has lapsed (lazy expiry, server
   // does not auto-flip status). Always null for non-banned members.
   bannedUntil: Date | null;
+  // Starts at 1 and rises by exactly one with every write that changes
+  // the member. Member-scoped writes accept it as `If-Match`.
+  version: number;
+  // The person's display name (see `LinkedIdentity.displayName` for how
+  // it is picked). Present on member reads and write responses; absent
+  // from the member snapshot inside `member.joined` events.
+  displayName?: string | null;
+}
+
+// One row of `POST /v1/groups/:id/members/import`. Each present field
+// replaces the member's current value; an absent field is left as is.
+export interface MemberImportRow {
+  userId: UserId;
+  roleIds?: RoleId[];
+  overrides?: PermissionEntry[];
+  metadata?: MemberMetadata;
+}
+
+export interface MemberImportInput {
+  members: MemberImportRow[];
+  // Imports roles, overrides and metadata for banned people without
+  // changing any ban.
+  allowBanned?: boolean;
+  actorUserId?: UserId;
+}
+
+export type MemberImportStatus = "created" | "reactivated" | "updated" | "unchanged";
+
+export interface MemberImportResult {
+  created: number;
+  reactivated: number;
+  updated: number;
+  unchanged: number;
+  items: { userId: UserId; status: MemberImportStatus; version: number }[];
+}
+
+// One failing row of an import, listed under `details.rows` on the
+// error envelope.
+export interface MemberImportRowError {
+  index: number;
+  userId: UserId;
+  code:
+    | "banned"
+    | "invalid_user_id"
+    | "bad_request"
+    | "not_found"
+    | "group_full"
+    | "group_limit_reached";
+  message: string;
 }
 
 export interface SetMemberNotesInput {
@@ -220,6 +351,18 @@ export interface MemberAccess {
   status: MemberStatus;
   roleIds: RoleId[];
   overrides: MemberPermissionOverride[];
+  // The member's version (see `Member.version`).
+  version: number;
+  // The person's display name (see `Member.displayName`).
+  displayName: string | null;
+  // The member's metadata (see `Member.metadata`).
+  metadata: Record<string, unknown>;
+}
+
+// Answer of the batch access read: one entry per requested id, in
+// request order, null where the id names no member of the group.
+export interface MemberAccessBatch {
+  items: (MemberAccess | null)[];
 }
 
 // =====================================================================
@@ -362,6 +505,8 @@ export type AuditAction =
   | "member.notes.updated"
   | "game.user.banned"
   | "game.user.unbanned"
+  | "game.user.sanctioned"
+  | "game.user.unsanctioned"
   | "game.permissions.mode.set"
   | "role.created"
   | "role.updated"
@@ -413,6 +558,22 @@ export interface LinkedIdentity {
   namespace: string | null;
   // When the id joined the person; orders a person's ids.
   linkedAt: Date;
+  // This id's own display name, or null. Where a response names a whole
+  // person (members, member access, friends), `displayName` is the name
+  // of the id the rendering rule picks; when that id has none, the most
+  // recently set name among the person's ids; else null.
+  displayName: string | null;
+}
+
+export const DISPLAY_NAME_MAX_LENGTH = 64;
+export const DISPLAY_NAME_LOOKUP_LIMIT = 20;
+
+// One match of `GET /v1/identities/by-name`. `userId` is the matching id
+// itself, recorded literally (not rendered).
+export interface DisplayNameMatch {
+  userId: UserId;
+  displayName: string;
+  displayNameUpdatedAt: Date;
 }
 
 // A single-use code that links the redeeming id to the requesting id's
@@ -461,21 +622,24 @@ interface EventBase {
 }
 
 // Most JunjoEvent types are scoped to a single group (members, roles,
-// permissions, group-level mutations). The EventHub uses `groupId` to
-// route SSE deliveries to per-group subscribers.
+// permissions, group-level mutations). `groupId` routes them to that
+// group's stream; the game stream carries every event of the game.
 interface GroupEventBase extends EventBase {
   groupId: GroupId;
 }
 
-// User-scoped events (friends, blocks). They have no group context;
-// SSE delivery for these will use a separate per-user channel that
-// post-V1 work introduces. Webhooks deliver them today.
+// Events with no group context (friends, blocks, game bans, identity
+// links). Delivered by webhooks and the game stream, never by a group
+// stream.
 type UserEventBase = EventBase;
 
 export interface MemberJoinedEvent extends GroupEventBase {
   type: "member.joined";
   userId: UserId;
   member: Member;
+  // The member's version after the write. Every event one write emits
+  // carries the same value.
+  memberVersion: number;
 }
 
 export interface MemberLeftEvent extends GroupEventBase {
@@ -483,6 +647,21 @@ export interface MemberLeftEvent extends GroupEventBase {
   userId: UserId;
   reason: "left" | "kicked";
   kickedBy?: UserId;
+  memberVersion: number;
+}
+
+// Which parts of a member a `member.updated` event changed. "notes"
+// covers both the public and the private note; "overrides" covers the
+// member's personal permission entries.
+export type MemberChangeField = "metadata" | "notes" | "overrides";
+
+// A change signal: carries what changed, not the new values. Read the
+// member, or the member's access, for the current state.
+export interface MemberUpdatedEvent extends GroupEventBase {
+  type: "member.updated";
+  userId: UserId;
+  changed: MemberChangeField[];
+  memberVersion: number;
 }
 
 export interface MemberInvitedEvent extends GroupEventBase {
@@ -506,6 +685,7 @@ export interface RoleChangedEvent extends GroupEventBase {
   // Populated when the caller supplies `actorUserId` on the role
   // assign / unassign request.
   actorUserId: UserId | null;
+  memberVersion: number;
 }
 
 // Which parts of a role a `role.updated` event changed.
@@ -559,11 +739,10 @@ export interface GroupRelationshipChangedEvent extends GroupEventBase {
   relationship: GroupRelationship | null; // null = cleared
 }
 
-// User-scoped friend events. No `groupId`. All friend events route
-// through webhook delivery only (SSE is per-group). Field convention
-// across the request lifecycle: `actorJunjoUserId` is always the
-// ORIGINAL sender of the request, `targetJunjoUserId` is always the
-// original target. The event type tells you who took the action.
+// User-scoped friend events. No `groupId`, so no group stream carries
+// them. Across the request lifecycle `actorJunjoUserId` is the sender
+// of the request and `targetJunjoUserId` its target; the event type
+// tells you who took the action.
 export interface FriendRequestSentEvent extends UserEventBase {
   type: "friend.request.sent";
   requestId: string;
@@ -661,42 +840,83 @@ export interface MemberBannedEvent extends GroupEventBase {
   reason: string | null;
   // Null = permanent. ISO timestamp = lazy-expiry deadline.
   bannedUntil: Date | null;
+  memberVersion: number;
 }
 
 export interface MemberUnbannedEvent extends GroupEventBase {
   type: "member.unbanned";
   userId: UserId;
+  memberVersion: number;
 }
 
-// Game-scoped ban events. No groupId; route through webhook delivery
-// only (SSE is per-group; same precedent as friend events).
+// Game-scoped ban events. No groupId, so no group stream carries them.
 export interface GameUserBannedEvent extends UserEventBase {
   type: "game.user.banned";
-  // The internal JunjoUser id, kept for existing consumers.
+  // Internal JunjoUser id.
   junjoUserId: string;
   // The banned person's external id, rendered per subscriber.
   userId: UserId;
   reason: string | null;
   expiresAt: Date | null;
+  // The person's moderation version after the write.
+  moderationVersion: number;
 }
 
 export interface GameUserUnbannedEvent extends UserEventBase {
   type: "game.user.unbanned";
-  // The internal JunjoUser id, kept for existing consumers.
+  // Internal JunjoUser id.
   junjoUserId: string;
   // The unbanned person's external id, rendered per subscriber.
   userId: UserId;
+  moderationVersion: number;
 }
 
-// Game-scoped identity events. No groupId; webhook delivery only.
-// `userId` names the person and is rendered per subscriber like every
-// other user id; the remaining id fields are literal and never rewritten.
+// Game-scoped sanction events. No groupId, so no group stream carries
+// them. Lazy expiry emits nothing. The sanction's type travels as
+// `sanctionType` because `type` is the event's own discriminator.
+export interface GameUserSanctionedEvent extends UserEventBase {
+  type: "game.user.sanctioned";
+  // The sanctioned person, rendered per subscriber.
+  userId: UserId;
+  sanctionType: string;
+  reason: string | null;
+  expiresAt: Date | null;
+  // The person's moderation version after the write.
+  moderationVersion: number;
+}
+
+export interface GameUserUnsanctionedEvent extends UserEventBase {
+  type: "game.user.unsanctioned";
+  userId: UserId;
+  sanctionType: string;
+  moderationVersion: number;
+}
+
+// Game-scoped identity change signal. `userId` names the person and is
+// rendered per subscriber; `changedUserId` is the id whose value changed,
+// recorded literally.
+export type IdentityChangeField = "displayName";
+
+export interface IdentityUpdatedEvent extends UserEventBase {
+  type: "identity.updated";
+  userId: UserId;
+  changedUserId: UserId;
+  // The changed id's new display name, or null when it was cleared.
+  displayName: string | null;
+  changed: IdentityChangeField[];
+}
+
+// Game-scoped identity events. No groupId, so no group stream carries
+// them. `userId` names the person and is rendered per subscriber like
+// every other user id; the remaining id fields are literal and never
+// rewritten.
 export interface IdentityLinkedEvent extends UserEventBase {
   type: "identity.linked";
   userId: UserId;
   // The id that joined the person.
   linkedUserId: UserId;
-  // Every id the person holds in the game after the link, earliest-linked first.
+  // Every id the person holds in the game after the link,
+  // earliest-linked first.
   identities: UserId[];
 }
 
@@ -714,6 +934,7 @@ export type JunjoEvent =
   | MemberJoinedEvent
   | MemberLeftEvent
   | MemberInvitedEvent
+  | MemberUpdatedEvent
   | MemberBannedEvent
   | MemberUnbannedEvent
   | RoleCreatedEvent
@@ -734,14 +955,17 @@ export type JunjoEvent =
   | FriendUnblockedEvent
   | GameUserBannedEvent
   | GameUserUnbannedEvent
+  | GameUserSanctionedEvent
+  | GameUserUnsanctionedEvent
   | IdentityLinkedEvent
-  | IdentityUnlinkedEvent;
+  | IdentityUnlinkedEvent
+  | IdentityUpdatedEvent;
 
 export type JunjoEventType = JunjoEvent["type"];
 
-// Type guard: events with a groupId can be fanned to per-group SSE
-// subscribers; user-scoped events skip the SSE hub and only flow
-// through webhook delivery.
+// Type guard: events with a groupId are fanned to that group's stream
+// subscribers; events without one reach only webhooks and the game
+// stream.
 export function isGroupScopedEvent(event: JunjoEvent): event is JunjoEvent & { groupId: GroupId } {
   return "groupId" in event && (event as { groupId?: unknown }).groupId !== undefined;
 }
@@ -860,6 +1084,9 @@ export interface Friendship {
   gameId: GameId;
   junjoUserId: UserId;
   since: Date;
+  // The friend's display name (see `Member.displayName`). Present on
+  // friends list entries only.
+  displayName?: string | null;
 }
 
 // Response of `requests.send`. `status` tells the caller which shape is
@@ -994,11 +1221,35 @@ export interface GameConfigIdentity {
   formats: Record<string, UserIdFormat>;
 }
 
+// Limits for every group of one kind. Each field is optional; an absent
+// field imposes nothing.
+export interface GroupKindLimits {
+  // Active members one group of the kind may hold (1 to 100000).
+  maxMembers?: number;
+  // Active memberships one person may hold across live groups of the
+  // kind (1 to 1000).
+  maxPerUser?: number;
+  // Soft-delete a group of the kind when a leave, kick or ban leaves it
+  // with no active members.
+  deleteWhenEmpty?: boolean;
+  // Soft-delete a live group of the kind once its membership has not
+  // changed for this many hours (1 to 8760).
+  idleDeleteHours?: number;
+}
+
+export const MAX_GROUP_KINDS = 32;
+
+export interface GameConfigGroups {
+  // Group kind to its limits. A kind that is not listed has none.
+  kinds: Record<string, GroupKindLimits>;
+}
+
 export interface GameConfig {
   friends: GameConfigFriends;
   blocks: GameConfigBlocks;
   permissions: GameConfigPermissions;
   identity: GameConfigIdentity;
+  groups: GameConfigGroups;
 }
 
 // Deeply-partial shape for PATCH payloads. Every nested branch is
@@ -1014,6 +1265,8 @@ export type PartialGameConfig = {
   permissions?: Partial<GameConfigPermissions>;
   // `formats` replaces the stored map as a whole.
   identity?: Partial<GameConfigIdentity>;
+  // `kinds` replaces the stored map as a whole.
+  groups?: Partial<GameConfigGroups>;
 };
 
 // =====================================================================
@@ -1056,12 +1309,19 @@ export const JUNJO_ERROR_CODES = [
   "link_code_invalid",
   "link_refused",
   "banned",
+  "group_full",
+  "group_limit_reached",
   "passcode_required",
   "passcode_invalid",
   "invitation_expired",
   "invitation_used",
   "restore_window_expired",
   "rate_limit_exceeded",
+  "too_many_streams",
+  "stream_position_expired",
+  "idempotency_key_reused",
+  "idempotency_key_in_progress",
+  "precondition_failed",
   "internal",
 ] as const;
 
@@ -1075,4 +1335,51 @@ export interface JunjoErrorEnvelope {
   // Correlation id, present on internal-500 responses; matches the
   // x-request-id response header.
   requestId?: string;
+  // Structured detail. The member import sets
+  // `{ rows: MemberImportRowError[] }`; ban and sanction lifts with
+  // nothing to lift set `{ reason: "not_active" }`.
+  details?: Record<string, unknown>;
+}
+
+// =====================================================================
+// Game export
+// =====================================================================
+
+// Record kinds of `GET /v1/export`, in the order they appear between
+// the header line and the end line.
+export const EXPORT_RECORD_KINDS = [
+  "game",
+  "person",
+  "group",
+  "role",
+  "member",
+  "invitation",
+  "relationship",
+  "ban",
+  "banHistory",
+  "sanction",
+  "sanctionHistory",
+  "friendship",
+  "friendRequest",
+  "block",
+  "friendTag",
+  "audit",
+] as const;
+
+export type ExportRecordKind = (typeof EXPORT_RECORD_KINDS)[number];
+
+export interface ExportHeader {
+  kind: "header";
+  format: "junjo-export";
+  version: 1;
+  gameId: GameId;
+  exportedAt: string;
+  // The game's stream position, read before any record.
+  position: string;
+}
+
+export interface ExportEnd {
+  kind: "end";
+  // Records written per kind; every kind is listed.
+  counts: Record<ExportRecordKind, number>;
 }

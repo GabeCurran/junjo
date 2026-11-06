@@ -60,6 +60,9 @@ export function validatePermissionKey(mode: PermissionMode, key: string): string
   if (key.startsWith("-")) return "must not start with '-'; set the entry's value to deny instead";
   if (key === WILDCARD) return null;
   const segments = key.split(".");
+  // Segment matching assumes every segment names a node, so a key with
+  // an empty segment (leading, trailing or doubled dot) is refused.
+  if (segments.some((s) => s.length === 0)) return "must not contain an empty segment";
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i] as string;
     if (!segment.includes(WILDCARD)) continue;
@@ -97,8 +100,8 @@ function bestCandidate(
   return -1;
 }
 
-// Higher priority first, then roleId descending, matching the
-// tie-break the role layer has always used.
+// Higher priority first, then roleId descending: the same tie-break as
+// the role layer.
 function outranks(a: { id: string; priority: number }, b: { id: string; priority: number }) {
   if (a.priority !== b.priority) return a.priority > b.priority;
   return a.id > b.id;

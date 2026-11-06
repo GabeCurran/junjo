@@ -6,10 +6,17 @@ import { banErrorMessage, checkBanState } from "../bans.js";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
 import { publishStagedEvents, stageEvent, toPublicMember } from "../events.js";
-import { findJunjoUserId, findOrCreateJunjoUser, renderResolved } from "../identity.js";
+import {
+  afterMembershipChange,
+  assertCanActivate,
+  loadKindLimits,
+  lockGroupMembership,
+} from "../groupKinds.js";
+import { findJunjoUserId, findOrCreateJunjoUser } from "../identity.js";
 import { isUniqueViolation } from "../prismaErrors.js";
+import { setEtag } from "../versions.js";
 import { acceptInvitationBody, declineInvitationBody } from "./invitations.schema.js";
-import { serializeMember } from "./members.js";
+import { serializeMemberFor } from "./members.js";
 
 export interface WireInvitation {
   id: string;
@@ -133,7 +140,7 @@ async function assertInvitationTarget(
   junjoUserId: string,
 ): Promise<void> {
   if (!targetUserId || targetUserId === userId) return;
-  const targetJunjoUserId = await findJunjoUserId(prisma, gameId, targetUserId).catch(() => null);
+  const targetJunjoUserId = await findJunjoUserId(prisma, gameId, targetUserId);
   if (targetJunjoUserId !== junjoUserId) {
     throw Errors.permissionDenied("this invitation is for a different user");
   }
@@ -168,10 +175,16 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
 
     const result = await prisma
       .$transaction(async (tx) => {
+        const locked = await lockGroupMembership(tx, invitation.groupId);
+        const limits = await loadKindLimits(tx, gameId, locked.kind);
         const existing = await tx.groupMember.findUnique({
           where: { groupId_junjoUserId: { groupId: invitation.groupId, junjoUserId } },
         });
         if (existing?.status === "active") throw Errors.alreadyMember();
+        // Checked before the invitation is consumed, so a refused accept
+        // leaves the code usable once the group has room.
+        await assertCanActivate(tx, locked, limits, junjoUserId);
+        await afterMembershipChange(tx, locked, limits, false);
 
         // Consume the invitation before touching membership, guarded on
         // usedAt still being null. Two racing redeemers both pass the
@@ -190,7 +203,12 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
               // Reactivate from left/kicked. bannedUntil clears
               // defensively even though the ban check above rejects
               // banned rows (state hygiene).
-              data: { status: "active", leftAt: null, bannedUntil: null },
+              data: {
+                status: "active",
+                leftAt: null,
+                bannedUntil: null,
+                version: { increment: 1 },
+              },
             })
           : await tx.groupMember.create({
               data: {
@@ -221,6 +239,7 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
           groupId: invitation.groupId as GroupId,
           userId: userId as UserId,
           member: toPublicMember(member, userId, []),
+          memberVersion: member.version,
         });
 
         return { member, event };
@@ -235,10 +254,8 @@ export function acceptInvitationByCodeHandler(prisma: PrismaClient, hub: EventHu
       });
 
     publishStagedEvents(hub, result.event);
-    return c.json(
-      serializeMember(result.member, await renderResolved(prisma, gameId, junjoUserId, userId)),
-      201,
-    );
+    setEtag(c, result.member.version);
+    return c.json(await serializeMemberFor(prisma, gameId, result.member, userId), 201);
   };
 }
 

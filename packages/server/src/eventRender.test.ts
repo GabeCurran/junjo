@@ -32,7 +32,9 @@ function joined(userId: string): MemberJoinedEvent {
       notesPrivate: null,
       joinedAt: at,
       bannedUntil: null,
+      version: 1,
     },
+    memberVersion: 1,
   };
 }
 

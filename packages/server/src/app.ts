@@ -3,7 +3,9 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { withAuditAttribution } from "./auditAttribution.js";
 import { prisma as defaultPrisma } from "./db.js";
-import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
+import { eventHub as defaultHub } from "./eventHub.js";
+import { withEventLog } from "./eventLog.js";
+import { idempotencyMiddleware } from "./idempotency.js";
 import { adminAuthMiddleware } from "./middleware/adminAuth.js";
 import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
@@ -57,8 +59,9 @@ import {
   updateAdminGroupMemberHandler,
   updateAdminRoleHandler,
 } from "./routes/admin.js";
-import { bansRouter } from "./routes/bans.js";
+import { bansRouter, getUserModerationHandler } from "./routes/bans.js";
 import { subscribeEventsHandler } from "./routes/events.js";
+import { exportHandler } from "./routes/export.js";
 import {
   createFriendTagHandler,
   deleteFriendTagHandler,
@@ -79,9 +82,15 @@ import {
   sendFriendRequestHandler,
   unfriendHandler,
 } from "./routes/friends.js";
+import { type GameStreamOptions, gameEventsHandlers } from "./routes/gameEvents.js";
 import { groupsRouter } from "./routes/groups.js";
 import { type WorkerHeartbeatProvider, healthCheckHandler } from "./routes/health.js";
-import { identityLinkHandlers, listLinkedIdentitiesHandler } from "./routes/identities.js";
+import {
+  findIdentitiesByNameHandler,
+  identityLinkHandlers,
+  listLinkedIdentitiesHandler,
+  setDisplayNameHandler,
+} from "./routes/identities.js";
 import {
   acceptInvitationByCodeHandler,
   declineInvitationByCodeHandler,
@@ -99,6 +108,11 @@ import {
   setRoleParentsHandler,
   updateRoleByIdHandler,
 } from "./routes/roles.js";
+import {
+  listUserSanctionHistoryHandler,
+  listUserSanctionsHandler,
+  sanctionsRouter,
+} from "./routes/sanctions.js";
 import { listFriendSuggestionsHandler } from "./routes/suggestions.js";
 import { getUserVisibilityHandler, setUserVisibilityHandler } from "./routes/visibility.js";
 import { webhooksRouter } from "./routes/webhooks.js";
@@ -106,10 +120,7 @@ import { webhooksRouter } from "./routes/webhooks.js";
 export interface CreateAppOptions {
   prisma?: PrismaClient;
   apiKeyStore?: ApiKeyStore;
-  events?: {
-    hub?: EventHub;
-    heartbeatIntervalMs?: number;
-  };
+  events?: GameStreamOptions;
   // When undefined, every admin route 401s; a self-host setup with no
   // operator endpoints can leave it unset.
   adminToken?: string;
@@ -128,6 +139,8 @@ export interface CreateAppOptions {
   };
   // Clock for link-code expiry and its rate limits; tests freeze it.
   identityLinks?: { now?: () => number };
+  // Clock for Idempotency-Key record ages; tests freeze it.
+  idempotency?: { now?: () => number };
   webhooks?: {
     // Production cloud must leave this false. Self-host development sets it
     // when receivers run on the same machine; index.ts derives it from the
@@ -139,8 +152,10 @@ export interface CreateAppOptions {
 // One Hono app per call so tests can boot one server per file without
 // globals bleeding across cases.
 export function createApp(opts: CreateAppOptions = {}): Hono {
-  // Every audit row written through this app records the acting key.
-  const prisma = withAuditAttribution(opts.prisma ?? defaultPrisma);
+  // Every audit row written through this app records the acting key, and
+  // every transaction writes the events it staged to the event log as
+  // its last statement.
+  const prisma = withEventLog(withAuditAttribution(opts.prisma ?? defaultPrisma));
   const hub = opts.events?.hub ?? defaultHub;
   const store: ApiKeyStore = opts.apiKeyStore ?? {
     findByPrefix: async (prefix) =>
@@ -169,6 +184,13 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   // helpers read; the API key middleware fills in the key's part.
   app.use("*", (_c, next) => runWithRequestContext(newRequestContext(), next));
   app.onError(errorHandler);
+
+  // Same response as the framework default; the flag tells the
+  // idempotency middleware that no handler ran.
+  app.notFound((c) => {
+    c.set("routeUnmatched", true);
+    return c.text("404 Not Found", 404);
+  });
 
   app.get("/", (c) => c.json({ name: "junjo-server", version: "0.0.0" }));
   app.get(
@@ -272,7 +294,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.patch(
     "/admin/games/:gameId/groups/:groupId/members/:userId",
     adminAuthMiddleware(opts.adminToken),
-    updateAdminGroupMemberHandler(prisma),
+    updateAdminGroupMemberHandler(prisma, hub),
   );
   v1.get(
     "/admin/games/:gameId/groups/:groupId/members/:userId/permissions",
@@ -282,12 +304,12 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.post(
     "/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
     adminAuthMiddleware(opts.adminToken),
-    setAdminMemberPermissionOverrideHandler(prisma),
+    setAdminMemberPermissionOverrideHandler(prisma, hub),
   );
   v1.delete(
     "/admin/games/:gameId/groups/:groupId/members/:userId/permissions/:permission",
     adminAuthMiddleware(opts.adminToken),
-    clearAdminMemberPermissionOverrideHandler(prisma),
+    clearAdminMemberPermissionOverrideHandler(prisma, hub),
   );
   v1.post(
     "/admin/games/:gameId/groups/:groupId/invitations",
@@ -417,15 +439,24 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
     getPermissionUsageHandler(prisma),
   );
   v1.use("*", apiKeyMiddleware(store));
+  // Per-key Idempotency-Key handling for every mutating route below.
+  v1.use("*", idempotencyMiddleware(prisma, { now: opts.idempotency?.now }));
   v1.get("/whoami", (c) => c.json({ gameId: c.var.gameId }));
   v1.route("/groups", groupsRouter(prisma, hub));
   v1.route("/bans", bansRouter(prisma, hub));
+  v1.route("/sanctions", sanctionsRouter(prisma, hub));
+  v1.get("/export", exportHandler(prisma));
   v1.delete("/invitations/:code", deleteInvitationByCodeHandler(prisma));
   v1.post("/invitations/:code/accept", acceptInvitationByCodeHandler(prisma, hub));
   v1.post("/invitations/:code/decline", declineInvitationByCodeHandler(prisma));
   v1.get("/members/:id", getMemberByIdHandler(prisma));
   v1.get("/users/:userId/members", listMembersForUserHandler(prisma));
   v1.get("/users/:userId/identities", listLinkedIdentitiesHandler(prisma));
+  v1.get("/users/:userId/moderation", getUserModerationHandler(prisma));
+  v1.get("/users/:userId/sanctions", listUserSanctionsHandler(prisma));
+  v1.get("/users/:userId/sanctions/history", listUserSanctionHistoryHandler(prisma));
+  v1.put("/users/:userId/display-name", setDisplayNameHandler(prisma, hub));
+  v1.get("/identities/by-name", findIdentitiesByNameHandler(prisma));
   const identityLinks = identityLinkHandlers(prisma, { hub, now: opts.identityLinks?.now });
   v1.post("/users/:userId/link-codes", identityLinks.issue);
   v1.post("/link-codes/redeem", identityLinks.redeem);
@@ -458,6 +489,9 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   v1.get("/users/:userId/visibility", getUserVisibilityHandler(prisma));
   v1.patch("/users/:userId/visibility", setUserVisibilityHandler(prisma));
   v1.get("/users/:userId/friends/suggestions", listFriendSuggestionsHandler(prisma));
+  const gameEvents = gameEventsHandlers(prisma, { ...opts.events, hub });
+  v1.get("/events", gameEvents.subscribe);
+  v1.get("/events/position", gameEvents.position);
   v1.get("/events/:groupId", subscribeEventsHandler(prisma, opts.events));
   v1.route(
     "/webhooks",

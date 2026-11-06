@@ -19,7 +19,7 @@ const roleMetadata = z
 
 const permissionKey = z.string().min(1).max(PERMISSION_KEY_MAX_LENGTH);
 
-// `value` defaults to true (grant), the route's original meaning.
+// `value` defaults to true (grant).
 export const grantPermissionBody = z.object({
   permission: permissionKey,
   value: z.boolean().optional(),

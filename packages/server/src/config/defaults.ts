@@ -39,6 +39,9 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   identity: {
     formats: {},
   },
+  groups: {
+    kinds: {},
+  },
 };
 
 // Resolves a partial config against `DEFAULT_GAME_CONFIG`. Pure function;
@@ -59,6 +62,7 @@ export function resolveGameConfig(partial: PartialGameConfig | null | undefined)
   const b = partial?.blocks;
   const p = partial?.permissions;
   const i = partial?.identity;
+  const g = partial?.groups;
   const dF = DEFAULT_GAME_CONFIG.friends;
   const dB = DEFAULT_GAME_CONFIG.blocks;
   const dP = DEFAULT_GAME_CONFIG.permissions;
@@ -101,6 +105,11 @@ export function resolveGameConfig(partial: PartialGameConfig | null | undefined)
     },
     identity: {
       formats: { ...(i?.formats ?? DEFAULT_GAME_CONFIG.identity.formats) },
+    },
+    groups: {
+      kinds: Object.fromEntries(
+        Object.entries(g?.kinds ?? DEFAULT_GAME_CONFIG.groups.kinds).map(([k, v]) => [k, { ...v }]),
+      ),
     },
   };
 }
@@ -151,6 +160,11 @@ export function mergeGameConfig(
   // than merges; otherwise a namespace could never be undeclared.
   if (patch.identity) {
     merged.identity = { ...(existing?.identity ?? {}), ...patch.identity };
+  }
+
+  // `kinds` replaces as a whole for the same reason as `formats`.
+  if (patch.groups) {
+    merged.groups = { ...(existing?.groups ?? {}), ...patch.groups };
   }
 
   return merged;

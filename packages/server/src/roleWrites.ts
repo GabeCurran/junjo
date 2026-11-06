@@ -1,6 +1,7 @@
 import type {
   GameId,
   GroupId,
+  MemberUpdatedEvent,
   PartialGameConfig,
   PermissionEntry,
   PermissionGrantedEvent,
@@ -12,6 +13,7 @@ import type {
   RoleDeletedEvent,
   RoleId,
   RoleUpdatedEvent,
+  UserId,
 } from "@junjo.io/shared";
 import {
   type MemberPermissionOverride,
@@ -19,11 +21,11 @@ import {
   type PrismaClient,
   type Role,
 } from "@prisma/client";
-import type { ZodTypeAny, z } from "zod";
 import { resolveGameConfig } from "./config/defaults.js";
 import { Errors } from "./errors.js";
 import type { EventHub } from "./eventHub.js";
 import { publishStagedEvents, stageEvent, toPublicRole } from "./events.js";
+import { lockKey } from "./locks.js";
 import { permissionCache } from "./permissionCache.js";
 import {
   MAX_ROLE_DEPTH,
@@ -39,6 +41,8 @@ import {
   replaceRoleEntriesBody,
   setRoleParentsBody,
 } from "./routes/roles.schema.js";
+import { parseBody } from "./validation.js";
+import { bumpMemberVersion, lockMemberVersion } from "./versions.js";
 
 // Role and permission-key writes shared by the per-game and admin
 // routes. Every write that stores a permission key reads the game's
@@ -46,17 +50,6 @@ import {
 // a mode switch, which takes the same row for update.
 
 type Tx = Prisma.TransactionClient;
-
-export function parseBody<S extends ZodTypeAny>(schema: S, json: unknown): z.infer<S> {
-  const parsed = schema.safeParse(json);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-      .join("; ");
-    throw Errors.badRequest(issues || "invalid request body");
-  }
-  return parsed.data;
-}
 
 export async function lockPermissionMode(tx: Tx, gameId: string): Promise<PermissionMode> {
   const rows = await tx.$queryRaw<{ config: unknown }[]>(
@@ -113,7 +106,7 @@ async function registerKeys(tx: Tx, gameId: string, keys: string[]): Promise<voi
   });
 }
 
-async function respond(prisma: PrismaClient, roleId: string): Promise<WireRole> {
+async function loadWireRole(prisma: PrismaClient, roleId: string): Promise<WireRole> {
   const role = await prisma.role.findUniqueOrThrow({ where: { id: roleId } });
   return serializeRole(role, await loadRoleDetail(prisma, roleId));
 }
@@ -212,14 +205,13 @@ export async function replaceRoleEntries(
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, outcome.event);
   }
-  return respond(prisma, roleId);
+  return loadWireRole(prisma, roleId);
 }
 
 // Adds or updates one entry. Idempotent when the entry already holds
-// `value`. A change the legacy events fully describe (a key entering
-// the granted set) emits only `permission.granted`; a key leaving the
-// granted set emits `permission.revoked`; any change involving a deny
-// also emits `role.updated`.
+// `value`. A key entering the granted set emits `permission.granted`; a
+// key leaving it emits `permission.revoked`; any change involving a
+// deny also emits `role.updated`.
 export async function upsertRoleEntry(
   prisma: PrismaClient,
   hub: EventHub,
@@ -305,12 +297,12 @@ export async function upsertRoleEntry(
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, ...outcome.events);
   }
-  return respond(prisma, roleId);
+  return loadWireRole(prisma, roleId);
 }
 
 // Removes one entry whatever its value. Idempotent on a missing entry.
-// Removing a grant emits `permission.revoked` as it always has;
-// removing a deny emits `role.updated`.
+// Removing a grant emits `permission.revoked`; removing a deny emits
+// `role.updated`.
 export async function removeRoleEntry(
   prisma: PrismaClient,
   hub: EventHub,
@@ -371,7 +363,7 @@ export async function removeRoleEntry(
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, outcome.event);
   }
-  return respond(prisma, roleId);
+  return loadWireRole(prisma, roleId);
 }
 
 // Length of the longest parent chain in an acyclic graph, in edges.
@@ -393,10 +385,12 @@ function longestChain(parentsById: ReadonlyMap<string, readonly string[]>): numb
 }
 
 // Sets a role's full parent list. Parents must be other roles in the
-// same group. The cycle and depth checks read the whole group's parent
-// graph inside a SERIALIZABLE transaction together with the write, so
-// two concurrent writes cannot each see an acyclic graph and together
-// close a cycle; the loser aborts, is retried, and is rejected.
+// same group. Every parent write in a group holds that group's graph
+// lock while it reads the graph and writes, so two concurrent writes
+// cannot each see an acyclic graph and together close a cycle. A lock
+// rather than SERIALIZABLE isolation: every write that emits an event
+// also bumps the game's event counter, which a serializable transaction
+// would fail on whenever any other event in the game commits first.
 export async function setRoleParents(
   prisma: PrismaClient,
   hub: EventHub,
@@ -407,77 +401,84 @@ export async function setRoleParents(
   const requested = [...new Set(parents)].sort();
 
   const outcome = await retryOnSerializationFailure(() =>
-    prisma.$transaction(
-      async (tx) => {
-        const role = await lockScopedRole(tx, gameId, roleId);
-        if (requested.includes(role.id))
-          throw Errors.parentCycle("a role cannot be its own parent");
+    prisma.$transaction(async (tx) => {
+      // The graph lock comes before any role row lock. Writing a parent
+      // link takes a key-share lock on the parent's row; if a racing
+      // write held that row while waiting for the graph lock, the two
+      // would deadlock. A role's group never changes, so it can be read
+      // before locking.
+      const scope = await tx.role.findFirst({
+        where: { id: roleId, group: { gameId, softDeletedAt: null } },
+        select: { groupId: true },
+      });
+      if (!scope) throw Errors.notFound("role");
+      await lockKey(tx, ["role-graph", scope.groupId]);
+      const role = await lockScopedRole(tx, gameId, roleId);
+      if (requested.includes(role.id)) throw Errors.parentCycle("a role cannot be its own parent");
 
-        const found = await tx.role.findMany({
-          where: { id: { in: requested }, group: { gameId, softDeletedAt: null } },
-          select: { id: true, groupId: true },
-        });
-        if (found.length !== requested.length) throw Errors.notFound("parent role");
-        if (found.some((r) => r.groupId !== role.groupId)) {
-          throw Errors.roleGroupMismatch("parent roles must belong to the same group");
-        }
+      const found = await tx.role.findMany({
+        where: { id: { in: requested }, group: { gameId, softDeletedAt: null } },
+        select: { id: true, groupId: true },
+      });
+      if (found.length !== requested.length) throw Errors.notFound("parent role");
+      if (found.some((r) => r.groupId !== role.groupId)) {
+        throw Errors.roleGroupMismatch("parent roles must belong to the same group");
+      }
 
-        const edges = await tx.roleParent.findMany({
-          where: { role: { groupId: role.groupId } },
-          select: { roleId: true, parentRoleId: true },
-        });
-        const before = edges
-          .filter((e) => e.roleId === role.id)
-          .map((e) => e.parentRoleId)
-          .sort();
-        if (before.length === requested.length && before.every((p, i) => p === requested[i])) {
-          return { role, event: null };
-        }
+      const edges = await tx.roleParent.findMany({
+        where: { role: { groupId: role.groupId } },
+        select: { roleId: true, parentRoleId: true },
+      });
+      const before = edges
+        .filter((e) => e.roleId === role.id)
+        .map((e) => e.parentRoleId)
+        .sort();
+      if (before.length === requested.length && before.every((p, i) => p === requested[i])) {
+        return { role, event: null };
+      }
 
-        const graph = new Map<string, string[]>();
-        const groupRoles = await tx.role.findMany({
-          where: { groupId: role.groupId },
-          select: { id: true },
-        });
-        for (const r of groupRoles) graph.set(r.id, []);
-        for (const e of edges) if (e.roleId !== role.id) graph.get(e.roleId)?.push(e.parentRoleId);
-        graph.set(role.id, requested);
-        if (findRoleCycle(graph))
-          throw Errors.parentCycle("setting these parents would create a cycle");
-        if (longestChain(graph) > MAX_ROLE_DEPTH) {
-          throw Errors.badRequest(
-            `role inheritance would exceed the depth limit of ${MAX_ROLE_DEPTH}`,
-          );
-        }
+      const graph = new Map<string, string[]>();
+      const groupRoles = await tx.role.findMany({
+        where: { groupId: role.groupId },
+        select: { id: true },
+      });
+      for (const r of groupRoles) graph.set(r.id, []);
+      for (const e of edges) if (e.roleId !== role.id) graph.get(e.roleId)?.push(e.parentRoleId);
+      graph.set(role.id, requested);
+      if (findRoleCycle(graph))
+        throw Errors.parentCycle("setting these parents would create a cycle");
+      if (longestChain(graph) > MAX_ROLE_DEPTH) {
+        throw Errors.badRequest(
+          `role inheritance would exceed the depth limit of ${MAX_ROLE_DEPTH}`,
+        );
+      }
 
-        await tx.roleParent.deleteMany({ where: { roleId: role.id } });
-        if (requested.length > 0) {
-          await tx.roleParent.createMany({
-            data: requested.map((parentRoleId) => ({ roleId: role.id, parentRoleId })),
-          });
-        }
-        await tx.auditEntry.create({
-          data: {
-            gameId,
-            groupId: role.groupId,
-            actorUserId: null,
-            action: "role.parents.set",
-            targetId: role.id,
-            payload: { roleId: role.id, before, after: requested } as Prisma.InputJsonValue,
-          },
+      await tx.roleParent.deleteMany({ where: { roleId: role.id } });
+      if (requested.length > 0) {
+        await tx.roleParent.createMany({
+          data: requested.map((parentRoleId) => ({ roleId: role.id, parentRoleId })),
         });
-        const event = await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["parents"]);
-        return { role, event };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    ),
+      }
+      await tx.auditEntry.create({
+        data: {
+          gameId,
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "role.parents.set",
+          targetId: role.id,
+          payload: { roleId: role.id, before, after: requested } as Prisma.InputJsonValue,
+        },
+      });
+      const event = await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["parents"]);
+      return { role, event };
+    }),
   );
 
   if (outcome.event) {
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, outcome.event);
   }
-  return respond(prisma, roleId);
+  return loadWireRole(prisma, roleId);
 }
 
 // Role names are unique per group exactly as stored; in "nodes" mode
@@ -672,14 +673,18 @@ export async function updateRole(
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, outcome.event);
   }
-  return respond(prisma, roleId);
+  return loadWireRole(prisma, roleId);
 }
 
 // Sets a member override, storing the key in the game's mode.
-// Idempotent on a matching `grant`. The first sight of a key
-// auto-registers `PermissionDef`.
+// Idempotent on a matching `grant`, which leaves the member version
+// alone. The first sight of a key auto-registers `PermissionDef`.
+// `ifMatch`, when set, is checked against the member version under the
+// member row lock. Returns the stored row and the member version after
+// the call.
 export async function setMemberOverride(
   prisma: PrismaClient,
+  hub: EventHub,
   args: {
     gameId: string;
     groupId: string;
@@ -687,15 +692,19 @@ export async function setMemberOverride(
     externalUserId: string;
     permission: string;
     grant: boolean;
+    ifMatch?: number | null;
   },
-): Promise<MemberPermissionOverride> {
+): Promise<{ row: MemberPermissionOverride; memberVersion: number }> {
   const { gameId, groupId, groupMemberId, grant } = args;
   const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const permission = keyForWrite(mode, args.permission);
+    const current = await lockMemberVersion(tx, groupMemberId, args.ifMatch ?? null);
     const where = { groupMemberId_permissionKey: { groupMemberId, permissionKey: permission } };
     const existing = await tx.memberPermissionOverride.findUnique({ where });
-    if (existing && existing.grant === grant) return { row: existing, changed: false };
+    if (existing && existing.grant === grant) {
+      return { row: existing, memberVersion: current, changed: false as const };
+    }
 
     await registerKeys(tx, gameId, [permission]);
     const row = await tx.memberPermissionOverride.upsert({
@@ -715,33 +724,50 @@ export async function setMemberOverride(
         payload: auditPayload as Prisma.InputJsonValue,
       },
     });
-    return { row, changed: true };
+    const memberVersion = await bumpMemberVersion(tx, groupMemberId);
+    const event = await stageMemberOverridesChanged(
+      tx,
+      gameId,
+      groupId,
+      args.externalUserId,
+      memberVersion,
+    );
+    return { row, memberVersion, changed: true as const, event };
   });
-  if (outcome.changed) permissionCache.invalidateGroup(groupId);
-  return outcome.row;
+  if (outcome.changed) {
+    permissionCache.invalidateGroup(groupId);
+    publishStagedEvents(hub, outcome.event);
+  }
+  return { row: outcome.row, memberVersion: outcome.memberVersion };
 }
 
-// Clears a member override. Idempotent on a missing override; the
-// PermissionDef catalog is preserved.
+// Clears a member override. Idempotent on a missing override, which
+// leaves the member version alone; the PermissionDef catalog is
+// preserved. `ifMatch` as for `setMemberOverride`. Returns the member
+// version after the call.
 export async function clearMemberOverride(
   prisma: PrismaClient,
+  hub: EventHub,
   args: {
     gameId: string;
     groupId: string;
     groupMemberId: string;
     externalUserId: string;
     permission: string;
+    ifMatch?: number | null;
   },
-): Promise<void> {
+): Promise<number> {
   const { gameId, groupId, groupMemberId } = args;
   if (!args.permission) throw Errors.badRequest("permission must not be empty");
-  const cleared = await prisma.$transaction(async (tx) => {
+  const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const permission = normalizePermissionKey(mode, args.permission);
+    const current = await lockMemberVersion(tx, groupMemberId, args.ifMatch ?? null);
     const where = { groupMemberId_permissionKey: { groupMemberId, permissionKey: permission } };
     const existing = await tx.memberPermissionOverride.findUnique({ where });
-    if (!existing) return false;
+    if (!existing) return { memberVersion: current, event: null };
     await tx.memberPermissionOverride.delete({ where });
+    const memberVersion = await bumpMemberVersion(tx, groupMemberId);
     await tx.auditEntry.create({
       data: {
         gameId,
@@ -756,9 +782,37 @@ export async function clearMemberOverride(
         } as Prisma.InputJsonValue,
       },
     });
-    return true;
+    const event = await stageMemberOverridesChanged(
+      tx,
+      gameId,
+      groupId,
+      args.externalUserId,
+      memberVersion,
+    );
+    return { memberVersion, event };
   });
-  if (cleared) permissionCache.invalidateGroup(groupId);
+  if (outcome.event) {
+    permissionCache.invalidateGroup(groupId);
+    publishStagedEvents(hub, outcome.event);
+  }
+  return outcome.memberVersion;
+}
+
+function stageMemberOverridesChanged(
+  tx: Tx,
+  gameId: string,
+  groupId: string,
+  externalUserId: string,
+  memberVersion: number,
+): Promise<MemberUpdatedEvent> {
+  return stageEvent<MemberUpdatedEvent>(tx, {
+    type: "member.updated",
+    gameId: gameId as GameId,
+    groupId: groupId as GroupId,
+    userId: externalUserId as UserId,
+    changed: ["overrides"],
+    memberVersion,
+  });
 }
 
 // Deletes a role that no member holds. Roles that inherited from it

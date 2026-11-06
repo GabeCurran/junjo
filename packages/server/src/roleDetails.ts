@@ -1,8 +1,7 @@
 import type { PermissionEntry, PermissionMode } from "@junjo.io/shared";
-import type { Group, Prisma, PrismaClient, Role } from "@prisma/client";
+import type { Group, Role } from "@prisma/client";
 import { loadPermissionMode } from "./config/loadGameConfig.js";
-
-type Client = PrismaClient | Prisma.TransactionClient;
+import type { Db } from "./db.js";
 
 // The parts of a role stored outside the Role row: its entries and its
 // parent role ids, both sorted for stable output.
@@ -13,14 +12,13 @@ export interface RoleDetail {
 
 export const EMPTY_ROLE_DETAIL: RoleDetail = { entries: [], parents: [] };
 
-// The keys a role grants, which is the meaning `permissions` has always
-// had on the wire.
+// The keys a role grants: the wire `permissions` field.
 export function grantedKeys(detail: RoleDetail): string[] {
   return detail.entries.filter((e) => e.value).map((e) => e.permission);
 }
 
 export async function loadRoleDetails(
-  client: Client,
+  client: Db,
   roleIds: readonly string[],
 ): Promise<Map<string, RoleDetail>> {
   const out = new Map<string, RoleDetail>();
@@ -46,7 +44,7 @@ export async function loadRoleDetails(
   return out;
 }
 
-export async function loadRoleDetail(client: Client, roleId: string): Promise<RoleDetail> {
+export async function loadRoleDetail(client: Db, roleId: string): Promise<RoleDetail> {
   return (await loadRoleDetails(client, [roleId])).get(roleId) ?? EMPTY_ROLE_DETAIL;
 }
 
@@ -57,8 +55,7 @@ export interface WireRole {
   priority: number;
   color: string | null;
   isDefault: boolean;
-  // Granted keys only, the field's original meaning. `entries` carries
-  // grants and denies.
+  // Granted keys only. `entries` carries grants and denies.
   permissions: string[];
   entries: PermissionEntry[];
   parents: string[];
@@ -94,7 +91,7 @@ export interface WireRoleGraph {
 // mode and the group's default role. Roles are ordered by priority
 // descending, then id descending, like the role list.
 export async function loadRoleGraph(
-  client: Client,
+  client: Db,
   gameId: string,
   group: Pick<Group, "id" | "defaultRoleId">,
 ): Promise<WireRoleGraph> {

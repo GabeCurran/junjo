@@ -1,6 +1,7 @@
 import {
   FRIENDS_LIST_VISIBILITY_VALUES,
   MAX_DECLARED_ID_FORMATS,
+  MAX_GROUP_KINDS,
   MAX_PREFERRED_NAMESPACES,
   PERMISSION_MODES,
   USER_ID_FORMATS,
@@ -70,9 +71,12 @@ const permissionsPatchSchema = z
   })
   .strict();
 
+export const NAMESPACE_FORMAT_MESSAGE =
+  "namespace must be 1 to 32 lowercase letters, digits, underscores or hyphens";
+
 export const userIdNamespaceSchema = z
   .string()
-  .regex(new RegExp(USER_ID_NAMESPACE_PATTERN), "namespace must be 1-32 of a-z, 0-9, _ or -");
+  .regex(new RegExp(USER_ID_NAMESPACE_PATTERN), NAMESPACE_FORMAT_MESSAGE);
 
 // An ordered namespace preference, as stored on API keys and webhook
 // endpoints. Empty means no preference.
@@ -100,7 +104,47 @@ const identityPatchSchema = z
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: [key],
-              message: "namespace must be 1-32 of a-z, 0-9, _ or -",
+              message: NAMESPACE_FORMAT_MESSAGE,
+            });
+          }
+        }
+      })
+      .optional(),
+  })
+  .strict();
+
+// Group kinds are open strings bounded like the create route's `kind`.
+export const GROUP_KIND_MAX_LENGTH = 64;
+
+const groupKindLimitsSchema = z
+  .object({
+    maxMembers: z.number().int().min(1).max(100_000).optional(),
+    maxPerUser: z.number().int().min(1).max(1000).optional(),
+    deleteWhenEmpty: z.boolean().optional(),
+    idleDeleteHours: z.number().int().min(1).max(8760).optional(),
+  })
+  .strict();
+
+// `kinds` is stated in full and replaces the stored map, like
+// `identity.formats`; a kind left out loses its limits.
+const groupsPatchSchema = z
+  .object({
+    kinds: z
+      .record(z.string(), groupKindLimitsSchema)
+      .superRefine((kinds, ctx) => {
+        const keys = Object.keys(kinds);
+        if (keys.length > MAX_GROUP_KINDS) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `at most ${MAX_GROUP_KINDS} group kinds may set limits`,
+          });
+        }
+        for (const key of keys) {
+          if (key.length < 1 || key.length > GROUP_KIND_MAX_LENGTH) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message: `group kind must be 1-${GROUP_KIND_MAX_LENGTH} characters`,
             });
           }
         }
@@ -115,6 +159,7 @@ export const gameConfigPatchSchema = z
     blocks: blocksPatchSchema.optional(),
     permissions: permissionsPatchSchema.optional(),
     identity: identityPatchSchema.optional(),
+    groups: groupsPatchSchema.optional(),
   })
   .strict();
 
