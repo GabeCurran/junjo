@@ -10,6 +10,7 @@ import io.junjo.sdk.mirror.GameMirror.GroupState;
 import io.junjo.sdk.mirror.GameMirror.MemberEntry;
 import io.junjo.sdk.mirror.GameMirror.MemberKey;
 import io.junjo.sdk.mirror.GameMirror.Person;
+import io.junjo.sdk.mirror.GameMirror.RetainedMember;
 import io.junjo.sdk.mirror.GameMirror.SanctionState;
 import io.junjo.sdk.mirror.GameMirror.State;
 import io.junjo.sdk.model.Ban;
@@ -36,7 +37,8 @@ import java.util.function.Function;
  * The mirror's state file: one checksummed JSON line (see {@link DurableFiles}) holding the
  * position, role graphs, bans, sanctions, loaded tracked members and known people. Models are
  * written in their wire shape, so the SDK's wire decoders read them back. Members still loading
- * are not saved.
+ * are not saved. Retained members are saved apart from tracked ones, each with the time it was
+ * last tracked; the field is optional, so a file written without it loads with none retained.
  */
 final class MirrorSnapshot {
     static final String FORMAT = "junjo-mirror";
@@ -73,6 +75,16 @@ final class MirrorSnapshot {
             members.add(m);
         }
         o.add("members", members);
+        JsonArray retained = new JsonArray();
+        for (Map.Entry<MemberKey, RetainedMember> e : s.retained().entrySet()) {
+            JsonObject m = new JsonObject();
+            m.addProperty("groupId", e.getKey().groupId());
+            m.addProperty("userId", e.getKey().userId());
+            m.add("access", e.getValue().access() == null ? JsonNull.INSTANCE : access(e.getValue().access()));
+            m.addProperty("lastConnectedAt", e.getValue().lastConnectedAt().toString());
+            retained.add(m);
+        }
+        o.add("retained", retained);
         JsonArray people = new JsonArray();
         for (Person p : new HashSet<>(s.people().values())) {
             JsonObject j = new JsonObject();
@@ -119,6 +131,14 @@ final class MirrorSnapshot {
             MemberAccess access = a == null ? null : Wire.access(a);
             s = s.withMember(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
                     new MemberEntry(true, access, access == null ? 0 : access.version()));
+        }
+        JsonArray retained = Json.optArr(o, "retained");
+        if (retained != null) {
+            for (JsonObject m : Json.objects(retained, "retained")) {
+                JsonObject a = Json.optObj(m, "access");
+                s = s.withRetained(new MemberKey(Json.str(m, "groupId"), Json.str(m, "userId")),
+                        new RetainedMember(a == null ? null : Wire.access(a), Json.instant(m, "lastConnectedAt")));
+            }
         }
         for (JsonObject p : Json.objects(Json.arr(o, "people"), "people")) {
             s = s.withPerson(new Person(Json.strList(p, "ids"), Json.optStr(p, "rendered")));

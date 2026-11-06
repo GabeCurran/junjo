@@ -106,6 +106,15 @@ import java.util.function.Function;
  * and loads it at start, so it answers at once, even before the server is reachable. Loaded data
  * may be stale until the stream, resumed from the saved position, catches up; when that position
  * has expired the mirror reloads everything from the server.
+ *
+ * <p>Retention: with {@link Builder#retainUntracked(Duration)} an untracked member's last loaded
+ * access is kept, in memory and in the snapshot file, for that window after the member was last
+ * tracked. A retained member is not tracked: reads do not answer for it, it is not listed by
+ * {@link #trackedMembers(String)}, and stream events never reload it. Tracking it again answers
+ * from the retained access at once while the access is reloaded. A retained entry is dropped when
+ * it outlives the window, when a member event shows a newer version of the membership, when an
+ * identity event names any of the person's ids, when its group is deleted, and on a full reload
+ * from the server, after which links may have changed.
  */
 public final class GameMirror implements AutoCloseable {
     /** The event types the mirror applies; the stream is filtered to these. */
@@ -145,6 +154,8 @@ public final class GameMirror implements AutoCloseable {
     private static final int PAGE_SIZE = 100;
     /** Tracks that arrive within this window share one batched access read. */
     private static final long TRACK_BATCH_WINDOW_MS = 10;
+    /** The longest gap between two prunes of retained members. */
+    private static final long RETAIN_PRUNE_MAX_MS = 60_000;
     private static final String CLOSED_MESSAGE = "mirror closed";
 
     private final JunjoClient client;
@@ -162,6 +173,7 @@ public final class GameMirror implements AutoCloseable {
     private final boolean defaultRoleForNonMembers;
     private final Path snapshotFile;
     private final Duration snapshotInterval;
+    private final Duration retainWindow;
     private final DurableFiles.Disk disk;
     private final JunjoLogger logger;
     private final ExecutorService applier;
@@ -202,6 +214,7 @@ public final class GameMirror implements AutoCloseable {
         this.defaultRoleForNonMembers = b.defaultRoleForNonMembers;
         this.snapshotFile = b.snapshotFile;
         this.snapshotInterval = b.snapshotInterval;
+        this.retainWindow = b.retainWindow;
         this.disk = b.disk;
         this.inheritance = b.inheritance;
         this.logger = transport.logger();
@@ -513,6 +526,12 @@ public final class GameMirror implements AutoCloseable {
      * timeout, and reloads it on every newer member event. Tracks issued close together are loaded
      * with one batched read per group. The group's role graph is loaded too when the mirror does
      * not hold it. Completes once the access is loaded.
+     *
+     * <p>A member held by {@link Builder#retainUntracked(Duration)} answers from the retained
+     * access as soon as this call is applied, and is reported as an {@link MirrorChange.Kind#ACCESS}
+     * change; the access is reloaded as for any other track. The future then completes once that
+     * reload has succeeded or failed: a failure is reported to {@code onError} and retried, and
+     * the retained access keeps answering until a reload succeeds.
      */
     public CompletableFuture<Void> track(String userId, String groupId) {
         Objects.requireNonNull(userId, "userId");
@@ -528,7 +547,7 @@ public final class GameMirror implements AutoCloseable {
             }
             State s = state;
             MemberKey key = findMemberKey(s, userId, groupId);
-            if (key != null && s.members().get(key).loaded()) {
+            if (key != null && s.members().get(key).loaded() && !trackWaiters.containsKey(key)) {
                 done.complete(null);
                 return;
             }
@@ -536,7 +555,15 @@ public final class GameMirror implements AutoCloseable {
             if (fresh) key = new MemberKey(groupId, p.key());
             trackWaiters.computeIfAbsent(key, k -> new ArrayList<>()).add(done);
             if (fresh) {
-                state = s.withMember(key, MemberEntry.PENDING);
+                RetainedMember kept = takeRetained(p, userId, groupId);
+                s = state;
+                if (kept != null) {
+                    state = s.withMember(key, new MemberEntry(true, kept.access(), kept.version()));
+                    changed(MirrorChange.Kind.ACCESS, key.userId(), groupId);
+                    markDirty();
+                } else {
+                    state = s.withMember(key, MemberEntry.PENDING);
+                }
                 if (!s.groups().containsKey(groupId)) reloadGroup(groupId, 0);
                 queueTrackLoad(key);
             }
@@ -545,15 +572,69 @@ public final class GameMirror implements AutoCloseable {
         return done;
     }
 
-    /** Stops following a member and drops their state. */
+    /**
+     * Stops following a member. Their state is dropped, or, with
+     * {@link Builder#retainUntracked(Duration)}, kept as retained for that window when it was
+     * loaded.
+     */
     public void untrack(String userId, String groupId) {
         submit(() -> {
-            MemberKey key = findMemberKey(state, userId, groupId);
+            State s = state;
+            MemberKey key = findMemberKey(s, userId, groupId);
             if (key == null) return;
-            state = state.withoutMember(key);
+            MemberEntry m = s.members().get(key);
+            s = s.withoutMember(key);
+            if (retainWindow != null && m.loaded()) {
+                s = s.withoutRetained(personKeys(s, key.userId(), groupId))
+                        .withRetained(key, new RetainedMember(m.access(), clock.instant()));
+            }
+            state = s;
             failWaiters(key, new JunjoException(JunjoException.CANCELLED, "untracked", null));
             markDirty();
         });
+    }
+
+    // Removes and returns the person's retained entry in the group, or null when there is none
+    // within the window. Every retained entry of the person in the group is removed.
+    private RetainedMember takeRetained(Person p, String userId, String groupId) {
+        State s = state;
+        if (s.retained().isEmpty()) return null;
+        Set<String> ids = new LinkedHashSet<>();
+        ids.add(userId);
+        ids.addAll(p.ids());
+        List<MemberKey> keys = new ArrayList<>();
+        RetainedMember newest = null;
+        for (String id : ids) {
+            MemberKey k = new MemberKey(groupId, id);
+            RetainedMember r = s.retained().get(k);
+            if (r == null) continue;
+            keys.add(k);
+            if (newest == null || r.lastConnectedAt().isAfter(newest.lastConnectedAt())) newest = r;
+        }
+        if (keys.isEmpty()) return null;
+        state = s.withoutRetained(keys);
+        markDirty();
+        return newest != null && withinWindow(newest, clock.instant()) ? newest : null;
+    }
+
+    private boolean withinWindow(RetainedMember r, Instant now) {
+        return retainWindow != null && r.lastConnectedAt().plus(retainWindow).isAfter(now);
+    }
+
+    // The keys the person holding this id could be retained under in the group.
+    private static List<MemberKey> personKeys(State s, String userId, String groupId) {
+        List<MemberKey> keys = new ArrayList<>();
+        for (String id : idsWith(s, userId)) keys.add(new MemberKey(groupId, id));
+        return keys;
+    }
+
+    // The retained members of a group, by the id each is kept under; read by tests.
+    Map<String, RetainedMember> retainedMembers(String groupId) {
+        Map<String, RetainedMember> out = new HashMap<>();
+        state.retained().forEach((k, r) -> {
+            if (k.groupId().equals(groupId)) out.put(k.userId(), r);
+        });
+        return Map.copyOf(out);
     }
 
     /** Starts following a group's role graph. Completes once the graph is loaded. */
@@ -696,7 +777,35 @@ public final class GameMirror implements AutoCloseable {
     private void boot() {
         if (snapshotFile != null) loadSnapshot();
         if (state.ready()) started.complete(this);
+        schedulePrune();
         attemptStart(0);
+    }
+
+    // Drops the retained members whose window has passed; with retention off, every one.
+    private void pruneRetained() {
+        State s = state;
+        if (s.retained().isEmpty()) return;
+        Instant now = clock.instant();
+        List<MemberKey> expired = new ArrayList<>();
+        s.retained().forEach((k, r) -> {
+            if (!withinWindow(r, now)) expired.add(k);
+        });
+        if (expired.isEmpty()) return;
+        state = s.withoutRetained(expired);
+        markDirty();
+    }
+
+    private void schedulePrune() {
+        if (retainWindow == null || closed) return;
+        long every = Math.max(1, Math.min(retainWindow.toMillis(), RETAIN_PRUNE_MAX_MS));
+        try {
+            transport.schedule(() -> submit(() -> {
+                pruneRetained();
+                schedulePrune();
+            }), every);
+        } catch (RuntimeException rejected) {
+            // The client is closed; nothing is pruned any more.
+        }
     }
 
     private void attemptStart(int attempt) {
@@ -737,7 +846,8 @@ public final class GameMirror implements AutoCloseable {
 
     // Builds a complete state at a position: every held and configured group, the ban and
     // sanction lists, and the tracked members carried over (reloaded by the caller). Resolved ids
-    // are dropped, because links may have changed in a gap; they resolve again on demand.
+    // are dropped, because links may have changed in a gap; they resolve again on demand. Retained
+    // members are dropped for the same reason.
     private State fullLoad(String position) throws Exception {
         State old = state;
         State next = State.EMPTY.withPosition(position);
@@ -814,13 +924,39 @@ public final class GameMirror implements AutoCloseable {
 
     private void applyMember(JunjoEvent.MemberScoped e) {
         MemberKey key = findMemberKey(state, e.userId(), e.groupId());
-        if (key == null) return;
+        if (key == null) {
+            dropOutdatedRetained(e);
+            return;
+        }
         MemberEntry m = state.members().get(key);
         if (m.loaded() && e.memberVersion() > 0 && m.version() >= e.memberVersion()) {
             skipped.incrementAndGet();
             return;
         }
         reloadMember(key, 0);
+    }
+
+    // A retained member is never reloaded. An event that may be newer than its retained access
+    // (a higher version, or none) drops it instead, so it cannot answer with an outdated access.
+    private void dropOutdatedRetained(JunjoEvent.MemberScoped e) {
+        State s = state;
+        if (s.retained().isEmpty()) return;
+        List<MemberKey> stale = new ArrayList<>();
+        for (MemberKey k : personKeys(s, e.userId(), e.groupId())) {
+            RetainedMember r = s.retained().get(k);
+            if (r != null && (e.memberVersion() <= 0 || r.version() < e.memberVersion())) stale.add(k);
+        }
+        if (stale.isEmpty()) return;
+        state = s.withoutRetained(stale);
+    }
+
+    // Drops every retained entry, in any group, kept under one of these ids.
+    private void dropRetainedOf(Collection<String> ids) {
+        State s = state;
+        if (s.retained().isEmpty()) return;
+        List<MemberKey> keys = new ArrayList<>();
+        for (MemberKey k : s.retained().keySet()) if (ids.contains(k.userId())) keys.add(k);
+        state = s.withoutRetained(keys);
     }
 
     private void applyBan(String userId, long version, Ban ban) {
@@ -861,17 +997,22 @@ public final class GameMirror implements AutoCloseable {
 
     // A link or unlink changes which person an id names. The person's ids are recorded from the
     // event, and every cached answer keyed by one of them is reloaded: its ban, its sanctions and
-    // every tracked membership.
+    // every tracked membership. Retained members of every id involved, before or after the
+    // change, are dropped.
     private void relink(String rendered, List<String> identities, String changedId, String splitOff) {
         Set<String> ids = new LinkedHashSet<>(identities);
         ids.add(rendered);
         if (splitOff == null) ids.add(changedId);
         else ids.remove(splitOff);
-        State s = state.withPerson(new Person(List.copyOf(ids), rendered));
+        State before = state;
+        State s = before.withPerson(new Person(List.copyOf(ids), rendered));
         if (splitOff != null) s = s.withPerson(new Person(List.of(splitOff), splitOff));
         state = s;
         Set<String> affected = new LinkedHashSet<>(ids);
         affected.add(changedId);
+        Set<String> involved = new HashSet<>();
+        for (String id : affected) involved.addAll(idsWith(before, id));
+        dropRetainedOf(involved);
         for (String id : affected) {
             reloadBan(id, 0);
             reloadSanctions(id, 0);
@@ -1007,7 +1148,7 @@ public final class GameMirror implements AutoCloseable {
             Throwable cause = Transport.unwrap(t);
             report(cause);
             for (MemberKey k : keys) {
-                failWaiters(k, cause);
+                settleWaitersAfterFailure(k, cause);
                 retryLater(() -> reloadMember(k, 1), 1);
             }
             return;
@@ -1030,7 +1171,7 @@ public final class GameMirror implements AutoCloseable {
         } catch (Throwable t) {
             Throwable cause = Transport.unwrap(t);
             report(cause);
-            failWaiters(key, cause);
+            settleWaitersAfterFailure(key, cause);
             retryLater(() -> reloadMember(key, attempt + 1), attempt + 1);
             return;
         }
@@ -1048,7 +1189,8 @@ public final class GameMirror implements AutoCloseable {
             if (!rendered.equals(key.userId())) s = s.withPersonMerged(key.userId(), rendered);
             s = s.withRendered(rendered);
         }
-        state = s;
+        // A tracked person needs no retained entry; the merge above may have shown one is theirs.
+        state = s.withoutRetained(personKeys(s, key.userId(), key.groupId()));
         MemberAccess before = old.access();
         MemberAccess after = entry.access();
         if (!Objects.equals(withoutName(before), withoutName(after))) {
@@ -1080,6 +1222,18 @@ public final class GameMirror implements AutoCloseable {
     private void failWaiters(MemberKey key, Throwable cause) {
         List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
         if (waiters != null) for (CompletableFuture<Void> w : waiters) w.completeExceptionally(cause);
+    }
+
+    // After a failed load: a member that still answers (restored from retention) completes its
+    // track waiters; one with nothing loaded fails them.
+    private void settleWaitersAfterFailure(MemberKey key, Throwable cause) {
+        MemberEntry m = state.members().get(key);
+        if (m == null || !m.loaded()) {
+            failWaiters(key, cause);
+            return;
+        }
+        List<CompletableFuture<Void>> waiters = trackWaiters.remove(key);
+        if (waiters != null) for (CompletableFuture<Void> w : waiters) w.complete(null);
     }
 
     private void reloadBan(String userId, int attempt) {
@@ -1202,6 +1356,7 @@ public final class GameMirror implements AutoCloseable {
             Optional<State> loaded = MirrorSnapshot.load(snapshotFile, this::compileGroup);
             if (loaded.isEmpty()) return;
             state = loaded.get();
+            pruneRetained();
             resumeFromSnapshot = true;
             Safe.log(logger, JunjoLogger.Level.INFO, "mirror loaded its snapshot at position " + state.position()
                     + "; answers may be stale until the stream catches up", null);
@@ -1261,6 +1416,18 @@ public final class GameMirror implements AutoCloseable {
         }
     }
 
+    /**
+     * A member kept after untrack, for {@link Builder#retainUntracked(Duration)}.
+     *
+     * @param access the last loaded access, or null when the user had no membership
+     * @param lastConnectedAt when the member was last tracked
+     */
+    record RetainedMember(MemberAccess access, Instant lastConnectedAt) {
+        long version() {
+            return access == null ? 0 : access.version();
+        }
+    }
+
     // An immutable snapshot. Every "with" returns a copy; the maps are never mutated after
     // construction, which is what makes lock-free reads safe.
     record State(
@@ -1272,23 +1439,26 @@ public final class GameMirror implements AutoCloseable {
             SanctionState sanctions,
             Map<MemberKey, MemberEntry> members,
             Map<String, Person> people,
-            Set<String> renderedIds) {
+            Set<String> renderedIds,
+            Map<MemberKey, RetainedMember> retained) {
         static final State EMPTY = new State(
-                false, null, Map.of(), Map.of(), Map.of(), SanctionState.EMPTY, Map.of(), Map.of(), Set.of());
+                false, null, Map.of(), Map.of(), Map.of(), SanctionState.EMPTY, Map.of(), Map.of(), Set.of(), Map.of());
 
         State markReady() {
-            return new State(true, position, groups, bans, moderationVersions, sanctions, members, people, renderedIds);
+            return new State(true, position, groups, bans, moderationVersions, sanctions, members, people, renderedIds,
+                    retained);
         }
 
         State withPosition(String p) {
-            return new State(ready, p, groups, bans, moderationVersions, sanctions, members, people, renderedIds);
+            return new State(ready, p, groups, bans, moderationVersions, sanctions, members, people, renderedIds,
+                    retained);
         }
 
         State withGroup(String id, GroupState g) {
             Map<String, GroupState> m = new HashMap<>(groups);
             m.put(id, g);
             return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, members, people,
-                    renderedIds);
+                    renderedIds, retained);
         }
 
         State withoutGroup(String id) {
@@ -1296,22 +1466,40 @@ public final class GameMirror implements AutoCloseable {
             m.remove(id);
             Map<MemberKey, MemberEntry> mem = new HashMap<>(members);
             mem.keySet().removeIf(k -> k.groupId().equals(id));
+            Map<MemberKey, RetainedMember> ret = new HashMap<>(retained);
+            ret.keySet().removeIf(k -> k.groupId().equals(id));
             return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, Map.copyOf(mem),
-                    people, renderedIds);
+                    people, renderedIds, Map.copyOf(ret));
         }
 
         State withMember(MemberKey key, MemberEntry e) {
             Map<MemberKey, MemberEntry> m = new HashMap<>(members);
             m.put(key, e);
             return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds);
+                    renderedIds, retained);
         }
 
         State withoutMember(MemberKey key) {
             Map<MemberKey, MemberEntry> m = new HashMap<>(members);
             m.remove(key);
             return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds);
+                    renderedIds, retained);
+        }
+
+        State withRetained(MemberKey key, RetainedMember r) {
+            Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
+            m.put(key, r);
+            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
+                    renderedIds, Map.copyOf(m));
+        }
+
+        // Drops the retained entries under any of these keys; returns this state when none is held.
+        State withoutRetained(Collection<MemberKey> keys) {
+            if (retained.isEmpty()) return this;
+            Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
+            if (!m.keySet().removeAll(keys)) return this;
+            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
+                    renderedIds, Map.copyOf(m));
         }
 
         State withBans(Collection<Ban> list) {
@@ -1324,7 +1512,7 @@ public final class GameMirror implements AutoCloseable {
                 if (ban.version() > 0) v.put(ban.userId(), ban.version());
             }
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    Set.copyOf(r));
+                    Set.copyOf(r), retained);
         }
 
         State withBan(String userId, Ban ban, long version) {
@@ -1334,18 +1522,19 @@ public final class GameMirror implements AutoCloseable {
             else b.put(userId, ban);
             if (version > 0) v.put(userId, version);
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds);
+                    renderedIds, retained);
         }
 
         State withBanMaps(Map<String, Ban> b, Map<String, Long> v) {
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds);
+                    renderedIds, retained);
         }
 
         State withSanctions(SanctionState next) {
             Set<String> r = new HashSet<>(renderedIds);
             r.addAll(next.byUser().keySet());
-            return new State(ready, position, groups, bans, moderationVersions, next, members, people, Set.copyOf(r));
+            return new State(ready, position, groups, bans, moderationVersions, next, members, people, Set.copyOf(r),
+                    retained);
         }
 
         // Records the person under every id they hold, replacing what each id named before.
@@ -1358,7 +1547,8 @@ public final class GameMirror implements AutoCloseable {
                 copy.add(p.rendered());
                 r = Set.copyOf(copy);
             }
-            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, Map.copyOf(m), r);
+            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, Map.copyOf(m), r,
+                    retained);
         }
 
         // Two ids name the same person, and the server renders that person as {@code rendered}.
@@ -1380,7 +1570,7 @@ public final class GameMirror implements AutoCloseable {
                 Set<String> r = new HashSet<>(renderedIds);
                 r.add(id);
                 s = new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                        Set.copyOf(r));
+                        Set.copyOf(r), retained);
             }
             Person p = s.people().get(id);
             if (p != null && !id.equals(p.rendered())) s = s.withPerson(new Person(p.ids(), id));
@@ -1455,6 +1645,7 @@ public final class GameMirror implements AutoCloseable {
         private Duration snapshotInterval = Duration.ofSeconds(30);
         private DurableFiles.Disk disk = DurableFiles.Disk.SYSTEM;
         private ContextInheritance inheritance = ContextInheritance.NONE;
+        private Duration retainWindow;
 
         private Builder(JunjoClient client) {
             this.client = Objects.requireNonNull(client, "client");
@@ -1563,6 +1754,27 @@ public final class GameMirror implements AutoCloseable {
          */
         public Builder contextInheritance(ContextInheritance inheritance) {
             this.inheritance = Objects.requireNonNull(inheritance, "inheritance");
+            return this;
+        }
+
+        /**
+         * Keeps an untracked member's last loaded access for this window after they were last
+         * tracked, in memory and in the snapshot file, so a member tracked again within it is
+         * answered at once, even while the server is unreachable. Each retained member records
+         * when it was last tracked; the window is measured from then by the mirror's clock, and
+         * expired entries are pruned at start and periodically. A retained member is not tracked:
+         * reads answer UNKNOWN for it until it is tracked again, and stream events never reload
+         * it. It is dropped when a member event shows a newer version of the membership, when an
+         * identity event names one of the person's ids, when its group is deleted, and on a full
+         * reload from the server.
+         * Zero turns retention off, which is the default.
+         *
+         * @throws IllegalArgumentException when the window is negative
+         */
+        public Builder retainUntracked(Duration window) {
+            Objects.requireNonNull(window, "window");
+            if (window.isNegative()) throw new IllegalArgumentException("window must not be negative");
+            this.retainWindow = window.isZero() ? null : window;
             return this;
         }
 
