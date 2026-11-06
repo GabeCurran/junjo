@@ -28,10 +28,15 @@ export interface AdminAuditEntry {
   action: string;
   gameId: string;
   gameName: string;
-  groupId: string;
-  groupName: string;
+  // Null for game-scoped actions (bans, identity links); groupName is
+  // then null too.
+  groupId: string | null;
+  groupName: string | null;
   groupSoftDeleted: boolean;
   actorUserId: string | null;
+  // The API key whose request wrote the entry; null for dashboard and
+  // system writes.
+  apiKey: AdminAuditApiKey | null;
   targetId: string | null;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -59,8 +64,22 @@ export interface AdminApiKey {
   id: string;
   gameId: string;
   prefix: string;
+  // Operator-facing label, shown on audit entries the key wrote.
+  name: string | null;
+  // Ordered namespace preference for user ids read through this key.
+  preferredNamespaces: string[];
   createdAt: string;
   revokedAt: string | null;
+}
+
+// Mirrors the server's API key limits (packages/server routes/admin.schema.ts
+// and @junjo.io/shared MAX_PREFERRED_NAMESPACES).
+export const ADMIN_API_KEY_NAME_MAX_LENGTH = 64;
+export const ADMIN_API_KEY_MAX_PREFERRED_NAMESPACES = 8;
+
+export interface AdminApiKeyInput {
+  name?: string | null;
+  preferredNamespaces?: string[];
 }
 
 export interface AdminApiKeyList {
@@ -283,10 +302,17 @@ export interface UpdateAdminRoleInput {
   isDefault?: boolean;
 }
 
+export interface AdminAuditApiKey {
+  id: string;
+  name: string | null;
+  prefix: string;
+}
+
 export interface AdminGroupAuditEntry {
   id: string;
   groupId: string;
   actorUserId: string | null;
+  apiKey: AdminAuditApiKey | null;
   action: string;
   targetId: string | null;
   payload: Record<string, unknown>;

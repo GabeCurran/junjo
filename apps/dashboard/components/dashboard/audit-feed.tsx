@@ -92,6 +92,12 @@ function AuditRow({ entry }: AuditRowProps) {
           ) : (
             <span>actor: system</span>
           )}
+          {entry.apiKey ? (
+            <>
+              {" "}
+              via key <span className="font-mono">{entry.apiKey.name ?? entry.apiKey.prefix}</span>
+            </>
+          ) : null}
           {entry.targetId ? (
             <>
               {" · "}target <span className="font-mono">{entry.targetId}</span>

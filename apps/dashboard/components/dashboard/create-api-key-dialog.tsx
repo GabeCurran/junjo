@@ -3,7 +3,7 @@
 
 import { Check, Copy, KeyRound, ShieldAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
@@ -20,6 +20,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
+import { ApiKeyFields } from "./api-key-fields";
 
 interface CreateApiKeyDialogProps {
   gameId: string;
@@ -41,6 +42,7 @@ export function CreateApiKeyDialog({ gameId }: CreateApiKeyDialogProps) {
   const [state, formAction] = useActionState(createApiKeyAction, INITIAL_STATE);
   const [copied, setCopied] = useState(false);
   const router = useRouter();
+  const fieldsId = useId();
 
   // The secret is stored in `state.apiKey.key`. We deliberately do NOT close
   // the dialog automatically on success: the operator needs to copy the
@@ -158,6 +160,7 @@ export function CreateApiKeyDialog({ gameId }: CreateApiKeyDialogProps) {
             </DialogHeader>
             <form action={formAction} className="space-y-4">
               <input type="hidden" name="gameId" value={gameId} />
+              <ApiKeyFields idPrefix={fieldsId} />
               <p className="text-sm text-muted-foreground">
                 Junjo stores only a scrypt hash of the secret. After the dialog closes there is no
                 way to recover the key; you will need to issue a new one and revoke this one if it
