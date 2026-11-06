@@ -112,7 +112,7 @@ Returns aggregate counts across every game on the deployment. Used by the dashbo
 
 ### Behavior
 
-- Implemented as four parallel `prisma.count` queries via `Promise.all`. Cheap to recompute; the dashboard caches the response for 60s via Next.js `revalidate`.
+- Implemented as four parallel `prisma.count` queries via `Promise.all`. Cheap to recompute; the dashboard fetches it fresh on every render, so the overview's live refresh shows current figures.
 - No query parameters. The 24h window is fixed.
 
 ### Errors
@@ -278,7 +278,7 @@ Creates a new game. The dashboard uses this from the create-game dialog on the g
 
 ## `GET /v1/admin/games/:gameId`
 
-Returns a single game with the same shape as the list endpoint. The dashboard uses this on the game detail page so the counts stay live (the list page's 60s `revalidate` cache could otherwise be stale relative to a recent membership change).
+Returns a single game with the same shape as the list endpoint. The dashboard uses this on the game detail page, fetched fresh on every render, so the counts stay live (the dashboard caches the list for 30 seconds and drops that cache when one of its own actions writes to the game, so the list can still trail a change made outside the dashboard).
 
 ### Path parameters
 
@@ -745,7 +745,7 @@ interface WireAdminGroupList {
 
 ## GET /v1/admin/games/:gameId/groups/:groupId
 
-Returns a single group's detail in the same wire shape as the list endpoint. Backs the dashboard's group detail page header so counts stay live (the list view's 60s revalidate cache could otherwise be stale relative to a recent membership change).
+Returns a single group's detail in the same wire shape as the list endpoint. Backs the dashboard's group detail page header, fetched fresh on every render, so counts stay live.
 
 ### Path parameters
 

@@ -77,7 +77,7 @@ Pagination is cursor-based. The hook calls `junjo.members.list(groupId, opts)` f
 
 ## Live updates
 
-On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams). Events carry members of any status, so each one is matched against the `status` filter client-side before it touches state; live updates therefore respect the filter even though the fetch path filters server-side. Five event types modify state:
+On mount, the hook attaches to the group's [shared event stream](/react/provider#shared-group-event-streams) before its fetch starts. Events and stream errors that arrive while a fetch (the initial one or a `refetch`) is in flight are held and applied, in arrival order, on top of the fetch result instead of being overwritten by it. Events carry members of any status, so each one is matched against the `status` filter client-side before it touches state; live updates therefore respect the filter even though the fetch path filters server-side. Five event types modify state:
 
 | Event | Behavior |
 |-------|----------|

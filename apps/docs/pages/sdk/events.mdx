@@ -95,7 +95,7 @@ interface GameSubscription {
 | `signal` | `AbortSignal` | Aborting is the same as `close()`, including a pending reconnect. Aborting before the first connection is up rejects with `cancelled`. |
 | `reconnect` | `boolean \| { initialDelayMs?: number; maxDelayMs?: number }` | Default `true`, with a 1000 ms initial and 30000 ms maximum delay. |
 | `onResync` | `({ position }) => void` | The resume position expired and a new live stream from `position` replaced it. Reload your state. Without this callback an expired position is fatal. |
-| `onReconnecting` | `({ attempt, delayMs, error? }) => void` | Called before each reconnect wait. `attempt` is 1 for the first retry after a drop. `error` is absent when the server closed the stream cleanly. |
+| `onReconnecting` | `({ attempt, delayMs, error? }) => void` | Called before each reconnect wait. `attempt` is 1 for the first retry after a drop and starts over once a stream stays up. `error` is absent when the server closed the stream cleanly. |
 | `onReconnected` | `({ position }) => void` | A reconnect succeeded and resumed after `position`. |
 | `onError` | `(err: Error) => void` | Called once when the subscription stops on its own. Never called after `close()` or an abort. |
 
@@ -105,7 +105,7 @@ interface GameSubscription {
 
 ### Reconnecting
 
-After the first connection is up, any end the server causes (a deploy, a network drop, a stalled connection) triggers a reconnect with `Last-Event-ID` set to the last position and the same `types`. Delays use full jitter: a random wait between 0 and `min(maxDelayMs, initialDelayMs * 2^n)`, where `n` counts failed attempts since the last success. A successful reconnect resets the count.
+After the first connection is up, any end the server causes (a deploy, a network drop, a stalled connection) triggers a reconnect with `Last-Event-ID` set to the last position and the same `types`. Delays use full jitter: a random wait between 0 and `min(maxDelayMs, initialDelayMs * 2^n)`, where `n` counts attempts since a stream last stayed up. The count starts over once a reconnected stream delivers a frame or stays open for 10 seconds; a stream that drops right after opening keeps backing off instead of reconnecting at the initial delay.
 
 | Reconnect answer | Result |
 |------------------|--------|
