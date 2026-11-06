@@ -4,7 +4,7 @@ import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
-import { useInvalidatePermissions } from "./permissionCache.js";
+import { PermissionCache, useInvalidatePermissions } from "./permissionCache.js";
 import { useCan } from "./useCan.js";
 
 const USER_ID = "user_a" as UserId;
@@ -355,5 +355,21 @@ describe("useCan", () => {
     expect(x.textContent).toBe("true");
     expect(y.textContent).toBe("true");
     expect(h.can).toHaveBeenCalledTimes(1);
+  });
+
+  it("subscribes once across re-renders with unchanged arguments", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+    const subscribe = vi.spyOn(PermissionCache.prototype, "subscribe");
+
+    const { result, rerender } = renderHook(() => useCan(USER_ID, GROUP_ID, PERMISSION), {
+      wrapper: wrapper(h.client),
+    });
+    await waitFor(() => expect(result.current).toBe(true));
+    const afterLoad = subscribe.mock.calls.length;
+    for (let i = 0; i < 5; i += 1) rerender();
+
+    expect(afterLoad).toBe(1);
+    expect(subscribe).toHaveBeenCalledTimes(1);
   });
 });

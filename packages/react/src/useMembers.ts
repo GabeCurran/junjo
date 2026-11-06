@@ -1,7 +1,8 @@
 import type { ListMembersOptions } from "@junjo.io/sdk";
 import type { GroupId, JunjoEvent, Member, MemberStatus } from "@junjo.io/shared";
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { upsertJoined, withRoleChange } from "./memberRows.js";
+import { PendingEvents } from "./pendingEvents.js";
 import { JunjoStreamClosedError, useSubscriptionHub } from "./subscriptionHub.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -178,6 +179,7 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
   // finally cannot clear a flag a newer generation owns (which would
   // let a duplicate page request slip through).
   const inflightMoreRef = useRef<number | null>(null);
+  const [pending] = useState(() => new PendingEvents());
 
   // The fetch path filters by status server-side (see refetch and
   // fetchMore), so pages, cursor, and hasMore all describe the filtered
@@ -202,10 +204,21 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
     };
   }, []);
 
+  // Applies what the stream delivered during a fetch, in arrival
+  // order, on top of whatever the fetch left in state.
+  const replayHeld = useCallback(() => {
+    const held = pending.drain();
+    for (const event of held.events) {
+      dispatch({ type: "event", event, matches: matchesRef.current });
+    }
+    if (held.failure !== null) dispatch({ type: "stream_error", error: held.failure });
+  }, [pending]);
+
   const refetch = useCallback(async (): Promise<void> => {
     const generation = ++generationRef.current;
     cursorRef.current = null;
     inflightMoreRef.current = null;
+    pending.begin();
     dispatch({ type: "fetch_start" });
     try {
       const listOpts: ListMembersOptions = {};
@@ -219,14 +232,16 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
         members: page.items,
         hasMore: page.nextCursor !== null,
       });
+      replayHeld();
     } catch (err) {
       if (generation !== generationRef.current) return;
       dispatch({
         type: "fetch_error",
         error: err instanceof Error ? err : new Error(String(err)),
       });
+      replayHeld();
     }
-  }, [junjo, groupId, limit, status]);
+  }, [junjo, groupId, limit, status, pending, replayHeld]);
 
   const fetchMore = useCallback(async (): Promise<void> => {
     if (cursorRef.current === null) return;
@@ -257,27 +272,36 @@ export function useMembers(groupId: GroupId, opts?: UseMembersOptions): UseMembe
     }
   }, [junjo, groupId, limit, status]);
 
+  // Subscribe-then-fetch: this effect is declared first so the stream
+  // opens before the fetch starts. Events that land before the snapshot
+  // are held and replayed on top of it (see PendingEvents) instead of
+  // being overwritten by it. Streaming failures (handshake rejection,
+  // mid-stream drop, server close) all surface as stream_error via the
+  // hub's listener callbacks; the hub tears down its shared stream and
+  // this hook recovers on remount / groupId change as before.
   useEffect(() => {
-    void refetch();
-  }, [refetch]);
-
-  // Streaming failures (handshake rejection, mid-stream drop, server
-  // close) all surface as stream_error via the hub's listener
-  // callbacks; the hub tears down its shared stream and this hook
-  // recovers on remount / groupId change as before.
-  useEffect(() => {
-    return hub.subscribe(groupId, {
+    const unsubscribe = hub.subscribe(groupId, {
       onEvent: (event) => {
+        if (pending.hold(event)) return;
         dispatch({ type: "event", event, matches: matchesRef.current });
       },
       onError: (err) => {
-        dispatch({ type: "stream_error", error: err });
+        if (!pending.holdFailure(err)) dispatch({ type: "stream_error", error: err });
       },
       onClose: () => {
-        dispatch({ type: "stream_error", error: new JunjoStreamClosedError() });
+        const err = new JunjoStreamClosedError();
+        if (!pending.holdFailure(err)) dispatch({ type: "stream_error", error: err });
       },
     });
-  }, [hub, groupId]);
+    return () => {
+      unsubscribe();
+      pending.clear();
+    };
+  }, [hub, groupId, pending]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
 
   return {
     members: state.members,

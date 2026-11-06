@@ -13,6 +13,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
+import { passTeardownDelay, useTeardownTimers } from "./testTimers.js";
 import { useRoles } from "./useRoles.js";
 
 const GAME_ID = "game_test" as GameId;
@@ -80,6 +81,7 @@ function wrapper(client: Junjo) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -146,6 +148,7 @@ describe("useRoles", () => {
   });
 
   it("closes the subscription on unmount", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.list.mockResolvedValue([]);
 
@@ -155,10 +158,12 @@ describe("useRoles", () => {
     const close = h.captures[0]?.close;
     expect(close).toBeDefined();
     unmount();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("re-fetches and re-subscribes when groupId changes", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     const roleA = makeRole("role_a");
     const roleB = makeRole("role_b", { groupId: ALT_GROUP_ID });
@@ -178,6 +183,7 @@ describe("useRoles", () => {
     rerender({ id: ALT_GROUP_ID });
 
     await waitFor(() => expect(result.current.roles).toEqual([roleB]));
+    passTeardownDelay();
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(h.list).toHaveBeenLastCalledWith(ALT_GROUP_ID);
     await waitFor(() => expect(h.captures).toHaveLength(2));

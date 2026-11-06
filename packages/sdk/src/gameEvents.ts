@@ -6,6 +6,10 @@ import { decodeEventData, readSSEFrames, toError } from "./sse.js";
 const DEFAULT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_MAX_DELAY_MS = 30_000;
 
+// How long a stream must stay open, without delivering a frame, before
+// the reconnect backoff starts over.
+export const STABLE_STREAM_MS = 10_000;
+
 // Bounds the backoff exponent so `initialDelayMs * 2 ** n` stays finite
 // (and never becomes 0 * Infinity = NaN) on a long outage.
 const MAX_BACKOFF_EXPONENT = 30;
@@ -36,7 +40,8 @@ export interface GameSubscribeOptions {
   /**
    * Reconnect after the server ends an established stream, resuming from
    * the last position seen. Defaults to true with a 1000 ms initial and
-   * 30000 ms maximum delay (full jitter, doubling per failed attempt).
+   * 30000 ms maximum delay (full jitter, doubling per attempt until a
+   * stream stays up).
    * With false, a server-initiated end stops the subscription and fires
    * `onError` with JunjoError code "network_error".
    */
@@ -51,7 +56,9 @@ export interface GameSubscribeOptions {
   onResync?: (info: { position: string }) => void;
   /**
    * Called before each reconnect wait. `attempt` is 1 for the first
-   * retry after a drop and resets after a successful reconnect; `error`
+   * retry after a drop. It starts over once a stream has delivered a
+   * frame or stayed open for 10 seconds, so a stream that drops right
+   * after opening keeps backing off; `error`
    * is the transport failure or rejected reconnect that caused it, and
    * is absent for a clean server close.
    */
@@ -151,6 +158,7 @@ export class GameEventsApi {
     let position = "";
     let attempt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stableTimer: ReturnType<typeof setTimeout> | undefined;
     // The connection currently being opened or read; close() tears down
     // whichever exists.
     let controller: AbortController | undefined;
@@ -192,6 +200,8 @@ export class GameEventsApi {
       callerSignal?.removeEventListener("abort", onCallerAbort);
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      stableTimer = undefined;
       controller?.abort();
       reader?.cancel().catch(() => undefined);
     };
@@ -230,7 +240,27 @@ export class GameEventsApi {
       }
     };
 
+    // The backoff starts over only once a stream has proven itself by
+    // delivering a frame or staying open for STABLE_STREAM_MS. A stream
+    // that opens and drops at once keeps the backoff growing instead
+    // of reconnecting at the initial delay forever.
+    const markStable = () => {
+      attempt = 0;
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      stableTimer = undefined;
+    };
+    const watchStability = () => {
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      stableTimer = setTimeout(markStable, STABLE_STREAM_MS);
+      // Never hold the event loop open for this timer alone.
+      if (typeof (stableTimer as { unref?: () => void }).unref === "function") {
+        (stableTimer as unknown as { unref: () => void }).unref();
+      }
+    };
+
     const onStreamEnd = (error?: Error) => {
+      if (stableTimer !== undefined) clearTimeout(stableTimer);
+      stableTimer = undefined;
       if (closed) return;
       if (!reconnectEnabled) {
         fail(
@@ -253,10 +283,12 @@ export class GameEventsApi {
     // carries an id, including heartbeats and skipped unknown types, so
     // a reconnect never replays frames already seen.
     const pump = (body: ReadableStreamDefaultReader<Uint8Array>) => {
+      watchStability();
       readSSEFrames(
         body,
         () => closed,
         (frame) => {
+          markStable();
           let event: JunjoEvent | null = null;
           try {
             if (frame.data !== undefined) event = decodeEventData(frame.data);
@@ -289,7 +321,6 @@ export class GameEventsApi {
         opened.reader.cancel().catch(() => undefined);
         return;
       }
-      attempt = 0;
       position = opened.start;
       pump(opened.reader);
       opts.onReconnected?.({ position });
@@ -312,7 +343,6 @@ export class GameEventsApi {
         opened.reader.cancel().catch(() => undefined);
         return;
       }
-      attempt = 0;
       position = opened.start;
       pump(opened.reader);
       opts.onResync?.({ position });

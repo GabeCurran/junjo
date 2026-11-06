@@ -7,6 +7,7 @@ import type {
   UserId,
   UserVisibilitySettings,
 } from "@junjo.io/sdk";
+import { EMPTY_LIST } from "./empty.js";
 import { useAsync } from "./useAsync.js";
 import { useJunjo } from "./useJunjo.js";
 
@@ -45,7 +46,7 @@ export function useFriends(userId: UserId, opts?: UseFriendsOptions): UseFriends
     `friends|${userId}|${limit ?? ""}|${tagId ?? ""}|${viewer ?? ""}`,
   );
   return {
-    friends: state.data ?? [],
+    friends: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,
@@ -120,7 +121,7 @@ export function useFriendSuggestions(
     `suggestions|${userId}|${limit ?? ""}`,
   );
   return {
-    suggestions: state.data ?? [],
+    suggestions: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,
@@ -146,7 +147,7 @@ export function useBlocklist(userId: UserId): UseBlocklistResult {
   const junjo = useJunjo();
   const state = useAsync(junjo, () => junjo.friends.blocks.list(userId), `blocks|${userId}`);
   return {
-    blocks: state.data ?? [],
+    blocks: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,
@@ -172,7 +173,7 @@ export function useFriendTags(userId: UserId): UseFriendTagsResult {
   const junjo = useJunjo();
   const state = useAsync(junjo, () => junjo.friends.tags.list(userId), `tags|${userId}`);
   return {
-    tags: state.data ?? [],
+    tags: state.data ?? EMPTY_LIST,
     loading: state.loading,
     error: state.error,
     refetch: state.refetch,

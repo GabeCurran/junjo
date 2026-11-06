@@ -55,8 +55,14 @@ export function useCan(
   const contextRef = useRef(opts?.context);
   contextRef.current = opts?.context;
 
+  // A stable subscribe keeps useSyncExternalStore from unsubscribing
+  // and resubscribing on every render; it changes only with the key.
+  const subscribe = useCallback(
+    (listener: () => void) => cache.subscribe(key, listener),
+    [cache, key],
+  );
   const allowed = useSyncExternalStore(
-    (listener) => cache.subscribe(key, listener),
+    subscribe,
     () => cache.get(key),
     () => undefined,
   );

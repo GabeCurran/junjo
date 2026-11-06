@@ -14,6 +14,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JunjoProvider } from "./JunjoProvider.js";
+import { passTeardownDelay, useTeardownTimers } from "./testTimers.js";
 import { useInvitations } from "./useInvitations.js";
 import { useMutation } from "./useMutation.js";
 
@@ -82,6 +83,7 @@ function wrapper(client: Junjo) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -274,6 +276,7 @@ describe("useInvitations", () => {
   });
 
   it("closes the subscription on unmount", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.list.mockResolvedValue(invitationsPage([]));
 
@@ -285,10 +288,12 @@ describe("useInvitations", () => {
     const close = h.captures[0]?.close;
     expect(close).toBeDefined();
     unmount();
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("re-fetches and re-subscribes when groupId changes", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.list.mockImplementation(() => Promise.resolve(invitationsPage([])));
 
@@ -304,6 +309,7 @@ describe("useInvitations", () => {
     rerender({ id: ALT_GROUP_ID });
 
     await waitFor(() => expect(h.captures).toHaveLength(2));
+    passTeardownDelay();
     expect(firstClose).toHaveBeenCalledTimes(1);
     expect(h.captures[1]?.groupId).toBe(ALT_GROUP_ID);
     expect(result.current.loading).toBe(false);
@@ -682,6 +688,7 @@ describe("useInvitations", () => {
   });
 
   it("closes a subscription that resolves after unmount", async () => {
+    useTeardownTimers();
     const h = makeHarness();
     h.list.mockResolvedValue(invitationsPage([]));
 
@@ -704,6 +711,7 @@ describe("useInvitations", () => {
       resolveSubscribe({ close });
       await Promise.resolve();
     });
+    passTeardownDelay();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
