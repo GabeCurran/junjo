@@ -51,14 +51,17 @@ export function describeActivity(entry: ActivityInput): ActivityPart[] {
     case "member.unbanned":
       return [who, text(" was unbanned from "), group];
     case "member.invited":
+    case "invitation.created":
       return [who, text(" was invited to "), group];
     case "member.metadata.updated":
       return [text("Metadata changed for "), who, text(" in "), group];
     case "member.notes.updated":
       return [text("Notes changed for "), who, text(" in "), group];
     case "role.assigned":
+    case "member.role.assigned":
       return [who, text(" was given a role in "), group];
     case "role.unassigned":
+    case "member.role.unassigned":
       return [who, text(" lost a role in "), group];
     case "role.created":
       return roleName
@@ -83,8 +86,10 @@ export function describeActivity(entry: ActivityInput): ActivityPart[] {
         ? [{ kind: "code", text: permission }, text(" was revoked in "), group]
         : [text("A permission was revoked in "), group];
     case "permission.override.set":
+    case "member.permission.override.set":
       return [text("Override set for "), who, text(" in "), group];
     case "permission.override.cleared":
+    case "member.permission.override.cleared":
       return [text("Override cleared for "), who, text(" in "), group];
     case "group.created":
       return [group, text(" was created")];

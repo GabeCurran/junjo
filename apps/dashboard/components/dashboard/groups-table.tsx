@@ -357,10 +357,14 @@ export function GroupsTable({ gameId, data, query, kindOptions }: GroupsTablePro
       </div>
 
       {data.items.length === 0 ? (
-        <Notice
-          title="No groups match this filter"
-          body="Clear the search, kind and visibility filters to see every group."
-        />
+        query.q.length > 0 || query.kind.length > 0 || query.visibility.length > 0 ? (
+          <Notice
+            title="No groups match this filter"
+            body="Clear the search, kind and visibility filters to see every group."
+          />
+        ) : (
+          <Notice title="No groups yet" body="Groups your game creates show up here." />
+        )
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

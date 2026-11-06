@@ -68,9 +68,14 @@ export function KickMemberDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <UserMinus className="h-3.5 w-3.5" aria-hidden />
-          Kick
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Kick"
+          title="Kick"
+          className="hover:text-destructive"
+        >
+          <UserMinus className="h-4 w-4" aria-hidden />
         </Button>
       </DialogTrigger>
       <DialogContent>
