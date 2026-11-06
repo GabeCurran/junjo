@@ -18,11 +18,11 @@ sequenceDiagram
   end
   Route-->>Route: respond to caller (HTTP 2xx)
 
-  Note over Route,Receiver: Drain phase (asynchronous, every 5s, single sequential worker)
+  Note over Route,Receiver: Drain phase (asynchronous, every 5s; a tick still running makes the next one skip)
   loop every 5 seconds (setInterval, unref)
-    Worker->>DB: SELECT id FROM WebhookDelivery<br/>WHERE status=pending AND nextAttemptAt is due<br/>ORDER BY nextAttemptAt ASC LIMIT 50
-    DB-->>Worker: due ids (batch up to 50)
-    loop each id, sequential
+    Worker->>DB: claim: lock due pending rows FOR UPDATE SKIP LOCKED<br/>ORDER BY nextAttemptAt ASC LIMIT 50<br/>and set nextAttemptAt = now + 15 min lease
+    DB-->>Worker: claimed ids with their endpoint (batch up to 50)
+    loop each endpoint (up to 8 at once), its deliveries one at a time in due order
       opt SIGTERM received (shouldStop)
         Worker->>Worker: break batch (stop scheduling new ticks)
       end
