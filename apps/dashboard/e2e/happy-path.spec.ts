@@ -27,7 +27,7 @@ test.describe("dashboard happy path", () => {
     const gameName = `E2E Game ${Date.now().toString()}`;
 
     await page.goto("/games");
-    await expect(page.getByText("All games", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Games" })).toBeVisible();
 
     // An open dialog hides the page behind it from the accessibility
     // tree, so the dialog's own controls are found inside the dialog.
@@ -70,7 +70,6 @@ test.describe("dashboard happy path", () => {
     await groupRow.getByRole("link").first().click();
 
     await expect(page.getByRole("heading", { name: /E2E Seeded Group/ }).first()).toBeVisible();
-    const tabs = page.getByRole("link", { name: /Members|Roles|Permissions|Audit/ });
-    await expect(tabs.first()).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Members" })).toBeVisible();
   });
 });
