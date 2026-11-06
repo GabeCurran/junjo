@@ -276,3 +276,159 @@ describe("useCan inherit", () => {
     expect(h.can).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("permission contexts", () => {
+  const CREATIVE = { world: "creative" };
+  type ContextOpts = { context?: Record<string, string> };
+
+  it("useCan forwards the context and omits options for an empty one", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+
+    const { result } = renderHook(
+      () => {
+        const contextual = useCan(USER_ID, GROUP_ID, PERMISSION, { context: CREATIVE });
+        const global = useCan(USER_ID, GROUP_ID, ALT_PERMISSION, { context: {} });
+        return [contextual, global];
+      },
+      { wrapper: wrapper(h.client) },
+    );
+
+    await waitFor(() => expect(result.current).toEqual([true, true]));
+    expect(h.can).toHaveBeenCalledWith(USER_ID, GROUP_ID, PERMISSION, { context: CREATIVE });
+    expect(h.can).toHaveBeenCalledWith(USER_ID, GROUP_ID, ALT_PERMISSION);
+  });
+
+  it("useCan forwards inherit and context together", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+
+    renderHook(() => useCan(USER_ID, GROUP_ID, PERMISSION, { inherit: true, context: CREATIVE }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(h.can).toHaveBeenCalledTimes(1));
+    expect(h.can).toHaveBeenCalledWith(USER_ID, GROUP_ID, PERMISSION, {
+      inherit: true,
+      context: CREATIVE,
+    });
+  });
+
+  it("useCan caches per canonical context", async () => {
+    const h = makeHarness();
+    h.can.mockImplementation(
+      async (_u: UserId, _g: GroupId, _p: PermissionKey, opts?: ContextOpts) =>
+        opts?.context?.world?.toLowerCase() === "creative",
+    );
+
+    const { result } = renderHook(
+      () => [
+        useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world: "creative" } }),
+        useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world: "Creative" } }),
+        useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world: "survival" } }),
+        useCan(USER_ID, GROUP_ID, PERMISSION),
+      ],
+      { wrapper: wrapper(h.client) },
+    );
+
+    await waitFor(() => expect(result.current).toEqual([true, true, false, false]));
+    expect(h.can).toHaveBeenCalledTimes(3);
+  });
+
+  it("useCan does not refetch when a fresh context literal has the same value", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+
+    const { result, rerender } = renderHook(
+      () => useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world: "creative" } }),
+      { wrapper: wrapper(h.client) },
+    );
+    await waitFor(() => expect(result.current).toBe(true));
+    rerender();
+    rerender();
+    expect(h.can).toHaveBeenCalledTimes(1);
+  });
+
+  it("useCan refetches when the context changes", async () => {
+    const h = makeHarness();
+    h.can.mockImplementation(
+      async (_u: UserId, _g: GroupId, _p: PermissionKey, opts?: ContextOpts) =>
+        opts?.context?.world === "creative",
+    );
+
+    const { result, rerender } = renderHook(
+      ({ world }: { world: string }) =>
+        useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world } }),
+      { wrapper: wrapper(h.client), initialProps: { world: "creative" } },
+    );
+    await waitFor(() => expect(result.current).toBe(true));
+    rerender({ world: "survival" });
+    await waitFor(() => expect(result.current).toBe(false));
+    expect(h.can).toHaveBeenCalledTimes(2);
+  });
+
+  it("useCanMany sends per-entry contexts and applies the hook's context to the rest", async () => {
+    const h = makeHarness();
+    h.checkBatch.mockImplementation(async (queries: CanQuery[]) =>
+      queries.map((q) => allow(q.context?.world === "creative")),
+    );
+    const checks: CanQuery[] = [
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION },
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: { world: "nether" } },
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: {} },
+    ];
+
+    const { result } = renderHook(() => useCanMany(checks, { context: CREATIVE }), {
+      wrapper: wrapper(h.client),
+    });
+
+    await waitFor(() => expect(result.current).toEqual([true, false, false]));
+    expect(h.checkBatch).toHaveBeenCalledWith([
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: CREATIVE },
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: { world: "nether" } },
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: {} },
+    ]);
+  });
+
+  it("useCanMany shares contextual answers with useCan", async () => {
+    const h = makeHarness();
+    h.can.mockResolvedValue(true);
+    h.checkBatch.mockImplementation(async (queries: CanQuery[]) => queries.map(() => allow(false)));
+
+    const { result } = renderHook(
+      () => ({
+        single: useCan(USER_ID, GROUP_ID, PERMISSION, { context: { world: "Creative" } }),
+        many: useCanMany([
+          { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION, context: CREATIVE },
+          { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION },
+        ]),
+      }),
+      { wrapper: wrapper(h.client) },
+    );
+    await waitFor(() => expect(result.current.single).toBe(true));
+    await waitFor(() => expect(result.current.many).toEqual([true, false]));
+    expect(h.checkBatch).toHaveBeenCalledTimes(1);
+    expect(h.checkBatch).toHaveBeenCalledWith([
+      { userId: USER_ID, groupId: GROUP_ID, permission: PERMISSION },
+    ]);
+  });
+
+  it("useCanMany refetches when the hook's context changes", async () => {
+    const h = makeHarness();
+    h.checkBatch.mockImplementation(async (queries: CanQuery[]) =>
+      queries.map((q) => allow(q.context?.world === "creative")),
+    );
+    const one = [CHECKS[0] as CanQuery];
+
+    const { result, rerender } = renderHook(
+      ({ world }: { world: string }) => useCanMany(one, { context: { world } }),
+      { wrapper: wrapper(h.client), initialProps: { world: "creative" } },
+    );
+    await waitFor(() => expect(result.current).toEqual([true]));
+    rerender({ world: "creative" });
+    expect(h.checkBatch).toHaveBeenCalledTimes(1);
+    rerender({ world: "survival" });
+    await waitFor(() => expect(result.current).toEqual([false]));
+    expect(h.checkBatch).toHaveBeenCalledTimes(2);
+  });
+});

@@ -2,6 +2,7 @@ import type {
   CreateRoleInput,
   GroupId,
   Page,
+  PermissionContext,
   PermissionEntry,
   PermissionKey,
   PermissionMode,
@@ -13,6 +14,7 @@ import type {
 } from "@junjo.io/shared";
 import { JunjoError } from "./errors.js";
 import { type HttpClient, type WriteOptions, writeOptions } from "./http.js";
+import { contextQuery, hasContext, wireContext } from "./permissionContext.js";
 import { parseWireDate } from "./wire.js";
 
 export interface WireRole {
@@ -25,10 +27,30 @@ export interface WireRole {
   permissions: string[];
   // Optional on the wire: servers that predate deny entries, role
   // inheritance, and role metadata omit them.
-  entries?: { permission: string; value: boolean }[];
+  entries?: WirePermissionEntry[];
   parents?: string[];
   metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface WirePermissionEntry {
+  permission: string;
+  value: boolean;
+  context?: Record<string, string>;
+}
+
+export function deserializePermissionEntry(e: WirePermissionEntry): PermissionEntry {
+  const entry: PermissionEntry = { permission: e.permission as PermissionKey, value: e.value };
+  const context = wireContext(e.context);
+  if (context) entry.context = context;
+  return entry;
+}
+
+// The request shape of an entry: `context` only when non-empty.
+function serializePermissionEntry(e: PermissionEntry): WirePermissionEntry {
+  const out: WirePermissionEntry = { permission: e.permission, value: e.value };
+  if (hasContext(e.context)) out.context = e.context;
+  return out;
 }
 
 export function deserializeRole(w: WireRole): Role {
@@ -40,10 +62,7 @@ export function deserializeRole(w: WireRole): Role {
     color: w.color,
     isDefault: w.isDefault,
     permissions: w.permissions,
-    entries: (w.entries ?? []).map((e) => ({
-      permission: e.permission as PermissionKey,
-      value: e.value,
-    })),
+    entries: (w.entries ?? []).map(deserializePermissionEntry),
     parents: (w.parents ?? []).map((r) => r as RoleId),
     metadata: w.metadata ?? {},
     createdAt: parseWireDate(w.createdAt, "createdAt"),
@@ -201,14 +220,21 @@ export class RolesApi {
    * Adds or updates one entry on the role. `value` defaults to true (a
    * grant); false stores a deny entry for the key. The body omits
    * `value` when it is not given, so the server applies its default.
+   * `context` limits the entry to checks in that context; an entry is
+   * identified by its key and context together, so a contextual write
+   * leaves the key's global entry alone. Absent or empty writes the
+   * global entry.
    */
   async grantPermission(
     roleId: RoleId,
     permission: PermissionKey,
-    opts?: WriteOptions & { value?: boolean },
+    opts?: WriteOptions & { value?: boolean; context?: PermissionContext },
   ): Promise<Role> {
-    const body: { permission: PermissionKey; value?: boolean } = { permission };
+    const body: { permission: PermissionKey; value?: boolean; context?: PermissionContext } = {
+      permission,
+    };
     if (opts?.value !== undefined) body.value = opts.value;
+    if (hasContext(opts?.context)) body.context = opts.context;
     const wire = await this.http.post<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/permissions`,
       body,
@@ -219,12 +245,14 @@ export class RolesApi {
 
   /**
    * Replaces the role's whole entry list, grants and denies, in one
-   * atomic write. Keys absent from `entries` are removed from the role.
+   * atomic write. Entries are matched by key and context: an entry
+   * absent from `entries` is removed from the role. Each
+   * `(permission, context)` pair may appear once.
    */
   async setEntries(roleId: RoleId, entries: PermissionEntry[], opts?: WriteOptions): Promise<Role> {
     const wire = await this.http.put<WireRole>(
       `/v1/roles/${encodeURIComponent(roleId)}/entries`,
-      { entries: entries.map((e) => ({ permission: e.permission, value: e.value })) },
+      { entries: entries.map(serializePermissionEntry) },
       writeOptions(opts),
     );
     return deserializeRole(wire);
@@ -244,13 +272,18 @@ export class RolesApi {
     return deserializeRole(wire);
   }
 
+  /**
+   * Removes the role's entry for a key, grant or deny. Without
+   * `context` it removes the global entry; with one it removes the
+   * entry for that context and leaves the global entry alone.
+   */
   async revokePermission(
     roleId: RoleId,
     permission: PermissionKey,
-    opts?: WriteOptions,
+    opts?: WriteOptions & { context?: PermissionContext },
   ): Promise<Role> {
     const wire = await this.http.delete<WireRole>(
-      `/v1/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}`,
+      `/v1/roles/${encodeURIComponent(roleId)}/permissions/${encodeURIComponent(permission)}${contextQuery(opts?.context)}`,
       undefined,
       writeOptions(opts),
     );

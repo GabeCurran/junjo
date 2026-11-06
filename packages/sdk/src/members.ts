@@ -10,6 +10,7 @@ import type {
   MemberStatus,
   Page,
   PageOptions,
+  PermissionContext,
   PermissionKey,
   RoleId,
   SetMemberNotesInput,
@@ -23,6 +24,7 @@ import {
   writeOptions,
 } from "./http.js";
 import { paginate } from "./pagination.js";
+import { contextQuery, hasContext, wireContext } from "./permissionContext.js";
 import { parseWireDate } from "./wire.js";
 
 export interface WireMember {
@@ -66,6 +68,7 @@ export interface WireMemberPermissionOverride {
   userId: string;
   permission: string;
   grant: boolean;
+  context?: Record<string, string>;
   setAt: string;
   setBy: string | null;
 }
@@ -73,7 +76,7 @@ export interface WireMemberPermissionOverride {
 export function deserializeMemberPermissionOverride(
   w: WireMemberPermissionOverride,
 ): MemberPermissionOverride {
-  return {
+  const override: MemberPermissionOverride = {
     groupId: w.groupId as GroupId,
     userId: w.userId as UserId,
     permission: w.permission as PermissionKey,
@@ -81,6 +84,9 @@ export function deserializeMemberPermissionOverride(
     setAt: parseWireDate(w.setAt, "setAt"),
     setBy: w.setBy === null ? null : (w.setBy as UserId),
   };
+  const context = wireContext(w.context);
+  if (context) override.context = context;
+  return override;
 }
 
 export interface WireMemberAccess {
@@ -168,8 +174,9 @@ export class MembersApi {
    * transaction (POST /v1/groups/:id/members/import): every row applies
    * or none does. Each row ensures an active membership; a present
    * `roleIds`, `overrides` or `metadata` replaces the current value and
-   * an absent one is left as is. Like `add`, it ignores the group's
-   * `visibility`.
+   * an absent one is left as is. `overrides` replaces the global and
+   * contextual overrides together; an override's `context` is sent as
+   * given. Like `add`, it ignores the group's `visibility`.
    *
    * Rows are validated before anything is written. A rejected import
    * throws `JunjoError` (`bad_request`, or `banned` when every failing
@@ -331,31 +338,40 @@ export class MembersApi {
   /**
    * Sets one personal permission entry. The response is the entry, not
    * the member, so it carries no member version; read `getAccess` for
-   * the version after the write.
+   * the version after the write. `context` limits the override to
+   * checks in that context; it is a separate override from the key's
+   * global one. Absent or empty sets the global override.
    */
   async overridePermission(
     groupId: GroupId,
     userId: UserId,
     permission: PermissionKey,
     grant: boolean,
-    opts?: ConditionalWriteOptions,
+    opts?: ConditionalWriteOptions & { context?: PermissionContext },
   ): Promise<MemberPermissionOverride> {
+    const body: { grant: boolean; context?: PermissionContext } = { grant };
+    if (hasContext(opts?.context)) body.context = opts.context;
     const wire = await this.http.post<WireMemberPermissionOverride>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
-      { grant },
+      body,
       writeOptions(opts),
     );
     return deserializeMemberPermissionOverride(wire);
   }
 
+  /**
+   * Clears one personal permission entry. Without `context` it clears
+   * the global override; with one it clears the override for that
+   * context and leaves the global one alone.
+   */
   async clearPermissionOverride(
     groupId: GroupId,
     userId: UserId,
     permission: PermissionKey,
-    opts?: ConditionalWriteOptions,
+    opts?: ConditionalWriteOptions & { context?: PermissionContext },
   ): Promise<void> {
     await this.http.delete<unknown>(
-      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}`,
+      `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/permissions/${encodeURIComponent(permission)}${contextQuery(opts?.context)}`,
       undefined,
       writeOptions(opts),
     );

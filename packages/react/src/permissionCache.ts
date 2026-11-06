@@ -1,4 +1,5 @@
-import type { GroupId, PermissionKey, UserId } from "@junjo.io/shared";
+import { permissionContextKey } from "@junjo.io/sdk";
+import type { GroupId, PermissionContext, PermissionKey, UserId } from "@junjo.io/shared";
 import { createContext, useContext, useMemo } from "react";
 
 export type PermissionCacheKey = string;
@@ -8,18 +9,22 @@ export type PermissionCacheKey = string;
 // is deliberate: a raw NUL byte in source is invisible in editors.
 const KEY_DELIMITER = "\u0000";
 
-// `inherit` is the last segment so the userId / groupId segment
-// positions that invalidateSegment indexes stay put. Inherited and
-// direct answers must not share a key: the same triple can resolve
-// differently with and without the parent walk.
+// `inherit` and the context follow the triple so the userId / groupId
+// segment positions that invalidateSegment indexes stay put. Inherited
+// and direct answers must not share a key: the same triple can resolve
+// differently with and without the parent walk. The context segment is
+// the SDK's canonical context key, the form the server caches under,
+// so contexts the server treats as one share an answer. It is JSON, and
+// JSON.stringify escapes NUL, so it never contains the delimiter.
 export function makeCacheKey(
   userId: UserId,
   groupId: GroupId,
   permission: PermissionKey,
   inherit = false,
+  context?: PermissionContext,
 ): PermissionCacheKey {
   const mode = inherit ? "i" : "d";
-  return `${userId}${KEY_DELIMITER}${groupId}${KEY_DELIMITER}${permission}${KEY_DELIMITER}${mode}`;
+  return `${userId}${KEY_DELIMITER}${groupId}${KEY_DELIMITER}${permission}${KEY_DELIMITER}${mode}${KEY_DELIMITER}${permissionContextKey(context)}`;
 }
 
 // Long sessions touching many (user, group, permission) triples would
@@ -160,15 +165,17 @@ export function usePermissionCache(): PermissionCache {
 
 export interface UseInvalidatePermissionsResult {
   /**
-   * Drops one answer. Pass `inherit` to target the inherited variant;
-   * the two are cached separately, so a call without it leaves an
-   * inherited answer for the same triple in place.
+   * Drops one answer. Pass `inherit` to target the inherited variant
+   * and `context` to target one context's answer; each variant is
+   * cached separately, so a call without them leaves the inherited and
+   * contextual answers for the same triple in place.
    */
   invalidate: (
     userId: UserId,
     groupId: GroupId,
     permission: PermissionKey,
     inherit?: boolean,
+    context?: PermissionContext,
   ) => void;
   invalidateUser: (userId: UserId) => void;
   invalidateGroup: (groupId: GroupId) => void;
@@ -182,8 +189,8 @@ export function useInvalidatePermissions(): UseInvalidatePermissionsResult {
   const cache = usePermissionCache();
   return useMemo<UseInvalidatePermissionsResult>(
     () => ({
-      invalidate: (userId, groupId, permission, inherit = false) => {
-        cache.invalidate(makeCacheKey(userId, groupId, permission, inherit));
+      invalidate: (userId, groupId, permission, inherit, context) => {
+        cache.invalidate(makeCacheKey(userId, groupId, permission, inherit, context));
       },
       invalidateUser: (userId) => {
         cache.invalidateUser(userId);

@@ -55,8 +55,8 @@ On mount, the hook attaches to the group's [shared event stream](/react/provider
 | `role.created` | Append `event.role` at the end (or replace in place when the same `id` is already present, idempotent on dedupe). |
 | `role.updated` | Reload the whole list with `roles.list` in the background. The event is a [change signal](/sdk/roles#the-roleupdated-event) that carries no new values, and one change can touch other roles (a priority change reorders the list), so the hook re-reads rather than patching. The current list stays visible and `loading` stays `false` until the fresh list lands; a failed reload surfaces on `error` and keeps the current list. |
 | `role.deleted` | Remove the role with `event.roleId`. |
-| `permission.granted` | Patch the affected role in place: append `event.permission` to its `permissions` array if not already present, and set the matching `entries` item to a grant (inserting it in key order when absent). Roles not in the list are ignored. |
-| `permission.revoked` | Patch the affected role in place: remove `event.permission` from its `permissions` array and remove its `entries` item. |
+| `permission.granted` | Patch the affected role in place: append `event.permission` to its `permissions` array if not already present, and set the key's global `entries` item to a grant (inserting it in key order when absent). Entries with a [context](/sdk/roles#entries-with-a-context) are left alone; their changes arrive as `role.updated`. Roles not in the list are ignored. |
+| `permission.revoked` | Patch the affected role in place: remove `event.permission` from its `permissions` array and remove the key's global `entries` item, leaving its contextual entries. |
 
 The background reload shares `refetch`'s generation counter, so a burst of `role.updated` events or an overlapping manual `refetch` still commits only the newest response.
 

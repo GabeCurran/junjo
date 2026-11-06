@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { permissionContextSchema } from "../permissionContext.js";
 
 export const ROLE_NAME_MAX_LENGTH = 64;
 export const PERMISSION_KEY_MAX_LENGTH = 128;
@@ -19,10 +20,12 @@ const roleMetadata = z
 
 const permissionKey = z.string().min(1).max(PERMISSION_KEY_MAX_LENGTH);
 
-// `value` defaults to true (grant).
+// `value` defaults to true (grant). `context` absent or empty targets
+// the global entry.
 export const grantPermissionBody = z.object({
   permission: permissionKey,
   value: z.boolean().optional(),
+  context: permissionContextSchema.optional(),
 });
 
 export type GrantPermissionBody = z.infer<typeof grantPermissionBody>;
@@ -54,7 +57,15 @@ export type UpdateRoleBody = z.infer<typeof updateRoleBody>;
 export const replaceRoleEntriesBody = z
   .object({
     entries: z
-      .array(z.object({ permission: permissionKey, value: z.boolean() }).strict())
+      .array(
+        z
+          .object({
+            permission: permissionKey,
+            value: z.boolean(),
+            context: permissionContextSchema.optional(),
+          })
+          .strict(),
+      )
       .max(MAX_ROLE_ENTRIES, `entries exceeds the ${MAX_ROLE_ENTRIES} entry cap`),
   })
   .strict();

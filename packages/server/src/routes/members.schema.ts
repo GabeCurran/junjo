@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { permissionContextSchema } from "../permissionContext.js";
 import { pageLimit } from "./page.schema.js";
 
 export const MEMBER_STATUSES = ["active", "invited", "left", "kicked", "banned"] as const;
@@ -62,6 +63,8 @@ export const overridePermissionBody = z
   .object({
     grant: z.boolean().optional(),
     value: z.boolean().optional(),
+    // Absent or empty targets the global override.
+    context: permissionContextSchema.optional(),
   })
   .refine((d) => d.grant !== undefined || d.value !== undefined, {
     message: "grant (or value) is required",
@@ -71,7 +74,7 @@ export const overridePermissionBody = z
     message: "grant and value must agree when both are sent",
     path: ["value"],
   })
-  .transform((d) => ({ grant: (d.grant ?? d.value) as boolean }));
+  .transform((d) => ({ grant: (d.grant ?? d.value) as boolean, context: d.context ?? {} }));
 
 export type OverridePermissionBody = z.infer<typeof overridePermissionBody>;
 
@@ -99,7 +102,15 @@ export const memberImportRow = z
     userId: z.string().min(1).max(255),
     roleIds: z.array(z.string().min(1)).max(100).optional(),
     overrides: z
-      .array(z.object({ permission: z.string().min(1), value: z.boolean() }).strict())
+      .array(
+        z
+          .object({
+            permission: z.string().min(1),
+            value: z.boolean(),
+            context: permissionContextSchema.optional(),
+          })
+          .strict(),
+      )
       .max(500)
       .optional(),
     metadata: z.record(z.unknown()).optional(),

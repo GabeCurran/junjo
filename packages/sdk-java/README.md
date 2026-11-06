@@ -105,12 +105,56 @@ The client owns a cached pool of daemon threads unless you pass `executor(...)`.
 
 ## Local permission checks
 
-`PermissionResolver` is the server's algorithm in Java: member overrides, then directly held roles, then parents and grandparents; within a layer the most specific key wins; ties go to deny. Both permission modes are supported (`exact`, and `nodes` with `a.b.*` and `*` wildcards and case folding).
+`PermissionResolver` is the server's algorithm in Java: member overrides, then directly held roles, then parents and grandparents; within a layer the best [context](#contexts) match wins, then the most specific key; ties go to deny. Both permission modes are supported (`exact`, and `nodes` with `a.b.*` and `*` wildcards and case folding).
 
 ```java
 RoleGraph graph = junjo.roles().getGraph("grp_main").join().value();
 MemberAccess access = junjo.members().getAccess("grp_main", player).join().value();
 PermissionCheckResult r = PermissionResolver.compile(graph).check(access, "chat.color");
+```
+
+## Contexts
+
+An entry or override can carry a `Context` (for example the world a player is in) so it applies only to checks made in that context; see [contexts in the API reference](https://docs.junjo.io/api-reference/permissions#contexts) for where a contextual entry ranks. `Context` is immutable, folds values with the server's ASCII-only fold, and `Context.GLOBAL` is the empty context. Every call that takes a context has an overload without one, which means global.
+
+```java
+Context creative = Context.of("world", "creative");
+junjo.roles().grantPermission(roleId, "essentials.*", true, creative);
+junjo.roles().revokePermission(roleId, "essentials.*", creative);
+junjo.members().overridePermission("grp_main", player, "chat.color", false, Context.of("world", "hub"));
+PermissionCheckResult r = junjo.permissions().check(player, "grp_main", "essentials.fly", creative).join();
+r.context();   // the deciding entry's context, or Context.GLOBAL
+```
+
+`setEntries`, `clearPermissionOverride`, import rows, `checkBatch` and `QueuedWrite.overridePermission` / `clearPermissionOverride` take contexts too.
+
+The game's context inheritance (`permissions.contexts` in its config) is set with the admin API and is not readable with a game key, so give the mirror the same table:
+
+```java
+ContextInheritance worlds = ContextInheritance.builder()
+        .inherit("world", "pvpworld", "world")
+        .inherit("world", "cave_world_nether", "world_nether")
+        .inherit("world", "world_nether", "world")
+        .build();
+GameMirror mirror = GameMirror.builder(junjo).group("grp_server").contextInheritance(worlds).build();
+```
+
+A Paper server keeps one context-bound checker per player and replaces it on a world change:
+
+```java
+private final Map<UUID, MemberChecker> checkers = new ConcurrentHashMap<>();
+
+@EventHandler
+public void onWorldChange(PlayerChangedWorldEvent event) {
+    Player p = event.getPlayer();
+    checkers.put(p.getUniqueId(), mirror.checker(Ids.namespaced("mc", p.getUniqueId()), "grp_server",
+            Context.of("world", p.getWorld().getName())));   // bind the same way on join
+}
+
+boolean has(Player p, String permission) {
+    MemberChecker c = checkers.get(p.getUniqueId());
+    return c != null && c.can(permission) == Answer.YES;   // lock-free, no I/O
+}
 ```
 
 ## The snapshot and stream pattern

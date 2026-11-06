@@ -8,7 +8,12 @@ import {
   clearMemberPermissionOverrideAction,
   listMemberPermissionOverridesAction,
 } from "../../app/(dashboard)/games/[gameId]/groups/[groupId]/actions";
-import type { AdminMemberPermissionOverride } from "../../lib/admin-shared";
+import {
+  type AdminMemberPermissionOverride,
+  formatPermissionContext,
+  isContextual,
+  permissionEntryId,
+} from "../../lib/admin-shared";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -50,8 +55,8 @@ export function ViewPermissionOverridesDialog({
 }: ViewPermissionOverridesDialogProps) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<DialogData>({ status: "idle", overrides: [] });
-  // Per-row clearing state. Keyed by permission so multiple in-flight clears
-  // don't fight over a single boolean.
+  // Per-row clearing state. Keyed by key and context so multiple in-flight
+  // clears don't fight over a single boolean.
   const [clearing, setClearing] = useState<Record<string, boolean>>({});
   const [rowError, setRowError] = useState<{ permission: string; error: string } | null>(null);
 
@@ -81,19 +86,26 @@ export function ViewPermissionOverridesDialog({
     }
   }, [open, refetch]);
 
-  async function handleClear(permission: string) {
-    setClearing((c) => ({ ...c, [permission]: true }));
+  async function handleClear(o: AdminMemberPermissionOverride) {
+    const id = permissionEntryId(o);
+    setClearing((c) => ({ ...c, [id]: true }));
     setRowError(null);
-    const result = await clearMemberPermissionOverrideAction(gameId, groupId, userId, permission);
+    const result = await clearMemberPermissionOverrideAction(
+      gameId,
+      groupId,
+      userId,
+      o.permission,
+      o.context,
+    );
     setClearing((c) => {
       const next = { ...c };
-      delete next[permission];
+      delete next[id];
       return next;
     });
     if (result.ok) {
       await refetch();
     } else {
-      setRowError({ permission, error: result.error ?? "could not clear override" });
+      setRowError({ permission: o.permission, error: result.error ?? "could not clear override" });
     }
   }
 
@@ -147,12 +159,19 @@ export function ViewPermissionOverridesDialog({
             <ul className="space-y-2">
               {data.overrides.map((o) => (
                 <li
-                  key={o.permission}
+                  key={permissionEntryId(o)}
                   className="flex items-center justify-between gap-3 rounded-md border border-border bg-card/50 px-3 py-2"
                 >
                   <div className="flex flex-col gap-1 overflow-hidden">
-                    <span className="truncate font-mono text-sm" title={o.permission}>
-                      {o.permission}
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-mono text-sm" title={o.permission}>
+                        {o.permission}
+                      </span>
+                      {isContextual(o) ? (
+                        <Badge variant="outline" className="shrink-0 font-mono text-xs">
+                          {formatPermissionContext(o.context)}
+                        </Badge>
+                      ) : null}
                     </span>
                     <span className="text-xs text-muted-foreground">
                       Set {dateFormatter.format(new Date(o.setAt))}
@@ -166,12 +185,12 @@ export function ViewPermissionOverridesDialog({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => void handleClear(o.permission)}
-                      disabled={Boolean(clearing[o.permission])}
+                      onClick={() => void handleClear(o)}
+                      disabled={Boolean(clearing[permissionEntryId(o)])}
                       aria-label={`Clear override for ${o.permission}`}
                     >
                       <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                      {clearing[o.permission] ? "Clearing..." : "Clear"}
+                      {clearing[permissionEntryId(o)] ? "Clearing..." : "Clear"}
                     </Button>
                   </div>
                 </li>

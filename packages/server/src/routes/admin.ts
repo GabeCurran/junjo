@@ -49,6 +49,11 @@ import {
 } from "../identity.js";
 import { type PermissionCache, permissionCache } from "../permissionCache.js";
 import {
+  canonicalContextKey,
+  contextFromRequestUrl,
+  rowContextField,
+} from "../permissionContext.js";
+import {
   EMPTY_ROLE_DETAIL,
   type RoleDetail,
   type WireRole,
@@ -954,6 +959,8 @@ export interface WireAdminMemberPermissionOverride {
   userId: string;
   permission: string;
   grant: boolean;
+  // Absent for a global override.
+  context?: Record<string, string>;
   setAt: string;
   setBy: string | null;
 }
@@ -968,6 +975,7 @@ function toWireAdminMemberPermissionOverride(
     userId: externalUserId,
     permission: row.permissionKey,
     grant: row.grant,
+    ...rowContextField(row),
     setAt: row.setAt.toISOString(),
     setBy: null,
   };
@@ -1246,7 +1254,7 @@ export function setAdminMemberPermissionOverrideHandler(
         .join("; ");
       throw Errors.badRequest(issues || "invalid request body");
     }
-    const { grant } = parsed.data;
+    const { grant, context } = parsed.data;
 
     const { group, member, shownId } = await loadAdminMemberContext(
       prisma,
@@ -1262,6 +1270,7 @@ export function setAdminMemberPermissionOverrideHandler(
       externalUserId: userId,
       permission,
       grant,
+      context,
     });
 
     return c.json<WireAdminMemberPermissionOverride>(
@@ -1285,6 +1294,7 @@ export function clearAdminMemberPermissionOverrideHandler(
     if (!groupId) throw Errors.badRequest("groupId is required");
     if (!userId) throw Errors.badRequest("userId is required");
     if (!permission) throw Errors.badRequest("permission must not be empty");
+    const context = contextFromRequestUrl(c.req.url);
 
     const { group, member } = await loadAdminMemberContext(prisma, gameId, groupId, userId);
 
@@ -1294,6 +1304,7 @@ export function clearAdminMemberPermissionOverrideHandler(
       groupMemberId: member.id,
       externalUserId: userId,
       permission,
+      context,
     });
 
     return c.body(null, 204);
@@ -1318,7 +1329,7 @@ export function listAdminMemberPermissionOverridesHandler(prisma: PrismaClient):
 
     const overrides = await prisma.memberPermissionOverride.findMany({
       where: { groupMemberId: member.id },
-      orderBy: { permissionKey: "asc" },
+      orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }],
     });
 
     return c.json<WireAdminMemberPermissionOverride[]>(
@@ -1525,6 +1536,7 @@ export function grantAdminRolePermissionHandler(prisma: PrismaClient, hub: Event
       roleId,
       permission: body.permission,
       value: body.value ?? true,
+      context: body.context,
     });
     return c.json<WireAdminRole>(role);
   };
@@ -1540,8 +1552,9 @@ export function revokeAdminRolePermissionHandler(prisma: PrismaClient, hub: Even
     if (!gameId) throw Errors.badRequest("gameId is required");
     if (!roleId) throw Errors.badRequest("roleId is required");
     if (!permission) throw Errors.badRequest("permission must not be empty");
+    const context = contextFromRequestUrl(c.req.url);
     return c.json<WireAdminRole>(
-      await removeRoleEntry(prisma, hub, { gameId, roleId, permission }),
+      await removeRoleEntry(prisma, hub, { gameId, roleId, permission, context }),
     );
   };
 }
@@ -2211,6 +2224,8 @@ export function checkAdminPermissionHandler(
       throw Errors.badRequest(issues || "invalid query");
     }
     const { userId, groupId, permission } = parsed.data;
+    const permissionContext = contextFromRequestUrl(c.req.url);
+    const contextKey = canonicalContextKey(permissionContext);
 
     const game = await prisma.game.findUnique({
       where: { id: gameId },
@@ -2225,11 +2240,19 @@ export function checkAdminPermissionHandler(
     if (!group) throw Errors.notFound("group");
 
     await assertUserIdsWellFormed(prisma, gameId, [userId]);
-    const cached = cache.get(gameId, group.id, userId, permission);
+    const cached = cache.get(gameId, group.id, userId, permission, { context: contextKey });
     if (cached) return c.json(cached);
 
-    const result = await resolvePermission(prisma, gameId, group.id, userId, permission);
-    cache.set(gameId, group.id, userId, permission, result);
+    const result = await resolvePermission(
+      prisma,
+      gameId,
+      group.id,
+      userId,
+      permission,
+      undefined,
+      permissionContext,
+    );
+    cache.set(gameId, group.id, userId, permission, result, { context: contextKey });
     return c.json(result);
   };
 }

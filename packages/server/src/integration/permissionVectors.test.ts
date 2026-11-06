@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
 import type { PermissionMode } from "@junjo.io/shared";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
 import { permissionCache } from "../permissionCache";
+import {
+  canonicalContextKey,
+  normalizeContext,
+  normalizeContextInheritance,
+} from "../permissionContext";
 import { normalizePermissionKey } from "../permissionResolve";
 import { createApiKey, createGame } from "../seed";
 
@@ -17,12 +22,52 @@ const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 const TRUNCATE = `TRUNCATE TABLE "AuditEntry", "MemberPermissionOverride", "MemberRole", "RoleParent", "RolePermission", "PermissionDef", "GroupMember", "ExternalIdentity", "JunjoUser", "Role", "Group", "ApiKey", "Game" RESTART IDENTITY CASCADE`;
 
+type VectorContext = Record<string, string>;
+
+interface VectorContextEntry {
+  permission: string;
+  value: boolean;
+  context: VectorContext;
+}
+
 interface VectorCase {
   name: string;
   modes: PermissionMode[];
-  roles: Record<string, { priority: number; entries: Record<string, boolean>; parents?: string[] }>;
-  member: { roles: string[]; overrides?: Record<string, boolean> };
-  checks: { permission: string; allowed: boolean; source: string; via?: string }[];
+  contexts?: Record<string, { inherit: Record<string, string[]> }>;
+  roles: Record<
+    string,
+    {
+      priority: number;
+      entries: Record<string, boolean>;
+      contextEntries?: VectorContextEntry[];
+      parents?: string[];
+    }
+  >;
+  member: {
+    roles: string[];
+    overrides?: Record<string, boolean>;
+    contextOverrides?: VectorContextEntry[];
+  };
+  checks: {
+    permission: string;
+    context?: VectorContext;
+    allowed: boolean;
+    source: string;
+    via?: string;
+    decidedContext?: VectorContext;
+  }[];
+}
+
+// The stored form of a vector's as-written context: folded, with its
+// canonical key, as the write path stores it.
+function storedContextColumns(context: VectorContext) {
+  const result = normalizeContext(context);
+  if ("error" in result) throw new Error(result.error);
+  const contextKey = canonicalContextKey(result.context);
+  return {
+    context: contextKey === "" ? Prisma.DbNull : result.context,
+    contextKey,
+  };
 }
 
 const vectors = JSON.parse(
@@ -66,9 +111,13 @@ describe.skipIf(!TEST_DATABASE_URL)(
     // Role ids are the vector's own ids so the id-descending tie-break
     // orders them exactly as the vectors expect.
     async function seedCase(vc: VectorCase, mode: PermissionMode): Promise<string> {
+      const inheritance = normalizeContextInheritance(vc.contexts ?? {});
+      if ("error" in inheritance) throw new Error(inheritance.error);
       await prisma.game.update({
         where: { id: gameId },
-        data: { config: { permissions: { mode } } },
+        data: {
+          config: { permissions: { mode, contexts: inheritance.contexts } } as object,
+        },
       });
       const group = await prisma.group.create({
         data: { gameId, kind: "network", name: "net", visibility: "public", metadata: {} },
@@ -77,11 +126,19 @@ describe.skipIf(!TEST_DATABASE_URL)(
         await prisma.role.create({
           data: { id, groupId: group.id, name: id, priority: role.priority },
         });
-        const entries = Object.entries(role.entries).map(([k, value]) => ({
-          roleId: id,
-          permissionKey: normalizePermissionKey(mode, k),
-          value,
-        }));
+        const entries = [
+          ...Object.entries(role.entries).map(([k, value]) => ({
+            roleId: id,
+            permissionKey: normalizePermissionKey(mode, k),
+            value,
+          })),
+          ...(role.contextEntries ?? []).map((e) => ({
+            roleId: id,
+            permissionKey: normalizePermissionKey(mode, e.permission),
+            value: e.value,
+            ...storedContextColumns(e.context),
+          })),
+        ];
         if (entries.length > 0) await prisma.rolePermission.createMany({ data: entries });
       }
       for (const [id, role] of Object.entries(vc.roles)) {
@@ -104,12 +161,23 @@ describe.skipIf(!TEST_DATABASE_URL)(
           data: { groupMemberId: member.id, permissionKey: normalizePermissionKey(mode, k), grant },
         });
       }
+      for (const o of vc.member.contextOverrides ?? []) {
+        await prisma.memberPermissionOverride.create({
+          data: {
+            groupMemberId: member.id,
+            permissionKey: normalizePermissionKey(mode, o.permission),
+            grant: o.value,
+            ...storedContextColumns(o.context),
+          },
+        });
+      }
       return group.id;
     }
 
     function expected(check: VectorCase["checks"][number]): Record<string, unknown> {
       const out: Record<string, unknown> = { allowed: check.allowed, source: check.source };
       if (check.via !== undefined) out.viaRoleId = check.via;
+      if (check.decidedContext !== undefined) out.context = check.decidedContext;
       return out;
     }
 
@@ -120,11 +188,13 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
           for (const check of vc.checks) {
             const qs = new URLSearchParams({ userId: USER, groupId, permission: check.permission });
+            for (const [k, v] of Object.entries(check.context ?? {})) qs.set(`context.${k}`, v);
             const res = await app.request(`/v1/permissions/check?${qs}`, {
               headers: { authorization: authHeader },
             });
             expect(res.status).toBe(200);
-            expect(await res.json(), `single ${check.permission}`).toEqual(expected(check));
+            const label = `single ${check.permission} ${JSON.stringify(check.context ?? {})}`;
+            expect(await res.json(), label).toEqual(expected(check));
           }
 
           permissionCache.clear();
@@ -132,7 +202,12 @@ describe.skipIf(!TEST_DATABASE_URL)(
             method: "POST",
             headers: { authorization: authHeader, "content-type": "application/json" },
             body: JSON.stringify({
-              checks: vc.checks.map((c) => ({ userId: USER, groupId, permission: c.permission })),
+              checks: vc.checks.map((c) => ({
+                userId: USER,
+                groupId,
+                permission: c.permission,
+                ...(c.context ? { context: c.context } : {}),
+              })),
               inherit: true,
             }),
           });

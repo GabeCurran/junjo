@@ -16,6 +16,7 @@ import io.junjo.sdk.internal.Safe;
 import io.junjo.sdk.internal.Threads;
 import io.junjo.sdk.internal.Transport;
 import io.junjo.sdk.model.Ban;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.LinkedIdentity;
 import io.junjo.sdk.model.ListBansOptions;
 import io.junjo.sdk.model.ListSanctionsOptions;
@@ -26,6 +27,7 @@ import io.junjo.sdk.model.PermissionSource;
 import io.junjo.sdk.model.Role;
 import io.junjo.sdk.model.RoleGraph;
 import io.junjo.sdk.model.Sanction;
+import io.junjo.sdk.permissions.ContextInheritance;
 import io.junjo.sdk.permissions.PermissionResolver;
 import io.junjo.sdk.permissions.PermissionResolver.GroupResolver;
 import java.io.IOException;
@@ -92,6 +94,13 @@ import java.util.function.Function;
  * through an outage until the mirror is ready. A fatal stream failure (any refused reconnect
  * other than an expiry) is reported to {@code onError}, after which the mirror keeps answering
  * from its last state and {@link #isLive()} turns false.
+ *
+ * <p>Contexts: a check may name a {@link Context}; the context-less reads check in
+ * {@link Context#GLOBAL}, where only global entries apply. The game's
+ * context inheritance (its config's {@code permissions.contexts}) is not readable with a game key,
+ * so the mirror takes it from {@link Builder#contextInheritance(ContextInheritance)} and
+ * {@link #setContextInheritance(ContextInheritance)}; it must match the server's for the mirror's
+ * answers to match {@code permissions().check}.
  *
  * <p>Persistence: with {@link Builder#snapshotFile(Path)} the mirror saves its state to that file
  * and loads it at start, so it answers at once, even before the server is reachable. Loaded data
@@ -162,6 +171,7 @@ public final class GameMirror implements AutoCloseable {
     private final Set<String> resolving = ConcurrentHashMap.newKeySet();
 
     private volatile State state = State.EMPTY;
+    private volatile ContextInheritance inheritance;
     private volatile boolean closed;
     private volatile boolean live;
     private volatile StreamState streamState = StreamState.CONNECTING;
@@ -193,6 +203,7 @@ public final class GameMirror implements AutoCloseable {
         this.snapshotFile = b.snapshotFile;
         this.snapshotInterval = b.snapshotInterval;
         this.disk = b.disk;
+        this.inheritance = b.inheritance;
         this.logger = transport.logger();
         this.applier = Executors.newSingleThreadExecutor(Threads.daemonFactory("junjo-mirror"));
     }
@@ -293,21 +304,76 @@ public final class GameMirror implements AutoCloseable {
      * access is not loaded.
      */
     public Optional<PermissionCheckResult> check(String userId, String groupId, String permission) {
+        return check(userId, groupId, permission, Context.GLOBAL);
+    }
+
+    /**
+     * Resolves a permission locally in a context, as {@code permissions().check} does with the
+     * same context: entries limited to a matching context apply, ranked by the game's context
+     * inheritance. Otherwise as {@link #check(String, String, String)}.
+     */
+    public Optional<PermissionCheckResult> check(String userId, String groupId, String permission, Context context) {
+        Objects.requireNonNull(context, "context");
         Lookup in = lookup(userId, groupId);
         if (in == null) return Optional.empty();
-        if (in.access() == null) return Optional.of(nonMember(in.group(), permission));
-        return Optional.of(in.group().resolver().check(in.access(), permission));
+        if (in.access() == null) return Optional.of(nonMember(in.group(), permission, context));
+        return Optional.of(in.group().resolver().check(in.access(), permission, context));
     }
 
     /** YES or NO, or UNKNOWN when the graph or the member is not loaded. */
     public Answer can(String userId, String groupId, String permission) {
-        return check(userId, groupId, permission).map(r -> Answer.of(r.allowed())).orElse(Answer.UNKNOWN);
+        return can(userId, groupId, permission, Context.GLOBAL);
     }
 
-    /** A checker for repeated checks of one member; see {@link MemberChecker}. */
+    /** YES or NO in a context, or UNKNOWN when the graph or the member is not loaded. */
+    public Answer can(String userId, String groupId, String permission, Context context) {
+        return check(userId, groupId, permission, context).map(r -> Answer.of(r.allowed())).orElse(Answer.UNKNOWN);
+    }
+
+    /** A checker for repeated checks of one member with no context; see {@link MemberChecker}. */
     public MemberChecker checker(String userId, String groupId) {
-        return new MemberChecker(
-                this, Objects.requireNonNull(userId, "userId"), Objects.requireNonNull(groupId, "groupId"));
+        return checker(userId, groupId, Context.GLOBAL);
+    }
+
+    /**
+     * A checker for repeated checks of one member in one context; see {@link MemberChecker}. When
+     * the member's context changes, take a new checker.
+     */
+    public MemberChecker checker(String userId, String groupId, Context context) {
+        return new MemberChecker(this, Objects.requireNonNull(userId, "userId"),
+                Objects.requireNonNull(groupId, "groupId"), Objects.requireNonNull(context, "context"));
+    }
+
+    /** The context inheritance checks resolve with. */
+    public ContextInheritance contextInheritance() {
+        return inheritance;
+    }
+
+    /**
+     * Replaces the context inheritance checks resolve with, to follow a change to the game's
+     * {@code permissions.contexts} config. Every loaded role graph is recompiled; completes
+     * once checks answer with the new inheritance. Reported to {@code onChange} as a
+     * {@link MirrorChange.Kind#ROLE_GRAPH} change with null ids.
+     */
+    public CompletableFuture<Void> setContextInheritance(ContextInheritance next) {
+        Objects.requireNonNull(next, "inheritance");
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        boolean queued = submit(() -> {
+            inheritance = next;
+            State s = state;
+            for (Map.Entry<String, GroupState> g : state.groups().entrySet()) {
+                s = s.withGroup(g.getKey(), compileGroup(g.getValue().graph()));
+            }
+            state = s;
+            changed(MirrorChange.Kind.ROLE_GRAPH, null, null);
+            done.complete(null);
+        });
+        if (!queued) done.completeExceptionally(mirrorClosed());
+        return done;
+    }
+
+    GroupState compileGroup(RoleGraph graph) {
+        return new GroupState(graph, PermissionResolver.compile(graph, inheritance));
     }
 
     /**
@@ -527,9 +593,9 @@ public final class GameMirror implements AutoCloseable {
     }
 
     // The answer for a user with no membership row: none, or the default role when opted in.
-    PermissionCheckResult nonMember(GroupState g, String permission) {
+    PermissionCheckResult nonMember(GroupState g, String permission, Context context) {
         if (!defaultRoleApplies(g)) return PermissionCheckResult.of(false, PermissionSource.NONE);
-        return g.resolver().check(List.of(g.graph().defaultRoleId()), Map.of(), permission);
+        return g.resolver().check(List.of(g.graph().defaultRoleId()), List.of(), permission, context);
     }
 
     private static Collection<String> idsOf(State s, String userId) {
@@ -876,7 +942,7 @@ public final class GameMirror implements AutoCloseable {
     private State loadGroup(State s, String groupId) throws Exception {
         try {
             JunjoResponse<RoleGraph> r = await(client.roles().getGraph(groupId), loadTimeout);
-            return s.withGroup(groupId, new GroupState(r.value(), PermissionResolver.compile(r.value())));
+            return s.withGroup(groupId, compileGroup(r.value()));
         } catch (JunjoException e) {
             if ("not_found".equals(e.code())) {
                 Safe.log(logger, JunjoLogger.Level.WARN,
@@ -1132,7 +1198,7 @@ public final class GameMirror implements AutoCloseable {
 
     private void loadSnapshot() {
         try {
-            Optional<State> loaded = MirrorSnapshot.load(snapshotFile);
+            Optional<State> loaded = MirrorSnapshot.load(snapshotFile, this::compileGroup);
             if (loaded.isEmpty()) return;
             state = loaded.get();
             resumeFromSnapshot = true;
@@ -1387,6 +1453,7 @@ public final class GameMirror implements AutoCloseable {
         private Path snapshotFile;
         private Duration snapshotInterval = Duration.ofSeconds(30);
         private DurableFiles.Disk disk = DurableFiles.Disk.SYSTEM;
+        private ContextInheritance inheritance = ContextInheritance.NONE;
 
         private Builder(JunjoClient client) {
             this.client = Objects.requireNonNull(client, "client");
@@ -1484,6 +1551,17 @@ public final class GameMirror implements AutoCloseable {
          */
         public Builder snapshotFile(Path file) {
             this.snapshotFile = Objects.requireNonNull(file, "file");
+            return this;
+        }
+
+        /**
+         * The game's context inheritance, as in its config's {@code permissions.contexts}. The
+         * server does not expose that config to a game key, so pass the same table the game's
+         * config holds; with a different one, contextual checks can answer differently from
+         * {@code permissions().check}. Default {@link ContextInheritance#NONE}.
+         */
+        public Builder contextInheritance(ContextInheritance inheritance) {
+            this.inheritance = Objects.requireNonNull(inheritance, "inheritance");
             return this;
         }
 

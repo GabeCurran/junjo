@@ -414,6 +414,65 @@ describe("useRoles", () => {
     expect(result.current.roles[0]?.entries).toEqual([{ permission: "members.kick", value: true }]);
   });
 
+  it("patches only the global entry on permission.granted, ahead of contextual ones", async () => {
+    const h = makeHarness();
+    const contextual = { permission: "fly", value: false, context: { world: "hub" } };
+    const role = makeRole("role_a", { permissions: [], entries: [contextual] });
+    h.list.mockResolvedValue([role]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(h.captures).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "permission.granted",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: role.id,
+        permission: "fly" as PermissionKey,
+      });
+    });
+
+    expect(result.current.roles[0]?.entries).toEqual([
+      { permission: "fly", value: true },
+      contextual,
+    ]);
+  });
+
+  it("removes only the global entry on permission.revoked", async () => {
+    const h = makeHarness();
+    const contextual = { permission: "fly", value: true, context: { world: "hub" } };
+    const role = makeRole("role_a", {
+      permissions: ["fly"],
+      entries: [{ permission: "fly", value: true }, contextual],
+    });
+    h.list.mockResolvedValue([role]);
+
+    const { result } = renderHook(() => useRoles(GROUP_ID), { wrapper: wrapper(h.client) });
+    await waitFor(() => expect(h.captures).toHaveLength(1));
+    const handler = h.captures[0]?.handler;
+    if (!handler) throw new Error("handler missing");
+
+    act(() => {
+      handler({
+        id: "evt_1",
+        type: "permission.revoked",
+        gameId: GAME_ID,
+        groupId: GROUP_ID,
+        occurredAt: new Date(),
+        roleId: role.id,
+        permission: "fly" as PermissionKey,
+      });
+    });
+
+    expect(result.current.roles[0]?.permissions).toEqual([]);
+    expect(result.current.roles[0]?.entries).toEqual([contextual]);
+  });
+
   it("refetches the list on role.updated without flipping loading", async () => {
     const h = makeHarness();
     const before = makeRole("role_a");

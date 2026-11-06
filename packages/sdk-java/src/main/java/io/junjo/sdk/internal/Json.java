@@ -247,6 +247,7 @@ public final class Json {
         if (value instanceof Boolean b) return new JsonPrimitive(b);
         if (value instanceof Character c) return new JsonPrimitive(c);
         if (value instanceof io.junjo.sdk.model.RequestBody rb) return toJson(rb.fields());
+        if (value instanceof io.junjo.sdk.model.Context c) return toJson(c.values());
         if (value instanceof java.time.Instant t) return new JsonPrimitive(t.toString());
         if (value instanceof Enum<?> e) return new JsonPrimitive(e.name());
         if (value instanceof Map<?, ?> m) {

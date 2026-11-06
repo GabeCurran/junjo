@@ -3,6 +3,7 @@ package io.junjo.sdk.queue;
 import static io.junjo.sdk.TestSupport.join;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -14,6 +15,7 @@ import io.junjo.sdk.JunjoClient;
 import io.junjo.sdk.TestSupport;
 import io.junjo.sdk.WriteOptions;
 import io.junjo.sdk.model.AddSanctionInput;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateBanInput;
 import io.junjo.sdk.model.SetMemberNotesInput;
 import java.time.Duration;
@@ -91,6 +93,13 @@ class QueuedWriteParityTest {
                 () -> client.members().overridePermission("g", "ns:u", "a.*", false));
         same(QueuedWrite.clearPermissionOverride("g", "ns:u", "a.b"),
                 () -> client.members().clearPermissionOverride("g", "ns:u", "a.b"));
+        Context hub = Context.of("world", "Hub");
+        same(QueuedWrite.overridePermission("g", "ns:u", "a.*", false, hub),
+                () -> client.members().overridePermission("g", "ns:u", "a.*", false, hub));
+        same(QueuedWrite.clearPermissionOverride("g", "ns:u", "a.b", hub),
+                () -> client.members().clearPermissionOverride("g", "ns:u", "a.b", hub));
+        same(QueuedWrite.overridePermission("g", "ns:u", "a.*", true, Context.GLOBAL),
+                () -> client.members().overridePermission("g", "ns:u", "a.*", true));
         same(QueuedWrite.setMetadata("g", "ns:u", Map.of("rank", 2)),
                 () -> client.members().setMetadata("g", "ns:u", Map.of("rank", 2)));
         SetMemberNotesInput notes = SetMemberNotesInput.builder().notesPrivate("n").build();
@@ -132,5 +141,15 @@ class QueuedWriteParityTest {
         QueuedWrite w = QueuedWrite.overridePermission("g", "ns:u", "a.*", false);
         assertEquals("/v1/groups/g/members/ns%3Au/permissions/a.*", w.path());
         assertEquals("{\"grant\":false}", w.body());
+    }
+
+    @Test
+    void contextualOverridesCarryTheirContext() {
+        Context both = Context.of("world", "Hub", "server", "EU");
+        QueuedWrite set = QueuedWrite.overridePermission("g", "ns:u", "a.*", false, both);
+        assertEquals("{\"grant\":false,\"context\":{\"server\":\"eu\",\"world\":\"hub\"}}", set.body());
+        QueuedWrite clear = QueuedWrite.clearPermissionOverride("g", "ns:u", "a.b", both);
+        assertEquals("/v1/groups/g/members/ns%3Au/permissions/a.b?context.server=eu&context.world=hub", clear.path());
+        assertNull(clear.body());
     }
 }

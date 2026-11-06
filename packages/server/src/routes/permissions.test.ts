@@ -341,7 +341,13 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/permissions/check", () => {
     // Invalidate the underlying permission row directly (no cache invalidation
     // hook); the cache should still serve the stale "allowed" answer.
     await prisma.rolePermission.delete({
-      where: { roleId_permissionKey: { roleId: role.id, permissionKey: "guild.kick" } },
+      where: {
+        roleId_permissionKey_contextKey: {
+          roleId: role.id,
+          permissionKey: "guild.kick",
+          contextKey: "",
+        },
+      },
     });
 
     const second = await checkPermission({

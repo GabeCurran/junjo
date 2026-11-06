@@ -17,6 +17,7 @@ import static io.junjo.sdk.internal.Json.strList;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.junjo.sdk.model.Ban;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.DisplayNameMatch;
 import io.junjo.sdk.model.Group;
 import io.junjo.sdk.model.GroupRelationship;
@@ -41,7 +42,9 @@ import io.junjo.sdk.model.RoleGraph;
 import io.junjo.sdk.model.Sanction;
 import io.junjo.sdk.model.SanctionHistoryEntry;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -96,7 +99,8 @@ public final class Wire {
                 str(o, "permission"),
                 bool(o, "grant"),
                 instant(o, "setAt"),
-                optStr(o, "setBy"));
+                optStr(o, "setBy"),
+                context(o));
     }
 
     /** Decodes a member's access. */
@@ -118,7 +122,7 @@ public final class Wire {
         JsonArray rawEntries = optArr(o, "entries");
         if (rawEntries != null) {
             for (JsonObject e : objects(rawEntries, "entries")) {
-                entries.add(new PermissionEntry(str(e, "permission"), bool(e, "value")));
+                entries.add(new PermissionEntry(str(e, "permission"), bool(e, "value"), context(e)));
             }
         }
         return new Role(
@@ -153,7 +157,24 @@ public final class Wire {
                 bool(o, "allowed"),
                 PermissionSource.fromWire(str(o, "source")),
                 optStr(o, "viaRoleId"),
-                optStr(o, "viaGroupId"));
+                optStr(o, "viaGroupId"),
+                context(o));
+    }
+
+    /**
+     * Decodes an optional {@code context} object of string values; absent, null or empty is
+     * {@link Context#GLOBAL}.
+     */
+    public static Context context(JsonObject o) {
+        JsonObject c = optObj(o, "context");
+        if (c == null || c.isEmpty()) return Context.GLOBAL;
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String key : c.keySet()) {
+            String value = optStr(c, key);
+            if (value == null) throw Json.wire("context value for '" + key + "' is not a string");
+            values.put(key, value);
+        }
+        return Context.fromWire(values);
     }
 
     /** Decodes a game ban. */

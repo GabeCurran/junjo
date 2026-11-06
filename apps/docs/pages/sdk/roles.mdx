@@ -11,8 +11,8 @@ The roles namespace operates on `Role` rows: a role is one named bundle of autho
 | `priority` | number | Higher = more authority. Also breaks ties between roles in the same resolution layer. |
 | `color` | string \| null | 7-char hex. |
 | `isDefault` | boolean | |
-| `permissions` | string[] | The keys this role grants: every entry whose `value` is `true`. Deny entries are not listed here. |
-| `entries` | `{ permission, value }[]` | Every entry on the role, grants (`value: true`) and denies (`value: false`), sorted by key. |
+| `permissions` | string[] | The keys this role grants globally: every global entry whose `value` is `true`. Deny entries and [contextual entries](#entries-with-a-context) are not listed here. |
+| `entries` | `{ permission, value, context? }[]` | Every entry on the role, grants (`value: true`) and denies (`value: false`), sorted by key and then by context, with a key's global entry first. `context` is present only on a [contextual entry](#entries-with-a-context). |
 | `parents` | `RoleId[]` | Roles this role inherits from, all in the same group. See [`setParents`](#setparentsroleid-parents). |
 | `metadata` | `Record<string, unknown>` | Free-form JSON for your own use (a chat prefix, a display badge). Junjo stores it and never reads it. |
 | `createdAt` | Date | |
@@ -27,7 +27,22 @@ A check walks the member's access in layers: their own [permission overrides](/s
 
 Within the deciding layer, the most specific key wins (the exact key, then the longest matching `a.b.*` wildcard, down to the bare `*`), and between entries of equal specificity a deny beats a grant. So a parent role can grant `shop.*` while a directly held role denies `shop.refund`, and the deny wins because it is in a nearer layer.
 
+Entries with a context rank by how well their context matches a check's context before key specificity; see [Entries with a context](#entries-with-a-context).
+
 Wildcards and case-insensitive keys apply only in `"nodes"` mode (the game config's `permissions.mode`; the default is `"exact"`, where every key is an opaque, case-sensitive string). See [Core concepts](/core-concepts#how-a-check-is-resolved) for the full rules and [permission modes](/core-concepts#permission-modes).
+
+### Entries with a context
+
+An entry can carry a `context`, such as `{ world: "creative" }`, so it applies only to [checks made in that context](/sdk/permissions#checks-with-a-context). An entry is identified by its key and its context together, so a role can hold the same key once globally and once per context:
+
+```ts
+await junjo.roles.setEntries(roleId, [
+  { permission: "essentials.fly", value: false },
+  { permission: "essentials.*", value: true, context: { world: "creative" } },
+]);
+```
+
+Values come back folded to lowercase. Contextual entries appear only in `entries`, and changing one emits `role.updated` with `changed: ["entries"]` rather than `permission.granted` or `permission.revoked`. The key and value rules and the precedence against global entries are defined under [Contexts](/api-reference/permissions#contexts) in the API reference.
 
 ## `create(groupId, input)`
 
@@ -204,7 +219,7 @@ Roles that listed the deleted role as a parent lose it from their `parents`, and
 
 ## `grantPermission(roleId, permission, opts?)`
 
-Adds or updates one entry on a role. Returns the updated `Role`. By default the entry is a grant; pass `{ value: false }` to store a deny instead. The first time a permission key appears on a given game, it is auto-registered into the `PermissionDef` catalog so the dashboard and SDK validators can list it; subsequent writes of the same key reuse the existing registry row.
+Adds or updates one entry on a role. Returns the updated `Role`. By default the entry is a grant; pass `{ value: false }` to store a deny instead, and `context` to write the entry for one [context](#entries-with-a-context). The first time a permission key appears on a given game, it is auto-registered into the `PermissionDef` catalog so the dashboard and SDK validators can list it; subsequent writes of the same key reuse the existing registry row.
 
 ```ts
 const role = await junjo.roles.grantPermission("role_xyz" as RoleId, "invite_member");
@@ -212,6 +227,9 @@ role.permissions; // includes "invite_member"
 
 // Deny a key, for example to carve one action out of a wildcard grant.
 await junjo.roles.grantPermission(roleId, "shop.refund", { value: false });
+
+// Grant a key in one world only; the global entry for the key is untouched.
+await junjo.roles.grantPermission(roleId, "essentials.fly", { context: { world: "creative" } });
 ```
 
 The call is idempotent: writing an entry the role already holds with the same value returns the unchanged role with no audit entry and no DB write. Writing the opposite value flips the existing entry.
@@ -221,16 +239,17 @@ The call is idempotent: writing an entry the role already holds with the same va
 | Option | Type | Notes |
 |--------|------|-------|
 | `value` | boolean | `true` (the default) grants the key; `false` denies it. Omitted from the request when not given, so the server applies its default. |
+| `context` | `PermissionContext` | The entry's [context](#entries-with-a-context). Absent or `{}` writes the global entry. |
 
 ### Events
 
-A key entering the granted set emits `permission.granted`. Any write that involves a deny emits `role.updated` with `changed: ["entries"]`; flipping a grant to a deny also emits `permission.revoked`.
+For a global entry, a key entering the granted set emits `permission.granted`. Any write that involves a deny emits `role.updated` with `changed: ["entries"]`; flipping a grant to a deny also emits `permission.revoked`. Any write to a contextual entry emits `role.updated` with `changed: ["entries"]` only.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, a key that is invalid in `"nodes"` mode, or the role already holds 5,000 entries. |
+| `bad_request` | 400 | Missing or empty `permission`, key over 128 characters, a key that is invalid in `"nodes"` mode, an invalid `context`, or the role already holds 5,000 entries. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -240,7 +259,7 @@ A key entering the granted set emits `permission.granted`. Any write that involv
 
 ## `setEntries(roleId, entries)`
 
-Replaces the role's whole entry list, grants and denies, in one atomic write. Returns the updated `Role`. Keys absent from `entries` are removed from the role; pass `[]` to clear it.
+Replaces the role's whole entry list, grants and denies, global and [contextual](#entries-with-a-context), in one atomic write. Returns the updated `Role`. Entries are matched by key and context: an entry absent from `entries` is removed from the role; pass `[]` to clear it.
 
 ```ts
 await junjo.roles.setEntries(roleId, [
@@ -254,8 +273,8 @@ Use it to sync a role from a config file or an editor in one request instead of 
 
 Rules:
 
-- At most 5,000 entries per role.
-- Each key may appear once; a duplicate key rejects the whole call.
+- At most 5,000 entries per role, contextual ones included.
+- Each `(permission, context)` pair may appear once; a duplicate rejects the whole call. A key may appear once globally and once per distinct context. An entry with `context: {}` is global.
 - In `"nodes"` mode keys are lowercased before storage and validated (printable ASCII, `*` only as the whole final segment or as the whole key), so two keys that differ only by case count as duplicates.
 
 A call that changes anything emits one `role.updated` event with `changed: ["entries"]`, not one event per key. A call that matches the stored list exactly is a no-op.
@@ -264,7 +283,7 @@ A call that changes anything emits one `role.updated` event with `changed: ["ent
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | More than 5,000 entries, a duplicate key, an empty or over-long key, or a key that is invalid in `"nodes"` mode. |
+| `bad_request` | 400 | More than 5,000 entries, a duplicate `(permission, context)` pair, an empty or over-long key, a key that is invalid in `"nodes"` mode, or an invalid `context`. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -318,7 +337,7 @@ graph.defaultRoleId; // RoleId | null
 graph.roles;         // Role[], each with entries and parents
 ```
 
-The graph holds everything a local resolver needs. Pair it with [`members.getAccess`](/sdk/members#getaccessgroupid-userid) for one member's roles and overrides, and you can answer checks in-process without a round-trip per check. Refresh it when a `role.created`, `role.updated`, `role.deleted`, `permission.granted`, or `permission.revoked` event arrives for the group.
+The graph holds everything a local resolver needs. Pair it with [`members.getAccess`](/sdk/members#getaccessgroupid-userid) for one member's roles and overrides, and you can answer checks in-process without a round-trip per check. Refresh it when a `role.created`, `role.updated`, `role.deleted`, `permission.granted`, or `permission.revoked` event arrives for the group. The graph does not carry the game's context inheritance (`permissions.contexts` in the [game config](/api-reference/admin#permission-contexts)), which resolving [contextual entries](#entries-with-a-context) also needs.
 
 ### Errors
 
@@ -333,19 +352,22 @@ The graph holds everything a local resolver needs. Pair it with [`members.getAcc
 
 ## `revokePermission(roleId, permission)`
 
-Removes the entry for a permission key from a role, whether it is a grant or a deny. Returns the updated `Role`. The call is idempotent: revoking a key the role has no entry for returns the unchanged role with no audit entry. Revoking a key does not remove its `PermissionDef` registry entry.
+Removes the entry for a permission key from a role, whether it is a grant or a deny. Returns the updated `Role`. Without options it removes the key's global entry; pass `{ context }` to remove the entry for one [context](#entries-with-a-context) instead, sent as `context.<key>=<value>` query parameters. The call is idempotent: revoking a key the role has no entry for returns the unchanged role with no audit entry. Revoking a key does not remove its `PermissionDef` registry entry.
 
-Removing a grant emits `permission.revoked`; removing a deny emits `role.updated` with `changed: ["entries"]`.
+Removing a global grant emits `permission.revoked`; removing a global deny or any contextual entry emits `role.updated` with `changed: ["entries"]`.
 
 ```ts
 const role = await junjo.roles.revokePermission("role_xyz" as RoleId, "invite_member");
 role.permissions; // no longer includes "invite_member"
+
+await junjo.roles.revokePermission(roleId, "essentials.fly", { context: { world: "creative" } });
 ```
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | An invalid `context`. |
 | `not_found` | 404 | Role missing / cross-game / soft-deleted-group. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 

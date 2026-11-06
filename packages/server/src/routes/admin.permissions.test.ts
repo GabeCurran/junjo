@@ -109,9 +109,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
       const stored = await prisma.rolePermission.findUnique({
         where: {
-          roleId_permissionKey: {
+          roleId_permissionKey_contextKey: {
             roleId: seed.roleId,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });
@@ -374,9 +375,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
       const stored = await prisma.rolePermission.findUnique({
         where: {
-          roleId_permissionKey: {
+          roleId_permissionKey_contextKey: {
             roleId: seed.roleId,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });
@@ -493,9 +495,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(404);
       const stored = await prisma.rolePermission.findUnique({
         where: {
-          roleId_permissionKey: {
+          roleId_permissionKey_contextKey: {
             roleId: seed.roleId,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });
@@ -509,9 +512,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(404);
       const stored = await prisma.rolePermission.findUnique({
         where: {
-          roleId_permissionKey: {
+          roleId_permissionKey_contextKey: {
             roleId: seed.roleId,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });

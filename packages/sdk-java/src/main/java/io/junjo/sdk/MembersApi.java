@@ -7,6 +7,7 @@ import io.junjo.sdk.internal.Json;
 import io.junjo.sdk.internal.Paths;
 import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.internal.Wire;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.ImportResult;
 import io.junjo.sdk.model.ListMembersOptions;
 import io.junjo.sdk.model.Member;
@@ -184,7 +185,28 @@ public final class MembersApi {
      */
     public CompletableFuture<MemberPermissionOverride> overridePermission(
             String groupId, String userId, String permission, boolean grant, WriteOptions opts) {
-        return api.write(Routes.overridePermission(groupId, userId, permission, grant), opts, Wire::override);
+        return overridePermission(groupId, userId, permission, grant, Context.GLOBAL, opts);
+    }
+
+    /**
+     * Same as {@link #overridePermission(String, String, String, boolean, Context, WriteOptions)}
+     * with default options.
+     */
+    public CompletableFuture<MemberPermissionOverride> overridePermission(
+            String groupId, String userId, String permission, boolean grant, Context context) {
+        return overridePermission(groupId, userId, permission, grant, context, WriteOptions.none());
+    }
+
+    /**
+     * Sets a personal override that applies only to checks in {@code context}. It is separate from
+     * the key's global override and from its overrides in other contexts; {@link Context#GLOBAL}
+     * sets the global one. Like every override it beats every role entry, whatever the entry's
+     * context.
+     */
+    public CompletableFuture<MemberPermissionOverride> overridePermission(
+            String groupId, String userId, String permission, boolean grant, Context context, WriteOptions opts) {
+        return api.write(
+                Routes.overridePermission(groupId, userId, permission, grant, context), opts, Wire::override);
     }
 
     /** Same as {@link #clearPermissionOverride(String, String, String, WriteOptions)} with default options. */
@@ -192,10 +214,28 @@ public final class MembersApi {
         return clearPermissionOverride(groupId, userId, permission, WriteOptions.none());
     }
 
-    /** Clears a personal override. Idempotent. */
+    /** Clears a personal global override. Idempotent. */
     public CompletableFuture<Void> clearPermissionOverride(
             String groupId, String userId, String permission, WriteOptions opts) {
-        return api.writeVoid(Routes.clearPermissionOverride(groupId, userId, permission), opts);
+        return clearPermissionOverride(groupId, userId, permission, Context.GLOBAL, opts);
+    }
+
+    /**
+     * Same as {@link #clearPermissionOverride(String, String, String, Context, WriteOptions)} with
+     * default options.
+     */
+    public CompletableFuture<Void> clearPermissionOverride(
+            String groupId, String userId, String permission, Context context) {
+        return clearPermissionOverride(groupId, userId, permission, context, WriteOptions.none());
+    }
+
+    /**
+     * Clears the personal override for the key in exactly {@code context}; {@link Context#GLOBAL}
+     * clears the global one. Idempotent.
+     */
+    public CompletableFuture<Void> clearPermissionOverride(
+            String groupId, String userId, String permission, Context context, WriteOptions opts) {
+        return api.writeVoid(Routes.clearPermissionOverride(groupId, userId, permission, context), opts);
     }
 
     /** Same as {@link #importMembers(String, MemberImport, WriteOptions)} with default options. */

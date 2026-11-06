@@ -9,6 +9,7 @@ import type {
   MemberJoinedEvent,
   MemberUpdatedEvent,
   PartialGameConfig,
+  PermissionContext,
   PermissionMode,
   RoleChangedEvent,
   RoleId,
@@ -30,6 +31,7 @@ import {
 } from "../groupKinds.js";
 import { findOrCreateJunjoUser } from "../identity.js";
 import { permissionCache } from "../permissionCache.js";
+import { canonicalContextKey, storedContext } from "../permissionContext.js";
 import { retryOnUniqueViolation } from "../prismaErrors.js";
 import { keyForWrite } from "../roleWrites.js";
 import { isUserIdWellFormed } from "../userIdFormat.js";
@@ -43,19 +45,35 @@ type Tx = Prisma.TransactionClient;
 // batch on a loaded database with room to spare.
 const IMPORT_TX_TIMEOUT_MS = 30_000;
 
+// One override, identified by its normalized key and canonical context.
+interface OverrideSlot {
+  key: string;
+  contextKey: string;
+  context: PermissionContext;
+  value: boolean;
+}
+
+// Overrides by `overrideSlot(key, contextKey)`.
+type OverrideMap = Map<string, OverrideSlot>;
+
+// Length-prefixed so no key can encode another (key, context) pair.
+function overrideSlot(key: string, contextKey: string): string {
+  return `${key.length}:${key}|${contextKey}`;
+}
+
 interface ParsedRow {
   index: number;
   userId: string;
   roleIds?: string[];
-  // Normalized key -> value, in the game's permission mode.
-  overrides?: Map<string, boolean>;
+  // Keys normalized in the game's permission mode, contexts folded.
+  overrides?: OverrideMap;
   metadata?: Record<string, unknown>;
 }
 
 interface LoadedMember {
   row: GroupMember;
   roleIds: string[];
-  overrides: Map<string, boolean>;
+  overrides: OverrideMap;
 }
 
 interface Plan {
@@ -67,8 +85,8 @@ interface Plan {
   finalRoleIds: string[];
   rolesAdded: string[];
   rolesRemoved: string[];
-  overridesSet: { key: string; value: boolean; before: boolean | undefined }[];
-  overridesCleared: { key: string; value: boolean }[];
+  overridesSet: (OverrideSlot & { before: boolean | undefined })[];
+  overridesCleared: OverrideSlot[];
   metadataChanged: boolean;
 }
 
@@ -303,7 +321,7 @@ function validateRows(members: unknown[], ctx: ImportContext, errors: RowErrors)
     }
     firstIndexOf.set(row.userId, index);
 
-    let overrides: Map<string, boolean> | undefined;
+    let overrides: OverrideMap | undefined;
     if (row.overrides) {
       overrides = new Map();
       for (const entry of row.overrides) {
@@ -319,16 +337,20 @@ function validateRows(members: unknown[], ctx: ImportContext, errors: RowErrors)
           );
           return;
         }
-        if (overrides.has(key)) {
+        const context = entry.context ?? {};
+        const contextKey = canonicalContextKey(context);
+        const slot = overrideSlot(key, contextKey);
+        if (overrides.has(slot)) {
+          const where = contextKey === "" ? "" : ` with context ${contextKey}`;
           errors.fail(
             index,
             row.userId,
             "bad_request",
-            `permission ${JSON.stringify(entry.permission)} is listed twice`,
+            `permission ${JSON.stringify(entry.permission)}${where} is listed twice`,
           );
           return;
         }
-        overrides.set(key, entry.value);
+        overrides.set(slot, { key, contextKey, context, value: entry.value });
       }
     }
     rows.push({
@@ -424,7 +446,9 @@ async function loadPeople(
       where: { groupId: ctx.groupId, junjoUserId: { in: knownPeople } },
       include: {
         memberRoles: { select: { roleId: true } },
-        permissionOverrides: { select: { permissionKey: true, grant: true } },
+        permissionOverrides: {
+          select: { permissionKey: true, grant: true, context: true, contextKey: true },
+        },
       },
     }),
     tx.gameBan.findMany({
@@ -437,7 +461,17 @@ async function loadPeople(
     memberOf.set(m.junjoUserId, {
       row,
       roleIds: memberRoles.map((r) => r.roleId),
-      overrides: new Map(permissionOverrides.map((o) => [o.permissionKey, o.grant])),
+      overrides: new Map(
+        permissionOverrides.map((o) => [
+          overrideSlot(o.permissionKey, o.contextKey),
+          {
+            key: o.permissionKey,
+            contextKey: o.contextKey,
+            context: (o.contextKey === "" ? {} : (o.context ?? {})) as PermissionContext,
+            value: o.grant,
+          },
+        ]),
+      ),
     });
   }
   for (const b of gameBans) if (isActiveUntil(b.expiresAt, ctx.now)) gameBanned.add(b.junjoUserId);
@@ -536,16 +570,16 @@ function planChanges(ctx: ImportContext, valid: ParsedRow[], people: People): Pl
     const rolesAdded = finalRoleIds.filter((id) => !priorRoles.includes(id));
     const rolesRemoved = priorRoles.filter((id) => !finalRoleIds.includes(id));
 
-    const priorOverrides = existing?.overrides ?? new Map<string, boolean>();
+    const priorOverrides: OverrideMap = existing?.overrides ?? new Map();
     const overridesSet: Plan["overridesSet"] = [];
     const overridesCleared: Plan["overridesCleared"] = [];
     if (input.overrides) {
-      for (const [key, value] of input.overrides) {
-        const before = priorOverrides.get(key);
-        if (before !== value) overridesSet.push({ key, value, before });
+      for (const [slot, next] of input.overrides) {
+        const before = priorOverrides.get(slot)?.value;
+        if (before !== next.value) overridesSet.push({ ...next, before });
       }
-      for (const [key, value] of priorOverrides) {
-        if (!input.overrides.has(key)) overridesCleared.push({ key, value });
+      for (const [slot, prior] of priorOverrides) {
+        if (!input.overrides.has(slot)) overridesCleared.push(prior);
       }
     }
 
@@ -642,10 +676,13 @@ async function applyWrites(
   );
   if (roleAdds.length > 0) await tx.memberRole.createMany({ data: roleAdds, skipDuplicates: true });
 
-  const overrideTouched = plans.flatMap((p) => [
-    ...p.overridesSet.map((o) => ({ groupMemberId: memberId(p), permissionKey: o.key })),
-    ...p.overridesCleared.map((o) => ({ groupMemberId: memberId(p), permissionKey: o.key })),
-  ]);
+  const overrideTouched = plans.flatMap((p) =>
+    [...p.overridesSet, ...p.overridesCleared].map((o) => ({
+      groupMemberId: memberId(p),
+      permissionKey: o.key,
+      contextKey: o.contextKey,
+    })),
+  );
   if (overrideTouched.length > 0) {
     await tx.memberPermissionOverride.deleteMany({ where: { OR: overrideTouched } });
   }
@@ -654,6 +691,8 @@ async function applyWrites(
       groupMemberId: memberId(p),
       permissionKey: o.key,
       grant: o.value,
+      context: storedContext(o.context) ?? Prisma.DbNull,
+      contextKey: o.contextKey,
       setAt: ctx.now,
       setByUserId: null,
     })),
@@ -708,6 +747,7 @@ async function writeAudit(
           memberId: id,
           permission: o.key,
           grant: o.value,
+          ...(o.contextKey === "" ? {} : { context: o.context }),
           ...(o.before !== undefined ? { before: { grant: o.before } } : {}),
         },
       });
@@ -716,7 +756,12 @@ async function writeAudit(
       audit.push({
         ...base,
         action: "permission.override.cleared",
-        payload: { memberId: id, permission: o.key, grant: o.value },
+        payload: {
+          memberId: id,
+          permission: o.key,
+          grant: o.value,
+          ...(o.contextKey === "" ? {} : { context: o.context }),
+        },
       });
     }
     if (p.metadataChanged) {

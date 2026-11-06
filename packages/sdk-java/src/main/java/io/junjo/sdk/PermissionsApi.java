@@ -4,7 +4,9 @@ import com.google.gson.JsonObject;
 import io.junjo.sdk.internal.ApiSupport;
 import io.junjo.sdk.internal.Json;
 import io.junjo.sdk.internal.Paths;
+import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.internal.Wire;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.PermissionCheckRequest;
 import io.junjo.sdk.model.PermissionCheckResult;
 import java.util.ArrayList;
@@ -33,23 +35,42 @@ public final class PermissionsApi {
     }
 
     /**
-     * Checks one permission in one group.
+     * Checks one permission in one group with no context: only global entries apply.
      *
      * @param inherit also walk the group's ancestors, nearest first, until one decides
      */
     public CompletableFuture<PermissionCheckResult> check(
             String userId, String groupId, String permission, boolean inherit) {
-        String path = new Paths.Query()
+        return check(userId, groupId, permission, inherit, Context.GLOBAL);
+    }
+
+    /** Same as {@link #check(String, String, String, boolean, Context)} without inheritance. */
+    public CompletableFuture<PermissionCheckResult> check(
+            String userId, String groupId, String permission, Context context) {
+        return check(userId, groupId, permission, false, context);
+    }
+
+    /**
+     * Checks one permission in one group, in a context. Entries limited to a context apply when
+     * the check's context matches them; {@link Context#GLOBAL} sees only global entries. The
+     * result's {@link PermissionCheckResult#context()} is the deciding entry's context.
+     *
+     * @param inherit also walk the group's ancestors, nearest first, until one decides
+     */
+    public CompletableFuture<PermissionCheckResult> check(
+            String userId, String groupId, String permission, boolean inherit, Context context) {
+        Paths.Query query = new Paths.Query()
                 .add("userId", userId)
                 .add("groupId", groupId)
                 .add("permission", permission)
-                .add("inherit", inherit ? "true" : null)
-                .appendTo("/v1/permissions/check");
+                .add("inherit", inherit ? "true" : null);
+        String path = Routes.contextQuery(query, context).appendTo("/v1/permissions/check");
         return api.get(path, Wire::checkResult);
     }
 
     /**
-     * Checks many triples. Results are positional. Inputs longer than {@link #BATCH_MAX} are split
+     * Checks many entries, each in its own {@link PermissionCheckRequest#context()}. Results are
+     * positional. Inputs longer than {@link #BATCH_MAX} are split
      * into sequential requests. An unknown group fails the whole call with {@code not_found}.
      *
      * @param inherit walk group ancestors for every entry
@@ -81,6 +102,7 @@ public final class PermissionsApi {
             m.put("userId", c.userId());
             m.put("groupId", c.groupId());
             m.put("permission", c.permission());
+            if (!c.context().isGlobal()) m.put("context", c.context().values());
             entries.add(m);
         }
         Map<String, Object> body = new LinkedHashMap<>();

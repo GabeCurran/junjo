@@ -299,3 +299,67 @@ describe("junjo.export", () => {
     expect(err.code).toBe("stream_overflow");
   });
 });
+
+describe("export permission contexts", () => {
+  it("passes context through on role entries and member overrides", async () => {
+    const role = {
+      kind: "role",
+      id: "r_1",
+      groupId: "g_1",
+      name: "Admin",
+      priority: 10,
+      color: null,
+      isDefault: false,
+      metadata: {},
+      entries: [
+        { permission: "essentials.fly", value: false },
+        { permission: "essentials.*", value: true, context: { world: "creative" } },
+      ],
+      parents: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const member = {
+      kind: "member",
+      id: "m_1",
+      groupId: "g_1",
+      personId: "p_1",
+      userId: "mc:1",
+      status: "active",
+      roles: ["r_1"],
+      overrides: [
+        {
+          permission: "fly",
+          value: false,
+          context: { world: "spawn" },
+          setAt: "2026-01-01T00:00:00.000Z",
+          setByPersonId: null,
+        },
+      ],
+      metadata: {},
+      notesPublic: null,
+      notesPrivate: null,
+      version: 1,
+      joinedAt: "2026-01-01T00:00:00.000Z",
+      leftAt: null,
+      bannedUntil: null,
+    };
+    const { junjo } = client(() =>
+      ndjson(
+        lines(header, role, member, {
+          kind: "end",
+          counts: counts({ role: 1, member: 1 }),
+        }),
+      ),
+    );
+    const records = await collect(junjo.export());
+    const roleRecord = records.find((r) => r.kind === "role");
+    const memberRecord = records.find((r) => r.kind === "member");
+    if (roleRecord?.kind !== "role" || memberRecord?.kind !== "member") {
+      throw new Error("expected role and member records");
+    }
+    expect(roleRecord.entries[1]?.context).toEqual({ world: "creative" });
+    expect(roleRecord.entries[0]).not.toHaveProperty("context");
+    expect(memberRecord.overrides[0]?.context).toEqual({ world: "spawn" });
+  });
+});

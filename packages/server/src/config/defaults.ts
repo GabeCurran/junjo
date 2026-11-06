@@ -35,6 +35,7 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   },
   permissions: {
     mode: "exact",
+    contexts: {},
   },
   identity: {
     formats: {},
@@ -102,6 +103,16 @@ export function resolveGameConfig(partial: PartialGameConfig | null | undefined)
     },
     permissions: {
       mode: p?.mode ?? dP.mode,
+      contexts: Object.fromEntries(
+        Object.entries(p?.contexts ?? dP.contexts).map(([k, v]) => [
+          k,
+          {
+            inherit: Object.fromEntries(
+              Object.entries(v.inherit).map(([value, parents]) => [value, [...parents]]),
+            ),
+          },
+        ]),
+      ),
     },
     identity: {
       formats: { ...(i?.formats ?? DEFAULT_GAME_CONFIG.identity.formats) },
@@ -152,6 +163,7 @@ export function mergeGameConfig(
     merged.blocks = { ...(existing?.blocks ?? {}), ...patch.blocks };
   }
 
+  // `contexts` replaces as a whole for the same reason as `formats`.
   if (patch.permissions) {
     merged.permissions = { ...(existing?.permissions ?? {}), ...patch.permissions };
   }

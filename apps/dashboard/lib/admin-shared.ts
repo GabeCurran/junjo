@@ -201,6 +201,8 @@ export interface AdminMemberPermissionOverride {
   userId: string;
   permission: string;
   grant: boolean;
+  // Absent for a global override.
+  context?: AdminPermissionContext;
   setAt: string;
   setBy: string | null;
 }
@@ -246,10 +248,37 @@ export interface CreateAdminGroupInvitationInput {
   expiresIn?: string;
 }
 
+// Conditions under which an entry applies, key to folded value. Absent
+// on a global entry.
+export type AdminPermissionContext = Record<string, string>;
+
 export interface AdminPermissionEntry {
   permission: string;
   // true grants the key, false denies it.
   value: boolean;
+  context?: AdminPermissionContext;
+}
+
+export function isContextual(entry: { context?: AdminPermissionContext }): boolean {
+  return entry.context !== undefined && Object.keys(entry.context).length > 0;
+}
+
+// Display form of a context: "key: value" pairs sorted by key.
+export function formatPermissionContext(context: AdminPermissionContext | undefined): string {
+  if (!context) return "";
+  return Object.keys(context)
+    .sort()
+    .map((k) => `${k}: ${context[k]}`)
+    .join(", ");
+}
+
+// A stable identity for an entry or override within one role or member:
+// its key plus its context.
+export function permissionEntryId(entry: {
+  permission: string;
+  context?: AdminPermissionContext;
+}): string {
+  return `${entry.permission}|${formatPermissionContext(entry.context)}`;
 }
 
 export interface AdminRole {
@@ -259,7 +288,8 @@ export interface AdminRole {
   priority: number;
   color: string | null;
   isDefault: boolean;
-  // Granted keys only. Denies are listed in `entries`.
+  // Globally granted keys only. Denies and contextual entries are listed
+  // in `entries`.
   permissions: string[];
   // Every entry stored on the role, grants and denies. Older servers
   // omit it; readers fall back to `permissions` as all-grant entries.
@@ -276,10 +306,16 @@ export function roleEntries(role: AdminRole): AdminPermissionEntry[] {
   return role.entries ?? role.permissions.map((permission) => ({ permission, value: true }));
 }
 
+// The state of the role's global entry for `permission`. Contextual
+// entries for the same key are reported by `roleContextEntries`.
 export function roleEntryState(role: AdminRole, permission: string): RoleEntryState {
-  const entry = roleEntries(role).find((e) => e.permission === permission);
+  const entry = roleEntries(role).find((e) => e.permission === permission && !isContextual(e));
   if (!entry) return "none";
   return entry.value ? "grant" : "deny";
+}
+
+export function roleContextEntries(role: AdminRole, permission: string): AdminPermissionEntry[] {
+  return roleEntries(role).filter((e) => e.permission === permission && isContextual(e));
 }
 
 export interface AdminPermissionDef {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Conformance vectors for Junjo permission resolution. Every implementation (server, SDK local resolvers) must pass all of them. Entry keys and check permissions are given as written by a caller; implementations normalize them exactly as they would on write and on check. 'via' is the role id that decided a role-sourced result. Membership and status gating are out of scope here: every case describes one active member.",
+  "description": "Conformance vectors for Junjo permission resolution. Every implementation (server, SDK local resolvers) must pass all of them. Entry keys and check permissions are given as written by a caller; implementations normalize them exactly as they would on write and on check. 'via' is the role id that decided a role-sourced result. Membership and status gating are out of scope here: every case describes one active member. Optional fields add contexts: a case's 'contexts' is the game's permissions.contexts, a role's 'contextEntries' and a member's 'contextOverrides' list contextual entries, a check's 'context' is the check's context and 'decidedContext' the result's expected 'context' (absent means the result has none); 'contextConfigs' and 'entryContexts' are validation vectors. README.md beside this file documents every field.",
   "cases": [
     {
       "name": "wildcard grant with specific denies in the same role",
@@ -453,6 +453,708 @@
         { "permission": "ban", "allowed": true, "source": "override" },
         { "permission": "mute", "allowed": false, "source": "default" }
       ]
+    },
+    {
+      "name": "a per-world grant beats a global deny of a more specific key in the same role",
+      "note": "Context ranks above key specificity inside a layer: essentials.* in creative beats the global essentials.fly deny there, and only there.",
+      "modes": ["nodes"],
+      "roles": {
+        "admin": {
+          "priority": 100,
+          "entries": { "essentials.fly": false },
+          "contextEntries": [
+            {
+              "permission": "essentials.*",
+              "value": true,
+              "context": { "world": "creative" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["admin"] },
+      "checks": [
+        {
+          "permission": "essentials.fly",
+          "allowed": true,
+          "source": "role",
+          "via": "admin",
+          "context": { "world": "creative" },
+          "decidedContext": { "world": "creative" }
+        },
+        {
+          "permission": "essentials.fly",
+          "allowed": false,
+          "source": "role",
+          "via": "admin",
+          "context": { "world": "survival" }
+        },
+        {
+          "permission": "essentials.fly",
+          "allowed": false,
+          "source": "role",
+          "via": "admin"
+        }
+      ]
+    },
+    {
+      "name": "a personal global override beats a per-world role grant",
+      "note": "Layer comes before context: the member's own layer decides first.",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "player": {
+          "priority": 20,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "chat.color",
+              "value": true,
+              "context": { "world": "hub" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["player"], "overrides": { "chat.color": false } },
+      "checks": [
+        {
+          "permission": "chat.color",
+          "context": { "world": "hub" },
+          "allowed": false,
+          "source": "override"
+        }
+      ]
+    },
+    {
+      "name": "an entry for a context the check did not send is ignored",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": { "fly": false },
+          "contextEntries": [
+            {
+              "permission": "fly",
+              "value": true,
+              "context": { "world": "creative" }
+            },
+            {
+              "permission": "build",
+              "value": true,
+              "context": { "server": "lobby" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        {
+          "permission": "fly",
+          "allowed": false,
+          "source": "role",
+          "via": "r",
+          "context": { "server": "lobby" }
+        },
+        {
+          "permission": "build",
+          "context": { "world": "creative" },
+          "allowed": false,
+          "source": "default"
+        },
+        {
+          "permission": "build",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "server": "lobby" },
+          "decidedContext": { "server": "lobby" }
+        },
+        { "permission": "build", "allowed": false, "source": "default" }
+      ]
+    },
+    {
+      "name": "two matching context keys beat one",
+      "note": "Scores compare across the roles of one layer: b's two-key grant beats a's one-key deny.",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "a": {
+          "priority": 50,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "kit.vip",
+              "value": false,
+              "context": { "world": "pvp" }
+            }
+          ]
+        },
+        "b": {
+          "priority": 10,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "kit.vip",
+              "value": true,
+              "context": { "world": "pvp", "server": "eu" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["a", "b"] },
+      "checks": [
+        {
+          "permission": "kit.vip",
+          "allowed": true,
+          "source": "role",
+          "via": "b",
+          "context": { "world": "pvp", "server": "eu" },
+          "decidedContext": { "server": "eu", "world": "pvp" }
+        },
+        {
+          "permission": "kit.vip",
+          "allowed": false,
+          "source": "role",
+          "via": "a",
+          "context": { "world": "pvp" },
+          "decidedContext": { "world": "pvp" }
+        },
+        {
+          "permission": "kit.vip",
+          "allowed": false,
+          "source": "role",
+          "via": "a",
+          "context": { "world": "pvp", "server": "us" },
+          "decidedContext": { "world": "pvp" }
+        }
+      ]
+    },
+    {
+      "name": "deny wins a tie between equally contextual entries",
+      "note": "Across roles the denying role decides; inside one role a deny for one key beats a grant for another key with the same score.",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "donor": {
+          "priority": 50,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "feature.x",
+              "value": true,
+              "context": { "world": "a" }
+            }
+          ]
+        },
+        "restricted": {
+          "priority": 5,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "feature.x",
+              "value": false,
+              "context": { "world": "a" }
+            }
+          ]
+        },
+        "mixed": {
+          "priority": 1,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "feature.y",
+              "value": true,
+              "context": { "world": "a" }
+            },
+            {
+              "permission": "feature.y",
+              "value": false,
+              "context": { "server": "b" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["donor", "restricted", "mixed"] },
+      "checks": [
+        {
+          "permission": "feature.x",
+          "allowed": false,
+          "source": "role",
+          "via": "restricted",
+          "context": { "world": "a" },
+          "decidedContext": { "world": "a" }
+        },
+        {
+          "permission": "feature.y",
+          "allowed": false,
+          "source": "role",
+          "via": "mixed",
+          "context": { "world": "a", "server": "b" },
+          "decidedContext": { "server": "b" }
+        },
+        {
+          "permission": "feature.y",
+          "allowed": true,
+          "source": "role",
+          "via": "mixed",
+          "context": { "world": "a" },
+          "decidedContext": { "world": "a" }
+        }
+      ]
+    },
+    {
+      "name": "the same key held globally and per world",
+      "modes": ["nodes", "exact"],
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": { "home.set": true },
+          "contextEntries": [
+            {
+              "permission": "home.set",
+              "value": false,
+              "context": { "world": "nether" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        { "permission": "home.set", "allowed": true, "source": "role", "via": "r" },
+        {
+          "permission": "home.set",
+          "allowed": false,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "nether" },
+          "decidedContext": { "world": "nether" }
+        },
+        {
+          "permission": "home.set",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "overworld" }
+        }
+      ]
+    },
+    {
+      "name": "context values fold to lowercase in every mode",
+      "note": "Values are folded with the ASCII-only fold on write and on check; the reported context is folded.",
+      "modes": ["nodes", "exact"],
+      "contexts": { "world": { "inherit": { "W_Event": ["W_TheNewIsland"] } } },
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "shop.use",
+              "value": true,
+              "context": { "world": "W_TheNewIsland" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        {
+          "permission": "shop.use",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "w_thenewisland" },
+          "decidedContext": { "world": "w_thenewisland" }
+        },
+        {
+          "permission": "shop.use",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "W_THENEWISLAND" },
+          "decidedContext": { "world": "w_thenewisland" }
+        },
+        {
+          "permission": "shop.use",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "w_event" },
+          "decidedContext": { "world": "w_thenewisland" }
+        }
+      ]
+    },
+    {
+      "name": "an inherited context grant applies",
+      "modes": ["nodes", "exact"],
+      "contexts": { "world": { "inherit": { "pvpworld": ["world"] } } },
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": { "essentials.back": false },
+          "contextEntries": [
+            {
+              "permission": "essentials.home",
+              "value": true,
+              "context": { "world": "world" }
+            },
+            {
+              "permission": "essentials.back",
+              "value": true,
+              "context": { "world": "world" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        {
+          "permission": "essentials.home",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "pvpworld" },
+          "decidedContext": { "world": "world" }
+        },
+        {
+          "permission": "essentials.home",
+          "context": { "world": "creative" },
+          "allowed": false,
+          "source": "default"
+        },
+        {
+          "permission": "essentials.back",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "pvpworld" },
+          "decidedContext": { "world": "world" }
+        },
+        {
+          "permission": "essentials.back",
+          "allowed": false,
+          "source": "role",
+          "via": "r"
+        }
+      ]
+    },
+    {
+      "name": "a world's own entry beats an inherited one",
+      "modes": ["nodes", "exact"],
+      "contexts": { "world": { "inherit": { "pvpworld": ["world"] } } },
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "pvp.toggle",
+              "value": true,
+              "context": { "world": "world" }
+            },
+            {
+              "permission": "pvp.toggle",
+              "value": false,
+              "context": { "world": "pvpworld" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        {
+          "permission": "pvp.toggle",
+          "allowed": false,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "pvpworld" },
+          "decidedContext": { "world": "pvpworld" }
+        },
+        {
+          "permission": "pvp.toggle",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "world" },
+          "decidedContext": { "world": "world" }
+        }
+      ]
+    },
+    {
+      "name": "a two-level chain: the nearest inherited entry wins",
+      "modes": ["nodes", "exact"],
+      "contexts": {
+        "world": {
+          "inherit": {
+            "cave_world_nether": ["world_nether"],
+            "world_nether": ["world"]
+          }
+        }
+      },
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "mine.ore",
+              "value": true,
+              "context": { "world": "world" }
+            },
+            {
+              "permission": "mine.ore",
+              "value": false,
+              "context": { "world": "world_nether" }
+            },
+            {
+              "permission": "mine.deep",
+              "value": true,
+              "context": { "world": "world" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["r"] },
+      "checks": [
+        {
+          "permission": "mine.ore",
+          "allowed": false,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "cave_world_nether" },
+          "decidedContext": { "world": "world_nether" }
+        },
+        {
+          "permission": "mine.deep",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "cave_world_nether" },
+          "decidedContext": { "world": "world" }
+        },
+        {
+          "permission": "mine.ore",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "world" },
+          "decidedContext": { "world": "world" }
+        }
+      ]
+    },
+    {
+      "name": "without a check context only global entries apply",
+      "note": "Contextual entries change nothing for a check that sends no context: these are the answers the role gives without them.",
+      "modes": ["nodes"],
+      "roles": {
+        "r": {
+          "priority": 1,
+          "entries": { "*": true, "a.b": false },
+          "contextEntries": [
+            {
+              "permission": "a.b",
+              "value": true,
+              "context": { "world": "x" }
+            },
+            {
+              "permission": "*",
+              "value": false,
+              "context": { "world": "x" }
+            }
+          ]
+        }
+      },
+      "member": {
+        "roles": ["r"],
+        "contextOverrides": [
+          {
+            "permission": "a.c",
+            "value": false,
+            "context": { "world": "x" }
+          }
+        ]
+      },
+      "checks": [
+        { "permission": "a.b", "allowed": false, "source": "role", "via": "r" },
+        { "permission": "a.c", "allowed": true, "source": "role", "via": "r" },
+        { "permission": "z", "allowed": true, "source": "role", "via": "r" }
+      ]
+    },
+    {
+      "name": "a contextual override decides only where it applies",
+      "modes": ["nodes", "exact"],
+      "roles": { "r": { "priority": 1, "entries": { "chat.color": true } } },
+      "member": {
+        "roles": ["r"],
+        "contextOverrides": [
+          {
+            "permission": "chat.color",
+            "value": false,
+            "context": { "world": "hub" }
+          }
+        ]
+      },
+      "checks": [
+        {
+          "permission": "chat.color",
+          "context": { "world": "hub" },
+          "allowed": false,
+          "source": "override",
+          "decidedContext": { "world": "hub" }
+        },
+        {
+          "permission": "chat.color",
+          "allowed": true,
+          "source": "role",
+          "via": "r",
+          "context": { "world": "spawn" }
+        },
+        { "permission": "chat.color", "allowed": true, "source": "role", "via": "r" }
+      ]
+    },
+    {
+      "name": "PEX: a player's per-world negation beats their global grant",
+      "note": "KappaMC's first example from MV's PermissionsEx data.",
+      "modes": ["nodes"],
+      "roles": {
+        "player": {
+          "priority": 20,
+          "entries": { "ezauctions.player": true },
+          "contextEntries": [
+            {
+              "permission": "ezauctions.player",
+              "value": false,
+              "context": { "world": "spawn" }
+            },
+            {
+              "permission": "ezauctions.player",
+              "value": false,
+              "context": { "world": "w_TheNewIsland" }
+            },
+            {
+              "permission": "ezauctions.player",
+              "value": false,
+              "context": { "world": "event" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["player"] },
+      "checks": [
+        {
+          "permission": "ezauctions.player",
+          "allowed": false,
+          "source": "role",
+          "via": "player",
+          "context": { "world": "spawn" },
+          "decidedContext": { "world": "spawn" }
+        },
+        {
+          "permission": "ezauctions.player",
+          "allowed": false,
+          "source": "role",
+          "via": "player",
+          "context": { "world": "W_TheNewIsland" },
+          "decidedContext": { "world": "w_thenewisland" }
+        },
+        {
+          "permission": "ezauctions.player",
+          "allowed": true,
+          "source": "role",
+          "via": "player",
+          "context": { "world": "survival" }
+        },
+        {
+          "permission": "ezauctions.player",
+          "allowed": true,
+          "source": "role",
+          "via": "player"
+        }
+      ]
+    },
+    {
+      "name": "PEX: a helper's per-world wildcard deny beats a global exact grant",
+      "note": "KappaMC's second example: the world-scoped -worldguard.region.bypass.* beats the global exact node in the same layer.",
+      "modes": ["nodes"],
+      "roles": {
+        "helper": {
+          "priority": 80,
+          "entries": { "worldguard.region.bypass.spawn": true },
+          "contextEntries": [
+            {
+              "permission": "worldguard.region.bypass.*",
+              "value": false,
+              "context": { "world": "world" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["helper"] },
+      "checks": [
+        {
+          "permission": "worldguard.region.bypass.spawn",
+          "allowed": false,
+          "source": "role",
+          "via": "helper",
+          "context": { "world": "world" },
+          "decidedContext": { "world": "world" }
+        },
+        {
+          "permission": "worldguard.region.bypass.spawn",
+          "allowed": true,
+          "source": "role",
+          "via": "helper",
+          "context": { "world": "creative" }
+        },
+        {
+          "permission": "worldguard.region.bypass.spawn",
+          "allowed": true,
+          "source": "role",
+          "via": "helper"
+        }
+      ]
+    },
+    {
+      "name": "PEX: the default group's per-world deny loses to a child group's global grant",
+      "note": "KappaMC's third example: layer comes first, so the child role's global grant decides before its parent's world deny is reached.",
+      "modes": ["nodes"],
+      "roles": {
+        "member": {
+          "priority": 30,
+          "entries": { "essentials.warp": true },
+          "parents": ["default"]
+        },
+        "default": {
+          "priority": 0,
+          "entries": {},
+          "contextEntries": [
+            {
+              "permission": "essentials.warp",
+              "value": false,
+              "context": { "world": "pvpworld" }
+            },
+            {
+              "permission": "essentials.spawn",
+              "value": false,
+              "context": { "world": "pvpworld" }
+            }
+          ]
+        }
+      },
+      "member": { "roles": ["member"] },
+      "checks": [
+        {
+          "permission": "essentials.warp",
+          "allowed": true,
+          "source": "role",
+          "via": "member",
+          "context": { "world": "pvpworld" }
+        },
+        {
+          "permission": "essentials.spawn",
+          "allowed": false,
+          "source": "role",
+          "via": "default",
+          "context": { "world": "pvpworld" },
+          "decidedContext": { "world": "pvpworld" }
+        }
+      ]
     }
   ],
   "keys": [
@@ -499,5 +1201,701 @@
       },
       "valid": true
     }
+  ],
+  "contextConfigs": [
+    { "name": "no inheritance", "contexts": {}, "valid": true },
+    {
+      "name": "the PEX worlds table",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "pvpworld": ["world"],
+            "world_nether": ["world"],
+            "cave_world_nether": ["world_nether"]
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a diamond",
+      "contexts": { "world": { "inherit": { "a": ["b", "c"], "b": ["d"], "c": ["d"] } } },
+      "valid": true
+    },
+    {
+      "name": "a two-value cycle",
+      "contexts": { "world": { "inherit": { "a": ["b"], "b": ["a"] } } },
+      "valid": false
+    },
+    {
+      "name": "a value inheriting itself",
+      "contexts": { "world": { "inherit": { "a": ["a"] } } },
+      "valid": false
+    },
+    {
+      "name": "a cycle through case folding",
+      "contexts": { "world": { "inherit": { "a": ["B"], "b": ["A"] } } },
+      "valid": false
+    },
+    {
+      "name": "a chain of 16 steps",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "w0": ["w1"],
+            "w1": ["w2"],
+            "w2": ["w3"],
+            "w3": ["w4"],
+            "w4": ["w5"],
+            "w5": ["w6"],
+            "w6": ["w7"],
+            "w7": ["w8"],
+            "w8": ["w9"],
+            "w9": ["w10"],
+            "w10": ["w11"],
+            "w11": ["w12"],
+            "w12": ["w13"],
+            "w13": ["w14"],
+            "w14": ["w15"],
+            "w15": ["w16"]
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a chain of 17 steps",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "w0": ["w1"],
+            "w1": ["w2"],
+            "w2": ["w3"],
+            "w3": ["w4"],
+            "w4": ["w5"],
+            "w5": ["w6"],
+            "w6": ["w7"],
+            "w7": ["w8"],
+            "w8": ["w9"],
+            "w9": ["w10"],
+            "w10": ["w11"],
+            "w11": ["w12"],
+            "w12": ["w13"],
+            "w13": ["w14"],
+            "w14": ["w15"],
+            "w15": ["w16"],
+            "w16": ["w17"]
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "eight parents",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "a": ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "nine parents",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "a": ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "256 values",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "v0": ["root"],
+            "v1": ["root"],
+            "v2": ["root"],
+            "v3": ["root"],
+            "v4": ["root"],
+            "v5": ["root"],
+            "v6": ["root"],
+            "v7": ["root"],
+            "v8": ["root"],
+            "v9": ["root"],
+            "v10": ["root"],
+            "v11": ["root"],
+            "v12": ["root"],
+            "v13": ["root"],
+            "v14": ["root"],
+            "v15": ["root"],
+            "v16": ["root"],
+            "v17": ["root"],
+            "v18": ["root"],
+            "v19": ["root"],
+            "v20": ["root"],
+            "v21": ["root"],
+            "v22": ["root"],
+            "v23": ["root"],
+            "v24": ["root"],
+            "v25": ["root"],
+            "v26": ["root"],
+            "v27": ["root"],
+            "v28": ["root"],
+            "v29": ["root"],
+            "v30": ["root"],
+            "v31": ["root"],
+            "v32": ["root"],
+            "v33": ["root"],
+            "v34": ["root"],
+            "v35": ["root"],
+            "v36": ["root"],
+            "v37": ["root"],
+            "v38": ["root"],
+            "v39": ["root"],
+            "v40": ["root"],
+            "v41": ["root"],
+            "v42": ["root"],
+            "v43": ["root"],
+            "v44": ["root"],
+            "v45": ["root"],
+            "v46": ["root"],
+            "v47": ["root"],
+            "v48": ["root"],
+            "v49": ["root"],
+            "v50": ["root"],
+            "v51": ["root"],
+            "v52": ["root"],
+            "v53": ["root"],
+            "v54": ["root"],
+            "v55": ["root"],
+            "v56": ["root"],
+            "v57": ["root"],
+            "v58": ["root"],
+            "v59": ["root"],
+            "v60": ["root"],
+            "v61": ["root"],
+            "v62": ["root"],
+            "v63": ["root"],
+            "v64": ["root"],
+            "v65": ["root"],
+            "v66": ["root"],
+            "v67": ["root"],
+            "v68": ["root"],
+            "v69": ["root"],
+            "v70": ["root"],
+            "v71": ["root"],
+            "v72": ["root"],
+            "v73": ["root"],
+            "v74": ["root"],
+            "v75": ["root"],
+            "v76": ["root"],
+            "v77": ["root"],
+            "v78": ["root"],
+            "v79": ["root"],
+            "v80": ["root"],
+            "v81": ["root"],
+            "v82": ["root"],
+            "v83": ["root"],
+            "v84": ["root"],
+            "v85": ["root"],
+            "v86": ["root"],
+            "v87": ["root"],
+            "v88": ["root"],
+            "v89": ["root"],
+            "v90": ["root"],
+            "v91": ["root"],
+            "v92": ["root"],
+            "v93": ["root"],
+            "v94": ["root"],
+            "v95": ["root"],
+            "v96": ["root"],
+            "v97": ["root"],
+            "v98": ["root"],
+            "v99": ["root"],
+            "v100": ["root"],
+            "v101": ["root"],
+            "v102": ["root"],
+            "v103": ["root"],
+            "v104": ["root"],
+            "v105": ["root"],
+            "v106": ["root"],
+            "v107": ["root"],
+            "v108": ["root"],
+            "v109": ["root"],
+            "v110": ["root"],
+            "v111": ["root"],
+            "v112": ["root"],
+            "v113": ["root"],
+            "v114": ["root"],
+            "v115": ["root"],
+            "v116": ["root"],
+            "v117": ["root"],
+            "v118": ["root"],
+            "v119": ["root"],
+            "v120": ["root"],
+            "v121": ["root"],
+            "v122": ["root"],
+            "v123": ["root"],
+            "v124": ["root"],
+            "v125": ["root"],
+            "v126": ["root"],
+            "v127": ["root"],
+            "v128": ["root"],
+            "v129": ["root"],
+            "v130": ["root"],
+            "v131": ["root"],
+            "v132": ["root"],
+            "v133": ["root"],
+            "v134": ["root"],
+            "v135": ["root"],
+            "v136": ["root"],
+            "v137": ["root"],
+            "v138": ["root"],
+            "v139": ["root"],
+            "v140": ["root"],
+            "v141": ["root"],
+            "v142": ["root"],
+            "v143": ["root"],
+            "v144": ["root"],
+            "v145": ["root"],
+            "v146": ["root"],
+            "v147": ["root"],
+            "v148": ["root"],
+            "v149": ["root"],
+            "v150": ["root"],
+            "v151": ["root"],
+            "v152": ["root"],
+            "v153": ["root"],
+            "v154": ["root"],
+            "v155": ["root"],
+            "v156": ["root"],
+            "v157": ["root"],
+            "v158": ["root"],
+            "v159": ["root"],
+            "v160": ["root"],
+            "v161": ["root"],
+            "v162": ["root"],
+            "v163": ["root"],
+            "v164": ["root"],
+            "v165": ["root"],
+            "v166": ["root"],
+            "v167": ["root"],
+            "v168": ["root"],
+            "v169": ["root"],
+            "v170": ["root"],
+            "v171": ["root"],
+            "v172": ["root"],
+            "v173": ["root"],
+            "v174": ["root"],
+            "v175": ["root"],
+            "v176": ["root"],
+            "v177": ["root"],
+            "v178": ["root"],
+            "v179": ["root"],
+            "v180": ["root"],
+            "v181": ["root"],
+            "v182": ["root"],
+            "v183": ["root"],
+            "v184": ["root"],
+            "v185": ["root"],
+            "v186": ["root"],
+            "v187": ["root"],
+            "v188": ["root"],
+            "v189": ["root"],
+            "v190": ["root"],
+            "v191": ["root"],
+            "v192": ["root"],
+            "v193": ["root"],
+            "v194": ["root"],
+            "v195": ["root"],
+            "v196": ["root"],
+            "v197": ["root"],
+            "v198": ["root"],
+            "v199": ["root"],
+            "v200": ["root"],
+            "v201": ["root"],
+            "v202": ["root"],
+            "v203": ["root"],
+            "v204": ["root"],
+            "v205": ["root"],
+            "v206": ["root"],
+            "v207": ["root"],
+            "v208": ["root"],
+            "v209": ["root"],
+            "v210": ["root"],
+            "v211": ["root"],
+            "v212": ["root"],
+            "v213": ["root"],
+            "v214": ["root"],
+            "v215": ["root"],
+            "v216": ["root"],
+            "v217": ["root"],
+            "v218": ["root"],
+            "v219": ["root"],
+            "v220": ["root"],
+            "v221": ["root"],
+            "v222": ["root"],
+            "v223": ["root"],
+            "v224": ["root"],
+            "v225": ["root"],
+            "v226": ["root"],
+            "v227": ["root"],
+            "v228": ["root"],
+            "v229": ["root"],
+            "v230": ["root"],
+            "v231": ["root"],
+            "v232": ["root"],
+            "v233": ["root"],
+            "v234": ["root"],
+            "v235": ["root"],
+            "v236": ["root"],
+            "v237": ["root"],
+            "v238": ["root"],
+            "v239": ["root"],
+            "v240": ["root"],
+            "v241": ["root"],
+            "v242": ["root"],
+            "v243": ["root"],
+            "v244": ["root"],
+            "v245": ["root"],
+            "v246": ["root"],
+            "v247": ["root"],
+            "v248": ["root"],
+            "v249": ["root"],
+            "v250": ["root"],
+            "v251": ["root"],
+            "v252": ["root"],
+            "v253": ["root"],
+            "v254": ["root"],
+            "v255": ["root"]
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "257 values",
+      "contexts": {
+        "world": {
+          "inherit": {
+            "v0": ["root"],
+            "v1": ["root"],
+            "v2": ["root"],
+            "v3": ["root"],
+            "v4": ["root"],
+            "v5": ["root"],
+            "v6": ["root"],
+            "v7": ["root"],
+            "v8": ["root"],
+            "v9": ["root"],
+            "v10": ["root"],
+            "v11": ["root"],
+            "v12": ["root"],
+            "v13": ["root"],
+            "v14": ["root"],
+            "v15": ["root"],
+            "v16": ["root"],
+            "v17": ["root"],
+            "v18": ["root"],
+            "v19": ["root"],
+            "v20": ["root"],
+            "v21": ["root"],
+            "v22": ["root"],
+            "v23": ["root"],
+            "v24": ["root"],
+            "v25": ["root"],
+            "v26": ["root"],
+            "v27": ["root"],
+            "v28": ["root"],
+            "v29": ["root"],
+            "v30": ["root"],
+            "v31": ["root"],
+            "v32": ["root"],
+            "v33": ["root"],
+            "v34": ["root"],
+            "v35": ["root"],
+            "v36": ["root"],
+            "v37": ["root"],
+            "v38": ["root"],
+            "v39": ["root"],
+            "v40": ["root"],
+            "v41": ["root"],
+            "v42": ["root"],
+            "v43": ["root"],
+            "v44": ["root"],
+            "v45": ["root"],
+            "v46": ["root"],
+            "v47": ["root"],
+            "v48": ["root"],
+            "v49": ["root"],
+            "v50": ["root"],
+            "v51": ["root"],
+            "v52": ["root"],
+            "v53": ["root"],
+            "v54": ["root"],
+            "v55": ["root"],
+            "v56": ["root"],
+            "v57": ["root"],
+            "v58": ["root"],
+            "v59": ["root"],
+            "v60": ["root"],
+            "v61": ["root"],
+            "v62": ["root"],
+            "v63": ["root"],
+            "v64": ["root"],
+            "v65": ["root"],
+            "v66": ["root"],
+            "v67": ["root"],
+            "v68": ["root"],
+            "v69": ["root"],
+            "v70": ["root"],
+            "v71": ["root"],
+            "v72": ["root"],
+            "v73": ["root"],
+            "v74": ["root"],
+            "v75": ["root"],
+            "v76": ["root"],
+            "v77": ["root"],
+            "v78": ["root"],
+            "v79": ["root"],
+            "v80": ["root"],
+            "v81": ["root"],
+            "v82": ["root"],
+            "v83": ["root"],
+            "v84": ["root"],
+            "v85": ["root"],
+            "v86": ["root"],
+            "v87": ["root"],
+            "v88": ["root"],
+            "v89": ["root"],
+            "v90": ["root"],
+            "v91": ["root"],
+            "v92": ["root"],
+            "v93": ["root"],
+            "v94": ["root"],
+            "v95": ["root"],
+            "v96": ["root"],
+            "v97": ["root"],
+            "v98": ["root"],
+            "v99": ["root"],
+            "v100": ["root"],
+            "v101": ["root"],
+            "v102": ["root"],
+            "v103": ["root"],
+            "v104": ["root"],
+            "v105": ["root"],
+            "v106": ["root"],
+            "v107": ["root"],
+            "v108": ["root"],
+            "v109": ["root"],
+            "v110": ["root"],
+            "v111": ["root"],
+            "v112": ["root"],
+            "v113": ["root"],
+            "v114": ["root"],
+            "v115": ["root"],
+            "v116": ["root"],
+            "v117": ["root"],
+            "v118": ["root"],
+            "v119": ["root"],
+            "v120": ["root"],
+            "v121": ["root"],
+            "v122": ["root"],
+            "v123": ["root"],
+            "v124": ["root"],
+            "v125": ["root"],
+            "v126": ["root"],
+            "v127": ["root"],
+            "v128": ["root"],
+            "v129": ["root"],
+            "v130": ["root"],
+            "v131": ["root"],
+            "v132": ["root"],
+            "v133": ["root"],
+            "v134": ["root"],
+            "v135": ["root"],
+            "v136": ["root"],
+            "v137": ["root"],
+            "v138": ["root"],
+            "v139": ["root"],
+            "v140": ["root"],
+            "v141": ["root"],
+            "v142": ["root"],
+            "v143": ["root"],
+            "v144": ["root"],
+            "v145": ["root"],
+            "v146": ["root"],
+            "v147": ["root"],
+            "v148": ["root"],
+            "v149": ["root"],
+            "v150": ["root"],
+            "v151": ["root"],
+            "v152": ["root"],
+            "v153": ["root"],
+            "v154": ["root"],
+            "v155": ["root"],
+            "v156": ["root"],
+            "v157": ["root"],
+            "v158": ["root"],
+            "v159": ["root"],
+            "v160": ["root"],
+            "v161": ["root"],
+            "v162": ["root"],
+            "v163": ["root"],
+            "v164": ["root"],
+            "v165": ["root"],
+            "v166": ["root"],
+            "v167": ["root"],
+            "v168": ["root"],
+            "v169": ["root"],
+            "v170": ["root"],
+            "v171": ["root"],
+            "v172": ["root"],
+            "v173": ["root"],
+            "v174": ["root"],
+            "v175": ["root"],
+            "v176": ["root"],
+            "v177": ["root"],
+            "v178": ["root"],
+            "v179": ["root"],
+            "v180": ["root"],
+            "v181": ["root"],
+            "v182": ["root"],
+            "v183": ["root"],
+            "v184": ["root"],
+            "v185": ["root"],
+            "v186": ["root"],
+            "v187": ["root"],
+            "v188": ["root"],
+            "v189": ["root"],
+            "v190": ["root"],
+            "v191": ["root"],
+            "v192": ["root"],
+            "v193": ["root"],
+            "v194": ["root"],
+            "v195": ["root"],
+            "v196": ["root"],
+            "v197": ["root"],
+            "v198": ["root"],
+            "v199": ["root"],
+            "v200": ["root"],
+            "v201": ["root"],
+            "v202": ["root"],
+            "v203": ["root"],
+            "v204": ["root"],
+            "v205": ["root"],
+            "v206": ["root"],
+            "v207": ["root"],
+            "v208": ["root"],
+            "v209": ["root"],
+            "v210": ["root"],
+            "v211": ["root"],
+            "v212": ["root"],
+            "v213": ["root"],
+            "v214": ["root"],
+            "v215": ["root"],
+            "v216": ["root"],
+            "v217": ["root"],
+            "v218": ["root"],
+            "v219": ["root"],
+            "v220": ["root"],
+            "v221": ["root"],
+            "v222": ["root"],
+            "v223": ["root"],
+            "v224": ["root"],
+            "v225": ["root"],
+            "v226": ["root"],
+            "v227": ["root"],
+            "v228": ["root"],
+            "v229": ["root"],
+            "v230": ["root"],
+            "v231": ["root"],
+            "v232": ["root"],
+            "v233": ["root"],
+            "v234": ["root"],
+            "v235": ["root"],
+            "v236": ["root"],
+            "v237": ["root"],
+            "v238": ["root"],
+            "v239": ["root"],
+            "v240": ["root"],
+            "v241": ["root"],
+            "v242": ["root"],
+            "v243": ["root"],
+            "v244": ["root"],
+            "v245": ["root"],
+            "v246": ["root"],
+            "v247": ["root"],
+            "v248": ["root"],
+            "v249": ["root"],
+            "v250": ["root"],
+            "v251": ["root"],
+            "v252": ["root"],
+            "v253": ["root"],
+            "v254": ["root"],
+            "v255": ["root"],
+            "v256": ["root"]
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "an invalid context key",
+      "contexts": { "World": { "inherit": { "a": ["b"] } } },
+      "valid": false
+    },
+    {
+      "name": "an empty parent value",
+      "contexts": { "world": { "inherit": { "a": [""] } } },
+      "valid": false
+    },
+    {
+      "name": "two values equal ignoring case",
+      "contexts": { "world": { "inherit": { "Nether": ["world"], "nether": ["world"] } } },
+      "valid": false
+    }
+  ],
+  "entryContexts": [
+    { "context": {}, "valid": true, "canonical": "" },
+    {
+      "context": { "world": "creative" },
+      "valid": true,
+      "canonical": "[[\"world\",\"creative\"]]"
+    },
+    {
+      "context": { "world": "Creative", "server": "EU" },
+      "valid": true,
+      "canonical": "[[\"server\",\"eu\"],[\"world\",\"creative\"]]"
+    },
+    {
+      "context": { "world": "has space" },
+      "valid": true,
+      "canonical": "[[\"world\",\"has space\"]]"
+    },
+    {
+      "context": { "world": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
+      "valid": true,
+      "canonical": "[[\"world\",\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"]]"
+    },
+    { "context": { "a_1": "étÉ" }, "valid": true, "canonical": "[[\"a_1\",\"étÉ\"]]" },
+    { "context": { "world": "" }, "valid": false },
+    {
+      "context": {
+        "world": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": false
+    },
+    { "context": { "world": "tab\there" }, "valid": false },
+    { "context": { "world": "del" }, "valid": false },
+    { "context": { "World": "x" }, "valid": false },
+    { "context": { "1world": "x" }, "valid": false },
+    { "context": { "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "x" }, "valid": false },
+    { "context": { "world": "a", "server": "b", "region": "c" }, "valid": false }
   ]
 }

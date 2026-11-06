@@ -62,7 +62,8 @@ export interface ExportRoleRecord {
   color: string | null;
   isDefault: boolean;
   metadata: Json;
-  entries: { permission: string; value: boolean }[];
+  /** `context` is present only on a contextual entry. */
+  entries: { permission: string; value: boolean; context?: Record<string, string> }[];
   /** Parent role ids. */
   parents: string[];
   createdAt: string;
@@ -78,7 +79,14 @@ export interface ExportMemberRecord {
   status: string;
   /** Role ids. */
   roles: string[];
-  overrides: { permission: string; value: boolean; setAt: string; setByPersonId: string | null }[];
+  /** `context` is present only on a contextual override. */
+  overrides: {
+    permission: string;
+    value: boolean;
+    context?: Record<string, string>;
+    setAt: string;
+    setByPersonId: string | null;
+  }[];
   metadata: Json;
   notesPublic: string | null;
   notesPrivate: string | null;

@@ -16,6 +16,36 @@ describe("makeCacheKey", () => {
     const original = makeCacheKey("user" as UserId, "a grp" as GroupId, "perm" as PermissionKey);
     expect(shifted).not.toBe(original);
   });
+
+  it("keys each canonical context separately", () => {
+    const global = makeCacheKey(USER_A, GROUP_A, PERMISSION);
+    expect(makeCacheKey(USER_A, GROUP_A, PERMISSION, false, {})).toBe(global);
+    expect(makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "nether" })).not.toBe(global);
+    expect(makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "Nether" })).toBe(
+      makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "nether" }),
+    );
+    expect(makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "a", server: "b" })).toBe(
+      makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { server: "b", world: "a" }),
+    );
+  });
+
+  it("keeps the context segment free of the delimiter", () => {
+    const key = makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "a\u0000b" });
+    expect(key.split("\u0000")).toHaveLength(5);
+  });
+});
+
+describe("PermissionCache contextual invalidation", () => {
+  it("invalidateUser and invalidateGroup sweep contextual keys too", async () => {
+    const cache = new PermissionCache();
+    const key = makeCacheKey(USER_A, GROUP_A, PERMISSION, false, { world: "nether" });
+    await cache.prefetch(key, async () => true);
+    cache.invalidateUser(USER_A);
+    expect(cache.has(key)).toBe(false);
+    await cache.prefetch(key, async () => true);
+    cache.invalidateGroup(GROUP_A);
+    expect(cache.has(key)).toBe(false);
+  });
 });
 
 describe("PermissionCache scoped invalidation", () => {

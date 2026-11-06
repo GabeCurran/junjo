@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { permissionContextSchema } from "../permissionContext.js";
 import { PERMISSION_KEY_MAX_LENGTH } from "./roles.schema.js";
 
 // Strict "true" / "false" matches the precedent set by the
@@ -17,6 +18,9 @@ export const checkPermissionQuery = z.object({
   inherit: boolFlag,
 });
 
+// The single check's context is read from `context.<key>` query
+// parameters by `contextFromQuery`, not by this schema.
+
 export type CheckPermissionQuery = z.infer<typeof checkPermissionQuery>;
 
 // Batch cap. Each entry costs the same database work as a single check,
@@ -29,6 +33,8 @@ const checkTriple = z
     userId: z.string().min(1),
     groupId: z.string().min(1),
     permission: z.string().min(1).max(PERMISSION_KEY_MAX_LENGTH),
+    // Per entry; absent or empty means only global entries apply.
+    context: permissionContextSchema.optional(),
   })
   .strict();
 

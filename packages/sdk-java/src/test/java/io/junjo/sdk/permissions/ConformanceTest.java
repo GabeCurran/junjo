@@ -2,6 +2,7 @@ package io.junjo.sdk.permissions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
@@ -9,6 +10,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.MemberAccess;
 import io.junjo.sdk.model.MemberPermissionOverride;
 import io.junjo.sdk.model.MemberStatus;
@@ -29,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -53,6 +56,58 @@ class ConformanceTest {
             out.put(PermissionResolver.normalizeKey(mode, e.getKey()), e.getValue().getAsBoolean());
         }
         return out;
+    }
+
+    static Map<String, String> stringMap(JsonObject o) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (o != null) for (Map.Entry<String, JsonElement> e : o.entrySet()) out.put(e.getKey(), e.getValue().getAsString());
+        return out;
+    }
+
+    static Context context(JsonObject o) {
+        return o == null ? Context.GLOBAL : Context.of(stringMap(o));
+    }
+
+    // Contextual entries as a caller writes them: keys normalized in the mode, contexts folded.
+    static List<PermissionEntry> contextEntries(PermissionMode mode, JsonArray a) {
+        List<PermissionEntry> out = new ArrayList<>();
+        if (a == null) return out;
+        for (JsonElement el : a) {
+            JsonObject e = el.getAsJsonObject();
+            out.add(new PermissionEntry(PermissionResolver.normalizeKey(mode, e.get("permission").getAsString()),
+                    e.get("value").getAsBoolean(), context(e.getAsJsonObject("context"))));
+        }
+        return out;
+    }
+
+    // The same entries with keys as written, for the compiled path, which normalizes them itself.
+    static List<PermissionEntry> rawContextEntries(JsonArray a) {
+        List<PermissionEntry> out = new ArrayList<>();
+        if (a == null) return out;
+        for (JsonElement el : a) {
+            JsonObject e = el.getAsJsonObject();
+            out.add(new PermissionEntry(e.get("permission").getAsString(), e.get("value").getAsBoolean(),
+                    context(e.getAsJsonObject("context"))));
+        }
+        return out;
+    }
+
+    static Map<String, Map<String, List<String>>> inheritanceMap(JsonObject contexts) {
+        Map<String, Map<String, List<String>>> out = new LinkedHashMap<>();
+        if (contexts == null) return out;
+        for (Map.Entry<String, JsonElement> k : contexts.entrySet()) {
+            Map<String, List<String>> values = new LinkedHashMap<>();
+            JsonObject inherit = k.getValue().getAsJsonObject().getAsJsonObject("inherit");
+            for (Map.Entry<String, JsonElement> v : inherit.entrySet()) {
+                values.put(v.getKey(), strings(v.getValue().getAsJsonArray()));
+            }
+            out.put(k.getKey(), values);
+        }
+        return out;
+    }
+
+    static ContextInheritance inheritance(JsonObject vc) {
+        return ContextInheritance.of(inheritanceMap(vc.getAsJsonObject("contexts")));
     }
 
     static List<String> strings(JsonArray a) {
@@ -88,27 +143,45 @@ class ConformanceTest {
             roles.put(r.getKey(), new ResolverRole(
                     role.get("priority").getAsLong(),
                     normalized(mode, role.getAsJsonObject("entries")),
+                    contextEntries(mode, role.getAsJsonArray("contextEntries")),
                     strings(role.getAsJsonArray("parents"))));
         }
         JsonObject member = vc.getAsJsonObject("member");
         Map<String, Boolean> overrides = normalized(mode, member.getAsJsonObject("overrides"));
+        List<PermissionEntry> contextOverrides = contextEntries(mode, member.getAsJsonArray("contextOverrides"));
         List<String> direct = strings(member.getAsJsonArray("roles"));
+        ContextInheritance inheritance = inheritance(vc);
         for (JsonElement c : vc.getAsJsonArray("checks")) {
             JsonObject check = c.getAsJsonObject();
             String permission = check.get("permission").getAsString();
-            PermissionCheckResult r = PermissionResolver.resolve(mode, overrides, direct, roles, permission);
-            assertEquals(check.get("allowed").getAsBoolean(), r.allowed(), permission + " allowed");
-            assertEquals(check.get("source").getAsString(), r.source().wire(), permission + " source");
+            Context context = context(check.getAsJsonObject("context"));
+            String label = permission + " in " + context;
+            PermissionCheckResult r = PermissionResolver.resolve(
+                    mode, overrides, contextOverrides, direct, roles, permission, context, inheritance);
+            assertEquals(check.get("allowed").getAsBoolean(), r.allowed(), label + " allowed");
+            assertEquals(check.get("source").getAsString(), r.source().wire(), label + " source");
             String via = check.has("via") ? check.get("via").getAsString() : null;
-            assertEquals(via, r.viaRoleId(), permission + " via");
+            assertEquals(via, r.viaRoleId(), label + " via");
+            Context decided = context(check.getAsJsonObject("decidedContext"));
+            assertEquals(decided, r.context(), label + " decidedContext");
 
             // The compiled path (role graph + member access) must agree with the raw resolver.
-            PermissionCheckResult compiled = compiledCheck(vc, mode, permission);
-            assertEquals(r, compiled, permission + " compiled");
+            PermissionCheckResult compiled = compiledCheck(vc, mode, permission, context, inheritance);
+            assertEquals(r, compiled, label + " compiled");
+
+            // Without a context the four-argument resolver is the same algorithm.
+            if (context.isGlobal() && contextOverrides.isEmpty()) {
+                Map<String, ResolverRole> globalOnly = new LinkedHashMap<>();
+                roles.forEach((id, role) -> globalOnly.put(id,
+                        new ResolverRole(role.priority(), role.entries(), role.parents())));
+                assertEquals(r, PermissionResolver.resolve(mode, overrides, direct, globalOnly, permission),
+                        label + " context-less");
+            }
         }
     }
 
-    static PermissionCheckResult compiledCheck(JsonObject vc, PermissionMode mode, String permission) {
+    static PermissionCheckResult compiledCheck(
+            JsonObject vc, PermissionMode mode, String permission, Context context, ContextInheritance inheritance) {
         Instant t = Instant.EPOCH;
         List<Role> roles = new ArrayList<>();
         for (Map.Entry<String, JsonElement> r : vc.getAsJsonObject("roles").entrySet()) {
@@ -117,6 +190,7 @@ class ConformanceTest {
             for (Map.Entry<String, JsonElement> e : role.getAsJsonObject("entries").entrySet()) {
                 entries.add(new PermissionEntry(e.getKey(), e.getValue().getAsBoolean()));
             }
+            entries.addAll(rawContextEntries(role.getAsJsonArray("contextEntries")));
             roles.add(new Role(r.getKey(), "g", r.getKey(), role.get("priority").getAsLong(), null, false, List.of(),
                     entries, strings(role.getAsJsonArray("parents")), Map.of(), t));
         }
@@ -128,9 +202,53 @@ class ConformanceTest {
                 overrides.add(new MemberPermissionOverride("g", "u", e.getKey(), e.getValue().getAsBoolean(), t, null));
             }
         }
+        for (PermissionEntry e : rawContextEntries(member.getAsJsonArray("contextOverrides"))) {
+            overrides.add(new MemberPermissionOverride("g", "u", e.permission(), e.value(), t, null, e.context()));
+        }
         MemberAccess access = new MemberAccess("g", "u", MemberStatus.ACTIVE, strings(member.getAsJsonArray("roles")),
                 overrides, 1, null, null);
-        return PermissionResolver.compile(new RoleGraph("g", mode, null, roles)).check(access, permission);
+        return PermissionResolver.compile(new RoleGraph("g", mode, null, roles), inheritance)
+                .check(access, permission, context);
+    }
+
+    @TestFactory
+    Stream<DynamicTest> contextConfigs() throws Exception {
+        List<DynamicTest> tests = new ArrayList<>();
+        for (JsonElement el : vectors().getAsJsonArray("contextConfigs")) {
+            JsonObject cv = el.getAsJsonObject();
+            Map<String, Map<String, List<String>>> raw = inheritanceMap(cv.getAsJsonObject("contexts"));
+            boolean valid = cv.get("valid").getAsBoolean();
+            tests.add(dynamicTest("contexts " + cv.get("name").getAsString() + " valid=" + valid, () -> {
+                Optional<String> problem = ContextInheritance.problem(raw);
+                assertEquals(valid, problem.isEmpty(), problem.orElse("accepted"));
+                if (valid) ContextInheritance.of(raw);
+                else assertThrows(IllegalArgumentException.class, () -> ContextInheritance.of(raw));
+            }));
+        }
+        assertFalse(tests.isEmpty());
+        return tests.stream();
+    }
+
+    @TestFactory
+    Stream<DynamicTest> entryContexts() throws Exception {
+        List<DynamicTest> tests = new ArrayList<>();
+        for (JsonElement el : vectors().getAsJsonArray("entryContexts")) {
+            JsonObject ev = el.getAsJsonObject();
+            Map<String, String> raw = stringMap(ev.getAsJsonObject("context"));
+            boolean valid = ev.get("valid").getAsBoolean();
+            tests.add(dynamicTest("context " + raw + " valid=" + valid, () -> {
+                assertEquals(valid, Context.problem(raw).isEmpty(), Context.problem(raw).orElse("accepted"));
+                if (valid) {
+                    Context c = Context.of(raw);
+                    assertEquals(ev.get("canonical").getAsString(), c.canonicalKey());
+                    assertEquals(c, Context.fromWire(c.values()), "a folded context reads back unchanged");
+                } else {
+                    assertThrows(IllegalArgumentException.class, () -> Context.of(raw));
+                }
+            }));
+        }
+        assertFalse(tests.isEmpty());
+        return tests.stream();
     }
 
     @TestFactory

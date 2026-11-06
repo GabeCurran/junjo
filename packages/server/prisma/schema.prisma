@@ -370,8 +370,13 @@ model RolePermission {
   permissionKey String
   value         Boolean  @default(true)
   grantedAt     DateTime @default(now())
+  // Conditions under which the entry applies; null means global.
+  // `contextKey` is its canonical form ("" for global) and is part of
+  // the identity, so one key can be held globally and per context.
+  context       Json?
+  contextKey    String   @default("")
 
-  @@id([roleId, permissionKey])
+  @@id([roleId, permissionKey, contextKey])
   @@index([permissionKey])
 }
 
@@ -384,8 +389,11 @@ model MemberPermissionOverride {
   grant         Boolean
   setAt         DateTime    @default(now())
   setByUserId   String?
+  // As on `RolePermission`.
+  context       Json?
+  contextKey    String      @default("")
 
-  @@id([groupMemberId, permissionKey])
+  @@id([groupMemberId, permissionKey, contextKey])
   @@index([permissionKey])
 }
 

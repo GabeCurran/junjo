@@ -533,9 +533,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: seed.memberId,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });
@@ -601,9 +602,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       const firstStored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: seed.memberId,
             permissionKey: "vault.withdraw",
+            contextKey: "",
           },
         },
       });
@@ -616,9 +618,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(200);
       const secondStored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: seed.memberId,
             permissionKey: "vault.withdraw",
+            contextKey: "",
           },
         },
       });
@@ -780,9 +783,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: seed.memberId,
             permissionKey: "guild.kick",
+            contextKey: "",
           },
         },
       });

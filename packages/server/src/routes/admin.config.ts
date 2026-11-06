@@ -14,6 +14,19 @@ import { permissionCache } from "../permissionCache.js";
 import { applyPermissionModeSwitch } from "../permissionModeSwitch.js";
 import { type DeclaredFormats, findFormatConflicts } from "../userIdFormat.js";
 
+// Key order is not significant in the stored JSON, so configs compare
+// in a canonical form.
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    return `{${keys
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function sameFormats(a: DeclaredFormats, b: DeclaredFormats): boolean {
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
@@ -114,6 +127,11 @@ export function updateAdminGameConfigHandler(prisma: PrismaClient): Handler {
           });
         }
 
+        // Context inheritance changes which entries apply to a check.
+        const contextsChanged =
+          canonicalJson(resolveGameConfig(stored).permissions.contexts) !==
+          canonicalJson(resolveGameConfig(merged).permissions.contexts);
+
         const row = await tx.game.update({
           where: { id: gameId },
           data: {
@@ -124,12 +142,16 @@ export function updateAdminGameConfigHandler(prisma: PrismaClient): Handler {
           },
           select: { id: true, config: true, networkId: true },
         });
-        return { updated: row, cacheStale: before !== after || formatsChanged };
+        return {
+          updated: row,
+          cacheStale: before !== after || formatsChanged || contextsChanged,
+        };
       },
       { timeout: 60_000 },
     );
-    // Every cached answer for this game was computed under the old mode,
-    // or for id spellings that a newly declared format now rejects.
+    // Every cached answer for this game was computed under the old mode
+    // or context inheritance, or for id spellings that a newly declared
+    // format now rejects.
     if (cacheStale) permissionCache.clear();
 
     return c.json<WireAdminGameConfig>(toWire(updated.id, updated.config, updated.networkId));

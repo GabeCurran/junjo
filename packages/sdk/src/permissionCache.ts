@@ -1,4 +1,5 @@
-import type { PermissionCheckResult } from "@junjo.io/shared";
+import type { PermissionCheckResult, PermissionContext } from "@junjo.io/shared";
+import { permissionContextKey } from "./permissionContext.js";
 
 /**
  * Default time a permission answer is reused, in milliseconds. Short
@@ -73,10 +74,20 @@ export class PermissionCache {
   // Length-prefixed: userId and permission are caller-supplied strings
   // that may contain any character, so a delimiter-joined key lets one
   // tuple encode to another tuple's key and answer with the wrong
-  // verdict.
-  key(userId: string, groupId: string, permission: string, inherit: boolean): string {
+  // verdict. The context part is the canonical context key, so contexts
+  // the server treats as one share an answer and every other context
+  // gets its own.
+  key(
+    userId: string,
+    groupId: string,
+    permission: string,
+    inherit: boolean,
+    context?: PermissionContext,
+  ): string {
     let out = inherit ? "i" : "d";
-    for (const part of [userId, groupId, permission]) out += `|${part.length}:${part}`;
+    for (const part of [userId, groupId, permission, permissionContextKey(context)]) {
+      out += `|${part.length}:${part}`;
+    }
     return out;
   }
 

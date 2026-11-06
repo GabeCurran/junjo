@@ -662,3 +662,125 @@ describe("roles.getGraph", () => {
     await newClient(fetchMock).roles.getGraph("has/slash" as GroupId);
   });
 });
+
+describe("role entries with a context", () => {
+  const CREATIVE = { world: "creative" };
+
+  it("grantPermission sends the context in the body", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({
+        permission: "essentials.fly",
+        value: false,
+        context: CREATIVE,
+      });
+      return jsonResponse({
+        ...roleFixture,
+        entries: [{ permission: "essentials.fly", value: false, context: CREATIVE }],
+      });
+    });
+    const role = await newClient(fetchMock).roles.grantPermission(
+      "role_1" as RoleId,
+      "essentials.fly",
+      { value: false, context: CREATIVE },
+    );
+    expect(role.entries).toEqual([
+      { permission: "essentials.fly", value: false, context: CREATIVE },
+    ]);
+  });
+
+  it("grantPermission omits an empty context", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({ permission: "essentials.fly" });
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.grantPermission("role_1" as RoleId, "essentials.fly", {
+      context: {},
+    });
+  });
+
+  it("revokePermission selects the contextual entry with context query params", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/roles/role_1/permissions/essentials.fly");
+      expect([...url.searchParams]).toEqual([
+        ["context.server", "EU West"],
+        ["context.world", "creative"],
+      ]);
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.revokePermission("role_1" as RoleId, "essentials.fly", {
+      context: { world: "creative", server: "EU West" },
+    });
+  });
+
+  it("revokePermission sends no query string for the global entry", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).search).toBe("");
+      return jsonResponse(roleFixture);
+    });
+    const client = newClient(fetchMock);
+    await client.roles.revokePermission("role_1" as RoleId, "essentials.fly");
+    await client.roles.revokePermission("role_1" as RoleId, "essentials.fly", { context: {} });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("setEntries sends contextual entries and drops empty contexts", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({
+        entries: [
+          { permission: "essentials.fly", value: false },
+          { permission: "essentials.*", value: true, context: CREATIVE },
+          { permission: "chat", value: true },
+        ],
+      });
+      return jsonResponse(roleFixture);
+    });
+    await newClient(fetchMock).roles.setEntries("role_1" as RoleId, [
+      { permission: "essentials.fly", value: false },
+      { permission: "essentials.*", value: true, context: CREATIVE },
+      { permission: "chat", value: true, context: {} },
+    ]);
+  });
+
+  it("decodes context on entries in role reads and the role graph", async () => {
+    const entries = [
+      { permission: "essentials.fly", value: false },
+      { permission: "essentials.fly", value: true, context: CREATIVE },
+    ];
+    const fetchMock = makeFetch(async (req) => {
+      if (new URL(req.url).pathname.endsWith("/role-graph")) {
+        return jsonResponse({
+          groupId: "grp_1",
+          mode: "nodes",
+          defaultRoleId: null,
+          roles: [{ ...roleFixture, entries }],
+        });
+      }
+      return jsonResponse({ ...roleFixture, entries });
+    });
+    const client = newClient(fetchMock);
+    const role = await client.roles.get("role_1" as RoleId);
+    expect(role?.entries).toEqual(entries);
+    expect(role?.entries[0]).not.toHaveProperty("context");
+    const graph = await client.roles.getGraph("grp_1" as GroupId);
+    expect(graph.roles[0]?.entries).toEqual(entries);
+  });
+
+  it("treats an empty or malformed wire context as global", async () => {
+    const fetchMock = makeFetch(async () =>
+      jsonResponse({
+        ...roleFixture,
+        entries: [
+          { permission: "a", value: true, context: {} },
+          { permission: "b", value: true, context: null },
+        ],
+      }),
+    );
+    const role = await newClient(fetchMock).roles.get("role_1" as RoleId);
+    expect(role?.entries).toEqual([
+      { permission: "a", value: true },
+      { permission: "b", value: true },
+    ]);
+  });
+});

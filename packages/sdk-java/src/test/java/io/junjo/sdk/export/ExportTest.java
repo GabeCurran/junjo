@@ -9,6 +9,7 @@ import io.junjo.sdk.FakeServer;
 import io.junjo.sdk.JunjoClient;
 import io.junjo.sdk.TestSupport;
 import io.junjo.sdk.JunjoException;
+import io.junjo.sdk.model.Context;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -70,6 +71,23 @@ class ExportTest {
         assertEquals("42", s.position());
         assertEquals(2L, s.counts().get("group"));
         assertEquals("gm", r.header().get("gameId"));
+    }
+
+    @Test
+    void contextualEntriesAndOverridesKeepTheirContext() {
+        String body = HEADER + """
+
+                {"kind":"role","id":"r1","entries":[{"permission":"fly","value":false},                {"permission":"fly","value":true,"context":{"world":"creative"}}]}
+                {"kind":"member","id":"m1","overrides":[{"permission":"chat","value":false,"context":{"world":"hub"},                "setAt":"2026-11-01T00:00:00Z","setByPersonId":null}]}
+                {"kind":"end","counts":{"role":1,"member":1}}
+                """;
+        List<ExportRecord> records = drain(reader(body));
+        List<?> entries = (List<?>) records.get(1).get("entries");
+        assertEquals(Context.GLOBAL, ExportRecord.context(entries.get(0)));
+        assertEquals(Context.of("world", "creative"), ExportRecord.context(entries.get(1)));
+        List<?> overrides = (List<?>) records.get(2).get("overrides");
+        assertEquals(Context.of("world", "hub"), ExportRecord.context(overrides.get(0)));
+        assertEquals(Context.GLOBAL, ExportRecord.context("not an object"));
     }
 
     @Test

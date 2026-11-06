@@ -113,6 +113,16 @@ KappaMC's tier 2 items, after the Java SDK:
 - A last-known display name per linked id
 - A full game export (roles, members, bans, identities, audit)
 
+## Phase 6: permission contexts (approved Nov 7, 2026)
+
+Per-world rules are needed for MV's migration (42 per-world PermissionsEx lines), and Minecraft servers in general need them. This replaces deferred decision 3.
+
+1. Role entries and member overrides take an optional `context`, for example `{ "world": "creative" }`. Keys are game-defined; values fold with the same ASCII fold as nodes-mode keys.
+2. Game config `permissions.contexts.<key>.inherit` declares context inheritance (MV: 25 worlds inherit `world`), resolved transitively, with cycles refused.
+3. Precedence: layer, then context (exact, then inherited by distance, then global), then key specificity, then deny.
+4. Checks take an optional context; callers without one get today's answers. The conformance vectors gain context cases, including KappaMC's PermissionsEx examples.
+5. TS SDK, React, Java (resolver and `GameMirror` checkers bound to a context), docs, and a read-only context display in the dashboard.
+
 ## Status and follow-ups
 
 | Phase | State |

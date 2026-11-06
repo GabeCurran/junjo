@@ -2,9 +2,11 @@ import type { PermissionEntry, PermissionMode } from "@junjo.io/shared";
 import type { Group, Role } from "@prisma/client";
 import { loadPermissionMode } from "./config/loadGameConfig.js";
 import type { Db } from "./db.js";
+import { rowContextField } from "./permissionContext.js";
 
 // The parts of a role stored outside the Role row: its entries and its
-// parent role ids, both sorted for stable output.
+// parent role ids, both sorted for stable output. Entries sort by key,
+// then canonical context, so a key's global entry comes first.
 export interface RoleDetail {
   entries: PermissionEntry[];
   parents: string[];
@@ -12,9 +14,10 @@ export interface RoleDetail {
 
 export const EMPTY_ROLE_DETAIL: RoleDetail = { entries: [], parents: [] };
 
-// The keys a role grants: the wire `permissions` field.
+// The keys a role grants globally: the wire `permissions` field.
+// Contextual grants are listed only in `entries`.
 export function grantedKeys(detail: RoleDetail): string[] {
-  return detail.entries.filter((e) => e.value).map((e) => e.permission);
+  return detail.entries.filter((e) => e.value && !e.context).map((e) => e.permission);
 }
 
 export async function loadRoleDetails(
@@ -28,8 +31,8 @@ export async function loadRoleDetails(
   const [entryRows, parentRows] = await Promise.all([
     client.rolePermission.findMany({
       where: { roleId: { in: ids } },
-      select: { roleId: true, permissionKey: true, value: true },
-      orderBy: { permissionKey: "asc" },
+      select: { roleId: true, permissionKey: true, value: true, context: true, contextKey: true },
+      orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }],
     }),
     client.roleParent.findMany({
       where: { roleId: { in: ids } },
@@ -38,7 +41,11 @@ export async function loadRoleDetails(
     }),
   ]);
   for (const row of entryRows) {
-    out.get(row.roleId)?.entries.push({ permission: row.permissionKey, value: row.value });
+    out.get(row.roleId)?.entries.push({
+      permission: row.permissionKey,
+      value: row.value,
+      ...rowContextField(row),
+    });
   }
   for (const row of parentRows) out.get(row.roleId)?.parents.push(row.parentRoleId);
   return out;
@@ -55,7 +62,8 @@ export interface WireRole {
   priority: number;
   color: string | null;
   isDefault: boolean;
-  // Granted keys only. `entries` carries grants and denies.
+  // Globally granted keys only. `entries` carries grants and denies,
+  // global and contextual.
   permissions: string[];
   entries: PermissionEntry[];
   parents: string[];

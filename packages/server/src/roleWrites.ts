@@ -3,6 +3,7 @@ import type {
   GroupId,
   MemberUpdatedEvent,
   PartialGameConfig,
+  PermissionContext,
   PermissionEntry,
   PermissionGrantedEvent,
   PermissionKey,
@@ -27,6 +28,7 @@ import type { EventHub } from "./eventHub.js";
 import { publishStagedEvents, stageEvent, toPublicRole } from "./events.js";
 import { lockKey } from "./locks.js";
 import { permissionCache } from "./permissionCache.js";
+import { canonicalContextKey, storedContext } from "./permissionContext.js";
 import {
   MAX_ROLE_DEPTH,
   findRoleCycle,
@@ -114,7 +116,47 @@ async function loadWireRole(prisma: PrismaClient, roleId: string): Promise<WireR
 export interface EntryDiff {
   added: PermissionEntry[];
   removed: PermissionEntry[];
-  changed: { permission: string; before: boolean; after: boolean }[];
+  changed: { permission: string; before: boolean; after: boolean; context?: PermissionContext }[];
+}
+
+// The entry's context when it is contextual, for wire and audit shapes
+// that omit the field on global entries.
+function contextField(context: PermissionContext): { context?: PermissionContext } {
+  return Object.keys(context).length === 0 ? {} : { context: { ...context } };
+}
+
+// Identity of an entry inside one role or member: key and canonical
+// context. Length-prefixed so no key can encode another pair.
+function slotOf(permission: string, contextKey: string): string {
+  return `${permission.length}:${permission}|${contextKey}`;
+}
+
+interface SlotEntry {
+  permission: string;
+  contextKey: string;
+  context: PermissionContext;
+  value: boolean;
+}
+
+// A row filter matching exactly `entries` on one role: one `IN` list per
+// distinct context, so a large replace stays a handful of predicates.
+function slotsWhere(
+  roleId: string,
+  entries: readonly SlotEntry[],
+): Prisma.RolePermissionWhereInput {
+  const byContext = new Map<string, string[]>();
+  for (const e of entries) {
+    const keys = byContext.get(e.contextKey);
+    if (keys) keys.push(e.permission);
+    else byContext.set(e.contextKey, [e.permission]);
+  }
+  return {
+    OR: [...byContext].map(([contextKey, keys]) => ({
+      roleId,
+      contextKey,
+      permissionKey: { in: keys },
+    })),
+  };
 }
 
 function isEmptyDiff(d: EntryDiff): boolean {
@@ -136,54 +178,89 @@ export async function replaceRoleEntries(
       const mode = await lockPermissionMode(tx, gameId);
       const role = await lockScopedRole(tx, gameId, roleId);
 
-      const next = new Map<string, boolean>();
+      // An entry's identity is its key and context, so the same key may
+      // appear once globally and once per context.
+      const next = new Map<string, SlotEntry>();
       for (const entry of entries) {
-        const key = keyForWrite(mode, entry.permission);
-        if (next.has(key)) {
-          throw Errors.badRequest(`duplicate permission ${JSON.stringify(key)} in entries`);
+        const permission = keyForWrite(mode, entry.permission);
+        const context = entry.context ?? {};
+        const contextKey = canonicalContextKey(context);
+        const slot = slotOf(permission, contextKey);
+        if (next.has(slot)) {
+          const where = contextKey === "" ? "" : ` with context ${contextKey}`;
+          throw Errors.badRequest(
+            `duplicate permission ${JSON.stringify(permission)}${where} in entries`,
+          );
         }
-        next.set(key, entry.value);
+        next.set(slot, { permission, contextKey, context, value: entry.value });
       }
 
       const current = await tx.rolePermission.findMany({
         where: { roleId },
-        select: { permissionKey: true, value: true },
+        select: { permissionKey: true, value: true, context: true, contextKey: true },
       });
-      const prev = new Map(current.map((r) => [r.permissionKey, r.value]));
+      const prev = new Map<string, SlotEntry>(
+        current.map((r) => [
+          slotOf(r.permissionKey, r.contextKey),
+          {
+            permission: r.permissionKey,
+            contextKey: r.contextKey,
+            context: (r.contextKey === "" ? {} : (r.context ?? {})) as PermissionContext,
+            value: r.value,
+          },
+        ]),
+      );
       const diff: EntryDiff = { added: [], removed: [], changed: [] };
-      for (const [permission, value] of next) {
-        const before = prev.get(permission);
-        if (before === undefined) diff.added.push({ permission, value });
-        else if (before !== value) diff.changed.push({ permission, before, after: value });
+      const added: SlotEntry[] = [];
+      const removed: SlotEntry[] = [];
+      const changed: SlotEntry[] = [];
+      for (const [slot, entry] of next) {
+        const before = prev.get(slot);
+        const shown = { permission: entry.permission, ...contextField(entry.context) };
+        if (before === undefined) {
+          added.push(entry);
+          diff.added.push({ ...shown, value: entry.value });
+        } else if (before.value !== entry.value) {
+          changed.push(entry);
+          diff.changed.push({ ...shown, before: before.value, after: entry.value });
+        }
       }
-      for (const [permission, value] of prev) {
-        if (!next.has(permission)) diff.removed.push({ permission, value });
+      for (const [slot, entry] of prev) {
+        if (next.has(slot)) continue;
+        removed.push(entry);
+        diff.removed.push({
+          permission: entry.permission,
+          value: entry.value,
+          ...contextField(entry.context),
+        });
       }
       if (isEmptyDiff(diff)) return { role, event: null };
 
-      if (diff.removed.length > 0) {
+      if (removed.length > 0) {
         await tx.rolePermission.deleteMany({
-          where: { roleId, permissionKey: { in: diff.removed.map((e) => e.permission) } },
+          where: slotsWhere(roleId, removed),
         });
       }
       for (const value of [true, false]) {
-        const keys = diff.changed.filter((c) => c.after === value).map((c) => c.permission);
-        if (keys.length > 0) {
+        const flips = changed.filter((e) => e.value === value);
+        if (flips.length > 0) {
           await tx.rolePermission.updateMany({
-            where: { roleId, permissionKey: { in: keys } },
+            where: slotsWhere(roleId, flips),
             data: { value },
           });
         }
       }
-      if (diff.added.length > 0) {
+      if (added.length > 0) {
         await tx.rolePermission.createMany({
-          data: diff.added.map((e) => ({ roleId, permissionKey: e.permission, value: e.value })),
+          data: added.map((e) => ({
+            roleId,
+            permissionKey: e.permission,
+            value: e.value,
+            context: storedContext(e.context) ?? Prisma.DbNull,
+            contextKey: e.contextKey,
+          })),
         });
-        await registerKeys(
-          tx,
-          gameId,
-          diff.added.map((e) => e.permission),
-        );
+        await registerKeys(tx, gameId, [...new Set(added.map((e) => e.permission))]);
       }
       await tx.auditEntry.create({
         data: {
@@ -208,25 +285,36 @@ export async function replaceRoleEntries(
   return loadWireRole(prisma, roleId);
 }
 
-// Adds or updates one entry. Idempotent when the entry already holds
-// `value`. A key entering the granted set emits `permission.granted`; a
-// key leaving it emits `permission.revoked`; any change involving a
-// deny also emits `role.updated`.
+// Adds or updates one entry, identified by key and context. Idempotent
+// when the entry already holds `value`. For a global entry, a key
+// entering the granted set emits `permission.granted`, a key leaving it
+// emits `permission.revoked`, and any change involving a deny also
+// emits `role.updated`. Any change to a contextual entry emits only
+// `role.updated`: the legacy events describe the global granted set.
+// `context` must already be validated and folded; empty is global.
 export async function upsertRoleEntry(
   prisma: PrismaClient,
   hub: EventHub,
-  args: { gameId: string; roleId: string; permission: string; value: boolean },
+  args: {
+    gameId: string;
+    roleId: string;
+    permission: string;
+    value: boolean;
+    context?: PermissionContext;
+  },
 ): Promise<WireRole> {
   const { gameId, roleId, value } = args;
+  const context = args.context ?? {};
+  const contextKey = canonicalContextKey(context);
   const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const role = await lockScopedRole(tx, gameId, roleId);
     const permission = keyForWrite(mode, args.permission);
+    const where = {
+      roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
+    };
 
-    const existing = await tx.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId, permissionKey: permission } },
-      select: { value: true },
-    });
+    const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
     if (existing?.value === value) return { role, events: [] };
     if (!existing) {
       const count = await tx.rolePermission.count({ where: { roleId } });
@@ -237,12 +325,36 @@ export async function upsertRoleEntry(
 
     await registerKeys(tx, gameId, [permission]);
     await tx.rolePermission.upsert({
-      where: { roleId_permissionKey: { roleId, permissionKey: permission } },
-      create: { roleId, permissionKey: permission, value },
+      where,
+      create: {
+        roleId,
+        permissionKey: permission,
+        value,
+        context: storedContext(context) ?? Prisma.DbNull,
+        contextKey,
+      },
       update: { value },
     });
 
     const events: (PermissionGrantedEvent | PermissionRevokedEvent | RoleUpdatedEvent)[] = [];
+    if (contextKey !== "") {
+      const shown = { permission, ...contextField(context) };
+      const diff: EntryDiff = existing
+        ? { added: [], removed: [], changed: [{ ...shown, before: existing.value, after: value }] }
+        : { added: [{ ...shown, value }], removed: [], changed: [] };
+      await tx.auditEntry.create({
+        data: {
+          gameId,
+          groupId: role.groupId,
+          actorUserId: null,
+          action: "role.entries.changed",
+          targetId: role.id,
+          payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      events.push(await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]));
+      return { role, events };
+    }
     const base = {
       gameId: gameId as GameId,
       groupId: role.groupId as GroupId,
@@ -300,31 +412,32 @@ export async function upsertRoleEntry(
   return loadWireRole(prisma, roleId);
 }
 
-// Removes one entry whatever its value. Idempotent on a missing entry.
-// Removing a grant emits `permission.revoked`; removing a deny emits
-// `role.updated`.
+// Removes one entry, identified by key and context, whatever its value.
+// Idempotent on a missing entry. Removing a global grant emits
+// `permission.revoked`; removing a global deny or any contextual entry
+// emits `role.updated`. `context` as for `upsertRoleEntry`.
 export async function removeRoleEntry(
   prisma: PrismaClient,
   hub: EventHub,
-  args: { gameId: string; roleId: string; permission: string },
+  args: { gameId: string; roleId: string; permission: string; context?: PermissionContext },
 ): Promise<WireRole> {
   const { gameId, roleId } = args;
   if (!args.permission) throw Errors.badRequest("permission must not be empty");
+  const context = args.context ?? {};
+  const contextKey = canonicalContextKey(context);
   const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const role = await lockScopedRole(tx, gameId, roleId);
     const permission = normalizePermissionKey(mode, args.permission);
+    const where = {
+      roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
+    };
 
-    const existing = await tx.rolePermission.findUnique({
-      where: { roleId_permissionKey: { roleId, permissionKey: permission } },
-      select: { value: true },
-    });
+    const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
     if (!existing) return { role, event: null };
 
-    await tx.rolePermission.delete({
-      where: { roleId_permissionKey: { roleId, permissionKey: permission } },
-    });
-    if (existing.value) {
+    await tx.rolePermission.delete({ where });
+    if (existing.value && contextKey === "") {
       await tx.auditEntry.create({
         data: {
           gameId,
@@ -344,7 +457,11 @@ export async function removeRoleEntry(
       });
       return { role, event };
     }
-    const diff: EntryDiff = { added: [], removed: [{ permission, value: false }], changed: [] };
+    const diff: EntryDiff = {
+      added: [],
+      removed: [{ permission, value: existing.value, ...contextField(context) }],
+      changed: [],
+    };
     await tx.auditEntry.create({
       data: {
         gameId,
@@ -676,12 +793,13 @@ export async function updateRole(
   return loadWireRole(prisma, roleId);
 }
 
-// Sets a member override, storing the key in the game's mode.
-// Idempotent on a matching `grant`, which leaves the member version
-// alone. The first sight of a key auto-registers `PermissionDef`.
-// `ifMatch`, when set, is checked against the member version under the
-// member row lock. Returns the stored row and the member version after
-// the call.
+// Sets a member override, identified by key and context, storing the
+// key in the game's mode. Idempotent on a matching `grant`, which
+// leaves the member version alone. The first sight of a key
+// auto-registers `PermissionDef`. `ifMatch`, when set, is checked
+// against the member version under the member row lock. `context` as
+// for `upsertRoleEntry`. Returns the stored row and the member version
+// after the call.
 export async function setMemberOverride(
   prisma: PrismaClient,
   hub: EventHub,
@@ -692,15 +810,24 @@ export async function setMemberOverride(
     externalUserId: string;
     permission: string;
     grant: boolean;
+    context?: PermissionContext;
     ifMatch?: number | null;
   },
 ): Promise<{ row: MemberPermissionOverride; memberVersion: number }> {
   const { gameId, groupId, groupMemberId, grant } = args;
+  const context = args.context ?? {};
+  const contextKey = canonicalContextKey(context);
   const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const permission = keyForWrite(mode, args.permission);
     const current = await lockMemberVersion(tx, groupMemberId, args.ifMatch ?? null);
-    const where = { groupMemberId_permissionKey: { groupMemberId, permissionKey: permission } };
+    const where = {
+      groupMemberId_permissionKey_contextKey: {
+        groupMemberId,
+        permissionKey: permission,
+        contextKey,
+      },
+    };
     const existing = await tx.memberPermissionOverride.findUnique({ where });
     if (existing && existing.grant === grant) {
       return { row: existing, memberVersion: current, changed: false as const };
@@ -709,10 +836,22 @@ export async function setMemberOverride(
     await registerKeys(tx, gameId, [permission]);
     const row = await tx.memberPermissionOverride.upsert({
       where,
-      create: { groupMemberId, permissionKey: permission, grant, setByUserId: null },
+      create: {
+        groupMemberId,
+        permissionKey: permission,
+        grant,
+        setByUserId: null,
+        context: storedContext(context) ?? Prisma.DbNull,
+        contextKey,
+      },
       update: { grant, setAt: new Date() },
     });
-    const auditPayload: Record<string, unknown> = { memberId: groupMemberId, permission, grant };
+    const auditPayload: Record<string, unknown> = {
+      memberId: groupMemberId,
+      permission,
+      grant,
+      ...contextField(context),
+    };
     if (existing) auditPayload.before = { grant: existing.grant };
     await tx.auditEntry.create({
       data: {
@@ -741,10 +880,10 @@ export async function setMemberOverride(
   return { row: outcome.row, memberVersion: outcome.memberVersion };
 }
 
-// Clears a member override. Idempotent on a missing override, which
-// leaves the member version alone; the PermissionDef catalog is
-// preserved. `ifMatch` as for `setMemberOverride`. Returns the member
-// version after the call.
+// Clears a member override, identified by key and context. Idempotent
+// on a missing override, which leaves the member version alone; the
+// PermissionDef catalog is preserved. `ifMatch` and `context` as for
+// `setMemberOverride`. Returns the member version after the call.
 export async function clearMemberOverride(
   prisma: PrismaClient,
   hub: EventHub,
@@ -754,16 +893,25 @@ export async function clearMemberOverride(
     groupMemberId: string;
     externalUserId: string;
     permission: string;
+    context?: PermissionContext;
     ifMatch?: number | null;
   },
 ): Promise<number> {
   const { gameId, groupId, groupMemberId } = args;
   if (!args.permission) throw Errors.badRequest("permission must not be empty");
+  const context = args.context ?? {};
+  const contextKey = canonicalContextKey(context);
   const outcome = await prisma.$transaction(async (tx) => {
     const mode = await lockPermissionMode(tx, gameId);
     const permission = normalizePermissionKey(mode, args.permission);
     const current = await lockMemberVersion(tx, groupMemberId, args.ifMatch ?? null);
-    const where = { groupMemberId_permissionKey: { groupMemberId, permissionKey: permission } };
+    const where = {
+      groupMemberId_permissionKey_contextKey: {
+        groupMemberId,
+        permissionKey: permission,
+        contextKey,
+      },
+    };
     const existing = await tx.memberPermissionOverride.findUnique({ where });
     if (!existing) return { memberVersion: current, event: null };
     await tx.memberPermissionOverride.delete({ where });
@@ -779,6 +927,7 @@ export async function clearMemberOverride(
           memberId: groupMemberId,
           permission,
           grant: existing.grant,
+          ...contextField(context),
         } as Prisma.InputJsonValue,
       },
     });

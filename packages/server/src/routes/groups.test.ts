@@ -4169,9 +4169,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
 
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "guild.invite_member",
+            contextKey: "",
           },
         },
       });
@@ -4259,9 +4260,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await override(group.id, "user_alice", "guild.kick", { grant: true });
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "guild.kick",
+            contextKey: "",
           },
         },
       });
@@ -4270,9 +4272,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await override(group.id, "user_alice", "guild.kick", { grant: true });
       const after = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "guild.kick",
+            contextKey: "",
           },
         },
       });
@@ -4398,9 +4401,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(200);
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "scope/with-slash",
+            contextKey: "",
           },
         },
       });
@@ -4495,9 +4499,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(204);
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "guild.kick",
+            contextKey: "",
           },
         },
       });
@@ -4574,9 +4579,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(404);
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "guild.kick",
+            contextKey: "",
           },
         },
       });
@@ -4628,9 +4634,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(res.status).toBe(204);
       const stored = await prisma.memberPermissionOverride.findUnique({
         where: {
-          groupMemberId_permissionKey: {
+          groupMemberId_permissionKey_contextKey: {
             groupMemberId: member.id,
             permissionKey: "scope/with-slash",
+            contextKey: "",
           },
         },
       });

@@ -58,7 +58,7 @@
     {
       "name": "@junjo.io/sdk (main entry)",
       "path": "dist/index.js",
-      "limit": "11 KB"
+      "limit": "12 KB"
     },
     {
       "name": "@junjo.io/sdk/adapters",

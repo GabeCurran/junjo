@@ -1,8 +1,10 @@
+import type { PermissionContext } from "@junjo.io/shared";
 import type { GroupMember, MemberPermissionOverride, PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import type { Db } from "../db.js";
 import { Errors } from "../errors.js";
 import { findJunjoUserId, renderPeople } from "../identity.js";
+import { rowContextField } from "../permissionContext.js";
 import { setEtag } from "../versions.js";
 import { listMembersForUserQuery } from "./members.schema.js";
 
@@ -97,6 +99,8 @@ export interface WireMemberPermissionOverride {
   userId: string;
   permission: string;
   grant: boolean;
+  // Absent for a global override.
+  context?: PermissionContext;
   setAt: string;
   setBy: string | null;
 }
@@ -114,6 +118,7 @@ export function serializeMemberPermissionOverride(
     userId: externalUserId,
     permission: override.permissionKey,
     grant: override.grant,
+    ...rowContextField(override),
     setAt: override.setAt.toISOString(),
     setBy: setByExternalUserId,
   };

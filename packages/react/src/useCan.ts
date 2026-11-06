@@ -1,4 +1,5 @@
-import type { GroupId, PermissionKey, UserId } from "@junjo.io/shared";
+import { permissionContextKey } from "@junjo.io/sdk";
+import type { GroupId, PermissionContext, PermissionKey, UserId } from "@junjo.io/shared";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { makeCacheKey, usePermissionCache } from "./permissionCache.js";
 import { useJunjo } from "./useJunjo.js";
@@ -11,6 +12,27 @@ export interface UseCanOptions {
    * cached separately from direct ones.
    */
   inherit?: boolean;
+  /**
+   * The check's context. Absent or empty means only global entries
+   * apply. In {@link useCanMany} it applies to every entry that has no
+   * `context` of its own. Answers are cached per canonical context, and
+   * the object is read by value: a new literal each render is fine.
+   */
+  context?: PermissionContext;
+}
+
+// The check options the SDK receives, or undefined when there are none,
+// so a plain check reaches the SDK without an options argument.
+function checkOptions(
+  inherit: boolean,
+  context: PermissionContext | undefined,
+): { inherit?: true; context?: PermissionContext } | undefined {
+  const hasContext = context !== undefined && Object.keys(context).length > 0;
+  if (!inherit && !hasContext) return undefined;
+  const opts: { inherit?: true; context?: PermissionContext } = {};
+  if (inherit) opts.inherit = true;
+  if (hasContext) opts.context = context;
+  return opts;
 }
 
 /**
@@ -26,7 +48,12 @@ export function useCan(
   const junjo = useJunjo();
   const cache = usePermissionCache();
   const inherit = opts?.inherit ?? false;
-  const key = makeCacheKey(userId, groupId, permission, inherit);
+  const key = makeCacheKey(userId, groupId, permission, inherit, opts?.context);
+  // The key carries the canonical context, so it is the change signal;
+  // the object itself is read through a ref to keep its per-render
+  // identity out of the effect's dependencies.
+  const contextRef = useRef(opts?.context);
+  contextRef.current = opts?.context;
 
   const allowed = useSyncExternalStore(
     (listener) => cache.subscribe(key, listener),
@@ -40,11 +67,10 @@ export function useCan(
   // unchanged, so the effect does not re-fire.
   useEffect(() => {
     if (allowed !== undefined) return;
+    const checkOpts = checkOptions(inherit, contextRef.current);
     void cache.prefetch(key, () =>
-      // Called without options unless inheriting, so a direct check
-      // reaches the SDK exactly as it always has.
-      inherit
-        ? junjo.can(userId, groupId, permission, { inherit: true })
+      checkOpts
+        ? junjo.can(userId, groupId, permission, checkOpts)
         : junjo.can(userId, groupId, permission),
     );
   }, [cache, junjo, key, userId, groupId, permission, inherit, allowed]);
@@ -57,6 +83,11 @@ export interface CanQuery {
   userId: UserId;
   groupId: GroupId;
   permission: PermissionKey;
+  /**
+   * This entry's context. Overrides `context` in the hook's options;
+   * `{}` checks the entry globally.
+   */
+  context?: PermissionContext;
 }
 
 const EMPTY: readonly undefined[] = [];
@@ -80,23 +111,43 @@ export function useCanMany(
   const junjo = useJunjo();
   const cache = usePermissionCache();
   const inherit = opts?.inherit ?? false;
+  const defaultContext = opts?.context;
+  const defaultContextKey = permissionContextKey(defaultContext);
 
   // The effect needs the original tuples to build its request, but
   // reading them through a ref keeps the array identity, which changes
   // every render, out of the dependency lists below.
   const checksRef = useRef(checks);
   checksRef.current = checks;
+  const defaultContextRef = useRef(defaultContext);
+  defaultContextRef.current = defaultContext;
 
   // A fresh array of the same tuples must not read as a change, so the
   // memo keys off the tuple content. JSON.stringify rather than a
   // joined string: ids are caller-supplied and may contain anything,
   // and a delimiter one of them happens to hold would make two
   // different inputs compare equal.
-  const checksKey = JSON.stringify(checks.map((c) => [c.userId, c.groupId, c.permission]));
-  // biome-ignore lint/correctness/useExhaustiveDependencies: checksKey is the change signal for checksRef, which is intentionally not a dependency
+  const checksKey = JSON.stringify(
+    checks.map((c) => [
+      c.userId,
+      c.groupId,
+      c.permission,
+      c.context === undefined ? null : permissionContextKey(c.context),
+    ]),
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: checksKey and defaultContextKey are the change signals for checksRef and defaultContextRef, which are intentionally not dependencies
   const keys = useMemo(
-    () => checksRef.current.map((c) => makeCacheKey(c.userId, c.groupId, c.permission, inherit)),
-    [checksKey, inherit],
+    () =>
+      checksRef.current.map((c) =>
+        makeCacheKey(
+          c.userId,
+          c.groupId,
+          c.permission,
+          inherit,
+          c.context ?? defaultContextRef.current,
+        ),
+      ),
+    [checksKey, defaultContextKey, inherit],
   );
 
   // useSyncExternalStore re-renders whenever getSnapshot returns a new
@@ -141,7 +192,15 @@ export function useCanMany(
       .filter(({ key, index }) => allowed[index] === undefined && !cache.isInflight(key));
     if (missing.length === 0) return;
 
-    const queries = missing.map(({ index }) => checksRef.current[index] as CanQuery);
+    // An entry without its own context takes the hook's; one with its
+    // own is passed through as given.
+    const fallback = defaultContextRef.current;
+    const queries = missing.map(({ index }) => {
+      const query = checksRef.current[index] as CanQuery;
+      return query.context === undefined && fallback !== undefined
+        ? { ...query, context: fallback }
+        : query;
+    });
     const shared = inherit
       ? junjo.checkBatch(queries, { inherit: true })
       : junjo.checkBatch(queries);

@@ -1142,3 +1142,104 @@ describe("members.getAccess", () => {
     await newClient(fetchMock).members.getAccess("has/slash" as GroupId, "weird/user" as UserId);
   });
 });
+
+describe("member overrides with a context", () => {
+  const HUB = { world: "hub" };
+  const G = "grp_1" as GroupId;
+  const U = "user_alice" as UserId;
+  const P = "chat.color" as PermissionKey;
+
+  function newClient(fetchMock: unknown) {
+    return new Junjo({
+      apiKey: "test_key",
+      baseUrl: "https://example.test",
+      fetch: fetchMock as typeof fetch,
+    });
+  }
+
+  it("overridePermission sends the context and decodes it on the result", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({ grant: false, context: HUB });
+      return jsonResponse({ ...overrideFixture, permission: P, grant: false, context: HUB });
+    });
+    const override = await newClient(fetchMock).members.overridePermission(G, U, P, false, {
+      context: HUB,
+    });
+    expect(override.context).toEqual(HUB);
+  });
+
+  it("overridePermission omits an empty context and leaves a global result without one", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(await req.json()).toEqual({ grant: true });
+      return jsonResponse(overrideFixture);
+    });
+    const override = await newClient(fetchMock).members.overridePermission(G, U, P, true, {
+      context: {},
+    });
+    expect(override).not.toHaveProperty("context");
+  });
+
+  it("clearPermissionOverride selects the contextual override with context query params", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(req.method).toBe("DELETE");
+      const url = new URL(req.url);
+      expect(url.pathname).toBe("/v1/groups/grp_1/members/user_alice/permissions/chat.color");
+      expect(url.searchParams.get("context.world")).toBe("hub");
+      return new Response(null, { status: 204 });
+    });
+    await newClient(fetchMock).members.clearPermissionOverride(G, U, P, { context: HUB });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("clearPermissionOverride targets the global override without a context", async () => {
+    const fetchMock = makeFetch(async (req) => {
+      expect(new URL(req.url).search).toBe("");
+      return new Response(null, { status: 204 });
+    });
+    await newClient(fetchMock).members.clearPermissionOverride(G, U, P);
+  });
+
+  it("listPermissionOverrides and getAccess decode contextual overrides", async () => {
+    const overrides = [overrideFixture, { ...overrideFixture, permission: P, context: HUB }];
+    const fetchMock = makeFetch(async (req) => {
+      if (new URL(req.url).pathname.endsWith("/access")) {
+        return jsonResponse({
+          groupId: "grp_1",
+          userId: "user_alice",
+          status: "active",
+          roleIds: [],
+          overrides,
+          version: 1,
+          displayName: null,
+        });
+      }
+      return jsonResponse(overrides);
+    });
+    const client = newClient(fetchMock);
+    const listed = await client.members.listPermissionOverrides(G, U);
+    expect(listed[0]).not.toHaveProperty("context");
+    expect(listed[1]?.context).toEqual(HUB);
+    const access = await client.members.getAccess(G, U);
+    expect(access?.overrides[1]?.context).toEqual(HUB);
+  });
+
+  it("import sends contextual overrides as given", async () => {
+    const overrides = [
+      { permission: "fly", value: true },
+      { permission: "fly", value: false, context: { world: "spawn" } },
+    ];
+    const fetchMock = makeFetch(async (req) => {
+      const body = (await req.json()) as { members: { overrides: unknown }[] };
+      expect(body.members[0]?.overrides).toEqual(overrides);
+      return jsonResponse({
+        created: 0,
+        reactivated: 0,
+        updated: 1,
+        unchanged: 0,
+        items: [{ userId: "user_alice", status: "updated", version: 2 }],
+      });
+    });
+    await newClient(fetchMock).members.import(G, { members: [{ userId: U, overrides }] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});

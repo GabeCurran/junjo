@@ -2,6 +2,7 @@ import type { PrismaClient, Role } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
+import { contextFromRequestUrl } from "../permissionContext.js";
 import { loadRoleDetail, serializeRole } from "../roleDetails.js";
 import {
   deleteRole,
@@ -69,19 +70,22 @@ export function grantPermissionHandler(prisma: PrismaClient, hub: EventHub): Han
       roleId: c.req.param("id") ?? "",
       permission: body.permission,
       value: body.value ?? true,
+      context: body.context,
     });
     return c.json(role);
   };
 }
 
 // Removes one entry, grant or deny. Idempotent on a missing entry.
-// PermissionDef registry is preserved.
+// PermissionDef registry is preserved. `context.<key>` query parameters
+// select a contextual entry; without them the global entry is removed.
 export function revokePermissionHandler(prisma: PrismaClient, hub: EventHub): Handler {
   return async (c) => {
     const role = await removeRoleEntry(prisma, hub, {
       gameId: c.var.gameId,
       roleId: c.req.param("id") ?? "",
       permission: c.req.param("permission") ?? "",
+      context: contextFromRequestUrl(c.req.url),
     });
     return c.json(role);
   };

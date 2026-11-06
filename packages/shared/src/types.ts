@@ -382,10 +382,30 @@ export type PermissionMode = "exact" | "nodes";
 
 export const PERMISSION_MODES = ["exact", "nodes"] as const satisfies readonly PermissionMode[];
 
+// Conditions under which an entry applies: context key to value. An
+// empty or absent context is global and applies to every check. Keys
+// match `PERMISSION_CONTEXT_KEY_PATTERN`; values are 1 to
+// `PERMISSION_CONTEXT_VALUE_MAX_LENGTH` characters with no control
+// characters and are folded to lowercase with an ASCII-only fold on
+// write and on check, in every permission mode.
+export type PermissionContext = Record<string, string>;
+
+export const PERMISSION_CONTEXT_KEY_PATTERN = "^[a-z][a-z0-9_]{0,31}$";
+export const MAX_PERMISSION_CONTEXT_KEYS = 2;
+export const PERMISSION_CONTEXT_VALUE_MAX_LENGTH = 64;
+// Caps on `permissions.contexts` in the game config.
+export const MAX_CONTEXT_INHERIT_DEPTH = 16;
+export const MAX_CONTEXT_INHERIT_VALUES = 256;
+export const MAX_CONTEXT_INHERIT_PARENTS = 8;
+
 // One entry on a role. `value` true grants the key, false denies it.
+// `context`, when present, limits the entry to checks whose context
+// matches it (folded; absent for a global entry). An entry's identity
+// is its permission and context together.
 export interface PermissionEntry {
   permission: PermissionKey;
   value: boolean;
+  context?: PermissionContext;
 }
 
 export type PermissionSource = "role" | "override" | "default" | "none";
@@ -402,14 +422,19 @@ export interface PermissionCheckResult {
   // direct rather than inherited. Absent on non-inherited checks, so
   // their wire shape is unchanged.
   viaGroupId?: GroupId;
+  // The deciding entry's context, folded. Absent when the deciding entry
+  // is global or nothing decided.
+  context?: PermissionContext;
 }
 
 // One triple of a batch permission check. Mirrors the query parameters
-// of the single-check route.
+// of the single-check route. `context` is the check's context; absent
+// means only global entries apply.
 export interface PermissionCheckRequest {
   userId: UserId;
   groupId: GroupId;
   permission: PermissionKey;
+  context?: PermissionContext;
 }
 
 // Results come back positionally: `results[i]` answers `checks[i]`.
@@ -423,6 +448,8 @@ export interface MemberPermissionOverride {
   permission: PermissionKey;
   // true = grant regardless of roles. false = revoke regardless of roles.
   grant: boolean;
+  // As on `PermissionEntry`: absent for a global override.
+  context?: PermissionContext;
   setAt: Date;
   // null when set by the server itself with no acting user (no
   // auth-adapter actor wired yet in V1; parallels Invitation.createdBy
@@ -1197,8 +1224,18 @@ export interface GameConfigBlocks {
   enabled: boolean;
 }
 
+// Inheritance between the values of one context key: each value maps
+// to the values whose entries it inherits. Resolution is transitive and
+// ranks a nearer value above a farther one.
+export interface GameConfigPermissionContext {
+  inherit: Record<string, string[]>;
+}
+
 export interface GameConfigPermissions {
   mode: PermissionMode;
+  // Context key to its value inheritance. A key that is not listed has
+  // none: only entries for the exact value apply.
+  contexts: Record<string, GameConfigPermissionContext>;
 }
 
 // A canonical id format a game can declare for one namespace. "uuid" is
@@ -1262,6 +1299,7 @@ export type PartialGameConfig = {
     visibility?: Partial<GameConfigFriendsVisibility>;
   };
   blocks?: Partial<GameConfigBlocks>;
+  // `contexts` replaces the stored map as a whole.
   permissions?: Partial<GameConfigPermissions>;
   // `formats` replaces the stored map as a whole.
   identity?: Partial<GameConfigIdentity>;
