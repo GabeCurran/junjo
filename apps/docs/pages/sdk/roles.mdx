@@ -119,7 +119,7 @@ for (const role of roles) {
 }
 ```
 
-Roles are a small list per group (10s, not 1000s); pagination is not provided. To read the roles together with the group's permission mode and default role, use [`getGraph`](#getgraphgroupid).
+Roles are a small list per group (10s, not 1000s); pagination is not provided. To read the roles together with the game's permission mode and context inheritance and the group's default role, use [`getGraph`](#getgraphgroupid).
 
 ### The result is both an array and a page
 
@@ -328,16 +328,19 @@ A change emits `role.updated` with `changed: ["parents"]`.
 
 ## `getGraph(groupId)`
 
-Reads every role in a group together with the group's permission mode and default role, in one call. Returns a `RoleGraph`: `{ groupId, mode, defaultRoleId, roles }`.
+Reads every role in a group together with the game's permission mode and context inheritance and the group's default role, in one call. Returns a `RoleGraph`: `{ groupId, mode, contexts, defaultRoleId, roles }`.
 
 ```ts
 const graph = await junjo.roles.getGraph(groupId);
 graph.mode;          // "exact" or "nodes"
+graph.contexts;      // { world: { inherit: { pvpworld: ["world"] } } }, or {}
 graph.defaultRoleId; // RoleId | null
 graph.roles;         // Role[], each with entries and parents
 ```
 
-The graph holds everything a local resolver needs. Pair it with [`members.getAccess`](/sdk/members#getaccessgroupid-userid) for one member's roles and overrides, and you can answer checks in-process without a round-trip per check. Refresh it when a `role.created`, `role.updated`, `role.deleted`, `permission.granted`, or `permission.revoked` event arrives for the group. The graph does not carry the game's context inheritance (`permissions.contexts` in the [game config](/api-reference/admin#permission-contexts)), which resolving [contextual entries](#entries-with-a-context) also needs.
+The graph holds everything a local resolver needs. Pair it with [`members.getAccess`](/sdk/members#getaccessgroupid-userid) for one member's roles and overrides, and you can answer checks in-process without a round-trip per check. Refresh it when a `role.created`, `role.updated`, `role.deleted`, `permission.granted`, or `permission.revoked` event arrives for the group.
+
+`mode` and `contexts` are game-wide: every group's graph carries the same values, and `contexts` is what resolving [contextual entries](#entries-with-a-context) needs alongside the roles. When either changes, the game stream delivers `permissions.config.updated` with the new values (see [`permissions.config`](/sdk/permissions#permissionsconfig)); a mode change also changes how keys match, so reload the graphs you hold. Against a server that predates the field, `contexts` is `{}`.
 
 ### Errors
 

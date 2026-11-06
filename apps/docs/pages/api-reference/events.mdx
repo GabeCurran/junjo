@@ -72,6 +72,7 @@ These reads send `Junjo-Stream-Position`, read before their data:
 - `GET /v1/groups/:id/members`, `GET /v1/groups/:id/members/:userId/access`, `POST /v1/groups/:id/members/access`
 - `GET /v1/bans`, `GET /v1/sanctions`
 - `GET /v1/users/:userId/identities`
+- `GET /v1/permissions/config`
 
 ### Versions on events
 
@@ -225,8 +226,26 @@ These events have no `groupId`, so no group stream carries them. The [game strea
 - `game.user.banned`, `game.user.unbanned`
 - `game.user.sanctioned`, `game.user.unsanctioned` (see [Sanctions](/api-reference/sanctions#events))
 - `identity.linked`, `identity.unlinked`, `identity.updated` (see [Identity](/api-reference/identity#events))
+- `permissions.config.updated` (below)
 
 `game.user.banned` and `game.user.unbanned` carry `userId`, the banned person's external id, alongside `junjoUserId`. `junjoUserId` is the internal `JunjoUser` id; prefer `userId`.
+
+`permissions.config.updated` fires when [`PATCH /v1/admin/games/:gameId/config`](/api-reference/admin#change-event) changes the game's resolved permission mode or context inheritance, and only then. It carries the new values in full, the same shape [`GET /v1/permissions/config`](/api-reference/permissions#get-v1permissionsconfig) returns:
+
+```json
+{
+  "id": "6f1c2a9e0b7d4c3e8a5f1b2c",
+  "type": "permissions.config.updated",
+  "gameId": "game_clxxx",
+  "occurredAt": "2026-11-06T12:00:00.000Z",
+  "mode": "nodes",
+  "contexts": {
+    "world": { "inherit": { "pvpworld": ["world"] } }
+  }
+}
+```
+
+`contexts` is `{}` when the game declares no inheritance. A follower that resolves permissions locally replaces its mode and inheritance with these values; a mode change also changes how stored keys match, so reload the role graphs it holds.
 
 ### User ids in events
 

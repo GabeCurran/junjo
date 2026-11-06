@@ -403,6 +403,10 @@ value branch-by-branch, so a body of
 - Refused with `400 bad_request`: a cycle (a value that reaches itself, including after folding), a chain deeper than 16 steps, more than 256 values listing parents under one key, more than 8 parents on one value, two values equal after folding, an invalid key or value, or any other shape.
 - A change drops every cached permission answer for the game.
 
+### Change event
+
+A `PATCH` that changes the resolved `permissions.mode` or `permissions.contexts` emits one [`permissions.config.updated`](/api-reference/events#events-with-no-group) event carrying the new values, committed with the write. A `PATCH` that leaves both as they were (including one that restates the same inheritance in another case or key order) and a `PATCH` of other branches only emit nothing. A game's own key reads the current values with [`GET /v1/permissions/config`](/api-reference/permissions#get-v1permissionsconfig).
+
 ### Response
 
 `200 OK` with the same `WireAdminGameConfig` shape as the GET above,
