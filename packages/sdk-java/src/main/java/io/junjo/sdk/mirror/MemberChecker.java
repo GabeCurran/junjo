@@ -11,11 +11,14 @@ import io.junjo.sdk.permissions.PermissionResolver;
 import io.junjo.sdk.permissions.PermissionResolver.CompiledOverrides;
 import io.junjo.sdk.permissions.PermissionResolver.ResolverRole;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
@@ -27,6 +30,9 @@ import java.util.TreeSet;
  * member's access or the group's graph changes; it always reads the mirror's current state, so it
  * never goes stale. A checker taken without a context checks in {@link Context#GLOBAL}.
  *
+ * <p>{@link #excludingRoles(Collection)} derives a checker that answers as if the member did not
+ * hold some roles.
+ *
  * <p>Thread-safe and lock-free like the mirror's other reads.
  */
 public final class MemberChecker {
@@ -34,21 +40,28 @@ public final class MemberChecker {
     private final String userId;
     private final String groupId;
     private final Context context;
+    private final Set<String> excluded;
     private volatile Compiled compiled;
 
     // The inputs one compiled form was built from; compared by identity, since state objects are
-    // replaced, never mutated.
+    // replaced, never mutated. held is the role list checks start from, exclusions applied.
     private record Compiled(
             GameMirror.GroupState group,
             MemberAccess access,
             CompiledOverrides overrides,
-            Map<String, Map<String, Integer>> chains) {}
+            Map<String, Map<String, Integer>> chains,
+            List<String> held) {}
 
     MemberChecker(GameMirror mirror, String userId, String groupId, Context context) {
+        this(mirror, userId, groupId, context, Set.of());
+    }
+
+    private MemberChecker(GameMirror mirror, String userId, String groupId, Context context, Set<String> excluded) {
         this.mirror = mirror;
         this.userId = userId;
         this.groupId = groupId;
         this.context = context;
+        this.excluded = excluded;
     }
 
     public String userId() {
@@ -64,6 +77,33 @@ public final class MemberChecker {
         return context;
     }
 
+    /** The role ids this checker treats as not held; empty for a checker taken from the mirror. */
+    public Set<String> excludedRoles() {
+        return excluded;
+    }
+
+    /**
+     * A checker for the same member, group and context that answers as if the member did not hold
+     * these roles, in addition to any this checker already excludes. This checker is unchanged.
+     *
+     * <p>Exclusion removes a role from the roles the member holds directly, and nothing else: the
+     * check then runs as it would for a member whose access lists only the remaining roles. A
+     * role reached as a parent of a remaining role still applies, even when it is excluded, so to
+     * stop a role and everything that inherits from it, exclude those roles too. The member's
+     * overrides apply as before, and so does the context. For a user with no membership checked
+     * against the group's default role ({@link GameMirror.Builder#defaultRoleForNonMembers}),
+     * excluding the default role leaves them holding none. Ids that name no role are ignored.
+     *
+     * @param roleIds the role ids to treat as not held, compared exactly
+     */
+    public MemberChecker excludingRoles(Collection<String> roleIds) {
+        Objects.requireNonNull(roleIds, "roleIds");
+        Set<String> next = new HashSet<>(excluded);
+        for (String id : roleIds) next.add(Objects.requireNonNull(id, "role id"));
+        if (next.size() == excluded.size()) return this;
+        return new MemberChecker(mirror, userId, groupId, context, Set.copyOf(next));
+    }
+
     /** Empty when the group's graph or the member's access is not loaded. */
     public Optional<PermissionCheckResult> check(String permission) {
         GameMirror.Lookup in = mirror.lookup(userId, groupId);
@@ -77,8 +117,7 @@ public final class MemberChecker {
         Compiled c = compile(in);
         PermissionResolver.GroupResolver resolver = in.group().resolver();
         return Optional.of(PermissionResolver.resolve(
-                resolver.mode(), c.overrides().global(), c.overrides().contextual(),
-                in.access() != null ? in.access().roleIds() : List.of(in.group().graph().defaultRoleId()),
+                resolver.mode(), c.overrides().global(), c.overrides().contextual(), c.held(),
                 resolver.roles(), permission, c.chains()));
     }
 
@@ -90,7 +129,8 @@ public final class MemberChecker {
     /**
      * Every key named by the member's overrides or by an entry of a role they hold (directly or
      * through parents), global or for any context, that resolves to allowed in this checker's
-     * context. Wildcard keys appear as written. Empty when not loaded.
+     * context. Wildcard keys appear as written. Excluded roles are left out as held roles, as in
+     * {@link #check(String)}. Empty when not loaded.
      */
     public Optional<Set<String>> grantedKeys() {
         GameMirror.Lookup in = mirror.lookup(userId, groupId);
@@ -100,10 +140,8 @@ public final class MemberChecker {
         Deque<String> pending = new ArrayDeque<>();
         if (in.access() != null) {
             for (MemberPermissionOverride o : in.access().overrides()) candidates.add(o.permission());
-            pending.addAll(in.access().roleIds());
-        } else if (mirror.defaultRoleApplies(in.group())) {
-            pending.add(in.group().graph().defaultRoleId());
         }
+        if (in.access() != null || mirror.defaultRoleApplies(in.group())) pending.addAll(compile(in).held());
         Set<String> seen = new HashSet<>();
         while (!pending.isEmpty()) {
             String id = pending.pop();
@@ -127,7 +165,16 @@ public final class MemberChecker {
         CompiledOverrides overrides = in.access() == null
                 ? CompiledOverrides.NONE
                 : CompiledOverrides.of(resolver.mode(), in.access().overrides());
-        c = new Compiled(in.group(), in.access(), overrides, resolver.inheritance().chains(context));
+        List<String> direct = in.access() != null
+                ? in.access().roleIds()
+                : mirror.defaultRoleApplies(in.group()) ? List.of(in.group().graph().defaultRoleId()) : List.of();
+        List<String> held = direct;
+        if (!excluded.isEmpty()) {
+            held = new ArrayList<>(direct.size());
+            for (String id : direct) if (!excluded.contains(id)) held.add(id);
+            held = List.copyOf(held);
+        }
+        c = new Compiled(in.group(), in.access(), overrides, resolver.inheritance().chains(context), held);
         compiled = c;
         return c;
     }

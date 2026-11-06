@@ -215,7 +215,13 @@ mirror.untrack(player, "grp_main");
 
 Every `GameMirror` method takes the user before the group, as `permissions().check` does. The mirror loads the role graphs of the given groups, the whole game ban list and the active sanctions at the position it read first, then follows the stream from there on one applier thread. Member, ban and sanction events whose `memberVersion` / `moderationVersion` is not newer than the loaded state are skipped. A failed reload keeps the old state and retries with backoff.
 
-A person may hold several linked ids. The mirror records each person's ids, so its reads answer for the person whatever id you pass; an id it has not resolved yet answers `UNKNOWN` for bans and sanctions until it is resolved in the background, or call `resolve(id)` first. Tracks issued together are loaded with one `getAccessMany` call per group. With a snapshot file, data loaded at start may be stale until the stream, resumed from the saved position, catches up. See the docs page for change kinds, the default-role option for non-members, `checker(userId, groupId)` and the stream health reads.
+A person may hold several linked ids. The mirror records each person's ids, so its reads answer for the person whatever id you pass; an id it has not resolved yet answers `UNKNOWN` for bans and sanctions until it is resolved in the background, or call `resolve(id)` first. Tracks issued together are loaded with one `getAccessMany` call per group. With a snapshot file, data loaded at start may be stale until the stream, resumed from the saved position, catches up.
+
+`retainUntracked(Duration.ofHours(24))` keeps an untracked member's last loaded access, in memory and in the snapshot file, for that window after they were last tracked (`lastConnectedAt`). A player who returns within it, even after a restart while Junjo is unreachable, is answered from the retained access as soon as `track` is applied, and the access is reloaded as usual. Retained members are not tracked: they answer `UNKNOWN`, are not in `trackedMembers`, and stream events never reload them. One is dropped when it outlives the window, when a member event carries a newer version, when an identity event names the person, and on a full reload. Off by default.
+
+`checker.excludingRoles(Set.of("role_mod", "role_admin"))` returns a checker that answers as if the member did not hold those roles; overrides and the checker's context apply as before. Exclusion removes held roles only: an excluded role that is a parent of a role still held keeps applying through it, so exclude the child roles too.
+
+See the docs page for change kinds, the default-role option for non-members, `checker(userId, groupId)` and the stream health reads.
 
 ## Sanctions, display names and export
 
