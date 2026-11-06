@@ -9,6 +9,7 @@ import io.junjo.sdk.internal.Wire;
 import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.PermissionCheckRequest;
 import io.junjo.sdk.model.PermissionCheckResult;
+import io.junjo.sdk.model.PermissionConfig;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +28,15 @@ public final class PermissionsApi {
 
     PermissionsApi(ApiSupport api) {
         this.api = api;
+    }
+
+    /**
+     * Reads the game's permission config: its permission mode and its context inheritance (the
+     * config's {@code permissions.contexts}). A change emits {@code permissions.config.updated} on
+     * the game stream.
+     */
+    public CompletableFuture<PermissionConfig> config() {
+        return api.get("/v1/permissions/config", Wire::permissionConfig);
     }
 
     /** Same as {@link #check(String, String, String, boolean)} without inheritance. */

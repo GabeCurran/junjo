@@ -31,7 +31,8 @@ import java.util.TreeSet;
  * never goes stale. A checker taken without a context checks in {@link Context#GLOBAL}.
  *
  * <p>{@link #excludingRoles(Collection)} derives a checker that answers as if the member did not
- * hold some roles.
+ * hold some roles, and {@link #excludingOverrides()} one that answers as if the member had no
+ * personal overrides. The two compose in either order.
  *
  * <p>Thread-safe and lock-free like the mirror's other reads.
  */
@@ -41,6 +42,7 @@ public final class MemberChecker {
     private final String groupId;
     private final Context context;
     private final Set<String> excluded;
+    private final boolean noOverrides;
     private volatile Compiled compiled;
 
     // The inputs one compiled form was built from; compared by identity, since state objects are
@@ -53,15 +55,18 @@ public final class MemberChecker {
             List<String> held) {}
 
     MemberChecker(GameMirror mirror, String userId, String groupId, Context context) {
-        this(mirror, userId, groupId, context, Set.of());
+        this(mirror, userId, groupId, context, Set.of(), false);
     }
 
-    private MemberChecker(GameMirror mirror, String userId, String groupId, Context context, Set<String> excluded) {
+    private MemberChecker(
+            GameMirror mirror, String userId, String groupId, Context context, Set<String> excluded,
+            boolean noOverrides) {
         this.mirror = mirror;
         this.userId = userId;
         this.groupId = groupId;
         this.context = context;
         this.excluded = excluded;
+        this.noOverrides = noOverrides;
     }
 
     public String userId() {
@@ -83,6 +88,14 @@ public final class MemberChecker {
     }
 
     /**
+     * Whether this checker answers as if the member had no personal overrides; false for a
+     * checker taken from the mirror.
+     */
+    public boolean excludesOverrides() {
+        return noOverrides;
+    }
+
+    /**
      * A checker for the same member, group and context that answers as if the member did not hold
      * these roles, in addition to any this checker already excludes. This checker is unchanged.
      *
@@ -101,7 +114,23 @@ public final class MemberChecker {
         Set<String> next = new HashSet<>(excluded);
         for (String id : roleIds) next.add(Objects.requireNonNull(id, "role id"));
         if (next.size() == excluded.size()) return this;
-        return new MemberChecker(mirror, userId, groupId, context, Set.copyOf(next));
+        return new MemberChecker(mirror, userId, groupId, context, Set.copyOf(next), noOverrides);
+    }
+
+    /**
+     * A checker for the same member, group and context that answers as if the member had no
+     * personal overrides, global or contextual, keeping any roles this checker already excludes.
+     * This checker is unchanged.
+     *
+     * <p>Only the overrides layer is left out: the check then runs as it would for a member whose
+     * access lists no overrides. Role entries, role parents, the context and its inheritance apply
+     * as before, and so does the status gate: a member who is not active still answers
+     * {@code allowed=false, source=none}. {@link #grantedKeys()} leaves out the keys only the
+     * overrides named.
+     */
+    public MemberChecker excludingOverrides() {
+        if (noOverrides) return this;
+        return new MemberChecker(mirror, userId, groupId, context, excluded, true);
     }
 
     /** Empty when the group's graph or the member's access is not loaded. */
@@ -129,8 +158,9 @@ public final class MemberChecker {
     /**
      * Every key named by the member's overrides or by an entry of a role they hold (directly or
      * through parents), global or for any context, that resolves to allowed in this checker's
-     * context. Wildcard keys appear as written. Excluded roles are left out as held roles, as in
-     * {@link #check(String)}. Empty when not loaded.
+     * context. Wildcard keys appear as written. Excluded roles are left out as held roles, and
+     * excluded overrides are left out entirely, as in {@link #check(String)}. Empty when not
+     * loaded.
      */
     public Optional<Set<String>> grantedKeys() {
         GameMirror.Lookup in = mirror.lookup(userId, groupId);
@@ -138,7 +168,7 @@ public final class MemberChecker {
         Set<String> candidates = new HashSet<>();
         Map<String, ResolverRole> roles = in.group().resolver().roles();
         Deque<String> pending = new ArrayDeque<>();
-        if (in.access() != null) {
+        if (in.access() != null && !noOverrides) {
             for (MemberPermissionOverride o : in.access().overrides()) candidates.add(o.permission());
         }
         if (in.access() != null || mirror.defaultRoleApplies(in.group())) pending.addAll(compile(in).held());
@@ -162,7 +192,7 @@ public final class MemberChecker {
         Compiled c = compiled;
         if (c != null && c.group() == in.group() && c.access() == in.access()) return c;
         PermissionResolver.GroupResolver resolver = in.group().resolver();
-        CompiledOverrides overrides = in.access() == null
+        CompiledOverrides overrides = in.access() == null || noOverrides
                 ? CompiledOverrides.NONE
                 : CompiledOverrides.of(resolver.mode(), in.access().overrides());
         List<String> direct = in.access() != null

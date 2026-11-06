@@ -96,11 +96,14 @@ import java.util.function.Function;
  * from its last state and {@link #isLive()} turns false.
  *
  * <p>Contexts: a check may name a {@link Context}; the context-less reads check in
- * {@link Context#GLOBAL}, where only global entries apply. The game's
- * context inheritance (its config's {@code permissions.contexts}) is not readable with a game key,
- * so the mirror takes it from {@link Builder#contextInheritance(ContextInheritance)} and
- * {@link #setContextInheritance(ContextInheritance)}; it must match the server's for the mirror's
- * answers to match {@code permissions().check}.
+ * {@link Context#GLOBAL}, where only global entries apply. The game's context inheritance (its
+ * config's {@code permissions.contexts}) comes from the server: every role graph carries it, so
+ * the newest graph load sets it, and a {@code permissions.config.updated} event replaces it live.
+ * That event also reloads the held graphs when it changes the permission mode. An inheritance set
+ * with {@link Builder#contextInheritance(ContextInheritance)} or
+ * {@link #setContextInheritance(ContextInheritance)} overrides the server's; it is only needed
+ * with a server whose role graphs do not carry the inheritance, and must then match the game's
+ * config for the mirror's answers to match {@code permissions().check}.
  *
  * <p>Persistence: with {@link Builder#snapshotFile(Path)} the mirror saves its state to that file
  * and loads it at start, so it answers at once, even before the server is reachable. Loaded data
@@ -138,7 +141,8 @@ public final class GameMirror implements AutoCloseable {
             EventType.GAME_USER_UNSANCTIONED,
             EventType.IDENTITY_LINKED,
             EventType.IDENTITY_UNLINKED,
-            EventType.IDENTITY_UPDATED));
+            EventType.IDENTITY_UPDATED,
+            EventType.PERMISSIONS_CONFIG_UPDATED));
 
     /** The state of the mirror's game stream. */
     public enum StreamState {
@@ -183,7 +187,8 @@ public final class GameMirror implements AutoCloseable {
     private final Set<String> resolving = ConcurrentHashMap.newKeySet();
 
     private volatile State state = State.EMPTY;
-    private volatile ContextInheritance inheritance;
+    // The explicit inheritance that wins over the server's, or null to follow the server.
+    private volatile ContextInheritance override;
     private volatile boolean closed;
     private volatile boolean live;
     private volatile StreamState streamState = StreamState.CONNECTING;
@@ -197,6 +202,7 @@ public final class GameMirror implements AutoCloseable {
     private boolean snapshotSaveScheduled;
     private final Map<String, Set<MemberKey>> pendingTracks = new HashMap<>();
     private boolean trackFlushScheduled;
+    private boolean inheritanceChanged;
 
     private GameMirror(Builder b) {
         this.client = b.client;
@@ -216,7 +222,7 @@ public final class GameMirror implements AutoCloseable {
         this.snapshotInterval = b.snapshotInterval;
         this.retainWindow = b.retainWindow;
         this.disk = b.disk;
-        this.inheritance = b.inheritance;
+        this.override = b.inheritance;
         this.logger = transport.logger();
         this.applier = Executors.newSingleThreadExecutor(Threads.daemonFactory("junjo-mirror"));
     }
@@ -357,27 +363,37 @@ public final class GameMirror implements AutoCloseable {
                 Objects.requireNonNull(groupId, "groupId"), Objects.requireNonNull(context, "context"));
     }
 
-    /** The context inheritance checks resolve with. */
+    /**
+     * The context inheritance checks resolve with: the explicit override when one is set, else the
+     * server's ({@link #serverContextInheritance()}).
+     */
     public ContextInheritance contextInheritance() {
-        return inheritance;
+        ContextInheritance o = override;
+        return o != null ? o : state.contexts();
     }
 
     /**
-     * Replaces the context inheritance checks resolve with, to follow a change to the game's
-     * {@code permissions.contexts} config. Every loaded role graph is recompiled; completes
-     * once checks answer with the new inheritance. Reported to {@code onChange} as a
+     * The game's context inheritance as last read from the server, from a role graph or a
+     * {@code permissions.config.updated} event, and kept in the snapshot file;
+     * {@link ContextInheritance#NONE} before the first load and with a server that does not send
+     * it.
+     */
+    public ContextInheritance serverContextInheritance() {
+        return state.contexts();
+    }
+
+    /**
+     * Sets an explicit context inheritance that checks resolve with instead of the server's. Only
+     * needed with a server whose role graphs do not carry the game's inheritance; null removes the
+     * override, so checks follow the server's again. Every loaded role graph is recompiled;
+     * completes once checks answer with the new inheritance. Reported to {@code onChange} as a
      * {@link MirrorChange.Kind#ROLE_GRAPH} change with null ids.
      */
     public CompletableFuture<Void> setContextInheritance(ContextInheritance next) {
-        Objects.requireNonNull(next, "inheritance");
         CompletableFuture<Void> done = new CompletableFuture<>();
         boolean queued = submit(() -> {
-            inheritance = next;
-            State s = state;
-            for (Map.Entry<String, GroupState> g : state.groups().entrySet()) {
-                s = s.withGroup(g.getKey(), compileGroup(g.getValue().graph()));
-            }
-            state = s;
+            override = next;
+            state = recompiled(state);
             changed(MirrorChange.Kind.ROLE_GRAPH, null, null);
             done.complete(null);
         });
@@ -385,8 +401,36 @@ public final class GameMirror implements AutoCloseable {
         return done;
     }
 
-    GroupState compileGroup(RoleGraph graph) {
-        return new GroupState(graph, PermissionResolver.compile(graph, inheritance));
+    // Compiles a graph with the override, or else with the server inheritance given.
+    GroupState compileGroup(RoleGraph graph, ContextInheritance server) {
+        ContextInheritance o = override;
+        return new GroupState(graph, PermissionResolver.compile(graph, o != null ? o : server));
+    }
+
+    // Every held graph compiled again with the state's effective inheritance.
+    private State recompiled(State s) {
+        State out = s;
+        for (Map.Entry<String, GroupState> g : s.groups().entrySet()) {
+            out = out.withGroup(g.getKey(), compileGroup(g.getValue().graph(), s.contexts()));
+        }
+        return out;
+    }
+
+    // Records the server inheritance in a state not published yet. When that changes what checks
+    // resolve with, the held graphs are recompiled, and the change is reported by the next
+    // reportInheritanceChange, once the state is published.
+    private State withServerContexts(State s, ContextInheritance next) {
+        if (next.equals(s.contexts())) return s;
+        State out = s.withContexts(next);
+        if (override != null) return out;
+        inheritanceChanged = true;
+        return recompiled(out);
+    }
+
+    private void reportInheritanceChange() {
+        if (!inheritanceChanged) return;
+        inheritanceChanged = false;
+        changed(MirrorChange.Kind.ROLE_GRAPH, null, null);
     }
 
     /**
@@ -643,6 +687,7 @@ public final class GameMirror implements AutoCloseable {
         boolean queued = submit(() -> {
             try {
                 state = loadGroup(state, groupId);
+                reportInheritanceChange();
                 changed(MirrorChange.Kind.ROLE_GRAPH, null, groupId);
                 markDirty();
                 done.complete(null);
@@ -819,6 +864,7 @@ public final class GameMirror implements AutoCloseable {
                     if (!next.groups().containsKey(groupId)) next = loadGroup(next, groupId);
                 }
                 state = next;
+                reportInheritanceChange();
             } else {
                 position = await(client.events().position(), loadTimeout);
                 state = fullLoad(position);
@@ -850,7 +896,7 @@ public final class GameMirror implements AutoCloseable {
     // members are dropped for the same reason.
     private State fullLoad(String position) throws Exception {
         State old = state;
-        State next = State.EMPTY.withPosition(position);
+        State next = State.EMPTY.withPosition(position).withContexts(old.contexts());
         Set<String> groups = new LinkedHashSet<>(initialGroups);
         groups.addAll(old.groups().keySet());
         for (String groupId : groups) next = loadGroup(next, groupId);
@@ -914,12 +960,25 @@ public final class GameMirror implements AutoCloseable {
             case JunjoEvent.IdentityLinked e -> relink(e.userId(), e.identities(), e.linkedUserId(), null);
             case JunjoEvent.IdentityUnlinked e ->
                     relink(e.userId(), e.identities(), e.unlinkedUserId(), e.unlinkedUserId());
+            case JunjoEvent.PermissionsConfigUpdated e -> applyConfig(e);
             default -> {
                 // Types outside the filter carry nothing the mirror holds.
             }
         }
         state = state.withPosition(position);
         markDirty();
+    }
+
+    // The event carries the new config: its inheritance applies at once. Graphs loaded in another
+    // mode are reloaded, because their answers depend on the mode.
+    private void applyConfig(JunjoEvent.PermissionsConfigUpdated e) {
+        state = withServerContexts(state, e.contexts());
+        reportInheritanceChange();
+        List<String> stale = new ArrayList<>();
+        for (Map.Entry<String, GroupState> g : state.groups().entrySet()) {
+            if (g.getValue().graph().mode() != e.mode()) stale.add(g.getKey());
+        }
+        for (String groupId : stale) reloadGroupIfHeld(groupId);
     }
 
     private void applyMember(JunjoEvent.MemberScoped e) {
@@ -1072,6 +1131,7 @@ public final class GameMirror implements AutoCloseable {
     private void reloadGroup(String groupId, int attempt) {
         try {
             state = loadGroup(state, groupId);
+            reportInheritanceChange();
             changed(MirrorChange.Kind.ROLE_GRAPH, null, groupId);
             markDirty();
         } catch (Throwable t) {
@@ -1080,10 +1140,12 @@ public final class GameMirror implements AutoCloseable {
         }
     }
 
+    // Every graph carries the game's inheritance, so the newest load sets the server's.
     private State loadGroup(State s, String groupId) throws Exception {
         try {
-            JunjoResponse<RoleGraph> r = await(client.roles().getGraph(groupId), loadTimeout);
-            return s.withGroup(groupId, compileGroup(r.value()));
+            RoleGraph graph = await(client.roles().getGraph(groupId), loadTimeout).value();
+            State next = withServerContexts(s, graph.contexts());
+            return next.withGroup(groupId, compileGroup(graph, next.contexts()));
         } catch (JunjoException e) {
             if ("not_found".equals(e.code())) {
                 Safe.log(logger, JunjoLogger.Level.WARN,
@@ -1340,6 +1402,7 @@ public final class GameMirror implements AutoCloseable {
     }
 
     private void changedEverything() {
+        inheritanceChanged = false;
         changed(MirrorChange.Kind.BAN, null, null);
         changed(MirrorChange.Kind.SANCTION, null, null);
         changed(MirrorChange.Kind.ROLE_GRAPH, null, null);
@@ -1440,25 +1503,32 @@ public final class GameMirror implements AutoCloseable {
             Map<MemberKey, MemberEntry> members,
             Map<String, Person> people,
             Set<String> renderedIds,
-            Map<MemberKey, RetainedMember> retained) {
-        static final State EMPTY = new State(
-                false, null, Map.of(), Map.of(), Map.of(), SanctionState.EMPTY, Map.of(), Map.of(), Set.of(), Map.of());
+            Map<MemberKey, RetainedMember> retained,
+            ContextInheritance contexts) {
+        static final State EMPTY = new State(false, null, Map.of(), Map.of(), Map.of(), SanctionState.EMPTY, Map.of(),
+                Map.of(), Set.of(), Map.of(), ContextInheritance.NONE);
+
+        // The server's context inheritance.
+        State withContexts(ContextInheritance c) {
+            return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people, renderedIds,
+                    retained, c);
+        }
 
         State markReady() {
             return new State(true, position, groups, bans, moderationVersions, sanctions, members, people, renderedIds,
-                    retained);
+                    retained, contexts);
         }
 
         State withPosition(String p) {
             return new State(ready, p, groups, bans, moderationVersions, sanctions, members, people, renderedIds,
-                    retained);
+                    retained, contexts);
         }
 
         State withGroup(String id, GroupState g) {
             Map<String, GroupState> m = new HashMap<>(groups);
             m.put(id, g);
             return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, members, people,
-                    renderedIds, retained);
+                    renderedIds, retained, contexts);
         }
 
         State withoutGroup(String id) {
@@ -1469,28 +1539,28 @@ public final class GameMirror implements AutoCloseable {
             Map<MemberKey, RetainedMember> ret = new HashMap<>(retained);
             ret.keySet().removeIf(k -> k.groupId().equals(id));
             return new State(ready, position, Map.copyOf(m), bans, moderationVersions, sanctions, Map.copyOf(mem),
-                    people, renderedIds, Map.copyOf(ret));
+                    people, renderedIds, Map.copyOf(ret), contexts);
         }
 
         State withMember(MemberKey key, MemberEntry e) {
             Map<MemberKey, MemberEntry> m = new HashMap<>(members);
             m.put(key, e);
             return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds, retained);
+                    renderedIds, retained, contexts);
         }
 
         State withoutMember(MemberKey key) {
             Map<MemberKey, MemberEntry> m = new HashMap<>(members);
             m.remove(key);
             return new State(ready, position, groups, bans, moderationVersions, sanctions, Map.copyOf(m), people,
-                    renderedIds, retained);
+                    renderedIds, retained, contexts);
         }
 
         State withRetained(MemberKey key, RetainedMember r) {
             Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
             m.put(key, r);
             return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                    renderedIds, Map.copyOf(m));
+                    renderedIds, Map.copyOf(m), contexts);
         }
 
         // Drops the retained entries under any of these keys; returns this state when none is held.
@@ -1499,7 +1569,7 @@ public final class GameMirror implements AutoCloseable {
             Map<MemberKey, RetainedMember> m = new HashMap<>(retained);
             if (!m.keySet().removeAll(keys)) return this;
             return new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                    renderedIds, Map.copyOf(m));
+                    renderedIds, Map.copyOf(m), contexts);
         }
 
         State withBans(Collection<Ban> list) {
@@ -1512,7 +1582,7 @@ public final class GameMirror implements AutoCloseable {
                 if (ban.version() > 0) v.put(ban.userId(), ban.version());
             }
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    Set.copyOf(r), retained);
+                    Set.copyOf(r), retained, contexts);
         }
 
         State withBan(String userId, Ban ban, long version) {
@@ -1522,19 +1592,19 @@ public final class GameMirror implements AutoCloseable {
             else b.put(userId, ban);
             if (version > 0) v.put(userId, version);
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds, retained);
+                    renderedIds, retained, contexts);
         }
 
         State withBanMaps(Map<String, Ban> b, Map<String, Long> v) {
             return new State(ready, position, groups, Map.copyOf(b), Map.copyOf(v), sanctions, members, people,
-                    renderedIds, retained);
+                    renderedIds, retained, contexts);
         }
 
         State withSanctions(SanctionState next) {
             Set<String> r = new HashSet<>(renderedIds);
             r.addAll(next.byUser().keySet());
             return new State(ready, position, groups, bans, moderationVersions, next, members, people, Set.copyOf(r),
-                    retained);
+                    retained, contexts);
         }
 
         // Records the person under every id they hold, replacing what each id named before.
@@ -1548,7 +1618,7 @@ public final class GameMirror implements AutoCloseable {
                 r = Set.copyOf(copy);
             }
             return new State(ready, position, groups, bans, moderationVersions, sanctions, members, Map.copyOf(m), r,
-                    retained);
+                    retained, contexts);
         }
 
         // Two ids name the same person, and the server renders that person as {@code rendered}.
@@ -1570,7 +1640,7 @@ public final class GameMirror implements AutoCloseable {
                 Set<String> r = new HashSet<>(renderedIds);
                 r.add(id);
                 s = new State(ready, position, groups, bans, moderationVersions, sanctions, members, people,
-                        Set.copyOf(r), retained);
+                        Set.copyOf(r), retained, contexts);
             }
             Person p = s.people().get(id);
             if (p != null && !id.equals(p.rendered())) s = s.withPerson(new Person(p.ids(), id));
@@ -1644,7 +1714,7 @@ public final class GameMirror implements AutoCloseable {
         private Path snapshotFile;
         private Duration snapshotInterval = Duration.ofSeconds(30);
         private DurableFiles.Disk disk = DurableFiles.Disk.SYSTEM;
-        private ContextInheritance inheritance = ContextInheritance.NONE;
+        private ContextInheritance inheritance;
         private Duration retainWindow;
 
         private Builder(JunjoClient client) {
@@ -1747,13 +1817,14 @@ public final class GameMirror implements AutoCloseable {
         }
 
         /**
-         * The game's context inheritance, as in its config's {@code permissions.contexts}. The
-         * server does not expose that config to a game key, so pass the same table the game's
-         * config holds; with a different one, contextual checks can answer differently from
-         * {@code permissions().check}. Default {@link ContextInheritance#NONE}.
+         * An explicit context inheritance that checks resolve with instead of the server's. Only
+         * needed with a server whose role graphs do not carry the game's inheritance; pass the
+         * same table the game's config holds, since with a different one contextual checks can
+         * answer differently from {@code permissions().check}. By default, and with null, the
+         * mirror follows the server's inheritance.
          */
         public Builder contextInheritance(ContextInheritance inheritance) {
-            this.inheritance = Objects.requireNonNull(inheritance, "inheritance");
+            this.inheritance = inheritance;
             return this;
         }
 

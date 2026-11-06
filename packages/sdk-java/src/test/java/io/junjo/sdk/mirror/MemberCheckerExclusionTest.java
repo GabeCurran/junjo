@@ -274,4 +274,98 @@ class MemberCheckerExclusionTest {
         assertThrows(NullPointerException.class, () -> base.excludingRoles(null));
         assertThrows(NullPointerException.class, () -> base.excludingRoles(Arrays.asList("staff", null)));
     }
+
+    // What the server's check answers for the member with no overrides and the excluded roles removed.
+    PermissionCheckResult withoutOverrides(String userId, Set<String> excluded, String permission, Context context) {
+        MemberAccess a = mirror.access(userId, "g1").orElseThrow();
+        List<String> kept = a.roleIds().stream().filter(r -> !excluded.contains(r)).toList();
+        MemberAccess without = new MemberAccess(
+                a.groupId(), a.userId(), a.status(), kept, List.of(), a.version(), a.displayName(), a.metadata());
+        return PermissionResolver.compile(mirror.roleGraph("g1").orElseThrow(), WORLDS)
+                .check(without, permission, context);
+    }
+
+    @Test
+    void excludingOverridesEqualsTheResolverWithNoOverridesInEitherOrder() {
+        List<Set<String>> exclusions = List.of(Set.of(), STAFF, Set.of("staff", "helper"), Set.of("vip"),
+                Set.of("staff", "vip", "helper", "member"));
+        for (String user : List.of("ns:u1", "ns:u2")) {
+            for (Context c : Arrays.asList(Context.GLOBAL, WORLD, PVP, CREATIVE)) {
+                for (Set<String> excluded : exclusions) {
+                    MemberChecker base = mirror.checker(user, "g1", c);
+                    MemberChecker rolesFirst = base.excludingRoles(excluded).excludingOverrides();
+                    MemberChecker overridesFirst = base.excludingOverrides().excludingRoles(excluded);
+                    for (String p : PERMISSIONS) {
+                        PermissionCheckResult expected = withoutOverrides(user, excluded, p, c);
+                        String what = user + " without overrides and " + excluded + ": " + p + " in " + c;
+                        assertEquals(expected, rolesFirst.check(p).orElseThrow(), what);
+                        assertEquals(expected, overridesFirst.check(p).orElseThrow(), what);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void excludingOverridesDropsOnlyTheOverridesLayer() {
+        MemberChecker base = mirror.checker("ns:u1", "g1", PVP);
+        MemberChecker plain = base.excludingOverrides();
+        assertEquals(PermissionSource.OVERRIDE, base.check("mod.ban").orElseThrow().source());
+        assertEquals(PermissionSource.DEFAULT, plain.check("mod.ban").orElseThrow().source());
+        assertEquals(Answer.NO, base.can("essentials.fly"), "the contextual override denies in pvpworld");
+        PermissionCheckResult fly = plain.check("essentials.fly").orElseThrow();
+        assertTrue(fly.allowed(), "pvpworld inherits staff's entry for world");
+        assertEquals("staff", fly.viaRoleId());
+        assertEquals(WORLD, fly.context());
+        assertEquals(Answer.YES, base.can("mod.ban"), "the checker it came from is unchanged");
+        assertEquals(Answer.NO, plain.excludingRoles(STAFF).can("essentials.fly"));
+    }
+
+    @Test
+    void excludingOverridesKeepsTheShapeAndComposes() {
+        MemberChecker base = mirror.checker("ns:u1", "g1", PVP);
+        MemberChecker plain = base.excludingOverrides();
+        assertFalse(base.excludesOverrides());
+        assertTrue(plain.excludesOverrides());
+        assertSame(plain, plain.excludingOverrides());
+        assertEquals(PVP, plain.context());
+        assertEquals("ns:u1", plain.userId());
+        assertEquals("g1", plain.groupId());
+        assertEquals(Set.of(), plain.excludedRoles());
+
+        MemberChecker capped = base.excludingRoles(STAFF);
+        MemberChecker both = capped.excludingOverrides();
+        assertFalse(capped.excludesOverrides());
+        assertTrue(both.excludesOverrides());
+        assertEquals(STAFF, both.excludedRoles());
+        assertTrue(plain.excludingRoles(STAFF).excludesOverrides(), "excluding roles keeps the override exclusion");
+        assertEquals(STAFF, plain.excludingRoles(STAFF).excludedRoles());
+        assertTrue(mirror.checker("ns:nobody", "g1").excludingOverrides().check("x").isEmpty(),
+                "unknown stays unknown");
+    }
+
+    @Test
+    void grantedKeysLeaveOutKeysOnlyTheOverridesNamed() {
+        assertEquals(Set.of("cosmetic.*", "essentials.fly", "mod.kick", "warp.*"),
+                mirror.checker("ns:u1", "g1", WORLD).excludingOverrides().grantedKeys().orElseThrow());
+        assertEquals(Set.of("chat.color", "cosmetic.*", "warp.*"),
+                mirror.checker("ns:u1", "g1", WORLD).excludingRoles(STAFF).excludingOverrides().grantedKeys()
+                        .orElseThrow());
+        assertEquals(Set.of("cosmetic.*", "mod.ban", "mod.kick", "warp.*"),
+                mirror.checker("ns:u1", "g1", PVP).grantedKeys().orElseThrow());
+        assertEquals(Set.of("cosmetic.*", "essentials.fly", "mod.kick", "warp.*"),
+                mirror.checker("ns:u1", "g1", PVP).excludingOverrides().grantedKeys().orElseThrow());
+    }
+
+    @Test
+    void excludingOverridesKeepsTheStatusGate() throws Exception {
+        accessByUser.put("ns:u3", """
+                {"groupId":"g1","userId":"ns:u3","status":"banned","roleIds":["staff"],"overrides":[%s],
+                 "version":1}""".formatted(override("ns:u3", "mod.ban", true, null)));
+        join(mirror.track("ns:u3", "g1"));
+        PermissionCheckResult r = mirror.checker("ns:u3", "g1").excludingOverrides().check("mod.kick").orElseThrow();
+        assertFalse(r.allowed());
+        assertEquals(PermissionSource.NONE, r.source());
+        assertEquals(Answer.NO, mirror.checker("ns:u3", "g1").excludingOverrides().can("mod.ban"));
+    }
 }

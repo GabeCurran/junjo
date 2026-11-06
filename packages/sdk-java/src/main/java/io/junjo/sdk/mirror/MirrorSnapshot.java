@@ -20,6 +20,7 @@ import io.junjo.sdk.model.PermissionEntry;
 import io.junjo.sdk.model.Role;
 import io.junjo.sdk.model.RoleGraph;
 import io.junjo.sdk.model.Sanction;
+import io.junjo.sdk.permissions.ContextInheritance;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -31,14 +32,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 
 /**
  * The mirror's state file: one checksummed JSON line (see {@link DurableFiles}) holding the
- * position, role graphs, bans, sanctions, loaded tracked members and known people. Models are
- * written in their wire shape, so the SDK's wire decoders read them back. Members still loading
- * are not saved. Retained members are saved apart from tracked ones, each with the time it was
- * last tracked; the field is optional, so a file written without it loads with none retained.
+ * position, role graphs, bans, sanctions, loaded tracked members, known people and the server's
+ * context inheritance. Models are written in their wire shape, so the SDK's wire decoders read
+ * them back. Members still loading are not saved. Retained members are saved apart from tracked
+ * ones, each with the time it was last tracked. The retained members and the inheritance are
+ * optional fields, so a file written without them loads with none retained and no inheritance.
  */
 final class MirrorSnapshot {
     static final String FORMAT = "junjo-mirror";
@@ -52,6 +54,7 @@ final class MirrorSnapshot {
         o.addProperty("version", VERSION);
         o.addProperty("savedAt", Instant.now().toString());
         o.addProperty("position", s.position());
+        o.add("contexts", Wire.contextsJson(s.contexts()));
         JsonArray groups = new JsonArray();
         for (GroupState g : s.groups().values()) groups.add(graph(g.graph()));
         o.add("groups", groups);
@@ -99,23 +102,24 @@ final class MirrorSnapshot {
     }
 
     /**
-     * Empty when the file does not exist.
+     * Empty when the file does not exist. Each graph is compiled with the saved server inheritance.
      *
      * @throws IOException when it cannot be read
      * @throws RuntimeException when it fails its checksum, is not a mirror snapshot of this
      *     version, or is malformed
      */
-    static Optional<State> load(Path file, Function<RoleGraph, GroupState> compile) throws IOException {
+    static Optional<State> load(Path file, BiFunction<RoleGraph, ContextInheritance, GroupState> compile)
+            throws IOException {
         if (!Files.exists(file)) return Optional.empty();
         String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8).strip();
         JsonObject o = DurableFiles.parseLine(text);
         if (!FORMAT.equals(Json.optStr(o, "format")) || Json.optLong(o, "version", -1) != VERSION) {
             throw new IllegalStateException("not a version " + VERSION + " mirror snapshot");
         }
-        State s = State.EMPTY.withPosition(Json.str(o, "position"));
+        State s = State.EMPTY.withPosition(Json.str(o, "position")).withContexts(Wire.contexts(o));
         for (JsonObject g : Json.objects(Json.arr(o, "groups"), "groups")) {
             RoleGraph graph = Wire.roleGraph(g);
-            s = s.withGroup(graph.groupId(), compile.apply(graph));
+            s = s.withGroup(graph.groupId(), compile.apply(graph, s.contexts()));
         }
         List<Ban> bans = new ArrayList<>();
         for (JsonObject b : Json.objects(Json.arr(o, "bans"), "bans")) bans.add(ban(b));
@@ -183,6 +187,7 @@ final class MirrorSnapshot {
             roles.add(j);
         }
         o.add("roles", roles);
+        o.add("contexts", Wire.contextsJson(g.contexts()));
         return o;
     }
 

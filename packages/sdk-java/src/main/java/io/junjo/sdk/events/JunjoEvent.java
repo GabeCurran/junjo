@@ -4,7 +4,9 @@ import io.junjo.sdk.model.Group;
 import io.junjo.sdk.model.GroupRelationship;
 import io.junjo.sdk.model.Invitation;
 import io.junjo.sdk.model.Member;
+import io.junjo.sdk.model.PermissionMode;
 import io.junjo.sdk.model.Role;
+import io.junjo.sdk.permissions.ContextInheritance;
 import java.time.Instant;
 import java.util.List;
 
@@ -374,6 +376,21 @@ public sealed interface JunjoEvent {
         @Override
         public EventType type() {
             return EventType.IDENTITY_UNLINKED;
+        }
+    }
+
+    /**
+     * {@code permissions.config.updated}: the game's permission mode or context inheritance
+     * changed. Game-scoped, so no group stream carries it.
+     *
+     * @param mode the permission mode after the change
+     * @param contexts the context inheritance after the change
+     */
+    record PermissionsConfigUpdated(EventMeta meta, PermissionMode mode, ContextInheritance contexts)
+            implements JunjoEvent {
+        @Override
+        public EventType type() {
+            return EventType.PERMISSIONS_CONFIG_UPDATED;
         }
     }
 }

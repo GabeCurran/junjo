@@ -41,7 +41,8 @@ public enum EventType {
     GAME_USER_UNSANCTIONED("game.user.unsanctioned"),
     IDENTITY_LINKED("identity.linked"),
     IDENTITY_UNLINKED("identity.unlinked"),
-    IDENTITY_UPDATED("identity.updated");
+    IDENTITY_UPDATED("identity.updated"),
+    PERMISSIONS_CONFIG_UPDATED("permissions.config.updated");
 
     private static final Map<String, EventType> BY_WIRE = new HashMap<>();
 
