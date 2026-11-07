@@ -8,9 +8,12 @@
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "predev": "prisma generate && npm run build --workspace @junjo.io/shared",
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "start": "node dist/index.js",
+    "pretypecheck": "prisma generate && npm run build --workspace @junjo.io/shared",
     "typecheck": "tsc --noEmit",
+    "pretest": "prisma generate && npm run build --workspace @junjo.io/shared",
     "test": "vitest run --passWithNoTests",
     "bench": "vitest bench --outputJson=bench-results/baseline.json",
     "postinstall": "prisma generate",
