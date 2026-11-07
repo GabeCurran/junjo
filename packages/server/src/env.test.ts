@@ -201,4 +201,18 @@ describe("loadEnv", () => {
       loadEnv({ DATABASE_URL: "postgres://x", WEBHOOK_DELIVERY_RETENTION_DAYS: "1.5" }),
     ).toThrow(/WEBHOOK_DELIVERY_RETENTION_DAYS/);
   });
+
+  it("defaults LAST_ACTIVITY_INTERVAL_MS to five seconds and accepts 0 to disable it", () => {
+    expect(loadEnv({ DATABASE_URL: "postgres://x" }).LAST_ACTIVITY_INTERVAL_MS).toBe(5000);
+    expect(
+      loadEnv({ DATABASE_URL: "postgres://x", LAST_ACTIVITY_INTERVAL_MS: "0" })
+        .LAST_ACTIVITY_INTERVAL_MS,
+    ).toBe(0);
+    expect(() =>
+      loadEnv({ DATABASE_URL: "postgres://x", LAST_ACTIVITY_INTERVAL_MS: "-1" }),
+    ).toThrow(/LAST_ACTIVITY_INTERVAL_MS/);
+    expect(() =>
+      loadEnv({ DATABASE_URL: "postgres://x", LAST_ACTIVITY_INTERVAL_MS: "1.5" }),
+    ).toThrow(/LAST_ACTIVITY_INTERVAL_MS/);
+  });
 });
