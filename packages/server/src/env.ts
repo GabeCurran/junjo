@@ -84,6 +84,20 @@ const EnvSchema = z.object({
         .int("EVENT_STREAM_POLL_MS must be a non-negative integer")
         .nonnegative("EVENT_STREAM_POLL_MS must be a non-negative integer"),
     ),
+  // How often each server process applies new audit entries to the
+  // stored last activity the admin player list reads. One process at a
+  // time does the work. 0 disables it, which leaves last activity at
+  // its value when the job stopped.
+  LAST_ACTIVITY_INTERVAL_MS: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? 5000 : Number(v)))
+    .pipe(
+      z
+        .number()
+        .int("LAST_ACTIVITY_INTERVAL_MS must be a non-negative integer")
+        .nonnegative("LAST_ACTIVITY_INTERVAL_MS must be a non-negative integer"),
+    ),
   // Upper bound on the number of answers the per-process permission
   // check cache holds. Past it the least recently used answer is evicted.
   PERMISSION_CACHE_MAX_ENTRIES: z

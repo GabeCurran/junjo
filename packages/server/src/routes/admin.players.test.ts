@@ -2,6 +2,8 @@ import { PrismaClient } from "@prisma/client";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app";
+import { mergePeople, splitIdentity } from "../identityLink";
+import { catchUpLastActivity } from "../lastActivity";
 import { createGame } from "../seed";
 import type { WireAdminPlayer, WireAdminPlayerList } from "./admin.players";
 
@@ -10,6 +12,14 @@ const ADMIN_TOKEN = "test-admin-token-aabbcc";
 
 const TRUNCATE =
   'TRUNCATE TABLE "AuditEntry", "Sanction", "GameBan", "GroupMember", "Group", "ExternalIdentity", "JunjoUser", "ApiKey", "Game" RESTART IDENTITY CASCADE';
+
+const RESET_ACTIVITY_CURSOR = `INSERT INTO "LastActivityCursor" (id, "createdAt", "auditId")
+  VALUES ('lastActivity', '1970-01-01', '')
+  ON CONFLICT (id) DO UPDATE SET "createdAt" = '1970-01-01', "auditId" = ''`;
+
+// The fixtures write entries with explicit past times in any order, so
+// the catch-up rereads the whole log rather than a recent window.
+const SETTLE_OVERLAP_MS = 1000 * 24 * 60 * 60 * 1000;
 
 const T0 = new Date("2026-10-01T00:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
@@ -39,6 +49,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/players", () =>
 
   beforeEach(async () => {
     await prisma.$executeRawUnsafe(TRUNCATE);
+    await prisma.$executeRawUnsafe(RESET_ACTIVITY_CURSOR);
   });
 
   afterAll(async () => {
@@ -101,7 +112,14 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/players", () =>
     return app.request(path, { method: "GET", headers: { authorization: header } });
   }
 
+  // Applies every written entry to the stored last activity, as the
+  // background job does a few seconds after each write.
+  async function settle() {
+    await catchUpLastActivity(prisma, { overlapMs: SETTLE_OVERLAP_MS });
+  }
+
   async function listOk(gameId: string, query = ""): Promise<WireAdminPlayerList> {
+    await settle();
     const res = await list(gameId, query);
     expect(res.status).toBe(200);
     return (await res.json()) as WireAdminPlayerList;
@@ -628,6 +646,214 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /v1/admin/games/:gameId/players", () =>
 
       const [item] = (await listOk(game.id)).items;
       expect(item?.activeGroupCount).toBe(2);
+    });
+  });
+
+  describe("stored last activity", () => {
+    // The value the list computed by scanning the audit log on every
+    // request before it was stored, evaluated over the log as it stands.
+    async function scannedActivity(gameId: string): Promise<Map<string, string | null>> {
+      const rows = await prisma.$queryRaw<{ personId: string; at: Date | null }[]>`
+        SELECT p."personId", GREATEST(
+          (SELECT max((SELECT a."createdAt" FROM "AuditEntry" a
+              WHERE a."gameId" = ${gameId} AND a."targetId" = ia."externalUserId"
+              ORDER BY a."createdAt" DESC LIMIT 1))
+            FROM "ExternalIdentity" ia
+            WHERE ia."gameId" = ${gameId} AND ia."junjoUserId" = p."personId"),
+          (SELECT max(a."createdAt") FROM "AuditEntry" a
+            WHERE a."actorUserId" = p."personId" AND a."gameId" = ${gameId})
+        ) AS at
+        FROM (
+          SELECT DISTINCT "junjoUserId" AS "personId" FROM "ExternalIdentity"
+          WHERE "gameId" = ${gameId}
+        ) p
+      `;
+      return new Map(rows.map((r) => [r.personId, r.at ? r.at.toISOString() : null]));
+    }
+
+    async function listedActivity(gameId: string, query = "") {
+      const body = await listOk(gameId, `limit=100${query ? `&${query}` : ""}`);
+      return new Map(body.items.map((p) => [p.personId, p.lastActivityAt]));
+    }
+
+    async function storedFor(gameId: string, userId: string): Promise<string | null> {
+      const row = await prisma.externalIdentity.findUniqueOrThrow({
+        where: { gameId_externalUserId: { gameId, externalUserId: userId } },
+        select: { lastActivityAt: true },
+      });
+      return row.lastActivityAt ? row.lastActivityAt.toISOString() : null;
+    }
+
+    // Nulls last in both directions, then person id ascending.
+    function expectedOrder(values: Map<string, string | null>, order: "asc" | "desc") {
+      return [...values.entries()]
+        .sort(([pa, a], [pb, b]) => {
+          if (a !== b) {
+            if (a === null) return 1;
+            if (b === null) return -1;
+            return order === "asc" ? a.localeCompare(b) : b.localeCompare(a);
+          }
+          return pa < pb ? -1 : pa > pb ? 1 : 0;
+        })
+        .map(([personId]) => personId);
+    }
+
+    it("equals the audit log scan over varied history", async () => {
+      const game = await createGame("Alpha", prisma);
+      const other = await createGame("Beta", prisma);
+      let state = 7;
+      const pick = (n: number) => {
+        state = (state * 1103515245 + 12345) % 2147483648;
+        return state % n;
+      };
+
+      const people: { personId: string; ids: string[] }[] = [];
+      for (let p = 0; p < 12; p++) {
+        const ids = Array.from({ length: 1 + (p % 3) }, (_, k) => `ns${k}:${p}`);
+        const personId = await seedPerson(
+          game.id,
+          ids.map((userId, k) => ({ userId, linkedAtHours: k })),
+        );
+        people.push({ personId, ids });
+      }
+      // Some of the same people, under the same external ids, in another game.
+      for (const { personId, ids } of people.slice(0, 4)) {
+        await seedPerson(other.id, [{ userId: ids[0] as string }], personId);
+      }
+      // A person with no id in either game, as an actor only.
+      const stranger = (await prisma.junjoUser.create({ data: {} })).id;
+
+      const targets = [
+        ...people.flatMap((p) => p.ids),
+        "ns0:late",
+        "ns1:extra",
+        "group-or-role-id",
+        "ns0:nobody",
+      ];
+      const actors = [...people.map((p) => p.personId), stranger];
+      const entry = () => ({
+        gameId: pick(5) === 0 ? other.id : game.id,
+        action: "member.joined",
+        targetId: pick(6) === 0 ? null : (targets[pick(targets.length)] as string),
+        actorUserId: pick(3) === 0 ? (actors[pick(actors.length)] as string) : null,
+        createdAt: at(pick(400)),
+      });
+      for (let n = 0; n < 60; n++) {
+        const mode = pick(3);
+        if (mode === 0) {
+          await prisma.auditEntry.create({ data: entry() });
+        } else if (mode === 1) {
+          await prisma.auditEntry.createMany({ data: Array.from({ length: 4 }, entry) });
+        } else {
+          const e = entry();
+          await prisma.$executeRaw`
+            INSERT INTO "AuditEntry" (id, "gameId", action, "targetId", "actorUserId", "createdAt")
+            VALUES (${`raw-${n}`}, ${e.gameId}, ${e.action}, ${e.targetId}, ${e.actorUserId}, ${e.createdAt})
+          `;
+        }
+      }
+      // Ids that appear after entries already named them or their person.
+      await seedPerson(game.id, [{ userId: "ns0:late" }]);
+      await seedPerson(game.id, [{ userId: "ns1:extra" }], people[0]?.personId);
+      await settle();
+
+      for (const gameId of [game.id, other.id]) {
+        const scanned = await scannedActivity(gameId);
+        expect([...scanned.values()].some((v) => v !== null)).toBe(true);
+        for (const sort of ["firstSeen", "name", "lastActivity"]) {
+          expect(await listedActivity(gameId, `sort=${sort}`)).toEqual(scanned);
+        }
+        for (const order of ["asc", "desc"] as const) {
+          const body = await listOk(gameId, `limit=100&sort=lastActivity&order=${order}`);
+          expect(body.items.map((p) => p.personId)).toEqual(expectedOrder(scanned, order));
+        }
+      }
+    });
+
+    it("ignores entries that name no identity in the game", async () => {
+      const game = await createGame("Alpha", prisma);
+      const other = await createGame("Beta", prisma);
+      const personId = await seedPerson(game.id, [{ userId: "p:a" }]);
+      await seedAudit(game.id, 5, { targetId: "group-or-role-id" });
+      await seedAudit(game.id, 6, { targetId: personId });
+      await seedAudit(other.id, 7, { targetId: "p:a", actorUserId: personId });
+      await prisma.auditEntry.createMany({
+        data: [
+          { gameId: game.id, action: "member.joined", targetId: "p:unknown", createdAt: at(8) },
+          { gameId: game.id, action: "member.joined", createdAt: at(9) },
+        ],
+      });
+      await settle();
+      expect(await storedFor(game.id, "p:a")).toBeNull();
+    });
+
+    it("raises the value for entries from every insert path and never lowers it", async () => {
+      const game = await createGame("Alpha", prisma);
+      const a = await seedPerson(game.id, [{ userId: "p:a" }, { userId: "p:a2" }]);
+      await seedPerson(game.id, [{ userId: "p:b" }]);
+
+      await prisma.auditEntry.createMany({
+        data: [
+          { gameId: game.id, action: "member.joined", targetId: "p:a", createdAt: at(9) },
+          { gameId: game.id, action: "member.joined", targetId: "p:a", createdAt: at(5) },
+          { gameId: game.id, action: "member.joined", targetId: "p:b", createdAt: at(3) },
+        ],
+      });
+      await settle();
+      expect(await storedFor(game.id, "p:a")).toBe(at(9).toISOString());
+      expect(await storedFor(game.id, "p:a2")).toBeNull();
+      expect(await storedFor(game.id, "p:b")).toBe(at(3).toISOString());
+
+      // An actor entry reaches every id the actor holds in the game.
+      await seedAudit(game.id, 12, { actorUserId: a, targetId: "p:b" });
+      await settle();
+      expect(await storedFor(game.id, "p:a")).toBe(at(12).toISOString());
+      expect(await storedFor(game.id, "p:a2")).toBe(at(12).toISOString());
+      expect(await storedFor(game.id, "p:b")).toBe(at(12).toISOString());
+
+      await prisma.$executeRaw`
+        INSERT INTO "AuditEntry" (id, "gameId", action, "targetId", "createdAt")
+        VALUES ('raw-entry', ${game.id}, 'member.joined', 'p:a2', ${at(20)})
+      `;
+      await settle();
+      expect(await storedFor(game.id, "p:a2")).toBe(at(20).toISOString());
+
+      await seedAudit(game.id, 1, { targetId: "p:a2", actorUserId: a });
+      await settle();
+      expect(await storedFor(game.id, "p:a2")).toBe(at(20).toISOString());
+      expect(await storedFor(game.id, "p:a")).toBe(at(12).toISOString());
+    });
+
+    it("keeps each id's own value through a merge and a split", async () => {
+      const game = await createGame("Alpha", prisma);
+      const a = await seedPerson(game.id, [{ userId: "p:a" }]);
+      const b = await seedPerson(game.id, [{ userId: "p:b" }]);
+      await seedAudit(game.id, 10, { targetId: "p:a" });
+      await seedAudit(game.id, 30, { actorUserId: b });
+      await seedAudit(game.id, 20, { targetId: "p:b" });
+      await settle();
+      expect(await storedFor(game.id, "p:a")).toBe(at(10).toISOString());
+      expect(await storedFor(game.id, "p:b")).toBe(at(30).toISOString());
+
+      await prisma.$transaction((tx) => mergePeople(tx, a, b, at(40)));
+      expect(await listedActivity(game.id)).toEqual(new Map([[a, at(30).toISOString()]]));
+      expect(await listedActivity(game.id)).toEqual(await scannedActivity(game.id));
+
+      // The split id carries its own value to the new person. The merge
+      // repointed the entries it acted on to the survivor, so a scan of
+      // the log no longer credits them to it.
+      const moved = await prisma.externalIdentity.findUniqueOrThrow({
+        where: { gameId_externalUserId: { gameId: game.id, externalUserId: "p:b" } },
+        select: { id: true },
+      });
+      const fresh = await prisma.$transaction((tx) => splitIdentity(tx, moved.id, at(50)));
+      expect(await listedActivity(game.id)).toEqual(
+        new Map([
+          [a, at(30).toISOString()],
+          [fresh, at(30).toISOString()],
+        ]),
+      );
+      expect((await scannedActivity(game.id)).get(fresh)).toBe(at(20).toISOString());
     });
   });
 });

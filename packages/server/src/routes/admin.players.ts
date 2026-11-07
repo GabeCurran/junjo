@@ -61,37 +61,6 @@ function displayNameOrderSql(alias: string): Prisma.Sql {
   return Prisma.sql`${i}."displayNameUpdatedAt" DESC NULLS LAST, ${i}.id DESC`;
 }
 
-// The newest audit entry in the game that targets one id: a single
-// descent of the (gameId, targetId, createdAt) index.
-function targetActivitySql(gameId: string, idColumn: Prisma.Sql): Prisma.Sql {
-  return Prisma.sql`(
-    SELECT a."createdAt" FROM "AuditEntry" a
-    WHERE a."gameId" = ${gameId} AND a."targetId" = ${idColumn}
-    ORDER BY a."createdAt" DESC
-    LIMIT 1
-  )`;
-}
-
-// The newest audit entry in the game written with the person as actor.
-function actorActivitySql(gameId: string, personColumn: Prisma.Sql): Prisma.Sql {
-  return Prisma.sql`(
-    SELECT max(a."createdAt") FROM "AuditEntry" a
-    WHERE a."actorUserId" = ${personColumn} AND a."gameId" = ${gameId}
-  )`;
-}
-
-// One person's last activity: the newer of their newest targeted entry
-// across their ids in the game and their newest entry as actor.
-function personActivitySql(gameId: string, alias: string): Prisma.Sql {
-  const p = Prisma.raw(alias);
-  return Prisma.sql`GREATEST(
-    (SELECT max(${targetActivitySql(gameId, Prisma.sql`ia."externalUserId"`)})
-      FROM "ExternalIdentity" ia
-      WHERE ia."gameId" = ${gameId} AND ia."junjoUserId" = ${p}."personId"),
-    ${actorActivitySql(gameId, Prisma.sql`${p}."personId"`)}
-  )`;
-}
-
 // One person's display name in the game, or null.
 function personDisplayNameSql(gameId: string, alias: string): Prisma.Sql {
   const p = Prisma.raw(alias);
@@ -175,9 +144,10 @@ export function listAdminPlayersHandler(prisma: PrismaClient): Handler {
       )`;
     }
 
-    // Only the active sort's key is computed for every person; sorting by
-    // last activity costs one index descent per id. The page computes last
-    // activity and the display name for its own rows only.
+    // Only the name sort's key is built for every person; the page looks
+    // up the display name for its own rows only. Last activity is the
+    // newest of the person's stored per-id values, read from the rows the
+    // aggregate already scans.
     const nameColumn =
       sort === "name"
         ? Prisma.sql`, lower(coalesce(
@@ -186,38 +156,27 @@ export function listAdminPlayersHandler(prisma: PrismaClient): Handler {
             (array_agg(i."externalUserId" ORDER BY i."linkedAt" ASC, i.id ASC))[1]
           )) AS "sortName"`
         : Prisma.empty;
-    const sortsByActivity = sort === "lastActivity";
-    const targetColumn = sortsByActivity
-      ? Prisma.sql`, max(${targetActivitySql(gameId, Prisma.sql`i."externalUserId"`)}) AS "targetActivityAt"`
-      : Prisma.empty;
-    const matchedActivity = sortsByActivity
-      ? Prisma.sql`, GREATEST(p."targetActivityAt", ${actorActivitySql(gameId, Prisma.sql`p."personId"`)}) AS "lastActivityAt"`
-      : Prisma.empty;
-    const pageActivity = sortsByActivity
-      ? Prisma.sql`s."lastActivityAt"`
-      : personActivitySql(gameId, "s");
     const pageSortName = sort === "name" ? Prisma.sql`, s."sortName"` : Prisma.empty;
 
     const query = Prisma.sql`
       WITH people AS (
-        SELECT i."junjoUserId" AS "personId", min(i."createdAt") AS "firstSeenAt"
-          ${nameColumn} ${targetColumn}
+        SELECT i."junjoUserId" AS "personId", min(i."createdAt") AS "firstSeenAt",
+          max(i."lastActivityAt") AS "lastActivityAt" ${nameColumn}
         FROM "ExternalIdentity" i
         WHERE i."gameId" = ${gameId}
         GROUP BY i."junjoUserId"
         HAVING true ${qCondition} ${namespaceCondition}
       ),
       matched AS (
-        SELECT p.* ${matchedActivity}
+        SELECT p.*
         FROM people p
         WHERE true ${standingCondition}
       )
       SELECT t.total, pg."personId", pg."displayName", pg."firstSeenAt", pg."lastActivityAt"
       FROM (SELECT count(*)::int AS total FROM matched) t
       LEFT JOIN LATERAL (
-        SELECT s."personId", s."firstSeenAt" ${pageSortName},
-          ${personDisplayNameSql(gameId, "s")} AS "displayName",
-          ${pageActivity} AS "lastActivityAt"
+        SELECT s."personId", s."firstSeenAt", s."lastActivityAt" ${pageSortName},
+          ${personDisplayNameSql(gameId, "s")} AS "displayName"
         FROM (
           SELECT * FROM matched m
           ORDER BY ${orderBySql(sort, order, "m")}

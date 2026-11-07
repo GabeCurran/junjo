@@ -169,6 +169,13 @@ model ExternalIdentity {
   displayName          String?
   // When `displayName` was last set; null while it is unset.
   displayNameUpdatedAt DateTime?
+  // The newest audit entry in this id's game that targets this id or
+  // names its person as actor; null while there is none. The last
+  // activity catch-up job raises it a few seconds after each entry, and
+  // a database trigger created in the migration, which the schema
+  // language cannot express, starts a new identity from the entries
+  // already written. An id moved to another person keeps its value.
+  lastActivityAt       DateTime? @db.Timestamptz(3)
 
   linkCodes LinkCode[]
 
@@ -178,6 +185,15 @@ model ExternalIdentity {
   // the members list endpoints (`WHERE gameId AND junjoUserId IN (...)`),
   // and the gameId-scoped existence checks in `findJunjoUserId`.
   @@index([gameId, junjoUserId])
+}
+
+// How far the last activity catch-up job has read the audit log: the
+// (createdAt, id) of the newest entry it has applied. One row, created
+// by the migration.
+model LastActivityCursor {
+  id        String   @id
+  createdAt DateTime
+  auditId   String
 }
 
 // Single-use code that links the redeeming id to the issuing id's
@@ -591,10 +607,12 @@ model AuditEntry {
   @@index([groupId, createdAt(sort: Desc)])
   @@index([gameId, createdAt(sort: Desc)])
   @@index([actorUserId, createdAt(sort: Desc)])
-  // Backs the latest-entry-per-target lookup of the admin player list
+  // Backs the per-game audit feed's target filter and the latest entry
+  // per target that a new identity's `lastActivityAt` starts from
   // (`WHERE gameId AND targetId = ? ORDER BY createdAt DESC`).
   @@index([gameId, targetId, createdAt(sort: Desc)])
-  // Backs the cross-game recent-activity feed and the 24 hour count
+  // Backs the cross-game recent-activity feed, the 24 hour count and the
+  // last activity catch-up job's read in (createdAt, id) order
   // (`ORDER BY createdAt DESC, id DESC`, `WHERE createdAt >= ?`).
   @@index([createdAt(sort: Desc), id(sort: Desc)])
   // Backs the per-game audit feed filtered by action.
