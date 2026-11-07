@@ -656,12 +656,12 @@ interface WireAdminPlayerList {
 ### Behavior
 
 - Strictly scoped to the game: ids, display names, bans, sanctions, memberships and audit entries from other games never contribute, even for a person who plays several games.
-- `lastActivityAt` is the time of the newest audit entry in this game whose `targetId` is one of the person's ids, or whose `actorUserId` is the person. Null when there is none.
+- `lastActivityAt` is the time of the newest audit entry in this game whose `targetId` is one of the person's ids, or whose `actorUserId` is the person. Null when there is none. The server stores it per id and a background job applies new audit entries within a few seconds (`LAST_ACTIVITY_INTERVAL_MS`, default 5 seconds; see [Self-hosting](/self-host#environment-variables)), so an entry written moments ago may not show yet. The person's value is the newest across their ids. An id moved by a link or unlink keeps the activity it had, so entries the id's previous person acted on still count for its new person.
 - `activeGroupCount` counts memberships with status `active` in groups of this game that are not soft-deleted.
 - `ban` and `sanctions` show active entries only. Expiry is lazy, so a ban or sanction whose `expiresAt` has passed is omitted (and does not match `standing`) even though its row still exists. Sanctions are listed newest first.
 - `sort=firstSeen` orders by `firstSeenAt`. `sort=name` orders by the display name, falling back to the earliest linked id when the person has none, ignoring case. `sort=lastActivity` orders by `lastActivityAt`; people with no activity sort last in both directions. Ties break on `personId` ascending so a given offset returns the same rows on every call.
 - `q`, `namespace` and `standing` are AND-combined. Each row still lists all of the person's ids, not only the one that matched.
-- Built as one aggregate query over the game's ids plus four batched lookups for the page. `sort=lastActivity` does one index lookup per id in the game to order everyone, so it is the most expensive sort on a large game; the other sorts look up activity for the page only.
+- Built as one aggregate query over the game's ids plus four batched lookups for the page. Every sort reads the stored activity from that aggregate, so `sort=lastActivity` costs about the same as `sort=firstSeen`.
 
 ### Errors
 
