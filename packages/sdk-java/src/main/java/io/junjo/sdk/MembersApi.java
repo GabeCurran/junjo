@@ -48,7 +48,13 @@ public final class MembersApi {
 
     /**
      * Adds a user to a group directly, ignoring the group's visibility. Bans are still enforced.
-     * Idempotent for an active member.
+     * Idempotent for an active member. Without {@code If-None-Match}, an active member who lacks
+     * {@code roleId} gains it, and a left or kicked member is reactivated.
+     *
+     * <p>{@link WriteOptions#withIfNoneMatchAny()} makes the add create-only: it applies only when the
+     * user has no membership row in the group in any status (active, left, kicked, invited or banned,
+     * under any of their linked ids), and otherwise fails with {@code 412 precondition_failed}
+     * having written nothing. A refusal for another reason, such as {@code banned}, is reported first.
      *
      * @param roleId a role to assign in the same write, or null
      * @param actorUserId the acting moderator, or null

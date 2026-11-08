@@ -70,7 +70,8 @@ import java.util.function.Consumer;
  * <p>Replay safety: every entry gets a random UUID {@code Idempotency-Key} when it is enqueued and
  * keeps it across retries and restarts, so a write whose response was lost is not applied twice
  * within the server's key retention. An optional {@code If-Match} additionally refuses a replay
- * against state that changed since the write was decided, beyond that retention.
+ * against state that changed since the write was decided, beyond that retention, and an optional
+ * {@code If-None-Match: *} refuses one whose target already exists.
  *
  * <p>Ordering: one drain thread sends entries strictly in enqueue order; an entry is not sent
  * until every earlier one has finished.
@@ -499,6 +500,7 @@ public final class WriteQueue implements AutoCloseable {
         o.addProperty("path", e.write().path());
         o.addProperty("body", e.write().body());
         o.addProperty("ifMatch", e.write().ifMatch());
+        o.addProperty("ifNoneMatch", e.write().ifNoneMatch());
         o.addProperty("lift", e.write().lift());
         o.addProperty("label", e.write().label());
         o.addProperty("at", e.enqueuedAt().toString());
@@ -534,7 +536,8 @@ public final class WriteQueue implements AutoCloseable {
                 Json.optStr(o, "body"),
                 Json.optStr(o, "ifMatch"),
                 Json.optBool(o, "lift", false),
-                Json.optStr(o, "label"));
+                Json.optStr(o, "label"),
+                Json.optStr(o, "ifNoneMatch"));
         Instant at = Json.optInstant(o, "at");
         return new Entry(Json.str(o, "id"), Json.str(o, "key"), w, at == null ? Instant.EPOCH : at);
     }
@@ -620,6 +623,7 @@ public final class WriteQueue implements AutoCloseable {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Idempotency-Key", e.idempotencyKey());
         if (e.write().ifMatch() != null) headers.put("If-Match", e.write().ifMatch());
+        if (e.write().ifNoneMatch() != null) headers.put("If-None-Match", e.write().ifNoneMatch());
         Call call = new Call(e.write().method(), e.write().path(), e.write().body(), headers, false, null);
         CompletableFuture<HttpResult> f = transport.exchange(call);
         synchronized (lock) {

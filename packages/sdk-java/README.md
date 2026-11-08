@@ -97,6 +97,9 @@ junjo.bans().add(
 
 junjo.members().assignRole("grp_main", player, "role_mod", null,
         WriteOptions.idempotent().withIfMatch(member.version())); // refused with 412 if the member changed
+
+junjo.members().add("grp_main", player, "role_member", null,
+        WriteOptions.idempotent().withIfNoneMatchAny()); // refused with 412 if any membership row exists
 ```
 
 ### Threads
@@ -262,7 +265,7 @@ queue.close();
 ```
 
 - `enqueue` returns after the entry is appended to the journal and forced to disk; when the force fails it throws and the entry is not queued. Each journal line carries a CRC32. The journal is compacted through a temporary file, an atomic move and a directory force; without atomic moves the old journal is kept and an ERROR is logged.
-- The `QueuedWrite` factories are named after the API calls and build exactly the same requests.
+- The `QueuedWrite` factories are named after the API calls and build exactly the same requests. `addMemberIfAbsent` is `addMember` with `If-None-Match: *`: it creates the membership only when none exists in any status, and an existing one is a `412` reported through `onConflict`.
 - Each entry gets a random `Idempotency-Key` that it keeps across retries and restarts, so a write whose answer was lost is not applied twice. Add `ifMatch(version)` for writes that must not apply to state that changed after you decided them; the server's key retention is 24 hours, and `If-Match` protects beyond it.
 - Entries are sent strictly in order. Network errors, timeouts, 5xx, 408, 429 and 409 `idempotency_key_in_progress` retry the head entry with backoff; later entries wait. A 401 also retries (a rotated key should not wipe the queue).
 - `412 precondition_failed` drops the entry and calls `onConflict`. Any other 4xx drops it and calls `onRejected`. Either way the entry, the status and the raw response body are first appended to the dead-letter file next to the journal (`deadLetterFile()`), so nothing is lost when a callback is unset or throws. Journal lines that fail their checksum are moved there too.

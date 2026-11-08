@@ -120,6 +120,48 @@ class ClientTest {
     }
 
     @Test
+    void createOnlyAddSendsIfNoneMatchAndSurfacesTheConflict() throws Exception {
+        server.on("POST", "/v1/groups/g1/members", (req, ex) -> {
+            if (req.body().contains("\"u2\"")) {
+                FakeServer.json(ex, 412, """
+                        {"code":"precondition_failed","status":412,
+                         "message":"the user already has a membership row in this group with status kicked",
+                         "details":{"memberStatus":"kicked"}}""");
+            } else {
+                FakeServer.json(ex, 201, MEMBER_JSON);
+            }
+        });
+        WriteOptions opts = WriteOptions.idempotent("key-2").withIfNoneMatchAny();
+        join(client.members().add("g1", "u1", "r1", null, opts));
+        FakeServer.Req req = server.requests.get(0);
+        assertEquals("*", req.header("If-None-Match"));
+        assertEquals("key-2", req.header("Idempotency-Key"));
+        assertNull(req.header("If-Match"));
+        JsonObject body = JsonParser.parseString(req.body()).getAsJsonObject();
+        assertEquals("r1", body.get("roleId").getAsString());
+
+        join(client.members().add("g1", "u1"));
+        assertNull(server.requests.get(1).header("If-None-Match"), "absent unless asked for");
+
+        JunjoException je = failure(client.members().add("g1", "u2", null, null,
+                WriteOptions.none().withIfNoneMatchAny()));
+        assertEquals("precondition_failed", je.code());
+        assertEquals(412, je.status());
+        assertEquals("kicked", je.details().orElseThrow().get("memberStatus"));
+    }
+
+    @Test
+    void writeOptionsKeepIfNoneMatchAcrossCopiesAndValidateIt() {
+        WriteOptions opts = WriteOptions.none().withIfNoneMatchAny().withIdempotencyKey("k").withIfMatch(2)
+                .withTimeout(Duration.ofSeconds(1));
+        assertEquals("*", opts.ifNoneMatch());
+        assertEquals(WriteOptions.ANY, opts.ifNoneMatch());
+        assertNull(WriteOptions.none().ifNoneMatch());
+        assertNull(new WriteOptions("k", null, null).ifNoneMatch());
+        assertThrows(IllegalArgumentException.class, () -> new WriteOptions(null, null, null, "\"1\""));
+    }
+
+    @Test
     void parsesErrorEnvelopeWithDetailsAndImportRows() throws Exception {
         server.on("POST", "/v1/groups/g1/members/import", (req, ex) -> FakeServer.json(ex, 400, """
                 {"code":"bad_request","status":400,"message":"rows failed","requestId":"req-9",

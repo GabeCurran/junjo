@@ -150,6 +150,60 @@ class WriteQueueTest {
     }
 
     @Test
+    void createOnlyAddSendsIfNoneMatchAndAnExistingMemberIsAConflictNotARetry() throws Exception {
+        server.on("POST", "/v1/groups/g/members", (req, ex) -> {
+            if (req.body().contains("\"taken\"")) {
+                FakeServer.json(ex, 412, FakeServer.error("precondition_failed", 412,
+                        "the user already has a membership row in this group with status active"));
+            } else {
+                FakeServer.json(ex, 201, MEMBER);
+            }
+        });
+        try (WriteQueue q = queue(dir.resolve("q.jsonl")).open()) {
+            q.enqueue(QueuedWrite.addMemberIfAbsent("g", "taken", "r", null));
+            q.enqueue(QueuedWrite.addMemberIfAbsent("g", "fresh", "r", null));
+            q.enqueue(QueuedWrite.addMember("g", "plain", null, null));
+            assertTrue(q.flush(Duration.ofSeconds(10)));
+            List<JsonObject> dead = deadLetters(q);
+            assertEquals(1, dead.size());
+            assertEquals("conflict", dead.get(0).get("reason").getAsString());
+            assertEquals("*", dead.get(0).getAsJsonObject("entry").get("ifNoneMatch").getAsString());
+        }
+        assertEquals(1, conflicts.size());
+        assertEquals(412, conflicts.get(0).status());
+        assertEquals("precondition_failed", conflicts.get(0).error().code());
+        assertEquals(2, successes.size());
+        assertTrue(rejections.isEmpty());
+        List<FakeServer.Req> sent = server.requests("POST", "/v1/groups/g/members");
+        assertEquals(3, sent.size(), "the conflict is not retried");
+        assertEquals("*", sent.get(0).header("If-None-Match"));
+        assertEquals("*", sent.get(1).header("If-None-Match"));
+        assertNull(sent.get(2).header("If-None-Match"));
+        assertNull(sent.get(0).header("If-Match"));
+    }
+
+    @Test
+    void createOnlyAddKeepsIfNoneMatchAcrossARestart() throws Exception {
+        Path journal = dir.resolve("q.jsonl");
+        server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 503,
+                FakeServer.error("internal", 503, "down")));
+        WriteQueue q1 = queue(journal).open();
+        WriteQueue.Entry entry = q1.enqueue(QueuedWrite.addMemberIfAbsent("g", "u", null, null));
+        assertFalse(q1.close(Duration.ofMillis(200)));
+
+        server.requests.clear();
+        server.onPrefix("POST", "/v1/groups/", (req, ex) -> FakeServer.json(ex, 201, MEMBER));
+        try (WriteQueue q2 = queue(journal).open()) {
+            assertEquals(1, q2.size());
+            assertEquals("*", q2.pending().get(0).write().ifNoneMatch());
+            assertTrue(q2.flush(Duration.ofSeconds(10)));
+        }
+        assertEquals(1, server.requests.size());
+        assertEquals("*", server.requests.get(0).header("If-None-Match"));
+        assertEquals(entry.idempotencyKey(), server.requests.get(0).header("Idempotency-Key"));
+    }
+
+    @Test
     void liftOfAnInactiveBanCountsAsSuccess() throws Exception {
         server.on("DELETE", "/v1/bans/ns%3Au", (req, ex) -> FakeServer.json(ex, 404, NOT_ACTIVE));
         server.on("DELETE", "/v1/groups/g/members/ns%3Au/ban", (req, ex) -> FakeServer.json(ex, 404, NOT_ACTIVE));
