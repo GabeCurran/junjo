@@ -86,8 +86,10 @@ export const Errors = {
     new JunjoError("idempotency_key_reused", 422, msg),
   idempotencyKeyInProgress: (msg = "a request with this Idempotency-Key is still in progress") =>
     new JunjoError("idempotency_key_in_progress", 409, msg),
-  preconditionFailed: (msg = "If-Match does not match the current version") =>
-    new JunjoError("precondition_failed", 412, msg),
+  preconditionFailed: (
+    msg = "If-Match does not match the current version",
+    details?: Record<string, unknown>,
+  ) => new JunjoError("precondition_failed", 412, msg, details),
   passcodeRequired: (msg = "this group requires a passcode to join") =>
     new JunjoError("passcode_required", 403, msg),
   passcodeInvalid: (msg = "invalid passcode") => new JunjoError("passcode_invalid", 403, msg),
