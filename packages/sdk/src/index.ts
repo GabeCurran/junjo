@@ -541,7 +541,7 @@ export {
   memberImportErrors,
 } from "./errors.js";
 export type { JunjoErrorCode, JunjoSdkErrorCode } from "./errors.js";
-export type { ConditionalWriteOptions, WriteOptions } from "./http.js";
+export type { ConditionalWriteOptions, CreateOnlyWriteOptions, WriteOptions } from "./http.js";
 export { FriendsApi } from "./friends.js";
 export type {
   Block,

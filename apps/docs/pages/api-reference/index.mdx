@@ -58,7 +58,7 @@ Reserved codes the server returns today:
 | `group_full` | 409 | The group is at its kind's member limit. See [Kind limits](/api-reference/groups#kind-limits). |
 | `group_limit_reached` | 409 | The user already holds the most memberships allowed in groups of that kind. |
 | `idempotency_key_in_progress` | 409 | A request with the same `Idempotency-Key` is still running. Carries `Retry-After: 1`. See [Idempotency keys](#idempotency-keys). |
-| `precondition_failed` | 412 | `If-Match` names a version other than the current one; nothing was written. See [Conditional writes](#conditional-writes). |
+| `precondition_failed` | 412 | `If-Match` names a version other than the current one, or `If-None-Match: *` found an existing membership; nothing was written. See [Conditional writes](#conditional-writes). |
 | `idempotency_key_reused` | 422 | The `Idempotency-Key` was already used by this API key for a different request. |
 | `rate_limit_exceeded` | 429 | A token bucket is exhausted: the per-API-key bucket or the shared per-source bucket, whichever denies first (see [Rate limiting](#rate-limiting)). Response carries a `Retry-After` header (seconds, integer >= 1) indicating the minimum wait before the next request will be admitted. Tunable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars (defaults: 600 sustained, 100 burst per key; the source bucket is sized at 20x). |
 | `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
@@ -105,6 +105,8 @@ A write that accepts `If-Match` compares it with the current version inside its 
 - A missing member answers `404`, not `412`.
 
 Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
+
+`POST /v1/groups/:id/members` accepts `If-None-Match: *` instead: the add applies only when the person has no membership row in the group in any status, and otherwise answers `412 precondition_failed` and writes nothing. Any other `If-None-Match` value answers `400 bad_request`. See [Create-only adds](/api-reference/groups#create-only-adds).
 
 ## Safe retries for queued writes
 

@@ -70,7 +70,8 @@ import java.util.function.Consumer;
  * <p>Replay safety: every entry gets a random UUID {@code Idempotency-Key} when it is enqueued and
  * keeps it across retries and restarts, so a write whose response was lost is not applied twice
  * within the server's key retention. An optional {@code If-Match} additionally refuses a replay
- * against state that changed since the write was decided, beyond that retention.
+ * against state that changed since the write was decided, beyond that retention, and an optional
+ * {@code If-None-Match: *} refuses one whose target already exists.
  *
  * <p>Ordering: one drain thread sends entries strictly in enqueue order; an entry is not sent
  * until every earlier one has finished.
@@ -122,6 +123,10 @@ public final class WriteQueue implements AutoCloseable {
     private long written;
     private long durable;
     private int epoch;
+    // Bumped by every journal rewrite. A rewrite runs only when no record is waiting for a force,
+    // so every record from an earlier generation was durable before the rewrite, and its offset
+    // no longer refers to the current file.
+    private int generation;
     private boolean forcing;
     private IOException forceFailure;
     private final Deque<Unforced> unforced = new ArrayDeque<>();
@@ -134,8 +139,9 @@ public final class WriteQueue implements AutoCloseable {
     // An entry whose put record ends at byte end of the journal.
     private record Unforced(Entry entry, long end) {}
 
-    // Where one record ends: the journal length after it, and the epoch it was written in.
-    private record Mark(long end, int epoch) {}
+    // Where one record ends: the journal length after it, and the epoch and journal generation it
+    // was written in.
+    private record Mark(long end, int epoch, int generation) {}
 
     /** One pending entry. {@code idempotencyKey} is sent with every attempt. */
     public record Entry(String id, String idempotencyKey, QueuedWrite write, Instant enqueuedAt) {}
@@ -345,6 +351,21 @@ public final class WriteQueue implements AutoCloseable {
         return out;
     }
 
+    // Compacts once enough entries are done. Compaction rewrites the queue only, so it waits while
+    // a force is running or an enqueue's put is not covered by one yet; a later completion tries
+    // again. Only the drain thread calls it, right after removing a finished entry, because an
+    // entry whose done record is written but which is still at the head of the queue would be
+    // rewritten as pending. Called with the lock held.
+    private void maybeCompact() {
+        if (doneSinceCompact < compactThreshold || forcing || !unforced.isEmpty()) return;
+        try {
+            rewrite();
+        } catch (IOException ex) {
+            Safe.log(logger, JunjoLogger.Level.ERROR, "write queue journal reopen failed", ex);
+            Safe.accept(logger, "onError", onError, ex);
+        }
+    }
+
     // Rewrites the journal with only the pending entries. Called with the lock held. When the new
     // file cannot replace the old one atomically, the old journal is kept: a plain move could
     // leave neither file complete after a crash.
@@ -362,6 +383,7 @@ public final class WriteQueue implements AutoCloseable {
                 StandardOpenOption.APPEND);
         written = channel.size();
         durable = written;
+        generation++;
         doneSinceCompact = 0;
     }
 
@@ -385,7 +407,7 @@ public final class WriteQueue implements AutoCloseable {
             throw e;
         }
         written += length;
-        return new Mark(written, epoch);
+        return new Mark(written, epoch, generation);
     }
 
     // Returns once a force covers the record, forcing the journal itself when no other thread is.
@@ -404,7 +426,7 @@ public final class WriteQueue implements AutoCloseable {
                         if (epoch != mark.epoch()) {
                             throw new IOException("the write queue journal could not be forced", forceFailure);
                         }
-                        if (durable >= mark.end()) return;
+                        if (mark.generation() != generation || durable >= mark.end()) return;
                         if (!forcing) break;
                         try {
                             lock.wait();
@@ -499,6 +521,7 @@ public final class WriteQueue implements AutoCloseable {
         o.addProperty("path", e.write().path());
         o.addProperty("body", e.write().body());
         o.addProperty("ifMatch", e.write().ifMatch());
+        o.addProperty("ifNoneMatch", e.write().ifNoneMatch());
         o.addProperty("lift", e.write().lift());
         o.addProperty("label", e.write().label());
         o.addProperty("at", e.enqueuedAt().toString());
@@ -534,7 +557,8 @@ public final class WriteQueue implements AutoCloseable {
                 Json.optStr(o, "body"),
                 Json.optStr(o, "ifMatch"),
                 Json.optBool(o, "lift", false),
-                Json.optStr(o, "label"));
+                Json.optStr(o, "label"),
+                Json.optStr(o, "ifNoneMatch"));
         Instant at = Json.optInstant(o, "at");
         return new Entry(Json.str(o, "id"), Json.str(o, "key"), w, at == null ? Instant.EPOCH : at);
     }
@@ -620,6 +644,7 @@ public final class WriteQueue implements AutoCloseable {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Idempotency-Key", e.idempotencyKey());
         if (e.write().ifMatch() != null) headers.put("If-Match", e.write().ifMatch());
+        if (e.write().ifNoneMatch() != null) headers.put("If-None-Match", e.write().ifNoneMatch());
         Call call = new Call(e.write().method(), e.write().path(), e.write().body(), headers, false, null);
         CompletableFuture<HttpResult> f = transport.exchange(call);
         synchronized (lock) {
@@ -717,16 +742,7 @@ public final class WriteQueue implements AutoCloseable {
                 new Outcome(head, r.status(), r.error()));
         synchronized (lock) {
             queue.pollFirst();
-            // Compaction rewrites the queue only, so it waits while an enqueue's put is not
-            // covered by a force yet; a later completion tries again.
-            if (doneSinceCompact >= compactThreshold && !forcing && unforced.isEmpty()) {
-                try {
-                    rewrite();
-                } catch (IOException ex) {
-                    Safe.log(logger, JunjoLogger.Level.ERROR, "write queue journal reopen failed", ex);
-                    Safe.accept(logger, "onError", onError, ex);
-                }
-            }
+            maybeCompact();
             lock.notifyAll();
         }
         return true;

@@ -14,12 +14,20 @@ import java.util.UUID;
  * <p>{@code ifMatch} is sent as {@code If-Match}: the write applies only when the target's current
  * version equals it, and is refused with {@code 412 precondition_failed} otherwise.
  *
+ * <p>{@code ifNoneMatch} is sent as {@code If-None-Match}. Its only value is {@code "*"}, which makes
+ * a create-only write: it applies only when the target does not exist yet in any state, and is
+ * refused with {@code 412 precondition_failed} otherwise. {@code members().add} honours it.
+ *
  * @param idempotencyKey the idempotency key, or null
  * @param ifMatch the entity tag in its quoted form, or null
  * @param timeout a per-call request timeout, or null for the client default
+ * @param ifNoneMatch {@code "*"}, or null
  */
-public record WriteOptions(String idempotencyKey, String ifMatch, Duration timeout) {
-    /** Validates the key and the entity tag. */
+public record WriteOptions(String idempotencyKey, String ifMatch, Duration timeout, String ifNoneMatch) {
+    /** The {@code If-None-Match} value that makes a write create-only. */
+    public static final String ANY = "*";
+
+    /** Validates the key and the entity tags. */
     public WriteOptions {
         if (idempotencyKey != null && !isValidKey(idempotencyKey)) {
             throw new IllegalArgumentException("idempotencyKey must be 1 to 255 printable ASCII characters");
@@ -27,9 +35,17 @@ public record WriteOptions(String idempotencyKey, String ifMatch, Duration timeo
         if (ifMatch != null && ifMatch.isBlank()) {
             throw new IllegalArgumentException("ifMatch must not be blank");
         }
+        if (ifNoneMatch != null && !ANY.equals(ifNoneMatch)) {
+            throw new IllegalArgumentException("ifNoneMatch must be \"*\" or null");
+        }
     }
 
-    private static final WriteOptions NONE = new WriteOptions(null, null, null);
+    /** Options without {@code If-None-Match}. */
+    public WriteOptions(String idempotencyKey, String ifMatch, Duration timeout) {
+        this(idempotencyKey, ifMatch, timeout, null);
+    }
+
+    private static final WriteOptions NONE = new WriteOptions(null, null, null, null);
 
     /** Options that add nothing. */
     public static WriteOptions none() {
@@ -37,7 +53,7 @@ public record WriteOptions(String idempotencyKey, String ifMatch, Duration timeo
     }
 
     public static WriteOptions idempotent(String key) {
-        return new WriteOptions(key, null, null);
+        return new WriteOptions(key, null, null, null);
     }
 
     /** Options carrying a fresh random idempotency key. */
@@ -46,21 +62,29 @@ public record WriteOptions(String idempotencyKey, String ifMatch, Duration timeo
     }
 
     public WriteOptions withIdempotencyKey(String key) {
-        return new WriteOptions(key, ifMatch, timeout);
+        return new WriteOptions(key, ifMatch, timeout, ifNoneMatch);
     }
 
     /** Applies the write only while the target is at {@code version}, sent as {@code If-Match: "version"}. */
     public WriteOptions withIfMatch(long version) {
-        return new WriteOptions(idempotencyKey, etag(version), timeout);
+        return new WriteOptions(idempotencyKey, etag(version), timeout, ifNoneMatch);
     }
 
     /** Applies the write only while the target carries {@code etag}, sent verbatim. */
     public WriteOptions withIfMatch(String etag) {
-        return new WriteOptions(idempotencyKey, etag, timeout);
+        return new WriteOptions(idempotencyKey, etag, timeout, ifNoneMatch);
+    }
+
+    /**
+     * Applies the write only while the target does not exist in any state, sent as
+     * {@code If-None-Match: *}.
+     */
+    public WriteOptions withIfNoneMatchAny() {
+        return new WriteOptions(idempotencyKey, ifMatch, timeout, ANY);
     }
 
     public WriteOptions withTimeout(Duration requestTimeout) {
-        return new WriteOptions(idempotencyKey, ifMatch, requestTimeout);
+        return new WriteOptions(idempotencyKey, ifMatch, requestTimeout, ifNoneMatch);
     }
 
     /** The strong, quoted entity tag for a version number. */

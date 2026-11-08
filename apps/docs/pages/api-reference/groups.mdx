@@ -540,6 +540,8 @@ ETag: "4"
 
 Member-scoped writes accept `If-Match` with that version (quoted, or a bare integer): `PATCH /v1/groups/:id/members/:userId`, role assign and unassign, override set and clear, kick, and group ban and unban. The check runs inside the write's transaction. A mismatch answers `412 precondition_failed` and writes nothing, a malformed value answers `400 bad_request`, and a missing member answers `404`. The check also applies when the write would be a no-op, so a stale queued write is reported instead of silently succeeding.
 
+`POST /v1/groups/:id/members` takes the opposite precondition, `If-None-Match: *`, which makes the add create-only (see [Create-only adds](#create-only-adds)).
+
 Member events carry `memberVersion`, the version after the write (see [Events](/api-reference/events#versions-on-events)). See [Safe retries for queued writes](/api-reference#safe-retries-for-queued-writes) for pairing `If-Match` with `Idempotency-Key`.
 
 ## `POST /v1/groups/:id/members`
@@ -583,6 +585,39 @@ That split makes the route idempotent while still letting a provisioning script 
 
 Concurrent identical adds resolve themselves: the loser's transaction rolls back and retries, and the retry takes the already-active path. The rollback drops its staged events and audit rows with it, so a race cannot double-emit `member.joined`.
 
+### Create-only adds
+
+By default the route merges into whatever membership already exists: an active member who lacks `roleId` gains it, and a `left` or `kicked` row is reactivated. A caller that wants to store a person with a starting role, but never change anyone who is already there, cannot get that safely with a read followed by an add: a promotion that lands in between leaves the member holding both roles.
+
+Send `If-None-Match: *` to make the add create-only:
+
+```
+POST /v1/groups/grp_123/members
+If-None-Match: *
+Content-Type: application/json
+
+{ "userId": "user_alice", "roleId": "role_member" }
+```
+
+- When the person has **no membership row** in the group, the add runs exactly as without the header: `201 Created`, the same body, events and audit entries.
+- When a row exists **in any status** (`active`, `left`, `kicked`, `invited` or `banned`, including one held under another of the person's [linked ids](/api-reference/identity#person-and-linked-ids)), the server writes nothing (no row change, role, event or audit entry) and answers `412 precondition_failed`. The message names the row's status, `details.memberStatus` carries it, and the `ETag` header carries the existing member's version.
+- Any other `If-None-Match` value, such as an entity tag or a list, answers `400 bad_request` before anything is read or written.
+
+```json
+{
+  "code": "precondition_failed",
+  "status": 412,
+  "message": "If-None-Match * failed: the user already has a membership row in this group with status active",
+  "details": { "memberStatus": "active" }
+}
+```
+
+The check runs inside the add's transaction, under the same group lock as the write, so two concurrent create-only adds of one person produce exactly one `201` and one `412`, and a concurrent join or add of the same person is never overwritten.
+
+Every other refusal is answered first, as it would be without the header: a malformed body, an unknown group or role, a role from another group, and a ban (`403 banned`, including an active group ban whose row exists). The `412` therefore always means that the row exists and the request was otherwise acceptable. A group ban that has expired no longer blocks the add, so its `banned` row answers `412`. [Kind limits](#kind-limits) are not evaluated when the answer is `412`.
+
+With `Idempotency-Key`, a retry of a create-only add replays the first answer: the `201` that created the member, not a `412` caused by its own earlier success.
+
 ### Events and audit
 
 Fired only on an actual transition, so a re-run is silent:
@@ -596,7 +631,8 @@ Any new role is reported by `role.changed`, so the event stream reads like the j
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `userId` missing or empty, or an unknown field was sent. |
+| `bad_request` | 400 | `userId` missing or empty, an unknown field was sent, or `If-None-Match` is present with a value other than `*`. |
+| `precondition_failed` | 412 | `If-None-Match: *` was sent and the person already has a membership row in this group, in any status. Nothing was written. See [Create-only adds](#create-only-adds). |
 | `role_group_mismatch` | 400 | `roleId` exists but belongs to another group. No member is created. |
 | `not_found` | 404 | The group, or a supplied `roleId`, does not exist in the calling game. No member is created. |
 | `banned` | 403 | The user is banned game-wide or from this group. An expired timed ban does not block the add. |

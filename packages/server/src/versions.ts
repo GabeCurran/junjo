@@ -27,6 +27,16 @@ export function readIfMatch(c: Context): number | null {
   return parsed;
 }
 
+// Whether the request carries `If-None-Match: *`, the precondition that
+// the target does not exist yet. Absent is false; any other value is a
+// 400, so an entity tag list cannot be mistaken for the create-only form.
+export function readIfNoneMatchAny(c: Context): boolean {
+  const raw = c.req.header("if-none-match");
+  if (raw === undefined) return false;
+  if (raw.trim() === "*") return true;
+  throw Errors.badRequest('If-None-Match accepts only "*"');
+}
+
 export function etagFor(version: number): string {
   return `"${version}"`;
 }

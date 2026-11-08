@@ -62,6 +62,7 @@ import {
   lockMember,
   lockMemberVersion,
   readIfMatch,
+  readIfNoneMatchAny,
   setEtag,
 } from "../versions.js";
 import { listAuditForGroup } from "./audit.js";
@@ -1093,9 +1094,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
   // they already were, so a re-run of a provisioning script is a no-op
   // that reports whether it changed anything. Events fire only on an
   // actual transition.
+  //
+  // `If-None-Match: *` makes the call create-only: it applies only when
+  // the person has no membership row in the group in any status, and is
+  // otherwise refused with 412 before anything is written. Every other
+  // refusal (unknown group or role, ban) is answered first, as the same
+  // request without the header would be, so the 412 means only that the
+  // row exists.
   r.post("/:id/members", async (c) => {
     const id = c.req.param("id");
     const gameId = c.var.gameId;
+    const createOnly = readIfNoneMatchAny(c);
     const json = await c.req.json().catch(() => null);
     const parsed = addMemberBody.safeParse(json);
     if (!parsed.success) {
@@ -1145,6 +1154,17 @@ export function groupsRouter(prisma: PrismaClient, hub: EventHub): Hono {
         const existing = await tx.groupMember.findUnique({
           where: { groupId_junjoUserId: { groupId: group.id, junjoUserId } },
         });
+        // Decided under the membership lock, after the row read. A writer
+        // that created the row concurrently is seen here once it commits;
+        // one that did not take the lock makes the create below fail on
+        // the unique key, and the retry reaches this check and sees it.
+        if (createOnly && existing) {
+          setEtag(c, existing.version);
+          throw Errors.preconditionFailed(
+            `If-None-Match * failed: the user already has a membership row in this group with status ${existing.status}`,
+            { memberStatus: existing.status },
+          );
+        }
         const wasActive = existing?.status === "active";
         if (!wasActive) {
           await assertCanActivate(tx, locked, limits, junjoUserId);

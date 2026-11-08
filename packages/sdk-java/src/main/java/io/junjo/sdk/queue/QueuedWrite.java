@@ -14,8 +14,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * One write the {@link WriteQueue} can persist and replay: method, path, JSON body and an optional
- * {@code If-Match}. Immutable. The factories build the same request as the matching API call, and
+ * One write the {@link WriteQueue} can persist and replay: method, path, JSON body, an optional
+ * {@code If-Match} and an optional {@code If-None-Match}. Immutable. The factories build the same request as the matching API call, and
  * are named after it.
  *
  * <p>{@code lift} marks a write that removes a ban or a sanction. Replaying a lift that finds
@@ -27,13 +27,15 @@ import java.util.Set;
  * @param ifMatch the entity tag to send as {@code If-Match}, or null
  * @param lift whether this write lifts a ban or a sanction
  * @param label a short description for logs and callbacks; defaults to the method and path
+ * @param ifNoneMatch {@code "*"} to send as {@code If-None-Match}, or null
  */
-public record QueuedWrite(String method, String path, String body, String ifMatch, boolean lift, String label) {
+public record QueuedWrite(
+        String method, String path, String body, String ifMatch, boolean lift, String label, String ifNoneMatch) {
     private static final Set<String> METHODS = Set.of("POST", "PUT", "PATCH", "DELETE");
 
     /**
-     * @throws IllegalArgumentException when the method is not a write method or the path does not
-     *     start with {@code /v1/}
+     * @throws IllegalArgumentException when the method is not a write method, the path does not
+     *     start with {@code /v1/}, or {@code ifNoneMatch} is neither null nor {@code "*"}
      */
     public QueuedWrite {
         Objects.requireNonNull(method, "method");
@@ -42,21 +44,38 @@ public record QueuedWrite(String method, String path, String body, String ifMatc
             throw new IllegalArgumentException("queued writes use POST, PUT, PATCH or DELETE");
         }
         if (!path.startsWith("/v1/")) throw new IllegalArgumentException("path must start with /v1/");
+        if (ifNoneMatch != null && !WriteOptions.ANY.equals(ifNoneMatch)) {
+            throw new IllegalArgumentException("ifNoneMatch must be \"*\" or null");
+        }
         if (label == null) label = method + " " + path;
+    }
+
+    /** A write without {@code If-None-Match}. */
+    public QueuedWrite(String method, String path, String body, String ifMatch, boolean lift, String label) {
+        this(method, path, body, ifMatch, lift, label, null);
     }
 
     /** A copy sending {@code If-Match: "version"}. */
     public QueuedWrite ifMatch(long version) {
-        return new QueuedWrite(method, path, body, WriteOptions.etag(version), lift, label);
+        return new QueuedWrite(method, path, body, WriteOptions.etag(version), lift, label, ifNoneMatch);
     }
 
     /** A copy sending {@code If-Match} with the entity tag verbatim. */
     public QueuedWrite ifMatch(String etag) {
-        return new QueuedWrite(method, path, body, Objects.requireNonNull(etag, "etag"), lift, label);
+        return new QueuedWrite(
+                method, path, body, Objects.requireNonNull(etag, "etag"), lift, label, ifNoneMatch);
+    }
+
+    /**
+     * A copy sending {@code If-None-Match: *}: the write applies only while its target does not
+     * exist in any state. A refusal is a {@code 412}, reported through {@code onConflict}.
+     */
+    public QueuedWrite ifNoneMatchAny() {
+        return new QueuedWrite(method, path, body, ifMatch, lift, label, WriteOptions.ANY);
     }
 
     public QueuedWrite withLabel(String text) {
-        return new QueuedWrite(method, path, body, ifMatch, lift, text);
+        return new QueuedWrite(method, path, body, ifMatch, lift, text, ifNoneMatch);
     }
 
     /**
@@ -72,6 +91,16 @@ public record QueuedWrite(String method, String path, String body, String ifMatc
     /** As {@code members().add}. {@code roleId} and {@code actorUserId} may be null. */
     public static QueuedWrite addMember(String groupId, String userId, String roleId, String actorUserId) {
         return of(Routes.addMember(groupId, userId, roleId, actorUserId), "add member");
+    }
+
+    /**
+     * As {@code members().add} with {@link WriteOptions#withIfNoneMatchAny()}: the add applies only
+     * when the user has no membership row in the group in any status. When one exists the server
+     * writes nothing and answers {@code 412}, which the queue reports through {@code onConflict}
+     * without retrying. {@code roleId} and {@code actorUserId} may be null.
+     */
+    public static QueuedWrite addMemberIfAbsent(String groupId, String userId, String roleId, String actorUserId) {
+        return of(Routes.addMember(groupId, userId, roleId, actorUserId), "add member if absent").ifNoneMatchAny();
     }
 
     /** As {@code members().assignRole}. {@code actorUserId} may be null. */

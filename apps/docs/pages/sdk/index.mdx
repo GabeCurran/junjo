@@ -66,6 +66,7 @@ Every method that writes accepts two more options next to `signal` and `timeoutM
 |--------|---------|---------|
 | `idempotencyKey` | Every write. | `Idempotency-Key: <key>`. A retry with the same key and the same request returns the first answer without running the write again. 1 to 255 printable ASCII characters, no spaces. Kept for 24 hours. |
 | `ifMatch` | Member-scoped writes (`members.setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`; `groups.kick`, `ban`, `unban`), game bans (`bans.add`, `bans.remove`) and sanctions (`sanctions.add`, `sanctions.remove`). | `If-Match: "<version>"`. Pass the number (`7`), the string (`"7"`) or the `ETag` value as is. A stale version rejects with `precondition_failed` and writes nothing. |
+| `ifNoneMatch` | `members.add`. | `If-None-Match: *`. The only value is `"*"`: the add applies only when the user has no membership row in the group, and otherwise rejects with `precondition_failed` and writes nothing. See [Create-only](/sdk/members#create-only). |
 
 The version to send comes from the object you last read: `Member.version` and `MemberAccess.version` for member-scoped writes, `Ban.version`, `Sanction.version` or [`bans.moderation(userId)`](/sdk/bans#moderationuserid) for game bans and sanctions, which share one moderation version. Member, game ban and sanction events carry the version their write produced as `memberVersion` / `moderationVersion`.
 
@@ -73,7 +74,7 @@ The version to send comes from the object you last read: `Member.version` and `M
 |------|--------|---------|
 | `idempotency_key_reused` | 422 | The key was already used for a different request. Use a new key per distinct write. |
 | `idempotency_key_in_progress` | 409 | The first request with this key is still running. Wait `retryAfterSeconds` and send it again. |
-| `precondition_failed` | 412 | `ifMatch` names a version other than the current one. Re-read, decide whether the write still applies, and resend with the new version and a new key. |
+| `precondition_failed` | 412 | `ifMatch` names a version other than the current one: re-read, decide whether the write still applies, and resend with the new version and a new key. On a create-only `members.add`, the user already has a membership: leave it as it is. |
 
 ### Queued writes
 

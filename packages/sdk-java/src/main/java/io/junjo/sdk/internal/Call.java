@@ -45,6 +45,7 @@ public record Call(
                 retryable = true;
             }
             if (opts.ifMatch() != null) headers.put("If-Match", opts.ifMatch());
+            if (opts.ifNoneMatch() != null) headers.put("If-None-Match", opts.ifNoneMatch());
             timeout = opts.timeout();
         }
         return new Call(method, path, body, headers, retryable, timeout);

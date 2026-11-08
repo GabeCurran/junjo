@@ -120,6 +120,21 @@ class QueuedWriteParityTest {
     }
 
     @Test
+    void addMemberIfAbsentMatchesTheCreateOnlyApiCall() throws Exception {
+        QueuedWrite w = QueuedWrite.addMemberIfAbsent("g", "ns:u", "r", null);
+        same(w, () -> client.members().add("g", "ns:u", "r", null, WriteOptions.none().withIfNoneMatchAny()));
+        assertEquals("*", server.requests.get(0).header("If-None-Match"));
+        assertEquals("*", w.ifNoneMatch());
+        assertNull(w.ifMatch());
+        assertEquals(QueuedWrite.addMember("g", "ns:u", "r", null).body(), w.body());
+        assertNull(QueuedWrite.addMember("g", "ns:u", "r", null).ifNoneMatch());
+        assertEquals("*", w.withLabel("x").ifMatch(3).ifNoneMatch(), "copies keep If-None-Match");
+        assertEquals("*", QueuedWrite.addMember("g", "u", null, null).ifNoneMatchAny().ifNoneMatch());
+        assertThrows(IllegalArgumentException.class,
+                () -> new QueuedWrite("POST", "/v1/x", null, null, false, null, "\"1\""));
+    }
+
+    @Test
     void addMemberKeepsTheActor() {
         assertEquals("{\"userId\":\"u\",\"actorUserId\":\"ns:mod\"}",
                 QueuedWrite.addMember("g", "u", null, "ns:mod").body());
