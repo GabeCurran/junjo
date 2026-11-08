@@ -103,6 +103,7 @@ The Java names match the TypeScript SDK's. The differences come from Java itself
 | `isNotActive(err)` | `JunjoException.isNotActive()` |
 | `events.subscribe(handler, { types: ["game.user.banned"] })` | `events().subscribe(listener, SubscribeOptions.builder().types(EventType.GAME_USER_BANNED).build())` |
 | options objects (`{ idempotencyKey, ifMatch }`) | `WriteOptions.idempotent().withIfMatch(version)` |
+| `members.add(groupId, userId, { ifNoneMatch: "*" })` | `members().add(groupId, userId, roleId, actorUserId, WriteOptions.idempotent().withIfNoneMatchAny())` |
 | `Promise<T>` | `CompletableFuture<T>` |
 
 Argument order follows the TypeScript SDK in the API classes: member calls take `(groupId, userId)`, permission checks take `(userId, groupId, permission)`. `GameMirror` has no TypeScript counterpart and takes the user first everywhere, as `permissions().check` does: `check(userId, groupId, permission)`, `track(userId, groupId)`, `access(userId, groupId)`.
@@ -143,6 +144,25 @@ junjo.members().assignRole("grp_main", player, "role_mod", moderatorId,
 ```
 
 `Member.version` and `MemberAccess.version` are the member version; `Ban.version` and `Sanction.version` are the person's moderation version, which bans and sanctions share. `bans().moderation(userId)` reads it for a person with nothing active; an id the game has never seen reads as version 0.
+
+### Create-only adds
+
+By default `members().add` merges into an existing membership: an active member who lacks the role gains it, and a left or kicked member is reactivated. `withIfNoneMatchAny()` sends `If-None-Match: *`, so the add applies only when the player has no membership row in the group in any status, and is otherwise refused with `412 precondition_failed` having written nothing:
+
+```java
+try {
+    junjo.members().add("grp_main", player, "role_member", null,
+            WriteOptions.idempotent().withIfNoneMatchAny()).join();
+} catch (CompletionException e) {
+    if (e.getCause() instanceof JunjoException je && "precondition_failed".equals(je.code())) {
+        // Already in the group; je.details() holds memberStatus. Nothing was changed.
+    } else {
+        throw e;
+    }
+}
+```
+
+The check runs inside the server's transaction, so unlike a `get` followed by `add` it cannot race with a promotion, join or add of the same player. A ban is still reported as `banned` first. See [Create-only adds](/api-reference/groups#create-only-adds).
 
 ## Local permission checks
 
@@ -402,17 +422,18 @@ WriteQueue queue = WriteQueue.builder(junjo, dataDir.resolve("junjo-writes.jsonl
 queue.enqueue(QueuedWrite.assignRole("grp_main", player, "role_vip", moderatorId).ifMatch(memberVersion));
 queue.enqueue(QueuedWrite.removeBan(player, moderatorId));
 queue.enqueue(QueuedWrite.removeSanction(player, "mute", moderatorId));
+queue.enqueue(QueuedWrite.addMemberIfAbsent("grp_main", player, "role_member", null));
 
 queue.close();   // drains for up to closeTimeout (10 s); the rest is resent on the next open()
 ```
 
-The `QueuedWrite` factories are named after the API calls and send exactly the same requests: `addMember`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `setMetadata`, `setNotes`, `kick`, `groupBan`, `groupUnban`, `addBan`, `removeBan`, `addSanction`, `removeSanction`, plus `custom` for any other route.
+The `QueuedWrite` factories are named after the API calls and send exactly the same requests: `addMember`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `setMetadata`, `setNotes`, `kick`, `groupBan`, `groupUnban`, `addBan`, `removeBan`, `addSanction`, `removeSanction`, plus `custom` for any other route. `addMemberIfAbsent` is `addMember` with `If-None-Match: *` (the queued form of `withIfNoneMatchAny()`), and `ifNoneMatchAny()` adds the same header to any queued write.
 
 - **Durable.** `enqueue` returns after the entry is appended to the journal and forced to disk; when the force fails, `enqueue` throws and the entry is not queued. Concurrent `enqueue` calls share forces, and the force runs outside the queue's lock. A success's `done` record is not forced on its own (the next force or `close()` writes it); if a crash loses it, the entry is resent with its idempotency key. Every journal line carries a CRC32. On open the journal is replayed and compacted through a temporary file, an atomic move and a directory `fsync`; when the file system cannot move atomically, the old journal is kept and an ERROR is logged.
 - **Dead letters.** Every entry the server refuses (`412` or another 4xx) is appended, with the status and the raw response body, to the dead-letter file next to the journal (`deadLetterFile()`, the journal's name plus `.dead`) before any callback runs. A journal line that fails its checksum, or the torn last line of a crashed append, is moved there too, with a reason.
 - **Replay-safe.** Each entry carries a random `Idempotency-Key` for its whole life, across retries and restarts. Add `ifMatch(version)` so a write is refused, not applied, if the state changed after you decided it; that also covers replays older than the server's 24-hour key retention.
 - **Ordered.** One drain thread sends entries in enqueue order. Network errors, timeouts, 5xx, 408, 429, 409 `idempotency_key_in_progress` and 401 retry the head entry with backoff (401 is kept so a rotated key does not wipe the queue).
-- **Outcomes.** 2xx calls `onSuccess`. `412 precondition_failed` drops the entry and calls `onConflict`. Any other 4xx drops it and calls `onRejected`.
+- **Outcomes.** 2xx calls `onSuccess`. `412 precondition_failed` drops the entry and calls `onConflict`; for `addMemberIfAbsent` that means the player already had a membership, which was left untouched. Any other 4xx drops it and calls `onRejected`.
 - **Lifts that find nothing to lift succeed.** A queued lift (`removeBan`, `groupUnban`, `removeSanction`) answered with `isNotActive()` counts as success. A `not_found` without that reason (an unknown group) is still a rejection.
 
 ## Ids

@@ -35,12 +35,32 @@ What it does:
 
 What it does not do: bypass bans. A game ban or group ban still refuses with `banned`, because a ban is state your game set deliberately. An expired timed ban does not block the add.
 
+### Create-only
+
+By default `add` merges into an existing membership: an active member who lacks `roleId` gains it, and a `left` or `kicked` member is reactivated. Pass `ifNoneMatch: "*"` when the add must only ever create:
+
+```ts
+try {
+  await junjo.members.add(groupId, userId, { roleId: defaultRoleId, ifNoneMatch: "*" });
+} catch (e) {
+  if (e instanceof JunjoError && e.code === "precondition_failed") {
+    // Already in the group (e.details?.memberStatus says how); left untouched.
+  } else {
+    throw e;
+  }
+}
+```
+
+The add then applies only when the user has no membership row in the group in any status (`active`, `left`, `kicked`, `invited` or `banned`, under any of their linked ids). Otherwise it rejects with `precondition_failed` (412) and writes nothing: no role, no reactivation, no event. The check runs inside the server's transaction, so it is safe against a concurrent promotion, join or add, unlike a `get` followed by `add`. Refusals for other reasons, such as `banned`, are reported first. Pair it with `idempotencyKey` so a retry after a lost response replays the first `201` instead of answering `412`. See [Create-only adds](/api-reference/groups#create-only-adds).
+
 ### Options
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `roleId` | `RoleId` | Assigned in the same transaction. Must belong to `groupId`. |
 | `actorUserId` | `UserId` | External id of the acting moderator, recorded on the audit entries. |
+| `ifNoneMatch` | `"*"` | Makes the add create-only, sent as `If-None-Match: *`. See [Create-only](#create-only). |
+| `idempotencyKey` | `string` | Sent as `Idempotency-Key`. See [Safe writes](/sdk#safe-writes). |
 
 ### Events
 
@@ -54,6 +74,7 @@ Only an actual transition emits anything, so a re-run is silent: becoming active
 | `role_group_mismatch` | 400 | `roleId` belongs to another group. No member is created. |
 | `not_found` | 404 | Group, or the supplied `roleId`, not found in the calling game. |
 | `banned` | 403 | The user is banned game-wide or from this group. |
+| `precondition_failed` | 412 | `ifNoneMatch: "*"` was passed and the user already has a membership row in the group. `details.memberStatus` holds its status. Nothing was written. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ### See also
