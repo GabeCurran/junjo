@@ -113,6 +113,10 @@ describe("writeOptions", () => {
     expect(writeOptions({ ifMatch }).headers).toEqual({ "if-match": header });
   });
 
+  it("sends ifNoneMatch as If-None-Match", () => {
+    expect(writeOptions({ ifNoneMatch: "*" }).headers).toEqual({ "if-none-match": "*" });
+  });
+
   it("passes the idempotency key through verbatim", () => {
     expect(writeOptions({ idempotencyKey: "queue-42:unban" }).headers).toEqual({
       "idempotency-key": "queue-42:unban",
@@ -264,6 +268,49 @@ describe("ifMatch on conditional writes", () => {
     const e2 = await rejection(running.junjo.groups.leave(G, U, { idempotencyKey: "k" }));
     expect(e2.code).toBe("idempotency_key_in_progress");
     expect(e2.retryAfterSeconds).toBe(1);
+  });
+});
+
+describe("ifNoneMatch on members.add", () => {
+  it("sends If-None-Match: * next to the body, the key and nothing else", async () => {
+    const { junjo, calls } = makeClient(() => jsonResponse(wireMember, 201, { etag: '"1"' }));
+    const member = await junjo.members.add(G, U, {
+      roleId: R,
+      ifNoneMatch: "*",
+      idempotencyKey: "k",
+    });
+    expect(member.version).toBe(7);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.path).toBe(`/v1/groups/${G}/members`);
+    expect(calls[0]?.headers.get("if-none-match")).toBe("*");
+    expect(calls[0]?.headers.get("if-match")).toBeNull();
+    expect(calls[0]?.headers.get("idempotency-key")).toBe("k");
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({ userId: U, roleId: R });
+  });
+
+  it("sends no If-None-Match by default", async () => {
+    const { junjo, calls } = makeClient(() => jsonResponse(wireMember, 200));
+    await junjo.members.add(G, U, { roleId: R });
+    expect(calls[0]?.headers.get("if-none-match")).toBeNull();
+  });
+
+  it("surfaces an existing membership as precondition_failed with its status", async () => {
+    const { junjo } = makeClient(() =>
+      jsonResponse(
+        {
+          code: "precondition_failed",
+          status: 412,
+          message: "the user already has a membership row in this group with status left",
+          details: { memberStatus: "left" },
+        },
+        412,
+        { etag: '"3"' },
+      ),
+    );
+    const err = await rejection(junjo.members.add(G, U, { ifNoneMatch: "*" }));
+    expect(err.code).toBe("precondition_failed");
+    expect(err.status).toBe(412);
+    expect(err.details).toEqual({ memberStatus: "left" });
   });
 });
 

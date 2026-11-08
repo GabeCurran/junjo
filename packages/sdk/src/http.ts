@@ -76,16 +76,31 @@ export interface ConditionalWriteOptions extends WriteOptions {
   ifMatch?: number | string;
 }
 
+/**
+ * Options for writes the server can make create-only: `members.add`.
+ */
+export interface CreateOnlyWriteOptions extends WriteOptions {
+  /**
+   * `"*"` makes the write create-only, sent as `If-None-Match: *`. It
+   * applies only when the target does not exist yet in any state, and
+   * otherwise fails with `precondition_failed` and writes nothing.
+   */
+  ifNoneMatch?: "*";
+}
+
 // Maps write options onto transport options. A string `ifMatch` is
 // quoted unless it already is, so an ETag value and a bare version
 // produce the same header.
-export function writeOptions(opts?: ConditionalWriteOptions): RequestOptions {
+export function writeOptions(
+  opts?: ConditionalWriteOptions & CreateOnlyWriteOptions,
+): RequestOptions {
   const headers: Record<string, string> = {};
   if (opts?.idempotencyKey !== undefined) headers["idempotency-key"] = opts.idempotencyKey;
   if (opts?.ifMatch !== undefined) {
     const tag = String(opts.ifMatch).trim();
     headers["if-match"] = /^".*"$/.test(tag) ? tag : `"${tag}"`;
   }
+  if (opts?.ifNoneMatch !== undefined) headers["if-none-match"] = opts.ifNoneMatch;
   return { signal: opts?.signal, timeoutMs: opts?.timeoutMs, headers };
 }
 

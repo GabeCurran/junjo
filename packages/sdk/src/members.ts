@@ -19,6 +19,7 @@ import type {
 import { JunjoError } from "./errors.js";
 import {
   type ConditionalWriteOptions,
+  type CreateOnlyWriteOptions,
   type HttpClient,
   type WriteOptions,
   writeOptions,
@@ -148,12 +149,21 @@ export class MembersApi {
    *
    * Idempotent: re-adding an active member returns the existing member
    * unchanged. Pass `roleId` to assign a role in the same transaction
-   * instead of following up with `assignRole`.
+   * instead of following up with `assignRole`. Without `ifNoneMatch`, an
+   * active member who lacks `roleId` gains it, and a left or kicked
+   * member is reactivated.
+   *
+   * `ifNoneMatch: "*"` makes the add create-only: it applies only when
+   * the user has no membership row in the group in any status (active,
+   * left, kicked, invited or banned, under any of their linked ids), and
+   * otherwise rejects with `precondition_failed` (412) and writes
+   * nothing. A refusal for another reason, such as `banned`, is reported
+   * first.
    */
   async add(
     groupId: GroupId,
     userId: UserId,
-    opts?: WriteOptions & {
+    opts?: CreateOnlyWriteOptions & {
       roleId?: RoleId;
       actorUserId?: UserId;
     },
