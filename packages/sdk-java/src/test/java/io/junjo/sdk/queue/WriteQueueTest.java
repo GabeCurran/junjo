@@ -483,8 +483,11 @@ class WriteQueueTest {
             for (int i = 0; i < 7; i++) q.enqueue(QueuedWrite.assignRole("g", "u", "r" + i, null));
             assertTrue(q.flush(Duration.ofSeconds(10)));
         }
+        // Seven puts and seven done records would be 14 lines. Compaction runs whenever three
+        // entries are done and no force is in flight, so what remains is at most the puts that
+        // were pending at the last compaction and the done records written after it.
         List<String> lines = Files.readAllLines(journal);
-        assertTrue(lines.size() <= 2, "compaction rewrote the journal: " + lines.size() + " lines");
+        assertTrue(lines.size() <= 6, "compaction did not bound the journal: " + lines.size() + " lines");
         try (WriteQueue q = queue(journal).open()) {
             assertEquals(0, q.size());
         }
