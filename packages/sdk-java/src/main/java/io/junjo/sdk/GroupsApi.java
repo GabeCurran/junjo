@@ -6,6 +6,8 @@ import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.internal.Wire;
 import io.junjo.sdk.model.BanHistoryEntry;
 import io.junjo.sdk.model.CreateGroupInput;
+import io.junjo.sdk.model.GroupBatchOp;
+import io.junjo.sdk.model.GroupBatchResponse;
 import io.junjo.sdk.model.Group;
 import io.junjo.sdk.model.GroupRelationship;
 import io.junjo.sdk.model.Invitation;
@@ -251,6 +253,29 @@ public final class GroupsApi {
                 .add("cursor", o.cursor())
                 .appendTo(Routes.group(groupId) + "/bans/history");
         return api.getPage(path, Wire::banHistory);
+    }
+
+    // ------------------------------------------------------------------ batches
+
+    /** Same as {@link #batch(String, List, WriteOptions)} with default options. */
+    public CompletableFuture<GroupBatchResponse> batch(String groupId, List<GroupBatchOp> ops) {
+        return batch(groupId, ops, WriteOptions.none());
+    }
+
+    /**
+     * Applies {@code ops} to the group in order, in one transaction: all of them or none. Honours
+     * {@code If-Match} against the group version; a group changed since fails with
+     * {@code 412 precondition_failed} whose {@code details.version} is the current version, and
+     * nothing is written. A failing op fails the whole batch with that op's own error, and
+     * {@link JunjoException#opIndex()} names it. Result {@code i} is what op {@code i}'s single
+     * call answers, as of right after op {@code i}.
+     *
+     * @throws IllegalArgumentException when {@code ops} holds fewer than 1 or more than
+     *     {@link GroupBatchOp#MAX_OPS} ops
+     */
+    public CompletableFuture<GroupBatchResponse> batch(String groupId, List<GroupBatchOp> ops, WriteOptions opts) {
+        List<GroupBatchOp> sent = List.copyOf(ops);
+        return api.write(Routes.groupBatch(groupId, sent), opts, o -> Wire.batchResponse(o, sent));
     }
 
     // ------------------------------------------------------------------ relationships

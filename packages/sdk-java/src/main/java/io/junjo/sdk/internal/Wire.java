@@ -15,12 +15,16 @@ import static io.junjo.sdk.internal.Json.str;
 import static io.junjo.sdk.internal.Json.strList;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import io.junjo.sdk.model.Ban;
 import io.junjo.sdk.model.BanHistoryEntry;
 import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.DisplayNameMatch;
 import io.junjo.sdk.model.Group;
+import io.junjo.sdk.model.GroupBatchOp;
+import io.junjo.sdk.model.GroupBatchResponse;
+import io.junjo.sdk.model.GroupBatchResult;
 import io.junjo.sdk.model.GroupRelationship;
 import io.junjo.sdk.model.IdentityLinkResult;
 import io.junjo.sdk.model.IdentityUnlinkResult;
@@ -349,6 +353,47 @@ public final class Wire {
     public static GroupRelationship relationship(JsonObject o) {
         return new GroupRelationship(
                 str(o, "groupAId"), str(o, "groupBId"), str(o, "type"), instant(o, "since"), optStr(o, "setBy"));
+    }
+
+    /**
+     * Decodes a group batch's answer for the ops that were sent. Each result is read as the kind
+     * its op answers; a null result reads as {@link GroupBatchResult#NONE}. A result count that
+     * differs from the op count is malformed wire data.
+     */
+    public static GroupBatchResponse batchResponse(JsonObject o, List<GroupBatchOp> ops) {
+        JsonArray raw = arr(o, "results");
+        if (raw.size() != ops.size()) {
+            throw Json.wire("batch returned " + raw.size() + " results for " + ops.size() + " ops");
+        }
+        List<GroupBatchResult> results = new ArrayList<>(raw.size());
+        for (int i = 0; i < raw.size(); i++) {
+            JsonElement el = raw.get(i);
+            if (el == null || el.isJsonNull()) {
+                results.add(GroupBatchResult.NONE);
+                continue;
+            }
+            if (!el.isJsonObject()) throw Json.wire("batch result " + i + " is not an object");
+            results.add(batchResult(ops.get(i), el.getAsJsonObject()));
+        }
+        return new GroupBatchResponse(str(o, "version"), results);
+    }
+
+    private static GroupBatchResult batchResult(GroupBatchOp op, JsonObject r) {
+        return switch (op) {
+            case GroupBatchOp.GroupUpdate g -> new GroupBatchResult.GroupResult(group(r));
+            case GroupBatchOp.RoleEntrySet s -> new GroupBatchResult.RoleResult(role(r));
+            case GroupBatchOp.RoleEntryRemove s -> new GroupBatchResult.RoleResult(role(r));
+            case GroupBatchOp.RelationshipSet s -> new GroupBatchResult.RelationshipResult(relationship(r));
+            case GroupBatchOp.RelationshipClear c -> GroupBatchResult.NONE;
+            case GroupBatchOp.MemberAdd m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberKick m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberLeave m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberBan m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberUnban m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberUpdate m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberRoleAdd m -> new GroupBatchResult.MemberResult(member(r));
+            case GroupBatchOp.MemberRoleRemove m -> new GroupBatchResult.MemberResult(member(r));
+        };
     }
 
     /** Decodes an import result. */

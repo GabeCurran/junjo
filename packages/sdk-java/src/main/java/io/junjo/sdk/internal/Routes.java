@@ -5,6 +5,7 @@ import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateBanInput;
 import io.junjo.sdk.model.CreateGroupInput;
 import io.junjo.sdk.model.CreateRoleInput;
+import io.junjo.sdk.model.GroupBatchOp;
 import io.junjo.sdk.model.MemberImport;
 import io.junjo.sdk.model.PermissionEntry;
 import io.junjo.sdk.model.SetMemberNotesInput;
@@ -88,6 +89,96 @@ public final class Routes {
 
     public static Route groupUnban(String groupId, String userId, String actorUserId) {
         return new Route("DELETE", member(groupId, userId) + "/ban", actor(actorUserId), true);
+    }
+
+    /**
+     * A group batch: every op in one transaction, all or none.
+     *
+     * @throws IllegalArgumentException when {@code ops} holds fewer than 1 or more than
+     *     {@link GroupBatchOp#MAX_OPS} ops
+     */
+    public static Route groupBatch(String groupId, List<GroupBatchOp> ops) {
+        List<GroupBatchOp> list = List.copyOf(ops);
+        if (list.isEmpty() || list.size() > GroupBatchOp.MAX_OPS) {
+            throw new IllegalArgumentException("a group batch takes 1 to " + GroupBatchOp.MAX_OPS + " ops");
+        }
+        List<Map<String, Object>> wire = new ArrayList<>(list.size());
+        for (GroupBatchOp op : list) wire.add(batchOp(op));
+        return new Route("POST", group(groupId) + "/batch", Map.of("ops", wire), false);
+    }
+
+    // One op in the server's field names, the op name first. Null optional fields and false flags
+    // are left out; fields whose null means "clear" come from inputs that record explicit nulls.
+    private static Map<String, Object> batchOp(GroupBatchOp op) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("op", op.op());
+        switch (op) {
+            case GroupBatchOp.MemberAdd o -> {
+                m.put("userId", o.userId());
+                putIfSet(m, "roleId", o.roleId());
+                putIfSet(m, "actorUserId", o.actorUserId());
+                if (o.createOnly()) m.put("createOnly", true);
+            }
+            case GroupBatchOp.MemberKick o -> {
+                m.put("userId", o.userId());
+                putIfSet(m, "reason", o.reason());
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.MemberLeave o -> m.put("userId", o.userId());
+            case GroupBatchOp.MemberBan o -> {
+                m.put("userId", o.userId());
+                putIfSet(m, "reason", o.reason());
+                if (o.expiresAt() != null) m.put("expiresAt", o.expiresAt().toString());
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.MemberUnban o -> {
+                m.put("userId", o.userId());
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.MemberUpdate o -> {
+                m.put("userId", o.userId());
+                if (o.metadata() != null) m.put("metadata", o.metadata());
+                if (o.notes() != null) m.putAll(o.notes().fields());
+            }
+            case GroupBatchOp.MemberRoleAdd o -> {
+                m.put("userId", o.userId());
+                m.put("roleId", o.roleId());
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.MemberRoleRemove o -> {
+                m.put("userId", o.userId());
+                m.put("roleId", o.roleId());
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.GroupUpdate o -> m.putAll(o.input().fields());
+            case GroupBatchOp.RoleEntrySet o -> {
+                m.put("roleId", o.roleId());
+                m.put("permission", o.entry().permission());
+                m.put("value", o.entry().value());
+                putContext(m, o.entry().context());
+            }
+            case GroupBatchOp.RoleEntryRemove o -> {
+                m.put("roleId", o.roleId());
+                m.put("permission", o.permission());
+                putContext(m, o.context());
+            }
+            case GroupBatchOp.RelationshipSet o -> {
+                m.put("otherGroupId", o.otherGroupId());
+                m.put("type", o.type());
+                if (o.mutual()) m.put("mutual", true);
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+            case GroupBatchOp.RelationshipClear o -> {
+                m.put("otherGroupId", o.otherGroupId());
+                if (o.mutual()) m.put("mutual", true);
+                putIfSet(m, "actorUserId", o.actorUserId());
+            }
+        }
+        return m;
+    }
+
+    private static void putIfSet(Map<String, Object> m, String name, Object value) {
+        if (value != null) m.put(name, value);
     }
 
     // ------------------------------------------------------------------ invitations

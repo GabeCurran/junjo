@@ -7,8 +7,10 @@ import io.junjo.sdk.internal.Routes;
 import io.junjo.sdk.model.AddSanctionInput;
 import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.CreateBanInput;
+import io.junjo.sdk.model.GroupBatchOp;
 import io.junjo.sdk.model.SetMemberNotesInput;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -159,6 +161,19 @@ public record QueuedWrite(
     public static QueuedWrite groupBan(
             String groupId, String userId, String reason, Instant expiresAt, String actorUserId) {
         return of(Routes.groupBan(groupId, userId, reason, expiresAt, actorUserId), "group ban");
+    }
+
+    /**
+     * As {@code groups().batch}: every op applies or none does, so a replay under the entry's
+     * idempotency key cannot apply part of it twice. Made conditional with {@link #ifMatch(String)}
+     * on the group version, a batch on a changed group is reported through {@code onConflict}
+     * and not retried; a failing op is a rejection whose {@code opIndex} names it.
+     *
+     * @throws IllegalArgumentException when {@code ops} holds fewer than 1 or more than
+     *     {@link GroupBatchOp#MAX_OPS} ops
+     */
+    public static QueuedWrite groupBatch(String groupId, List<GroupBatchOp> ops) {
+        return of(Routes.groupBatch(groupId, ops), "group batch");
     }
 
     /** As {@code groups().unban}; a lift. {@code actorUserId} may be null. */
