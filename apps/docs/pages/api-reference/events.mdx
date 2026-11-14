@@ -11,6 +11,51 @@ Use the game stream for anything that must not miss an event (a game server enfo
 
 Both streams render user ids per subscriber (see [User ids in events](#user-ids-in-events)) and share the payload shapes of the `JunjoEvent` union in `@junjo.io/shared`. [Webhooks](/api-reference/webhooks) deliver the same events durably to an HTTP endpoint.
 
+## Event envelope
+
+Every event, on every surface (group streams, the game stream, webhooks and the durable event log), carries these fields next to its type-specific payload:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The event's own random identifier, the same on every surface. Use it to deduplicate. |
+| `type` | string | The `JunjoEvent` discriminator (`member.joined`, `group.updated`, ...). |
+| `gameId` | string | The game the event belongs to. |
+| `groupId` | string | Group-scoped events only. See [Events with no group](#events-with-no-group). |
+| `occurredAt` | string | ISO 8601 timestamp. |
+| `origin` | `{ apiKeyId: string \| null, tag: string \| null }` | Where the write behind the event came from. See [Event origin](#event-origin). |
+
+```json
+{
+  "id": "5d1e8a2fb34c7a90e6f21b38",
+  "type": "group.updated",
+  "gameId": "game_xyz",
+  "groupId": "grp_qrs",
+  "occurredAt": "2026-11-14T12:00:00.000Z",
+  "origin": { "apiKeyId": "key_clxxx...", "tag": "sync-eu-1" },
+  "group": { "id": "grp_qrs", "name": "Crimson Wolves", "...": "..." },
+  "actorUserId": null
+}
+```
+
+### Event origin
+
+`origin` names the write that caused the event:
+
+| Field | Value |
+|-------|-------|
+| `apiKeyId` | The `id` of the per-game API key whose request caused the event, as listed by [`GET /v1/admin/games/:gameId/api-keys`](/api-reference/admin#get-v1admingamesgameidapi-keys). `null` for admin-token writes (the dashboard) and for changes Junjo makes on its own, such as expiry and cleanup jobs. |
+| `tag` | The request's [`Junjo-Write-Tag`](/api-reference#write-tags) header, exactly as sent, or `null` when the request sent none. |
+
+Every event one request causes carries the same origin. Events logged before the server stamped origins read back with both fields `null`.
+
+A writer that keeps its own copy of the data, and applies its own changes locally when its writes succeed, can use `origin` to skip the events those writes cause:
+
+1. Give each writer a tag of its own (for example, one per server instance) and send it as `Junjo-Write-Tag` on every write.
+2. On the stream, skip an event whose `origin.tag` is that tag. To be strict when several keys are in use, also compare `origin.apiKeyId` with the writer's key id.
+3. Apply every other event: those come from other writers, from the dashboard, or from Junjo itself.
+
+The tag only labels writes; it is not a credential, and any caller holding a key can send any tag.
+
 ## `GET /v1/events`
 
 Opens the game stream: one frame per event of the calling game, in position order. Every event appears, whether or not it belongs to a group.
@@ -35,7 +80,7 @@ The position is not the event's `id`. The JSON `id` is the event's own random id
 
 ```
 event: game.user.banned
-data: {"id":"9f2c41d07a3be1c6d58e0f14","type":"game.user.banned","gameId":"game_xyz","occurredAt":"2026-11-06T12:00:00.000Z","junjoUserId":"...","userId":"mc:2f0c...","reason":"griefing","expiresAt":null}
+data: {"id":"9f2c41d07a3be1c6d58e0f14","type":"game.user.banned","gameId":"game_xyz","occurredAt":"2026-11-06T12:00:00.000Z","origin":{"apiKeyId":"key_clxxx...","tag":null},"junjoUserId":"...","userId":"mc:2f0c...","reason":"griefing","expiresAt":null}
 id: 42
 
 ```
@@ -82,6 +127,8 @@ Member and game-ban events carry the version their write produced, so a cache ca
 |--------|-------|---------|
 | `member.joined`, `member.left`, `member.updated`, `member.banned`, `member.unbanned`, `role.changed` | `memberVersion` | The member's [version](/api-reference/groups#member-versions) after the write. |
 | `game.user.banned`, `game.user.unbanned`, `game.user.sanctioned`, `game.user.unsanctioned` | `moderationVersion` | The person's [moderation version](/api-reference/bans#moderation-version) after the write. |
+
+Group events need no field of their own: on the game stream, the position of an event that names a `groupId` is the [group version](/api-reference/groups#group-versions) that event gave its group. A write that emits several events for one group leaves the group at the position of the last one. Group fields read together with version `V` (from `GET /v1/groups/:id` or an export) reflect at least every change up to position `V`, so a client holding such a read can skip `group.updated` events for that group at positions up to `V`.
 
 A client whose snapshot of the member (or person) shows a version greater than or equal to the event's can skip the event. Every event one write emits carries the same version: an import that creates a member and assigns roles emits `member.joined` and `role.changed` with one `memberVersion`. The `member` inside `member.joined` is the member as that write leaves it, so a client that stores it as its snapshot may skip the rest of that write's events.
 
@@ -159,7 +206,7 @@ Frames look like this:
 
 ```
 event: member.joined
-data: {"id":"5d1e8a2fb34c7a90e6f21b38","type":"member.joined","gameId":"game_xyz","groupId":"grp_qrs","occurredAt":"2026-04-28T12:00:00.000Z","userId":"user_alice","member":{...}}
+data: {"id":"5d1e8a2fb34c7a90e6f21b38","type":"member.joined","gameId":"game_xyz","groupId":"grp_qrs","occurredAt":"2026-04-28T12:00:00.000Z","origin":{"apiKeyId":"key_clxxx...","tag":null},"userId":"user_alice","member":{...}}
 id: 5d1e8a2fb34c7a90e6f21b38
 
 ```
@@ -181,15 +228,15 @@ The server emits an event after every mutation that changes a group's externally
 
 | Route | Event type | Notes |
 |-------|------------|-------|
-| `PATCH /v1/groups/:id` | `group.updated` | No-op PATCHes (every supplied field already matches) emit nothing. |
-| `DELETE /v1/groups/:id` | `group.deleted` | Both soft and hard delete emit the same event. Idempotent calls on already-deleted groups emit nothing. |
-| `POST /v1/groups/:id/restore` | `group.updated` | Re-emits the post-restore group. Restoring a live group emits nothing. |
-| `PUT /v1/groups/:id/parent` | `group.updated` | Carries the post-state group with the new `parentGroupId`. Idempotent calls (parent unchanged) emit nothing. |
+| `PATCH /v1/groups/:id` | `group.updated` | No-op PATCHes (every supplied field already matches) emit nothing. `actorUserId` is the body's `actorUserId`, or `null`. |
+| `DELETE /v1/groups/:id` | `group.deleted` | Both soft and hard delete emit the same event. Idempotent calls on already-deleted groups emit nothing. `actorUserId` is the `actorUserId` query parameter, or `null`. |
+| `POST /v1/groups/:id/restore` | `group.updated` | Re-emits the post-restore group, with `actorUserId: null`. Restoring a live group emits nothing. |
+| `PUT /v1/groups/:id/parent` | `group.updated` | Carries the post-state group with the new `parentGroupId`, with `actorUserId: null`. Idempotent calls (parent unchanged) emit nothing. |
 | `POST /v1/groups/:id/invitations` | `member.invited` | One event per created invitation. |
 | `POST /v1/groups/:id/bulk-invite` | `member.invited` | One event per created invitation in input order; rows that were skipped (duplicate / already-member / already-pending) emit nothing. |
 | `POST /v1/invitations/:code/accept` | `member.joined` | The `member` payload carries the newly-active row. |
 | `POST /v1/groups/:id/leave` | `member.left` | `reason: "left"`. Idempotent calls on already-left / already-kicked rows emit nothing. |
-| `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`. Idempotent calls emit nothing. |
+| `POST /v1/groups/:id/members/:userId/kick` | `member.left` | `reason: "kicked"`, plus `kickedBy` when the body names an `actorUserId` (absent otherwise). Idempotent calls emit nothing. |
 | `POST /v1/groups/:id/members/:userId/ban` | `member.banned` | Carries `userId`, `reason`, `bannedUntil` (null = permanent). Idempotent re-ban with identical expiry emits nothing; changing the expiry re-emits. |
 | `DELETE /v1/groups/:id/members/:userId/ban` | `member.unbanned` | Fires on explicit unban. Lazy `bannedUntil` expiry does NOT fire an event; read paths just stop treating the row as banned. Calls on non-banned members 404 (`details.reason: "not_active"`). |
 | `POST /v1/groups/:id/members/import` | `member.joined`, `role.changed`, `member.updated` | The events the equivalent single calls emit, for members the import changed; staged in the import's transaction. Unchanged rows emit nothing. |
@@ -204,8 +251,8 @@ The server emits an event after every mutation that changes a group's externally
 | `DELETE /v1/groups/:id/members/:userId/roles/:roleId` | `role.changed` | `added: []`, `removed: [roleId]`. Payload's `actorUserId` is `null` unless the caller supplies `{ actorUserId }` in the body. Idempotent calls emit nothing. |
 | `POST /v1/roles/:id/permissions` | `permission.granted` when the key becomes granted; `permission.revoked` then `role.updated` when a grant becomes a deny; `role.updated` alone for a new deny entry | Idempotent calls (entry already holds that value) emit nothing. |
 | `DELETE /v1/roles/:id/permissions/:permission` | `permission.revoked` when a grant is removed; `role.updated` when a deny is removed | Idempotent calls emit nothing. |
-| `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. |
-| `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. |
+| `PUT /v1/groups/:a/relationships/:b` | `group.relationship.changed` | One event per direction that actually changed. With `mutual: true` and both directions changing, two events fire (one on each group's stream). Type-equal no-op directions emit nothing. `actorUserId` and `relationship.setBy` are the body's `actorUserId`, or `null`. |
+| `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. `actorUserId` is the `actorUserId` query parameter, or `null`. |
 | `POST /v1/groups/:id/leave`, `.../kick`, `.../ban` on a kind with `deleteWhenEmpty` | `group.deleted` after the member event | Only when the write removed the last active member. See [Kind limits](/api-reference/groups#kind-limits). |
 | Idle-group sweeper (kinds with `idleDeleteHours`) | `group.deleted` | One per group it soft-deletes. |
 
@@ -217,6 +264,8 @@ The following mutations do **not** publish events:
 A future minor-version bump may add events for these cases without breaking the existing union.
 
 `member.updated` is a change signal: it says which parts of the member changed, not their new values. Read the member, or `GET /v1/groups/:id/members/:userId/access`, for the current state.
+
+`group.updated`, `group.deleted` and `group.relationship.changed` carry `actorUserId`: the user the write named as its actor, or `null` when it named none. Dashboard writes and the deletes Junjo makes on its own (`deleteWhenEmpty`, the idle sweeper) carry `null`. Servers older than the field leave it out. `member.left` from a kick carries `kickedBy` only when the kick named an actor.
 
 ### Events with no group
 
@@ -238,6 +287,7 @@ These events have no `groupId`, so no group stream carries them. The [game strea
   "type": "permissions.config.updated",
   "gameId": "game_clxxx",
   "occurredAt": "2026-11-06T12:00:00.000Z",
+  "origin": { "apiKeyId": null, "tag": null },
   "mode": "nodes",
   "contexts": {
     "world": { "inherit": { "pvpworld": ["world"] } }
@@ -257,6 +307,8 @@ Fields that name a person are rendered with the [identity rendering rule](/api-r
 | `member.left` | `userId`, `kickedBy` |
 | `member.updated`, `member.banned`, `member.unbanned` | `userId` |
 | `role.changed` | `userId`, `actorUserId` |
+| `group.updated`, `group.deleted` | `actorUserId` |
+| `group.relationship.changed` | `actorUserId`, `relationship.setBy` |
 | `friend.request.sent`, `.accepted`, `.declined`, `.cancelled` | `actorJunjoUserId`, `targetJunjoUserId` |
 | `friend.removed` | `removedByJunjoUserId`, `otherJunjoUserId` |
 | `friend.blocked`, `friend.unblocked` | `byJunjoUserId`, `otherJunjoUserId` |

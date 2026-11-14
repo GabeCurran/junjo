@@ -42,7 +42,7 @@ Every error response uses the same JSON shape:
 }
 ```
 
-Some errors add a `details` object with structured information: the [member import](/api-reference/groups#post-v1groupsidmembersimport) lists every failing row under `details.rows`, and a lift with nothing to lift sets `details.reason` (see [Safe retries for queued writes](#safe-retries-for-queued-writes)). Errors without details omit the field.
+Some errors add a `details` object with structured information: the [member import](/api-reference/groups#post-v1groupsidmembersimport) lists every failing row under `details.rows`, a lift with nothing to lift sets `details.reason` (see [Safe retries for queued writes](#safe-retries-for-queued-writes)), and a stale group `If-Match` sets `details.version` to the group's current version. Errors without details omit the field.
 
 The SDK preserves this shape on the `JunjoError` it throws, so callers can branch on `error.code` rather than parsing messages.
 
@@ -58,7 +58,7 @@ Reserved codes the server returns today:
 | `group_full` | 409 | The group is at its kind's member limit. See [Kind limits](/api-reference/groups#kind-limits). |
 | `group_limit_reached` | 409 | The user already holds the most memberships allowed in groups of that kind. |
 | `idempotency_key_in_progress` | 409 | A request with the same `Idempotency-Key` is still running. Carries `Retry-After: 1`. See [Idempotency keys](#idempotency-keys). |
-| `precondition_failed` | 412 | `If-Match` names a version other than the current one, or `If-None-Match: *` found an existing membership; nothing was written. See [Conditional writes](#conditional-writes). |
+| `precondition_failed` | 412 | `If-Match` names a version other than the current one (for a group version, `details.version` carries the current one), or `If-None-Match: *` found an existing membership; nothing was written. See [Conditional writes](#conditional-writes). |
 | `idempotency_key_reused` | 422 | The `Idempotency-Key` was already used by this API key for a different request. |
 | `rate_limit_exceeded` | 429 | A token bucket is exhausted: the per-API-key bucket or the shared per-source bucket, whichever denies first (see [Rate limiting](#rate-limiting)). Response carries a `Retry-After` header (seconds, integer >= 1) indicating the minimum wait before the next request will be admitted. Tunable via `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` env vars (defaults: 600 sustained, 100 burst per key; the source bucket is sized at 20x). |
 | `internal` | 500 | Unhandled server error. The full error is logged server-side; the response body is generic on purpose. |
@@ -90,21 +90,34 @@ A replay repeats the stored `Content-Type` and `ETag` headers. Records are kept 
 
 The record is saved right after the write commits. If the server crashes in between, a retry runs the write again. Use the pairing in [Safe retries for queued writes](#safe-retries-for-queued-writes) when that matters.
 
+## Write tags
+
+Any request may send a `Junjo-Write-Tag` header: 1 to 128 printable ASCII characters (`0x21` to `0x7E`, so no spaces). Every event the request causes carries it, exactly as sent, in [`origin.tag`](/api-reference/events#event-origin), next to `origin.apiKeyId`, the id of the per-game key that made the request (`null` for admin-token requests). A malformed tag answers `400 bad_request` and nothing is written. Without the header, `origin.tag` is `null`.
+
+```
+PATCH /v1/groups/grp_123 HTTP/1.1
+Authorization: Bearer <key>
+Junjo-Write-Tag: sync-eu-1
+```
+
+A writer that keeps its own copy of the data uses the tag to recognise the events its own writes caused and skip them; giving each writer its own tag tells apart several writers that share one key. The tag is a label, not a credential: any caller holding a key can send any tag.
+
 ## Conditional writes
 
-Members and per-person moderation state carry a **version**: an integer that rises by one with every write that changes them, and never on a no-op. The current version is returned as a strong entity tag, `ETag: "7"`, and as a `version` field in the body:
+Members, groups and per-person moderation state carry a **version** that changes with every write that changes them, and never on a no-op. The current version is returned as a strong entity tag, `ETag: "7"`, and as a `version` field in the body:
 
-- **Member version.** `Member.version` (starts at 1), on member reads, lists, member access and member-scoped write responses. See [Groups](/api-reference/groups#member-versions).
-- **Moderation version.** Per person and game, 0 for someone never moderated. Rises with every game ban or [sanction](/api-reference/sanctions) create, change or lift. Returned by [`GET /v1/users/:userId/moderation`](/api-reference/bans#get-v1usersuseridmoderation) and on game ban and sanction objects.
+- **Member version.** `Member.version` (starts at 1, rises by one per change), on member reads, lists, member access and member-scoped write responses. See [Groups](/api-reference/groups#member-versions).
+- **Group version.** `Group.version`, the [stream position](/api-reference/events#positions) of the latest event about the group or anything in it, as a decimal string; `"0"` for a group no event has touched. It only increases, but not by one per write. On single-group reads and write responses. See [Group versions](/api-reference/groups#group-versions).
+- **Moderation version.** Per person and game, 0 for someone never moderated. Rises by one with every game ban or [sanction](/api-reference/sanctions) create, change or lift. Returned by [`GET /v1/users/:userId/moderation`](/api-reference/bans#get-v1usersuseridmoderation) and on game ban and sanction objects.
 
 A write that accepts `If-Match` compares it with the current version inside its transaction:
 
 - `If-Match: "7"` or `If-Match: 7` (a bare integer is accepted too). Any other value, including lists, weak tags and `*`, answers `400 bad_request`.
-- A mismatch answers `412 precondition_failed` and writes nothing.
+- A mismatch answers `412 precondition_failed` and writes nothing. For a group version, `details.version` carries the current version.
 - Without `If-Match` the write is unconditional.
-- A missing member answers `404`, not `412`.
+- A missing member or group answers `404`, not `412`.
 
-Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
+Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `PATCH /v1/groups/:id` and `DELETE /v1/groups/:id` (group version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
 
 `POST /v1/groups/:id/members` accepts `If-None-Match: *` instead: the add applies only when the person has no membership row in the group in any status, and otherwise answers `412 precondition_failed` and writes nothing. Any other `If-None-Match` value answers `400 bad_request`. See [Create-only adds](/api-reference/groups#create-only-adds).
 
@@ -113,9 +126,9 @@ Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member ro
 A client that queues writes while offline, or replays them after a failure, should send both headers on every queued write:
 
 1. **`Idempotency-Key`**, unique per queued write and stored with it. A retry of a request the server already applied returns the original answer instead of applying it again.
-2. **`If-Match`** with the version the client last saw for the member or person. If someone else changed them in the meantime (or the write already applied and the idempotency record has expired or was lost in a crash), the server answers `412` instead of overwriting newer state.
+2. **`If-Match`** with the version the client last saw for the member, group or person. If someone else changed them in the meantime (or the write already applied and the idempotency record has expired or was lost in a crash), the server answers `412` instead of overwriting newer state.
 
-On `412`, read the current state (`GET /v1/groups/:id/members/:userId` or `GET /v1/users/:userId/moderation`), decide whether the queued write still makes sense, and send it again with the new version and a new idempotency key.
+On `412`, read the current state (`GET /v1/groups/:id/members/:userId`, `GET /v1/groups/:id` or `GET /v1/users/:userId/moderation`), decide whether the queued write still makes sense, and send it again with the new version and a new idempotency key.
 
 Ban and sanction lifts need one more rule. `DELETE /v1/bans/:userId`, `DELETE /v1/groups/:id/members/:userId/ban` and `DELETE /v1/sanctions/:userId/:type` answer `404 not_found` with `details.reason: "not_active"` when there is nothing active to lift, including for an id the game has never seen. This answer takes precedence over a stale `If-Match`. A replayed lift should treat it as success. Any other `404` on those routes (an unknown group, for example) has no `reason` and is a real failure.
 

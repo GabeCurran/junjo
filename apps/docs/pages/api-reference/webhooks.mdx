@@ -118,13 +118,17 @@ x-junjo-signature: v1=4f9b3e8c1a7d2f0b9e8a6c5d4f3a2b1c9e8f7d6c5b4a3210f9e8d7c6b5
   "gameId": "game_xyz",
   "groupId": "grp_qrs",
   "occurredAt": "2026-04-28T12:30:00.000Z",
+  "origin": { "apiKeyId": "key_clxxx...", "tag": null },
   "group": {
     "id": "grp_qrs",
     "name": "Crimson Wolves",
     ...
-  }
+  },
+  "actorUserId": null
 }
 ```
+
+Every payload carries the [event envelope](./events#event-envelope), including `origin`: the key and [write tag](/api-reference#write-tags) of the request that caused the event.
 
 ## Signature scheme
 

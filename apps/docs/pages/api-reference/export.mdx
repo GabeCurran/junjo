@@ -6,15 +6,26 @@ The export contains member notes, ban reasons and the audit log, so only keys yo
 
 ## `GET /v1/export`
 
-Authenticated with a per-game key that has `canExport`. No query parameters.
+Authenticated with a per-game key that has `canExport`.
+
+**Query parameters**
+
+| Name | Notes |
+|------|-------|
+| `records` | Optional comma-separated record kinds to include, any of the [record kinds](#record-kinds) except `game`. Omitted: every kind. The header, `game` and end lines are always sent. An empty value or an unknown kind (including `game`) is `400 bad_request`. |
+| `groupKinds` | Optional comma-separated group kinds. Keeps group-scoped records only for groups of these kinds; see [Filtering by group kind](#filtering-by-group-kind). An empty value, more than 32 kinds, or a kind over 64 characters is `400 bad_request`. |
+
+```
+GET /v1/export?records=group,role,member&groupKinds=guild,party
+```
 
 **Response** `200 OK`, `content-type: application/x-ndjson`: one JSON object per line, each with a `kind`.
 
 ```
-{"kind":"header","format":"junjo-export","version":1,"gameId":"ckggg...","exportedAt":"2026-11-09T12:00:00.000Z","position":"4211"}
+{"kind":"header","format":"junjo-export","version":1,"gameId":"ckggg...","exportedAt":"2026-11-09T12:00:00.000Z","position":"4211","records":["person","group","role",...],"groupKinds":null}
 {"kind":"game","id":"ckggg...","name":"Survival","config":{...},"networkId":null,"createdAt":"...","updatedAt":"..."}
 {"kind":"person","id":"ckppp...","identities":[{"userId":"mc:069a79f4-44e9-4726-a5be-fca90e38aaf5","namespace":"mc","linkedAt":"...","displayName":"Steve","displayNameUpdatedAt":"..."}]}
-{"kind":"group","id":"ckgrp...","groupKind":"party","name":"Steve's party",...}
+{"kind":"group","id":"ckgrp...","version":"4198","groupKind":"party","name":"Steve's party",...}
 ...
 {"kind":"end","counts":{"game":1,"person":1520,"group":88,...}}
 ```
@@ -23,18 +34,33 @@ Authenticated with a per-game key that has `canExport`. No query parameters.
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | `records` or `groupKinds` is empty or names something invalid (see above). |
 | `permission_denied` | 403 | The key does not have `canExport`. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## Layout
 
-1. **Header** (first line): `format` is always `"junjo-export"`, `version` is `1`. `position` is the game's [stream position](/api-reference/events#positions), read before any record.
-2. **Records**, grouped by kind, in this order: `game`, `person`, `group`, `role`, `member`, `invitation`, `relationship`, `ban`, `banHistory`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, `audit`. A kind with no rows has no lines.
-3. **End** (last line): `counts` holds the number of records written per kind, every kind listed. A file without the end line was cut short; discard it and export again.
+1. **Header** (first line): `format` is always `"junjo-export"`, `version` is `1`. `position` is the game's [stream position](/api-reference/events#positions), read before any record. `records` lists the record kinds the export carries, in export order (`game` is not listed; it is always sent), and `groupKinds` the group kinds it was limited to, or `null` for every group.
+2. **Records**, grouped by kind, in this order: `game`, `person`, `group`, `role`, `member`, `invitation`, `relationship`, `ban`, `banHistory`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, `audit`. A kind with no rows, or left out by `records`, has no lines.
+3. **End** (last line): `counts` holds the number of records written per kind, every kind listed; a kind left out by `records` counts `0`. A file without the end line was cut short; discard it and export again.
 
 Records are read in batches of about 1000 rows, so the server never holds a whole table in memory. Read the response as a stream and process it line by line rather than buffering it.
 
 The export is not one database snapshot: a write made while it runs may or may not be in it. To stay exact, replay the [game stream](/api-reference/events#get-v1events) from the header's `position` after the import; every change made during the export is in that range.
+
+### Filtering by group kind
+
+With `groupKinds`, these records are kept only for groups of the listed kinds:
+
+- `group`, `role`, `member` and `invitation`;
+- `relationship`, by its A side (`groupAId`);
+- the group-scoped rows of `banHistory` and `audit`.
+
+Game-scoped records are not affected: `person`, `ban`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, and the game-scoped rows of `banHistory` and `audit` (those with no `groupId`). Leave them out with `records` when they are not wanted.
+
+```
+GET /v1/export?records=group,role,member,relationship&groupKinds=guild
+```
 
 ## References and ids
 
@@ -46,7 +72,7 @@ Records refer to each other by **internal ids**: groups, roles, members and reco
 |--------|--------|
 | `game` | `id`, `name`, `config` (as stored, unresolved), `networkId`, `createdAt`, `updatedAt` |
 | `person` | `id`, `identities: [{ userId, namespace, linkedAt, displayName, displayNameUpdatedAt }]` (earliest-linked first) |
-| `group` | `id`, `groupKind`, `name`, `visibility`, `metadata`, `defaultRoleId`, `parentGroupId`, `hasPasscode`, `createdAt`, `updatedAt`, `softDeletedAt`, `memberActivityAt`. Soft-deleted groups are included. |
+| `group` | `id`, `version`, `groupKind`, `name`, `visibility`, `metadata`, `defaultRoleId`, `parentGroupId`, `hasPasscode`, `createdAt`, `updatedAt`, `softDeletedAt`, `memberActivityAt`. Soft-deleted groups are included. `version` is the group's [version](/api-reference/groups#group-versions) for the exported state, read in the same snapshot as the row; it can be above the header's `position` when the group changed while the export ran. |
 | `role` | `id`, `groupId`, `name`, `priority`, `color`, `isDefault`, `metadata`, `entries: [{ permission, value, context? }]` (`context` only on contextual entries), `parents` (role ids), `createdAt`, `updatedAt` |
 | `member` | `id`, `groupId`, `personId`, `userId`, `status`, `roles` (role ids), `overrides: [{ permission, value, context?, setAt, setByPersonId }]`, `metadata`, `notesPublic`, `notesPrivate`, `version`, `joinedAt`, `leftAt`, `bannedUntil` |
 | `invitation` | `id`, `groupId`, `code`, `roleId`, `targetUserId`, `createdByPersonId`, `createdAt`, `expiresAt`, `usedAt`, `usedByPersonId` |

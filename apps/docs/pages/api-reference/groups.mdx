@@ -20,6 +20,7 @@ A `Group` is the unit Junjo organizes players around: guild, clan, faction, part
 | `createdAt` | string | ISO 8601 timestamp. |
 | `updatedAt` | string | ISO 8601 timestamp. |
 | `softDeletedAt` | string \| null | Set when the group is soft-deleted; null otherwise. |
+| `version` | string | The group's [version](#group-versions), a decimal string. Present on single-group responses (get, create, update, delete, restore), which also send it as `ETag`. Absent on `GET /v1/groups` items and on the `group` inside events. |
 
 ## Kind limits
 
@@ -93,7 +94,7 @@ A missing or malformed body returns `400 bad_request` with the failing path in t
 
 ### Response
 
-`201 Created` with a `Group` body:
+`201 Created` with a `Group` body and the group's [version](#group-versions) as `ETag`:
 
 ```json
 {
@@ -108,9 +109,12 @@ A missing or malformed body returns `400 bad_request` with the failing path in t
   "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T05:00:00.000Z",
-  "softDeletedAt": null
+  "softDeletedAt": null,
+  "version": "0"
 }
 ```
+
+Creating a group emits no event, so a new group is at version `"0"`. With `creatorUserId` the create emits `member.joined`, and the version is that event's position.
 
 ### Audit log
 
@@ -156,7 +160,11 @@ Fetches a single group by id. Soft-deleted groups and groups belonging to a diff
 
 ### Response
 
-`200 OK` with a `Group` body. `memberCount` is the number of `GroupMember` rows with `status = "active"` for this group, computed at request time.
+`200 OK` with a `Group` body and the group's [version](#group-versions) as `ETag`. `memberCount` is the number of `GroupMember` rows with `status = "active"` for this group, computed at request time.
+
+```
+ETag: "4211"
+```
 
 ```json
 {
@@ -171,9 +179,12 @@ Fetches a single group by id. Soft-deleted groups and groups belonging to a diff
   "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T05:00:00.000Z",
-  "softDeletedAt": null
+  "softDeletedAt": null,
+  "version": "4211"
 }
 ```
+
+The version is read before the group, so it never runs ahead of the data returned with it. A write that lands in between can make a later `If-Match` with this version fail, never pass on stale data.
 
 ### Errors
 
@@ -235,6 +246,8 @@ The filter is backed by the `(gameId, kind)` index, so it stays cheap as the gro
 
 `memberCount` per item is the count of `GroupMember` rows in `status = "active"`, computed at request time via a single batched `groupBy` query (no N+1).
 
+List items carry no `version`. Read the group with `GET /v1/groups/:id` for a version to send as `If-Match`.
+
 ### Errors
 
 | Code | Status | When |
@@ -270,12 +283,19 @@ Partially updates a group. The body is a subset of `{ name, visibility, metadata
 | `metadata` | object | Optional. **Replaces the existing metadata wholesale**; not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
 | `defaultRoleId` | string \| null | Optional. Pass `null` to clear; pass a string to set. |
 | `passcode` | string \| null | Optional. Pass a 4-128 char string to set or replace the join passcode; pass `null` to clear it. Omit to leave any existing passcode untouched. See [Passcodes](#passcodes). |
+| `actorUserId` | string | Optional. External user id of the person making the change. Recorded as the audit actor and sent as `actorUserId` on the `group.updated` event. It is not a change itself: a body with only `actorUserId` is a `400`. |
 
-An empty body, an unknown visibility value, an empty `name`, or a malformed JSON body all return `400 bad_request`.
+An empty body, a body with only `actorUserId`, an unknown visibility value, an empty `name`, or a malformed JSON body all return `400 bad_request`.
+
+### Headers
+
+| Header | Notes |
+|--------|-------|
+| `If-Match` | Optional. The group's [version](#group-versions), quoted (`"4211"`) or bare (`4211`). A mismatch answers `412 precondition_failed` with the current version in `details.version` and writes nothing. Checked even when the PATCH changes nothing. |
 
 ### Response
 
-`200 OK` with the updated `Group` body. `memberCount` is computed at request time from active members, just like `GET /v1/groups/:id`.
+`200 OK` with the updated `Group` body and its new [version](#group-versions) in `version` and `ETag`. `memberCount` is computed at request time from active members, just like `GET /v1/groups/:id`.
 
 ```json
 {
@@ -290,13 +310,14 @@ An empty body, an unknown visibility value, an empty `name`, or a malformed JSON
   "hasPasscode": false,
   "createdAt": "2026-04-28T05:00:00.000Z",
   "updatedAt": "2026-04-28T06:00:00.000Z",
-  "softDeletedAt": null
+  "softDeletedAt": null,
+  "version": "4215"
 }
 ```
 
 ### Audit log
 
-Writes one `group.updated` entry **only when at least one field actually changed**. The payload is a `{ before, after }` pair containing only the changed fields:
+Writes one `group.updated` entry **only when at least one field actually changed**. `actorUserId` is the resolved `JunjoUser` id of the body's `actorUserId`, or `null` without one; a passcode change's `group.passcode.set` / `group.passcode.cleared` entry carries the same actor. The payload is a `{ before, after }` pair containing only the changed fields:
 
 ```json
 {
@@ -311,14 +332,15 @@ Writes one `group.updated` entry **only when at least one field actually changed
 }
 ```
 
-A no-op PATCH (every supplied field already matches the stored value) succeeds with `200 OK`, returns the unchanged group, and writes no audit entry. The `updatedAt` timestamp is also unchanged in that case. Metadata is treated as changed whenever it is provided, even when the new value is structurally equal to the stored one (deep equality across `jsonb` ordering is not attempted).
+A no-op PATCH (every supplied field already matches the stored value) succeeds with `200 OK`, returns the unchanged group, writes no audit entry and emits no event. The `updatedAt` timestamp and the version are also unchanged in that case. Metadata is treated as changed whenever it is provided, even when the new value is structurally equal to the stored one (deep equality across `jsonb` ordering is not attempted).
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Empty body, invalid field value, malformed JSON. |
+| `bad_request` | 400 | Empty body, a body with only `actorUserId`, invalid field value, malformed JSON, or a malformed `If-Match`. |
 | `not_found` | 404 | No group with that id in the calling game (also returned for soft-deleted rows and cross-game ids). |
+| `precondition_failed` | 412 | `If-Match` does not match the group's version. `details.version` is the current version. Nothing was written. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `DELETE /v1/groups/:id`
@@ -335,13 +357,20 @@ Soft-deletes a group by stamping `softDeletedAt` with the current time. The grou
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `hard` | `"true"` | absent | Any other value (or absence) keeps the soft-delete path. Only the literal string `"true"` triggers hard delete. |
+| `hard` | `"true" \| "false"` | `"false"` | `"true"` hard-deletes; `"false"` or absence keeps the soft-delete path. Any other value answers `400 bad_request`. |
+| `actorUserId` | string | none | Optional external user id of the person deleting the group. Recorded as the audit actor of a soft delete and sent as `actorUserId` on the `group.deleted` event (soft and hard). |
+
+### Headers
+
+| Header | Notes |
+|--------|-------|
+| `If-Match` | Optional. The group's [version](#group-versions), quoted or bare. Applies to soft and hard deletes. A mismatch answers `412 precondition_failed` with the current version in `details.version` and deletes nothing. |
 
 ### Response
 
-- Soft delete on a live group: `200 OK` with the now-soft-deleted `Group` body (`softDeletedAt` populated). Writes one `group.deleted` audit entry in the same transaction.
-- Soft delete on an already soft-deleted group: `200 OK` with the existing group body, `softDeletedAt` left at its prior value, **no second audit entry**, no timestamp bump. Idempotent.
-- Hard delete: `204 No Content`. Cascade rules remove related rows, including the group's audit history. No audit entry is written (it would be cascade-deleted anyway).
+- Soft delete on a live group: `200 OK` with the now-soft-deleted `Group` body (`softDeletedAt` populated) and its new [version](#group-versions) in `version` and `ETag`. Writes one `group.deleted` audit entry in the same transaction.
+- Soft delete on an already soft-deleted group: `200 OK` with the existing group body and its current version, `softDeletedAt` left at its prior value, **no second audit entry**, no event, no timestamp bump. Idempotent. A stale `If-Match` still answers `412`.
+- Hard delete: `204 No Content`. Cascade rules remove related rows, including the group's audit history and its version. No audit entry is written (it would be cascade-deleted anyway).
 
 ### Audit log (soft delete only)
 
@@ -350,14 +379,16 @@ Soft-deletes a group by stamping `softDeletedAt` with the current time. The grou
 | `action` | `group.deleted` |
 | `groupId` | the deleted group id |
 | `targetId` | the deleted group id |
-| `actorUserId` | `null` |
+| `actorUserId` | the resolved `JunjoUser` id of the `actorUserId` query parameter, or `null` without one |
 | `payload` | `{ kind: "soft", softDeletedAt: <iso>, retentionDays: 7 }` |
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | `hard` is not `"true"` / `"false"`, `actorUserId` is empty, or `If-Match` is malformed. |
 | `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). |
+| `precondition_failed` | 412 | `If-Match` does not match the group's version. `details.version` is the current version. Nothing was deleted. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## `POST /v1/groups/:id/restore`
@@ -372,8 +403,10 @@ Clears `softDeletedAt` on a group that is still inside the 7-day undo window. Id
 
 ### Response
 
-- Restore inside the window: `200 OK` with the restored `Group` body (`softDeletedAt: null`). Writes one `group.restored` audit entry.
-- Restore on a live (not soft-deleted) group: `200 OK` with the existing group body, no audit entry. Idempotent.
+- Restore inside the window: `200 OK` with the restored `Group` body (`softDeletedAt: null`) and its new [version](#group-versions) in `version` and `ETag`. Writes one `group.restored` audit entry and emits `group.updated` with `actorUserId: null`.
+- Restore on a live (not soft-deleted) group: `200 OK` with the existing group body, no audit entry. Idempotent. This answer carries no `version` or `ETag`; read the group for its version.
+
+Restore does not take `If-Match`.
 
 ### Audit log (restore inside window only)
 
@@ -527,6 +560,45 @@ By default the response excludes invitations that have already been used (`usedA
 | `bad_request` | 400 | `limit` invalid, `cursor` not in this group, `includeExpired`/`includeUsed` not `"true"`/`"false"`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
+
+## Group versions
+
+Every group carries a `version`: the [stream position](/api-reference/events#positions) of the latest logged event about the group. That covers:
+
+- the group's own events (`group.updated`, `group.deleted`);
+- the events of its members, roles, permissions, overrides and invitations;
+- `group.relationship.changed` where the group is the A side (`groupId`). Setting A's stance toward B moves A's version, not B's.
+
+A group no logged event has touched yet is at version `"0"`. A write that changes nothing emits no event and leaves the version as it is.
+
+The version is a decimal string that can exceed 2^53, like a position. It only increases, but not by one per write: positions are shared by every event of the game. Treat it as opaque and compare it for equality.
+
+Single-group responses carry it as `version` in the body and in the `ETag` header: `GET /v1/groups/:id`, `POST /v1/groups` (201), `PATCH /v1/groups/:id`, soft `DELETE /v1/groups/:id` (200) and `POST /v1/groups/:id/restore`. `GET /v1/groups` items and the `group` inside `group.updated` leave it out. Export `group` records carry it too ([Export](/api-reference/export#record-kinds)).
+
+```
+ETag: "4211"
+```
+
+`PATCH /v1/groups/:id` and `DELETE /v1/groups/:id` (soft and `?hard=true`) accept `If-Match` with that version:
+
+- Quoted (`If-Match: "4211"`) or bare (`If-Match: 4211`), up to 19 digits. Any other value answers `400 bad_request`.
+- A mismatch answers `412 precondition_failed` with the current version in `details.version`, and nothing is written.
+- The check also applies to a PATCH that changes nothing, so a stale queued edit is reported instead of silently succeeding.
+
+```json
+{
+  "code": "precondition_failed",
+  "status": 412,
+  "message": "If-Match \"4198\" does not match group ckxxx...'s version (current \"4211\")",
+  "details": { "version": "4211" }
+}
+```
+
+The check runs when the write's events are logged, while the game's event counter is locked, so it sees every other write in the game that committed first. Of several writers that send the same `If-Match` and each change the group, exactly one succeeds and the others get `412`.
+
+On the [game stream](/api-reference/events#get-v1events), the position of an event about a group is the version that event gave the group. A stream consumer can therefore track a group's version from the events alone. A hard delete removes the group's version with the group.
+
+The group version is separate from [member versions](#member-versions). A member write moves both, and member-scoped writes (including kick) still take the member version in `If-Match`.
 
 ## Member versions
 
@@ -892,12 +964,13 @@ Removes a member from a group on the dev backend's behalf. Only an `active` memb
 The body is optional; an empty body, `{}`, and `{ "reason": null }` are all accepted.
 
 ```json
-{ "reason": "violated guild rules" }
+{ "reason": "violated guild rules", "actorUserId": "user_officer" }
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
 | `reason` | no | Free-form string up to 500 characters, or `null`, or omitted. Lands on the audit `payload`. |
+| `actorUserId` | no | External user id of the person doing the kick. Recorded as the audit actor and sent as `kickedBy` on the `member.left` event. Without it, `kickedBy` is absent from the event. |
 
 ### Response
 
@@ -914,14 +987,14 @@ Accepts `If-Match` ([member version](#member-versions)).
 | `action` | `member.kicked` |
 | `groupId` | the group id |
 | `targetId` | the kicked user's external id |
-| `actorUserId` | `null` (V1 has no auth-adapter actor wired; the dev's backend is the trusted layer behind the API key) |
+| `actorUserId` | the resolved `JunjoUser` id of the body's `actorUserId`, or `null` without one |
 | `payload` | `{ memberId, reason }` where `reason` is the body's value, or `null` when omitted |
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed, or a malformed `If-Match`. |
+| `bad_request` | 400 | `reason` longer than 500 characters or otherwise malformed, an empty `actorUserId`, or a malformed `If-Match`. |
 | `not_found` | 404 | No group with that id in the calling game (soft-deleted and cross-game also collapse here), or no `ExternalIdentity` for the user, or no `GroupMember` row for the user in this group. |
 | `precondition_failed` | 412 | `If-Match` does not match the member's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -1543,6 +1616,7 @@ Set or update a directed relationship from group A to group B. Relationships are
 |-------|------|-------|
 | `type` | string (1-64 chars) | Required. Open string: `"ally"`, `"enemy"`, `"neutral"`, `"trade-partner"`, `"vassal"`, etc. The server stores it verbatim. |
 | `mutual` | boolean | Optional. When `true` the route writes both A->B and B->A rows with the same `type`. Defaults to `false`. |
+| `actorUserId` | string | Optional. External user id of the person setting the relationship. Becomes the row's `setBy`, the audit actor, and `actorUserId` (and `relationship.setBy`) on the `group.relationship.changed` event. Without it, `setBy` is `null`. |
 
 ### Response
 
@@ -1554,14 +1628,16 @@ Set or update a directed relationship from group A to group B. Relationships are
   "groupBId": "grp_b",
   "type": "ally",
   "since": "2026-04-28T05:00:00.000Z",
-  "setBy": null
+  "setBy": "user_officer"
 }
 ```
 
+`setBy` is a user id rendered with the caller's [namespace preference](/api-reference/identity#preferred-namespaces), like other user ids, on this response and on the relationship reads below. Writes made from the dashboard set it to `null`.
+
 ### Behavior
 
-- Each direction is independent. If A->B already has the supplied `type`, that direction is a no-op (no DB write, no audit entry, no `since` bump). The other direction (B->A) still goes through its own check.
-- A direction whose `type` actually changes writes one `group.relationship.set` audit entry on the *origin* group's audit log. Mutual writes therefore produce up to two audit entries; partial-mutual writes produce one.
+- Each direction is independent. If A->B already has the supplied `type`, that direction is a no-op (no DB write, no audit entry, no `since` bump, and the existing `setBy` is kept). The other direction (B->A) still goes through its own check.
+- A direction whose `type` actually changes writes one `group.relationship.set` audit entry on the *origin* group's audit log, with the resolved `JunjoUser` id of `actorUserId` as its actor (or `null`). Mutual writes therefore produce up to two audit entries; partial-mutual writes produce one.
 - Self-relationships (`a === b`) are rejected with `400 bad_request`.
 - The audit payload is `{ groupAId, groupBId, type, mutual, before? }`. `before` is included only when the row already existed and the type changed; on a fresh insert `before` is omitted.
 
@@ -1569,7 +1645,7 @@ Set or update a directed relationship from group A to group B. Relationships are
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Body missing `type`, `type` empty or over 64 chars, body malformed JSON, or `a === b`. |
+| `bad_request` | 400 | Body missing `type`, `type` empty or over 64 chars, an empty `actorUserId`, body malformed JSON, or `a === b`. |
 | `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
@@ -1589,6 +1665,7 @@ Clear the directed A->B relationship. Idempotent: a missing row is a no-op (no a
 | Field | Type | Notes |
 |-------|------|-------|
 | `mutual` | `"true"` \| `"false"` | Optional. When `"true"`, clears both A->B and B->A. Strict string match. |
+| `actorUserId` | string | Optional. External user id of the person clearing the relationship. Recorded as the audit actor and sent as `actorUserId` on the `group.relationship.changed` event. |
 
 ### Response
 
@@ -1598,14 +1675,14 @@ Clear the directed A->B relationship. Idempotent: a missing row is a no-op (no a
 
 - For each direction (A->B, plus B->A when `mutual=true`):
   - If no row exists: no-op for that direction.
-  - If a row exists: hard-deleted, and one `group.relationship.cleared` audit entry is written on the *origin* group's audit log with `payload: { groupAId, groupBId, type, mutual }` (where `type` is the row's previous value).
+  - If a row exists: hard-deleted, and one `group.relationship.cleared` audit entry is written on the *origin* group's audit log with `payload: { groupAId, groupBId, type, mutual }` (where `type` is the row's previous value) and the resolved `JunjoUser` id of `actorUserId` as its actor (or `null`).
 - Self-relationships (`a === b`) are rejected with `400 bad_request`.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `mutual` is not `"true"` / `"false"`, or `a === b`. |
+| `bad_request` | 400 | `mutual` is not `"true"` / `"false"`, `actorUserId` is empty, or `a === b`. |
 | `not_found` | 404 | Either group does not exist, is soft-deleted, or belongs to a different game. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
