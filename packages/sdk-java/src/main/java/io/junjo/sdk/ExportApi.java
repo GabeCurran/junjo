@@ -1,8 +1,10 @@
 package io.junjo.sdk;
 
+import io.junjo.sdk.export.ExportOptions;
 import io.junjo.sdk.export.ExportReader;
 import io.junjo.sdk.export.ExportRecord;
 import io.junjo.sdk.export.ExportSummary;
+import io.junjo.sdk.internal.Paths;
 import io.junjo.sdk.internal.Threads;
 import io.junjo.sdk.internal.Transport;
 import java.io.UncheckedIOException;
@@ -24,13 +26,24 @@ public final class ExportApi {
         this.transport = transport;
     }
 
+    /** Same as {@link #open(ExportOptions)} with every record kind of every group. */
+    public CompletableFuture<ExportReader> open() {
+        return open(ExportOptions.all());
+    }
+
     /**
      * Opens the export. Completes once the server answered; iterating the reader then blocks on
      * the network, so iterate off any latency-sensitive thread and close the reader when done.
+     * {@code opts} may be null.
      */
-    public CompletableFuture<ExportReader> open() {
-        return transport.openStream("/v1/export", Map.of(), "application/x-ndjson")
+    public CompletableFuture<ExportReader> open(ExportOptions opts) {
+        return transport.openStream(path(opts), Map.of(), "application/x-ndjson")
                 .thenApply(resp -> new ExportReader(resp.body()));
+    }
+
+    /** Same as {@link #read(ExportOptions, Consumer)} with every record kind of every group. */
+    public CompletableFuture<ExportSummary> read(Consumer<ExportRecord> consumer) {
+        return read(ExportOptions.all(), consumer);
     }
 
     /**
@@ -40,12 +53,13 @@ public final class ExportApi {
      * short or malformed, {@code stream_overflow} when a line passes
      * {@link ExportReader#MAX_LINE_CHARS}, {@code network_error} when the connection fails, or
      * with whatever the consumer throws. Records already handed to the consumer stay handed over,
-     * so a consumer that persists them must discard its output on failure.
+     * so a consumer that persists them must discard its output on failure. {@code opts} may be
+     * null.
      */
-    public CompletableFuture<ExportSummary> read(Consumer<ExportRecord> consumer) {
+    public CompletableFuture<ExportSummary> read(ExportOptions opts, Consumer<ExportRecord> consumer) {
         Objects.requireNonNull(consumer, "consumer");
         CompletableFuture<ExportSummary> done = new CompletableFuture<>();
-        open().whenComplete((reader, err) -> {
+        open(opts).whenComplete((reader, err) -> {
             if (err != null) {
                 done.completeExceptionally(Transport.unwrap(err));
                 return;
@@ -63,5 +77,13 @@ public final class ExportApi {
             });
         });
         return done;
+    }
+
+    private static String path(ExportOptions opts) {
+        if (opts == null) return "/v1/export";
+        return new Paths.Query()
+                .add("records", opts.records() == null ? null : String.join(",", opts.records()))
+                .add("groupKinds", opts.groupKinds() == null ? null : String.join(",", opts.groupKinds()))
+                .appendTo("/v1/export");
     }
 }

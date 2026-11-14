@@ -105,6 +105,8 @@ class QueuedWriteParityTest {
         SetMemberNotesInput notes = SetMemberNotesInput.builder().notesPrivate("n").build();
         same(QueuedWrite.setNotes("g", "ns:u", notes), () -> client.members().setNotes("g", "ns:u", notes));
         same(QueuedWrite.kick("g", "ns:u", "afk"), () -> client.groups().kick("g", "ns:u", "afk", WriteOptions.none()));
+        same(QueuedWrite.kick("g", "ns:u", "afk", "ns:mod"),
+                () -> client.groups().kick("g", "ns:u", "afk", "ns:mod", WriteOptions.none()));
         same(QueuedWrite.groupBan("g", "ns:u", "grief", until, "ns:mod"),
                 () -> client.groups().ban("g", "ns:u", "grief", until, "ns:mod", WriteOptions.none()));
         same(QueuedWrite.groupUnban("g", "ns:u", "ns:mod"),

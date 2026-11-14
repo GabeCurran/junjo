@@ -17,6 +17,7 @@ import static io.junjo.sdk.internal.Json.strList;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.junjo.sdk.model.Ban;
+import io.junjo.sdk.model.BanHistoryEntry;
 import io.junjo.sdk.model.Context;
 import io.junjo.sdk.model.DisplayNameMatch;
 import io.junjo.sdk.model.Group;
@@ -73,7 +74,8 @@ public final class Wire {
                 Json.optBool(o, "hasPasscode", false),
                 instant(o, "createdAt"),
                 instant(o, "updatedAt"),
-                optInstant(o, "softDeletedAt"));
+                optInstant(o, "softDeletedAt"),
+                optStr(o, "version"));
     }
 
     /** Decodes a member. */
@@ -241,6 +243,22 @@ public final class Wire {
                 optStr(o, "bannedBy"),
                 optStr(o, "issuer"),
                 optLong(o, "version", 0));
+    }
+
+    /** Decodes a ban history entry. */
+    public static BanHistoryEntry banHistory(JsonObject o) {
+        return new BanHistoryEntry(
+                str(o, "id"),
+                str(o, "gameId"),
+                str(o, "userId"),
+                str(o, "scope"),
+                optStr(o, "groupId"),
+                str(o, "kind"),
+                optStr(o, "reason"),
+                optInstant(o, "expiresAt"),
+                instant(o, "eventAt"),
+                optStr(o, "actorUserId"),
+                optStr(o, "issuer"));
     }
 
     /** Decodes a moderation state. */

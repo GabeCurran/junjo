@@ -32,12 +32,42 @@ public sealed interface JunjoEvent {
         return meta().id();
     }
 
+    /** Where the write behind the event came from. */
+    default EventOrigin origin() {
+        return meta().origin();
+    }
+
     /**
      * Fields every event carries.
      *
      * @param id the event's random id, not the stream position
+     * @param origin where the write behind the event came from; {@link EventOrigin#NONE} when the
+     *     event carried none
      */
-    record EventMeta(String id, String gameId, Instant occurredAt) {}
+    record EventMeta(String id, String gameId, Instant occurredAt, EventOrigin origin) {
+        /** Reads a null origin as {@link EventOrigin#NONE}. */
+        public EventMeta {
+            if (origin == null) origin = EventOrigin.NONE;
+        }
+
+        /** Fields without an origin. */
+        public EventMeta(String id, String gameId, Instant occurredAt) {
+            this(id, gameId, occurredAt, EventOrigin.NONE);
+        }
+    }
+
+    /**
+     * Where the write behind an event came from. A writer that keeps its own copy of the data can
+     * drop the events it caused by matching these.
+     *
+     * @param apiKeyId the id of the per-game API key that made the write, or null for admin writes,
+     *     changes the server makes on its own, and events from servers older than the field
+     * @param tag the write's {@code Junjo-Write-Tag} as sent, or null
+     */
+    record EventOrigin(String apiKeyId, String tag) {
+        /** No key and no tag. */
+        public static final EventOrigin NONE = new EventOrigin(null, null);
+    }
 
     /** An event routed to one group. */
     interface GroupScoped {
@@ -64,7 +94,7 @@ public sealed interface JunjoEvent {
      * {@code member.left}.
      *
      * @param reason {@code left} or {@code kicked}
-     * @param kickedBy the kicking moderator, or null
+     * @param kickedBy the kicking moderator the kick named, or null
      */
     record MemberLeft(EventMeta meta, String groupId, String userId, String reason, String kickedBy, long memberVersion)
             implements JunjoEvent, MemberScoped {
@@ -182,15 +212,32 @@ public sealed interface JunjoEvent {
      * {@code group.updated}.
      *
      * @param group the group after the change
+     * @param actorUserId the user the write named as its actor, or null
      */
-    record GroupUpdated(EventMeta meta, String groupId, Group group) implements JunjoEvent, GroupScoped {
+    record GroupUpdated(EventMeta meta, String groupId, Group group, String actorUserId)
+            implements JunjoEvent, GroupScoped {
+        /** An unattributed change. */
+        public GroupUpdated(EventMeta meta, String groupId, Group group) {
+            this(meta, groupId, group, null);
+        }
+
         @Override
         public EventType type() {
             return EventType.GROUP_UPDATED;
         }
     }
 
-    record GroupDeleted(EventMeta meta, String groupId) implements JunjoEvent, GroupScoped {
+    /**
+     * {@code group.deleted}.
+     *
+     * @param actorUserId the user the write named as its actor, or null
+     */
+    record GroupDeleted(EventMeta meta, String groupId, String actorUserId) implements JunjoEvent, GroupScoped {
+        /** An unattributed delete. */
+        public GroupDeleted(EventMeta meta, String groupId) {
+            this(meta, groupId, null);
+        }
+
         @Override
         public EventType type() {
             return EventType.GROUP_DELETED;
@@ -201,9 +248,17 @@ public sealed interface JunjoEvent {
      * {@code group.relationship.changed}.
      *
      * @param relationship the relationship, or null when cleared
+     * @param actorUserId the user the write named as its actor, or null
      */
-    record GroupRelationshipChanged(EventMeta meta, String groupId, String otherGroupId, GroupRelationship relationship)
+    record GroupRelationshipChanged(
+            EventMeta meta, String groupId, String otherGroupId, GroupRelationship relationship, String actorUserId)
             implements JunjoEvent, GroupScoped {
+        /** An unattributed change. */
+        public GroupRelationshipChanged(
+                EventMeta meta, String groupId, String otherGroupId, GroupRelationship relationship) {
+            this(meta, groupId, otherGroupId, relationship, null);
+        }
+
         @Override
         public EventType type() {
             return EventType.GROUP_RELATIONSHIP_CHANGED;

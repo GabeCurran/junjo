@@ -14,6 +14,7 @@ import io.junjo.sdk.JunjoException;
 import io.junjo.sdk.events.EventType;
 import io.junjo.sdk.events.JunjoEvent;
 import io.junjo.sdk.events.JunjoEvent.EventMeta;
+import io.junjo.sdk.events.JunjoEvent.EventOrigin;
 import java.util.Optional;
 
 /**
@@ -37,7 +38,7 @@ public final class EventDecoder {
     public static JunjoEvent decode(JsonObject o) {
         Optional<EventType> known = EventType.fromWire(str(o, "type"));
         if (known.isEmpty()) return null;
-        EventMeta m = new EventMeta(str(o, "id"), str(o, "gameId"), instant(o, "occurredAt"));
+        EventMeta m = new EventMeta(str(o, "id"), str(o, "gameId"), instant(o, "occurredAt"), origin(o));
         return switch (known.get()) {
             case MEMBER_JOINED -> new JunjoEvent.MemberJoined(
                     m, str(o, "groupId"), str(o, "userId"), Wire.member(obj(o, "member")), mv(o));
@@ -66,12 +67,17 @@ public final class EventDecoder {
                     m, str(o, "groupId"), str(o, "roleId"), str(o, "permission"));
             case PERMISSION_REVOKED -> new JunjoEvent.PermissionRevoked(
                     m, str(o, "groupId"), str(o, "roleId"), str(o, "permission"));
-            case GROUP_UPDATED -> new JunjoEvent.GroupUpdated(m, str(o, "groupId"), Wire.group(obj(o, "group")));
-            case GROUP_DELETED -> new JunjoEvent.GroupDeleted(m, str(o, "groupId"));
+            case GROUP_UPDATED -> new JunjoEvent.GroupUpdated(
+                    m, str(o, "groupId"), Wire.group(obj(o, "group")), optStr(o, "actorUserId"));
+            case GROUP_DELETED -> new JunjoEvent.GroupDeleted(m, str(o, "groupId"), optStr(o, "actorUserId"));
             case GROUP_RELATIONSHIP_CHANGED -> {
                 JsonObject rel = optObj(o, "relationship");
                 yield new JunjoEvent.GroupRelationshipChanged(
-                        m, str(o, "groupId"), str(o, "otherGroupId"), rel == null ? null : Wire.relationship(rel));
+                        m,
+                        str(o, "groupId"),
+                        str(o, "otherGroupId"),
+                        rel == null ? null : Wire.relationship(rel),
+                        optStr(o, "actorUserId"));
             }
             case FRIEND_REQUEST_SENT -> new JunjoEvent.FriendRequestSent(
                     m, str(o, "requestId"), str(o, "actorJunjoUserId"), str(o, "targetJunjoUserId"));
@@ -117,6 +123,13 @@ public final class EventDecoder {
             case PERMISSIONS_CONFIG_UPDATED -> new JunjoEvent.PermissionsConfigUpdated(
                     m, Wire.mode(o), Wire.contexts(o));
         };
+    }
+
+    // Absent or null on events from servers older than the field: no key, no tag.
+    private static EventOrigin origin(JsonObject o) {
+        JsonObject origin = optObj(o, "origin");
+        if (origin == null) return EventOrigin.NONE;
+        return new EventOrigin(optStr(origin, "apiKeyId"), optStr(origin, "tag"));
     }
 
     private static long mv(JsonObject o) {

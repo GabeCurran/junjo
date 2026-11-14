@@ -147,7 +147,12 @@ public record QueuedWrite(
 
     /** As {@code groups().kick}. {@code reason} may be null. */
     public static QueuedWrite kick(String groupId, String userId, String reason) {
-        return of(Routes.kick(groupId, userId, reason), "kick");
+        return kick(groupId, userId, reason, null);
+    }
+
+    /** As {@code groups().kick}. {@code reason} and {@code actorUserId} may be null. */
+    public static QueuedWrite kick(String groupId, String userId, String reason, String actorUserId) {
+        return of(Routes.kick(groupId, userId, reason, actorUserId), "kick");
     }
 
     /** As {@code groups().ban}. {@code reason}, {@code expiresAt} and {@code actorUserId} may be null. */

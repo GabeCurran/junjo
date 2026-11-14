@@ -6,6 +6,7 @@ import io.junjo.sdk.JunjoException;
 import io.junjo.sdk.JunjoResponse;
 import io.junjo.sdk.WriteOptions;
 import io.junjo.sdk.model.Page;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -31,6 +32,11 @@ public final class ApiSupport {
     /** GET returning a decoded object. */
     public <T> CompletableFuture<T> get(String path, Function<JsonObject, T> decode) {
         return transport.send(Call.get(path)).thenApply(r -> decode.apply(Json.parseObject(r.bodyString())));
+    }
+
+    /** GET of a bare JSON array of objects. */
+    public <T> CompletableFuture<List<T>> getList(String path, String name, Function<JsonObject, T> item) {
+        return transport.send(Call.get(path)).thenApply(r -> Wire.list(Json.parseArray(r.bodyString()), name, item));
     }
 
     /** GET returning a decoded value with its stream position and ETag. */

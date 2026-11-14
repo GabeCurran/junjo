@@ -33,6 +33,7 @@ public final class JunjoClient implements AutoCloseable {
     private final SanctionsApi sanctions;
     private final ExportApi export;
     private final IdentitiesApi identities;
+    private final InvitationsApi invitations;
     private final EventsApi events;
 
     private JunjoClient(Builder b) {
@@ -44,7 +45,8 @@ public final class JunjoClient implements AutoCloseable {
                 b.retry,
                 b.logger,
                 b.executor,
-                "junjo-java/" + VERSION);
+                "junjo-java/" + VERSION,
+                b.writeTag);
         ApiSupport api = new ApiSupport(transport);
         this.groups = new GroupsApi(api);
         this.members = new MembersApi(api);
@@ -54,6 +56,7 @@ public final class JunjoClient implements AutoCloseable {
         this.sanctions = new SanctionsApi(api);
         this.export = new ExportApi(transport);
         this.identities = new IdentitiesApi(api);
+        this.invitations = new InvitationsApi(api);
         this.events = new EventsApi(api);
     }
 
@@ -61,7 +64,7 @@ public final class JunjoClient implements AutoCloseable {
         return new Builder();
     }
 
-    /** Groups, group bans and kicks. */
+    /** Groups, membership, kicks, group bans, relationships and the sub-group hierarchy. */
     public GroupsApi groups() {
         return groups;
     }
@@ -98,6 +101,11 @@ public final class JunjoClient implements AutoCloseable {
         return identities;
     }
 
+    /** Invitation lists, lookups and revokes. Creation and accepting live on {@link GroupsApi}. */
+    public InvitationsApi invitations() {
+        return invitations;
+    }
+
     /** The game event stream. */
     public EventsApi events() {
         return events;
@@ -123,6 +131,7 @@ public final class JunjoClient implements AutoCloseable {
         private RetryPolicy retry = RetryPolicy.defaults();
         private JunjoLogger logger = JunjoLogger.NONE;
         private Executor executor;
+        private String writeTag;
 
         private Builder() {}
 
@@ -175,6 +184,22 @@ public final class JunjoClient implements AutoCloseable {
          */
         public Builder executor(Executor exec) {
             this.executor = Objects.requireNonNull(exec, "executor");
+            return this;
+        }
+
+        /**
+         * A {@code Junjo-Write-Tag} sent on every request unless the call's own
+         * {@link WriteOptions#writeTag()} replaces it. Events carry it as the tag of their
+         * {@link io.junjo.sdk.events.JunjoEvent#origin() origin}, so writers sharing one API key
+         * can each recognise the events they caused. Default: none.
+         *
+         * @throws IllegalArgumentException when the tag is not 1 to
+         *     {@value WriteOptions#WRITE_TAG_MAX_LENGTH} printable ASCII characters without spaces
+         */
+        public Builder writeTag(String tag) {
+            Objects.requireNonNull(tag, "writeTag");
+            if (!WriteOptions.isValidWriteTag(tag)) throw new IllegalArgumentException(WriteOptions.WRITE_TAG_RULE);
+            this.writeTag = tag;
             return this;
         }
 

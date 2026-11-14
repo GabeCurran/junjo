@@ -67,9 +67,11 @@ junjo.members().add("grp_main", player)
 junjo.close();
 ```
 
-Namespaces: `groups()`, `members()`, `roles()`, `permissions()`, `bans()`, `sanctions()`, `identities()`, `events()`, `export()`. Method names match the TypeScript SDK: `bans().add`, `members().removeRole`, `members().overridePermission`, `members().clearPermissionOverride`, `members().getAccess`, `members().getAccessMany`, `members().setMetadata`, `members().setNotes`, `groups().kick`, `roles().setEntries`, `roles().grantPermission`, `roles().revokePermission`, `roles().getGraph`.
+Namespaces: `groups()`, `members()`, `roles()`, `permissions()`, `bans()`, `sanctions()`, `identities()`, `invitations()`, `events()`, `export()`. Method names match the TypeScript SDK: `bans().add`, `members().removeRole`, `members().overridePermission`, `members().clearPermissionOverride`, `members().getAccess`, `members().getAccessMany`, `members().setMetadata`, `members().setNotes`, `groups().update`, `groups().delete`, `groups().restore`, `groups().inviteByUserId`, `groups().inviteByCode`, `groups().acceptInvitation`, `groups().declineInvitation`, `groups().join`, `groups().leave`, `groups().kick`, `groups().banHistory`, `groups().setRelationship`, `groups().clearRelationship`, `groups().getRelationship`, `groups().listRelationships`, `groups().setParent`, `groups().listChildren`, `invitations().list`, `invitations().get`, `invitations().revoke`, `roles().setEntries`, `roles().grantPermission`, `roles().revokePermission`, `roles().getGraph`.
 
-Return types: every paged list (`groups().list`, `members().list`, `bans().list`, `sanctions().list`, `sanctions().history`) returns `JunjoResponse<Page<T>>`, as do the other reads that carry a stream position or an ETag; `streamPosition()` and `etag()` are null when the server sent none. Single-resource reads (`groups().get`, `members().get`, `roles().get`, `bans().get`) return an empty `Optional` instead of failing with `not_found`.
+Return types: every paged list (`groups().list`, `groups().banHistory`, `members().list`, `invitations().list`, `bans().list`, `sanctions().list`, `sanctions().history`) returns `JunjoResponse<Page<T>>`, as do the other reads that carry a stream position or an ETag; `streamPosition()` and `etag()` are null when the server sent none. Single-resource reads (`groups().get`, `groups().getRelationship`, `members().get`, `roles().get`, `bans().get`, `invitations().get`) return an empty `Optional` instead of failing with `not_found`.
+
+A group read, create, update, soft delete or restore carries the group's `version()` (a decimal string, also sent as the ETag); lists and event payloads leave it null. `groups().update` and `groups().delete` take it as `If-Match`.
 
 ### Errors
 
@@ -100,7 +102,14 @@ junjo.members().assignRole("grp_main", player, "role_mod", null,
 
 junjo.members().add("grp_main", player, "role_member", null,
         WriteOptions.idempotent().withIfNoneMatchAny()); // refused with 412 if any membership row exists
+
+junjo.groups().update("grp_main", UpdateGroupInput.builder().name("Main").actorUserId(mod).build(),
+        WriteOptions.none().withIfMatch(group.version())); // refused with 412 if the group changed
 ```
+
+### Write tags and event origin
+
+`JunjoClient.builder().writeTag("shard-1")` sends `Junjo-Write-Tag` on every request; `WriteOptions.withWriteTag(...)` overrides it for one write. Tags are 1 to 128 printable ASCII characters without spaces. Every event carries `origin()`: the `apiKeyId` of the key that made the write (null for admin writes and server jobs) and that write's `tag`, so a writer sharing a key with others can skip the events it caused. Events from older servers read as `EventOrigin.NONE`. `group.updated`, `group.deleted` and `group.relationship.changed` carry the write's `actorUserId`, and `member.left` the kick's `kickedBy`.
 
 ### Threads
 
@@ -242,6 +251,10 @@ List<DisplayNameMatch> hits = junjo.identities().findByName("steve", "mc").join(
 
 // The NDJSON export, read line by line (needs a key with canExport).
 ExportSummary summary = junjo.export().read(record -> backup.write(record.json())).join();
+
+// Only some record kinds, for groups of some kinds; the header names both filters.
+junjo.export().read(ExportOptions.all().withRecords(List.of("group", "member")).withGroupKinds(List.of("party")),
+        record -> backup.write(record.json())).join();
 ```
 
 The export fails with `invalid_wire_data` when its end record is missing or its counts disagree with the records read, and with `stream_overflow` when a line passes 16 Mi characters.
