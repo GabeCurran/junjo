@@ -774,6 +774,116 @@ result.errors;  // []
 
 - [`POST /v1/groups/:id/bulk-invite`](/api-reference/groups) - the underlying HTTP route.
 
+## `batch(groupId, ops, opts?)`
+
+```ts
+async batch(
+  groupId: GroupId,
+  ops: GroupBatchOp[],
+  opts?: ConditionalWriteOptions, // ifMatch, idempotencyKey, writeTag, signal, timeoutMs
+): Promise<GroupBatchResponse>
+```
+
+Applies `ops` to the group in order, in one transaction: all of them or none. Each op has the fields and checks of the single call it stands for, sees the effects of the ops before it, and emits that call's events, which are published after the commit in op order. With `ifMatch` (the group's `version`), the batch applies only if nobody changed the group since it was read. The full rules are in [`POST /v1/groups/:id/batch`](/api-reference/groups#post-v1groupsidbatch).
+
+```ts
+const { version, results } = await junjo.groups.batch(
+  groupId,
+  [
+    { op: "member.add", userId: "user_carol" as UserId },
+    { op: "member.role.add", userId: "user_carol" as UserId, roleId: officerRole },
+  ],
+  { ifMatch: group.version },
+);
+```
+
+### Ops
+
+`GroupBatchOp` is a union discriminated on `op`; 1 to 50 per batch.
+
+| `op` | Fields | Single call |
+|------|--------|-------------|
+| `member.add` | `userId`, `roleId?`, `actorUserId?`, `createOnly?` | [`members.add`](/sdk/members#addgroupid-userid-opts); `createOnly: true` is `ifNoneMatch: "*"` |
+| `member.kick` | `userId`, `reason?`, `actorUserId?` | [`kick`](#kickgroupid-userid-opts) |
+| `member.leave` | `userId` | [`leave`](#leavegroupid-userid) |
+| `member.ban` | `userId`, `reason?`, `expiresAt?` (ISO string or `null`), `actorUserId?` | [`ban`](#bangroupid-userid-opts) |
+| `member.unban` | `userId`, `actorUserId?` | [`unban`](#unbangroupid-userid-opts) |
+| `member.update` | `userId`, `metadata?`, `notesPublic?`, `notesPrivate?` | `members.setMetadata` / `setNotes` |
+| `member.role.add`, `member.role.remove` | `userId`, `roleId`, `actorUserId?` | `members.assignRole` / `removeRole` |
+| `group.update` | `name?`, `visibility?`, `metadata?`, `defaultRoleId?`, `actorUserId?` (no `passcode`) | [`update`](#updateid-input-opts) |
+| `role.entry.set` | `roleId`, `permission`, `value?`, `context?` | `roles.grantPermission`, for a role of this group |
+| `role.entry.remove` | `roleId`, `permission`, `context?` | `roles.revokePermission`, for a role of this group |
+| `relationship.set` | `otherGroupId`, `type`, `mutual?`, `actorUserId?` | [`setRelationship`](#setrelationshipgroupaid-groupbid-type-opts) from this group |
+| `relationship.clear` | `otherGroupId`, `mutual?`, `actorUserId?` | [`clearRelationship`](#clearrelationshipgroupaid-groupbid-opts) from this group |
+
+### Returns
+
+```ts
+interface GroupBatchResponse {
+  version: string; // the group's version after the batch
+  results: GroupBatchResult[]; // Member | Group | Role | GroupRelationship | null
+}
+```
+
+`results[i]` is what op `i`'s single call returns, deserialized, describing the state right after op `i`: a `Member` for `member.*` ops, the `Group` (without `version`) for `group.update`, the `Role` for role-entry ops, the A->B `GroupRelationship` for `relationship.set`, and `null` for `relationship.clear`. `version` is the one to pass as `ifMatch` next time.
+
+### Errors
+
+A failing op fails the whole batch with that op's own error; `err.details.opIndex` names it, next to the op's own details.
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty or oversized list, unknown op or field, `passcode` in `group.update`, or an op that fails validation (`details.opIndex`). |
+| `not_found` | 404 | The group is missing or deleted (no `opIndex`), or an op's own 404 (`details.opIndex`), including ops after one that deleted an emptied group. |
+| `precondition_failed` | 412 | `ifMatch` is stale: `details.version` is the current version and nothing was written. With `details.opIndex` instead, a `createOnly` add found an existing row. |
+| any op's code | varies | `banned`, `group_full`, `group_limit_reached`, `role_group_mismatch`, ... with `details.opIndex`. |
+
+### Example: hand over the top role
+
+Move a leader role from one member to another, keep the old leader as an officer, and retry when the group changed in between:
+
+```ts
+import { JunjoError, type GroupBatchOp, type GroupId, type RoleId, type UserId } from "@junjo.io/sdk";
+
+async function handOver(
+  groupId: GroupId,
+  from: UserId,
+  to: UserId,
+  leader: RoleId,
+  officer: RoleId,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const group = await junjo.groups.get(groupId);
+    const current = group && (await junjo.members.get(groupId, from));
+    // Re-check on every attempt: the reason for the handover may be gone.
+    if (!group || !current?.roles.includes(leader)) return false;
+
+    const ops: GroupBatchOp[] = [
+      { op: "member.role.remove", userId: from, roleId: leader },
+      { op: "member.role.add", userId: to, roleId: leader },
+      { op: "member.role.add", userId: from, roleId: officer },
+    ];
+    try {
+      await junjo.groups.batch(groupId, ops, {
+        ifMatch: group.version,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      return true;
+    } catch (e) {
+      const stale =
+        e instanceof JunjoError &&
+        e.code === "precondition_failed" &&
+        e.details?.opIndex === undefined;
+      if (!stale) throw e;
+      // Someone changed the group since the read: read again and decide again.
+    }
+  }
+  return false;
+}
+```
+
+Nothing is half applied at any point: other readers see either the old leader or the new one, never both or neither.
+
 ## `setRelationship(groupAId, groupBId, type, opts?)`
 
 ```ts

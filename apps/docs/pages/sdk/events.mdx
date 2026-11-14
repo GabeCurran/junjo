@@ -147,7 +147,14 @@ In [proxy mode](/react/provider#browser-apps-proxy-mode) your proxy must forward
 Every event carries `origin`: where the write behind it came from.
 
 ```ts
-event.origin; // { apiKeyId: string | null; tag: string | null }
+import type { EventOrigin } from "@junjo.io/sdk";
+
+interface EventOrigin {
+  apiKeyId: string | null;
+  tag: string | null;
+}
+
+event.origin; // EventOrigin
 ```
 
 `apiKeyId` is the id of the per-game key whose request caused the event (the key's `id` in the [admin API](/api-reference/admin#get-v1admingamesgameidapi-keys)), or `null` for dashboard writes and for changes Junjo makes on its own, such as expiry. `tag` is the [`Junjo-Write-Tag`](/api-reference#write-tags) the request sent, or `null`. Events from servers older than the field, and events logged before it, parse with both set to `null`.
@@ -184,7 +191,7 @@ interface MemberUpdatedEvent {
   gameId: GameId;
   groupId: GroupId;
   occurredAt: Date;
-  origin: { apiKeyId: string | null; tag: string | null };
+  origin: EventOrigin;
   userId: UserId;
   changed: ("metadata" | "notes" | "overrides")[];
   memberVersion: number;
@@ -203,7 +210,7 @@ interface PermissionsConfigUpdatedEvent {
   id: string;
   gameId: GameId;
   occurredAt: Date;
-  origin: { apiKeyId: string | null; tag: string | null };
+  origin: EventOrigin;
   mode: "exact" | "nodes";
   contexts: Record<string, { inherit: Record<string, string[]> }>;
 }

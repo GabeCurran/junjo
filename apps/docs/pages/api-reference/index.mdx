@@ -117,7 +117,7 @@ A write that accepts `If-Match` compares it with the current version inside its 
 - Without `If-Match` the write is unconditional.
 - A missing member or group answers `404`, not `412`.
 
-Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `PATCH /v1/groups/:id` and `DELETE /v1/groups/:id` (group version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
+Routes that accept `If-Match`: `PATCH /v1/groups/:id/members/:userId`, member role assign and unassign, member override set and clear, kick, group ban and unban (member version); `PATCH /v1/groups/:id`, `DELETE /v1/groups/:id` and [`POST /v1/groups/:id/batch`](/api-reference/groups#post-v1groupsidbatch) (group version); `POST /v1/bans`, `DELETE /v1/bans/:userId`, `POST /v1/sanctions` and `DELETE /v1/sanctions/:userId/:type` (moderation version).
 
 `POST /v1/groups/:id/members` accepts `If-None-Match: *` instead: the add applies only when the person has no membership row in the group in any status, and otherwise answers `412 precondition_failed` and writes nothing. Any other `If-None-Match` value answers `400 bad_request`. See [Create-only adds](/api-reference/groups#create-only-adds).
 

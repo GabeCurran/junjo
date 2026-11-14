@@ -255,6 +255,7 @@ The server emits an event after every mutation that changes a group's externally
 | `DELETE /v1/groups/:a/relationships/:b` | `group.relationship.changed` (with `relationship: null`) | One event per direction that actually had a row. `actorUserId` is the `actorUserId` query parameter, or `null`. |
 | `POST /v1/groups/:id/leave`, `.../kick`, `.../ban` on a kind with `deleteWhenEmpty` | `group.deleted` after the member event | Only when the write removed the last active member. See [Kind limits](/api-reference/groups#kind-limits). |
 | Idle-group sweeper (kinds with `idleDeleteHours`) | `group.deleted` | One per group it soft-deletes. |
+| `POST /v1/groups/:id/batch` | The events of each op's single route | In op order, published after the batch commits; a batch that fails emits nothing. See [Group batch](/api-reference/groups#post-v1groupsidbatch). |
 
 The following mutations do **not** publish events:
 

@@ -357,7 +357,7 @@ Soft-deletes a group by stamping `softDeletedAt` with the current time. The grou
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `hard` | `"true" \| "false"` | `"false"` | `"true"` hard-deletes; `"false"` or absence keeps the soft-delete path. Any other value answers `400 bad_request`. |
+| `hard` | `"true"` | absent | Any other value (or absence) keeps the soft-delete path. Only the literal string `"true"` triggers hard delete. |
 | `actorUserId` | string | none | Optional external user id of the person deleting the group. Recorded as the audit actor of a soft delete and sent as `actorUserId` on the `group.deleted` event (soft and hard). |
 
 ### Headers
@@ -386,7 +386,7 @@ Soft-deletes a group by stamping `softDeletedAt` with the current time. The grou
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | `hard` is not `"true"` / `"false"`, `actorUserId` is empty, or `If-Match` is malformed. |
+| `bad_request` | 400 | `actorUserId` is empty, or `If-Match` is malformed. |
 | `not_found` | 404 | No group with that id in the calling game (cross-game ids also return 404). |
 | `precondition_failed` | 412 | `If-Match` does not match the group's version. `details.version` is the current version. Nothing was deleted. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
@@ -579,7 +579,7 @@ Single-group responses carry it as `version` in the body and in the `ETag` heade
 ETag: "4211"
 ```
 
-`PATCH /v1/groups/:id` and `DELETE /v1/groups/:id` (soft and `?hard=true`) accept `If-Match` with that version:
+`PATCH /v1/groups/:id`, `DELETE /v1/groups/:id` (soft and `?hard=true`) and [`POST /v1/groups/:id/batch`](#post-v1groupsidbatch) accept `If-Match` with that version:
 
 - Quoted (`If-Match: "4211"`) or bare (`If-Match: 4211`), up to 19 digits. Any other value answers `400 bad_request`.
 - A mismatch answers `412 precondition_failed` with the current version in `details.version`, and nothing is written.
@@ -599,6 +599,125 @@ The check runs when the write's events are logged, while the game's event counte
 On the [game stream](/api-reference/events#get-v1events), the position of an event about a group is the version that event gave the group. A stream consumer can therefore track a group's version from the events alone. A hard delete removes the group's version with the group.
 
 The group version is separate from [member versions](#member-versions). A member write moves both, and member-scoped writes (including kick) still take the member version in `If-Match`.
+
+To change several rows of a group together, guarded by one group version, use a [group batch](#post-v1groupsidbatch).
+
+## `POST /v1/groups/:id/batch`
+
+Applies an ordered list of writes to one group in one transaction: all of them or none. With `If-Match`, the batch applies only if the group's [version](#group-versions) is still the one the caller read.
+
+Use it for changes that touch several rows and must not be seen half done, such as handing a group's top role from one member to another, or for a group that is edited from several places at once (two servers and a dashboard, say), where a loser should re-read and decide again instead of overwriting.
+
+### Path parameters
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | The group id. Must belong to the calling game and not be soft-deleted. |
+
+### Headers
+
+| Header | Notes |
+|--------|-------|
+| `If-Match` | Optional. The group's version, quoted or bare, as on [`PATCH /v1/groups/:id`](#patch-v1groupsid). A mismatch answers `412 precondition_failed` with the current version in `details.version`, and nothing is written. Checked even when no op changes anything. |
+| `Idempotency-Key` | Optional. As on every write ([Idempotency keys](/api-reference#idempotency-keys)); a replay returns the stored answer without running the batch again. |
+| `Junjo-Write-Tag` | Optional. Every event of the batch carries it in `origin.tag` ([Write tags](/api-reference#write-tags)). |
+
+### Request
+
+```json
+{
+  "ops": [
+    { "op": "member.role.remove", "userId": "user_alice", "roleId": "role_leader" },
+    { "op": "member.role.add", "userId": "user_bob", "roleId": "role_leader" },
+    { "op": "member.role.add", "userId": "user_alice", "roleId": "role_officer" }
+  ]
+}
+```
+
+`ops` holds 1 to 50 ops. Each op is an object with an `op` name and the fields of the single route it stands for, with the same validation; path parameters become fields, the group is always `:id`, and unknown fields are refused. The whole body is validated before anything is read or written: a malformed op answers `400 bad_request` with `details.opIndex` naming the first bad op.
+
+| `op` | Fields | Same as |
+|------|--------|---------|
+| `member.add` | `userId`, `roleId?`, `actorUserId?`, `createOnly?` | [`POST /v1/groups/:id/members`](#post-v1groupsidmembers). `createOnly: true` is the body form of `If-None-Match: *` ([Create-only adds](#create-only-adds)). |
+| `member.kick` | `userId`, `reason?`, `actorUserId?` | [`POST /v1/groups/:id/members/:userId/kick`](#post-v1groupsidmembersuseridkick) |
+| `member.leave` | `userId` | [`POST /v1/groups/:id/leave`](#post-v1groupsidleave) |
+| `member.ban` | `userId`, `reason?`, `expiresAt?`, `actorUserId?` | [`POST /v1/groups/:id/members/:userId/ban`](#post-v1groupsidmembersuseridban) |
+| `member.unban` | `userId`, `actorUserId?` | [`DELETE /v1/groups/:id/members/:userId/ban`](#delete-v1groupsidmembersuseridban) |
+| `member.update` | `userId`, `metadata?`, `notesPublic?`, `notesPrivate?` (at least one) | [`PATCH /v1/groups/:id/members/:userId`](#patch-v1groupsidmembersuserid) |
+| `member.role.add` | `userId`, `roleId`, `actorUserId?` | [`POST /v1/groups/:id/members/:userId/roles/:roleId`](#post-v1groupsidmembersuseridrolesroleid) |
+| `member.role.remove` | `userId`, `roleId`, `actorUserId?` | [`DELETE /v1/groups/:id/members/:userId/roles/:roleId`](#delete-v1groupsidmembersuseridrolesroleid) |
+| `group.update` | `name?`, `visibility?`, `metadata?`, `defaultRoleId?`, `actorUserId?` (at least one besides `actorUserId`) | [`PATCH /v1/groups/:id`](#patch-v1groupsid), without `passcode`: sending `passcode` is a `400`. |
+| `role.entry.set` | `roleId`, `permission`, `value?` (default `true`), `context?` | [`POST /v1/roles/:id/permissions`](/api-reference/roles#post-v1rolesidpermissions) |
+| `role.entry.remove` | `roleId`, `permission`, `context?` | [`DELETE /v1/roles/:id/permissions/:permission`](/api-reference/roles#delete-v1rolesidpermissionspermission) |
+| `relationship.set` | `otherGroupId`, `type`, `mutual?`, `actorUserId?` | [`PUT /v1/groups/:a/relationships/:b`](#put-v1groupsarelationshipsb) with `:a` the batch's group |
+| `relationship.clear` | `otherGroupId`, `mutual?`, `actorUserId?` | [`DELETE /v1/groups/:a/relationships/:b`](#delete-v1groupsarelationshipsb) with `:a` the batch's group |
+
+The role-entry ops act on roles of this group only. A role of another group of the game answers `400 role_group_mismatch`; a role that is missing, belongs to another game or sits in a deleted group answers `404 not_found`. Not available in a batch: passcodes, group delete and restore, invitations, member import, parent changes and replacing a role's entries.
+
+### Behavior
+
+- **In order.** Ops run in list order, and each sees the effects of the ones before it: a member added by op 0 can be given a role by op 1.
+- **All or nothing.** When an op fails, the whole batch rolls back: no rows, audit entries, events, webhook deliveries or version change. The answer is that op's error, with the same code and status its single route would give, its own `details` kept, and `details.opIndex` added.
+- **Like the single routes.** Each op has its single route's no-op cases, kind-limit checks, ban checks, member version changes, audit entries and events. Events keep op order, carry the batch request's origin, and are published only after the commit. Ops take no per-member `If-Match`; the group's `If-Match` guards the whole batch.
+- **Groups emptied mid-batch.** An op that removes the last active member of a group whose kind has `deleteWhenEmpty` soft-deletes the group at once, as its single route does. Every later op then answers `404 not_found` (group), which fails the batch. Put such a departure last, or alone.
+- **People.** People an op would create on its single route (an added or banned user, any actor) are created before the transaction, and stay if the batch rolls back, as they do when a single route fails after resolving them. They hold no membership or other rows from the failed batch.
+- **Concurrency.** Batches on one group run one at a time. A stale `If-Match` fails before any op runs, and the version is checked again when the batch's events are logged, under the game's event counter lock: of several batches sent with the same version that each change something, exactly one succeeds and the others get `412`.
+
+### Response
+
+`200 OK` with the group's version after the batch, in the body and as `ETag`, and one result per op:
+
+```json
+{
+  "version": "4219",
+  "results": [
+    { "groupId": "ckxxx...", "userId": "user_alice", "roles": [], "version": 8, "...": "..." },
+    { "groupId": "ckxxx...", "userId": "user_bob", "roles": ["role_leader"], "version": 3, "...": "..." },
+    { "groupId": "ckxxx...", "userId": "user_alice", "roles": ["role_officer"], "version": 9, "...": "..." }
+  ]
+}
+```
+
+`results[i]` is what op `i`'s single route returns, describing the state right after that op (a later op in the same batch may have changed it since):
+
+| Ops | Result |
+|-----|--------|
+| `member.*` | The `Member`. |
+| `group.update` | The `Group`, without `version` (the batch's version is the top-level `version`). |
+| `role.entry.set`, `role.entry.remove` | The `Role`. |
+| `relationship.set` | The A->B `GroupRelationship`. |
+| `relationship.clear` | `null`. |
+
+A batch whose ops all change nothing answers `200` with the unchanged version and emits no event.
+
+### Example: hand over the top role
+
+Move the leader role from one member to another, keeping the old leader as an officer, only if nobody changed the group since it was read:
+
+1. `GET /v1/groups/grp_123` and keep the `ETag` (say `"4211"`).
+2. Send the three ops shown under Request above with `If-Match: "4211"` and an `Idempotency-Key`.
+3. On `200`, the handover is done and `version` is the group's new version.
+4. On `412`, someone changed the group in between (`details.version` is the current version). Re-read the group and its members, check that the handover still makes sense (the old leader still holds the role, the new one is still a member), and send the batch again with the new version and a new idempotency key. Give up after a few attempts.
+
+```
+POST /v1/groups/grp_123/batch HTTP/1.1
+Authorization: Bearer <key>
+Content-Type: application/json
+If-Match: "4211"
+Idempotency-Key: handover-7f3c
+
+{ "ops": [ ... ] }
+```
+
+### Errors
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Malformed body, 0 or more than 50 ops, an unknown op or field, `passcode` in `group.update`, an op that fails its route's validation (with `details.opIndex`), or a malformed `If-Match`. |
+| `not_found` | 404 | The group is missing, soft-deleted or in another game (no `opIndex`). With `details.opIndex`: an op's own 404, such as an unknown member, role or other group, or any op after one that deleted the emptied group. |
+| `precondition_failed` | 412 | `If-Match` does not match the group's version; `details.version` is the current one. With `details.opIndex` instead: a `member.add` with `createOnly` found an existing row. |
+| any op's code | varies | The failing op's own error (`banned`, `group_full`, `group_limit_reached`, `role_group_mismatch`, `invalid_user_id`, ...) with `details.opIndex`. |
+| `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ## Member versions
 
