@@ -295,173 +295,72 @@ export async function replaceRoleEntries(
 export async function upsertRoleEntry(
   prisma: PrismaClient,
   hub: EventHub,
-  args: {
-    gameId: string;
-    roleId: string;
-    permission: string;
-    value: boolean;
-    context?: PermissionContext;
-  },
+  args: RoleEntryUpsert,
 ): Promise<WireRole> {
-  const { gameId, roleId, value } = args;
-  const context = args.context ?? {};
-  const contextKey = canonicalContextKey(context);
-  const outcome = await prisma.$transaction(async (tx) => {
-    const mode = await lockPermissionMode(tx, gameId);
-    const role = await lockScopedRole(tx, gameId, roleId);
-    const permission = keyForWrite(mode, args.permission);
-    const where = {
-      roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
-    };
-
-    const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
-    if (existing?.value === value) return { role, events: [] };
-    if (!existing) {
-      const count = await tx.rolePermission.count({ where: { roleId } });
-      if (count >= MAX_ROLE_ENTRIES) {
-        throw Errors.badRequest(`role already has the maximum of ${MAX_ROLE_ENTRIES} entries`);
-      }
-    }
-
-    await registerKeys(tx, gameId, [permission]);
-    await tx.rolePermission.upsert({
-      where,
-      create: {
-        roleId,
-        permissionKey: permission,
-        value,
-        context: storedContext(context) ?? Prisma.DbNull,
-        contextKey,
-      },
-      update: { value },
-    });
-
-    const events: (PermissionGrantedEvent | PermissionRevokedEvent | RoleUpdatedEvent)[] = [];
-    if (contextKey !== "") {
-      const shown = { permission, ...contextField(context) };
-      const diff: EntryDiff = existing
-        ? { added: [], removed: [], changed: [{ ...shown, before: existing.value, after: value }] }
-        : { added: [{ ...shown, value }], removed: [], changed: [] };
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "role.entries.changed",
-          targetId: role.id,
-          payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
-        },
-      });
-      events.push(await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]));
-      return { role, events };
-    }
-    const base = {
-      gameId: gameId as GameId,
-      groupId: role.groupId as GroupId,
-      roleId: role.id as RoleId,
-      permission: permission as PermissionKey,
-    };
-    if (value) {
-      const payload: Record<string, unknown> = { roleId: role.id, permission };
-      if (existing) payload.before = { value: existing.value };
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.granted",
-          targetId: role.id,
-          payload: payload as Prisma.InputJsonValue,
-        },
-      });
-      events.push(
-        await stageEvent<PermissionGrantedEvent>(tx, { type: "permission.granted", ...base }),
-      );
-    } else {
-      const diff: EntryDiff = existing
-        ? {
-            added: [],
-            removed: [],
-            changed: [{ permission, before: existing.value, after: value }],
-          }
-        : { added: [{ permission, value }], removed: [], changed: [] };
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "role.entries.changed",
-          targetId: role.id,
-          payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
-        },
-      });
-      if (existing?.value === true) {
-        events.push(
-          await stageEvent<PermissionRevokedEvent>(tx, { type: "permission.revoked", ...base }),
-        );
-      }
-      events.push(await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]));
-    }
-    return { role, events };
-  });
-
+  const outcome = await prisma.$transaction((tx) => upsertRoleEntryInTx(tx, args));
   if (outcome.events.length > 0) {
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, ...outcome.events);
   }
-  return loadWireRole(prisma, roleId);
+  return loadWireRole(prisma, args.roleId);
 }
 
-// Removes one entry, identified by key and context, whatever its value.
-// Idempotent on a missing entry. Removing a global grant emits
-// `permission.revoked`; removing a global deny or any contextual entry
-// emits `role.updated`. `context` as for `upsertRoleEntry`.
-export async function removeRoleEntry(
-  prisma: PrismaClient,
-  hub: EventHub,
-  args: { gameId: string; roleId: string; permission: string; context?: PermissionContext },
-): Promise<WireRole> {
-  const { gameId, roleId } = args;
-  if (!args.permission) throw Errors.badRequest("permission must not be empty");
+export interface RoleEntryUpsert {
+  gameId: string;
+  roleId: string;
+  permission: string;
+  value: boolean;
+  context?: PermissionContext;
+}
+
+export type RoleEntryEvent = PermissionGrantedEvent | PermissionRevokedEvent | RoleUpdatedEvent;
+
+// The transaction body of `upsertRoleEntry`: takes the permission mode
+// share lock, then the role row lock, and stages the events without
+// publishing them. Returns the locked role and the staged events, none
+// when the entry already held `value`.
+export async function upsertRoleEntryInTx(
+  tx: Tx,
+  args: RoleEntryUpsert,
+): Promise<{ role: Role; events: RoleEntryEvent[] }> {
+  const { gameId, roleId, value } = args;
   const context = args.context ?? {};
   const contextKey = canonicalContextKey(context);
-  const outcome = await prisma.$transaction(async (tx) => {
-    const mode = await lockPermissionMode(tx, gameId);
-    const role = await lockScopedRole(tx, gameId, roleId);
-    const permission = normalizePermissionKey(mode, args.permission);
-    const where = {
-      roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
-    };
+  const mode = await lockPermissionMode(tx, gameId);
+  const role = await lockScopedRole(tx, gameId, roleId);
+  const permission = keyForWrite(mode, args.permission);
+  const where = {
+    roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
+  };
 
-    const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
-    if (!existing) return { role, event: null };
-
-    await tx.rolePermission.delete({ where });
-    if (existing.value && contextKey === "") {
-      await tx.auditEntry.create({
-        data: {
-          gameId,
-          groupId: role.groupId,
-          actorUserId: null,
-          action: "permission.revoked",
-          targetId: role.id,
-          payload: { roleId: role.id, permission } as Prisma.InputJsonValue,
-        },
-      });
-      const event = await stageEvent<PermissionRevokedEvent>(tx, {
-        type: "permission.revoked",
-        gameId: gameId as GameId,
-        groupId: role.groupId as GroupId,
-        roleId: role.id as RoleId,
-        permission: permission as PermissionKey,
-      });
-      return { role, event };
+  const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
+  if (existing?.value === value) return { role, events: [] };
+  if (!existing) {
+    const count = await tx.rolePermission.count({ where: { roleId } });
+    if (count >= MAX_ROLE_ENTRIES) {
+      throw Errors.badRequest(`role already has the maximum of ${MAX_ROLE_ENTRIES} entries`);
     }
-    const diff: EntryDiff = {
-      added: [],
-      removed: [{ permission, value: existing.value, ...contextField(context) }],
-      changed: [],
-    };
+  }
+
+  await registerKeys(tx, gameId, [permission]);
+  await tx.rolePermission.upsert({
+    where,
+    create: {
+      roleId,
+      permissionKey: permission,
+      value,
+      context: storedContext(context) ?? Prisma.DbNull,
+      contextKey,
+    },
+    update: { value },
+  });
+
+  const events: RoleEntryEvent[] = [];
+  if (contextKey !== "") {
+    const shown = { permission, ...contextField(context) };
+    const diff: EntryDiff = existing
+      ? { added: [], removed: [], changed: [{ ...shown, before: existing.value, after: value }] }
+      : { added: [{ ...shown, value }], removed: [], changed: [] };
     await tx.auditEntry.create({
       data: {
         gameId,
@@ -472,15 +371,142 @@ export async function removeRoleEntry(
         payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
       },
     });
-    const event = await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]);
-    return { role, event };
-  });
+    events.push(await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]));
+    return { role, events };
+  }
+  const base = {
+    gameId: gameId as GameId,
+    groupId: role.groupId as GroupId,
+    roleId: role.id as RoleId,
+    permission: permission as PermissionKey,
+  };
+  if (value) {
+    const payload: Record<string, unknown> = { roleId: role.id, permission };
+    if (existing) payload.before = { value: existing.value };
+    await tx.auditEntry.create({
+      data: {
+        gameId,
+        groupId: role.groupId,
+        actorUserId: null,
+        action: "permission.granted",
+        targetId: role.id,
+        payload: payload as Prisma.InputJsonValue,
+      },
+    });
+    events.push(
+      await stageEvent<PermissionGrantedEvent>(tx, { type: "permission.granted", ...base }),
+    );
+  } else {
+    const diff: EntryDiff = existing
+      ? {
+          added: [],
+          removed: [],
+          changed: [{ permission, before: existing.value, after: value }],
+        }
+      : { added: [{ permission, value }], removed: [], changed: [] };
+    await tx.auditEntry.create({
+      data: {
+        gameId,
+        groupId: role.groupId,
+        actorUserId: null,
+        action: "role.entries.changed",
+        targetId: role.id,
+        payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
+      },
+    });
+    if (existing?.value === true) {
+      events.push(
+        await stageEvent<PermissionRevokedEvent>(tx, { type: "permission.revoked", ...base }),
+      );
+    }
+    events.push(await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]));
+  }
+  return { role, events };
+}
 
+// Removes one entry, identified by key and context, whatever its value.
+// Idempotent on a missing entry. Removing a global grant emits
+// `permission.revoked`; removing a global deny or any contextual entry
+// emits `role.updated`. `context` as for `upsertRoleEntry`.
+export async function removeRoleEntry(
+  prisma: PrismaClient,
+  hub: EventHub,
+  args: RoleEntryRemoval,
+): Promise<WireRole> {
+  if (!args.permission) throw Errors.badRequest("permission must not be empty");
+  const outcome = await prisma.$transaction((tx) => removeRoleEntryInTx(tx, args));
   if (outcome.event) {
     permissionCache.invalidateGroup(outcome.role.groupId);
     publishStagedEvents(hub, outcome.event);
   }
-  return loadWireRole(prisma, roleId);
+  return loadWireRole(prisma, args.roleId);
+}
+
+export interface RoleEntryRemoval {
+  gameId: string;
+  roleId: string;
+  permission: string;
+  context?: PermissionContext;
+}
+
+// The transaction body of `removeRoleEntry`, with the same lock order
+// as `upsertRoleEntryInTx`. `permission` must be non-empty. Returns the
+// locked role and the staged event, null when there was no entry.
+export async function removeRoleEntryInTx(
+  tx: Tx,
+  args: RoleEntryRemoval,
+): Promise<{ role: Role; event: PermissionRevokedEvent | RoleUpdatedEvent | null }> {
+  const { gameId, roleId } = args;
+  const context = args.context ?? {};
+  const contextKey = canonicalContextKey(context);
+  const mode = await lockPermissionMode(tx, gameId);
+  const role = await lockScopedRole(tx, gameId, roleId);
+  const permission = normalizePermissionKey(mode, args.permission);
+  const where = {
+    roleId_permissionKey_contextKey: { roleId, permissionKey: permission, contextKey },
+  };
+
+  const existing = await tx.rolePermission.findUnique({ where, select: { value: true } });
+  if (!existing) return { role, event: null };
+
+  await tx.rolePermission.delete({ where });
+  if (existing.value && contextKey === "") {
+    await tx.auditEntry.create({
+      data: {
+        gameId,
+        groupId: role.groupId,
+        actorUserId: null,
+        action: "permission.revoked",
+        targetId: role.id,
+        payload: { roleId: role.id, permission } as Prisma.InputJsonValue,
+      },
+    });
+    const event = await stageEvent<PermissionRevokedEvent>(tx, {
+      type: "permission.revoked",
+      gameId: gameId as GameId,
+      groupId: role.groupId as GroupId,
+      roleId: role.id as RoleId,
+      permission: permission as PermissionKey,
+    });
+    return { role, event };
+  }
+  const diff: EntryDiff = {
+    added: [],
+    removed: [{ permission, value: existing.value, ...contextField(context) }],
+    changed: [],
+  };
+  await tx.auditEntry.create({
+    data: {
+      gameId,
+      groupId: role.groupId,
+      actorUserId: null,
+      action: "role.entries.changed",
+      targetId: role.id,
+      payload: { roleId: role.id, ...diff } as unknown as Prisma.InputJsonValue,
+    },
+  });
+  const event = await stageRoleUpdated(tx, gameId, role.groupId, role.id, ["entries"]);
+  return { role, event };
 }
 
 // Length of the longest parent chain in an acyclic graph, in edges.

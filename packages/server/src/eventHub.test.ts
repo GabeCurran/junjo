@@ -16,6 +16,7 @@ function fakeEvent(groupId: string, id = "evt_1"): MemberJoinedEvent {
     gameId: "game_test" as GameId,
     groupId: groupId as GroupId,
     occurredAt: new Date(0),
+    origin: { apiKeyId: null, tag: null },
     userId: "user_alice" as UserId,
     member: {
       id: "mem_1" as MemberId,

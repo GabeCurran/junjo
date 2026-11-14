@@ -12,6 +12,9 @@ import type { GameConfigPermissions, UserIdFormat } from "@junjo.io/shared";
 // anything else they need themselves.
 export interface RequestContext {
   apiKeyId: string | null;
+  // The request's `Junjo-Write-Tag` header, validated, or null. Stamped
+  // with `apiKeyId` on every event the request causes.
+  writeTag: string | null;
   preferredNamespaces: readonly string[];
   // gameId -> declared formats. Filled by the API key middleware for the
   // key's own game, and lazily by `idFormatsFor` for any other game.
@@ -26,6 +29,7 @@ const storage = new AsyncLocalStorage<RequestContext>();
 export function newRequestContext(): RequestContext {
   return {
     apiKeyId: null,
+    writeTag: null,
     preferredNamespaces: [],
     idFormats: new Map(),
     permissionConfigs: new Map(),

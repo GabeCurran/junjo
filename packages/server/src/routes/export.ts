@@ -2,7 +2,7 @@ import { EXPORT_RECORD_KINDS, type ExportRecordKind } from "@junjo.io/shared";
 import type { PrismaClient } from "@prisma/client";
 import type { Handler } from "hono";
 import { Errors } from "../errors.js";
-import { readStreamPosition } from "../eventLog.js";
+import { readGroupVersions, readStreamPosition } from "../eventLog.js";
 import { renderUserIds } from "../identity.js";
 import { logger } from "../logger.js";
 import { rowContextField } from "../permissionContext.js";
@@ -25,7 +25,33 @@ interface Batch {
   next: string | null;
 }
 
-type BatchReader = (prisma: PrismaClient, gameId: string, after: string | null) => Promise<Batch>;
+// Which records an export carries. `groupKinds`, when set, keeps the
+// group-scoped records of groups of those kinds only; game-scoped
+// records (and game-scoped rows of mixed kinds) are not affected by it.
+export interface ExportFilter {
+  records: ReadonlySet<ExportRecordKind>;
+  groupKinds: readonly string[] | null;
+}
+
+type BatchReader = (
+  prisma: PrismaClient,
+  gameId: string,
+  after: string | null,
+  filter: ExportFilter,
+) => Promise<Batch>;
+
+// The group condition for group-scoped rows under `filter`.
+function groupOf(gameId: string, filter: ExportFilter) {
+  return filter.groupKinds === null ? { gameId } : { gameId, kind: { in: [...filter.groupKinds] } };
+}
+
+// For rows that are game-scoped (no group) or group-scoped: game-scoped
+// rows always pass; group rows pass when their group's kind does.
+function gameOrGroupOf(filter: ExportFilter) {
+  return filter.groupKinds === null
+    ? {}
+    : { OR: [{ groupId: null }, { group: { kind: { in: [...filter.groupKinds] } } }] };
+}
 
 async function page<T extends { id: string }>(
   rows: T[],
@@ -76,16 +102,29 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
 
   // The passcode hash is a credential and stays out; `hasPasscode` says
   // whether one was set.
-  group: async (prisma, gameId, after) => {
-    const rows = await prisma.group.findMany({
-      where: { gameId, ...idAfter(after) },
-      orderBy: { id: "asc" },
-      take: EXPORT_BATCH_SIZE,
-    });
+  // Each group's version is read in the same snapshot as its row, so it
+  // is exactly the version of the state exported.
+  group: async (prisma, gameId, after, filter) => {
+    const { rows, versions } = await prisma.$transaction(
+      async (tx) => {
+        const found = await tx.group.findMany({
+          where: { ...groupOf(gameId, filter), ...idAfter(after) },
+          orderBy: { id: "asc" },
+          take: EXPORT_BATCH_SIZE,
+        });
+        const read = await readGroupVersions(
+          tx,
+          found.map((g) => g.id),
+        );
+        return { rows: found, versions: read };
+      },
+      { isolationLevel: "RepeatableRead" },
+    );
     return page(rows, (list) =>
       list.map((g) => ({
         kind: "group",
         id: g.id,
+        version: (versions.get(g.id) ?? 0n).toString(),
         groupKind: g.kind,
         name: g.name,
         visibility: g.visibility,
@@ -101,9 +140,9 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
     );
   },
 
-  role: async (prisma, gameId, after) => {
+  role: async (prisma, gameId, after, filter) => {
     const rows = await prisma.role.findMany({
-      where: { group: { gameId }, ...idAfter(after) },
+      where: { group: groupOf(gameId, filter), ...idAfter(after) },
       include: {
         rolePermissions: { orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }] },
         parentLinks: { orderBy: { parentRoleId: "asc" } },
@@ -133,9 +172,9 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
     );
   },
 
-  member: async (prisma, gameId, after) => {
+  member: async (prisma, gameId, after, filter) => {
     const rows = await prisma.groupMember.findMany({
-      where: { group: { gameId }, ...idAfter(after) },
+      where: { group: groupOf(gameId, filter), ...idAfter(after) },
       include: {
         memberRoles: { orderBy: { roleId: "asc" } },
         permissionOverrides: { orderBy: [{ permissionKey: "asc" }, { contextKey: "asc" }] },
@@ -175,9 +214,9 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
     });
   },
 
-  invitation: async (prisma, gameId, after) => {
+  invitation: async (prisma, gameId, after, filter) => {
     const rows = await prisma.invitation.findMany({
-      where: { group: { gameId }, ...idAfter(after) },
+      where: { group: groupOf(gameId, filter), ...idAfter(after) },
       orderBy: { id: "asc" },
       take: EXPORT_BATCH_SIZE,
     });
@@ -199,11 +238,11 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
   },
 
   // Directed group relationships; both ends belong to the game.
-  relationship: async (prisma, gameId, after) => {
+  relationship: async (prisma, gameId, after, filter) => {
     const [afterA = "", afterB = ""] = after === null ? [] : after.split("\u0000");
     const rows = await prisma.groupRelationship.findMany({
       where: {
-        groupA: { gameId },
+        groupA: groupOf(gameId, filter),
         ...(after === null
           ? {}
           : {
@@ -254,9 +293,9 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
     });
   },
 
-  banHistory: async (prisma, gameId, after) => {
+  banHistory: async (prisma, gameId, after, filter) => {
     const rows = await prisma.banHistory.findMany({
-      where: { gameId, ...idAfter(after) },
+      where: { gameId, ...gameOrGroupOf(filter), ...idAfter(after) },
       orderBy: { id: "asc" },
       take: EXPORT_BATCH_SIZE,
     });
@@ -364,9 +403,9 @@ const readers: Record<Exclude<ExportRecordKind, "game">, BatchReader> = {
   },
 
   // Oldest first by id; ids are not time-ordered, `createdAt` is given.
-  audit: async (prisma, gameId, after) => {
+  audit: async (prisma, gameId, after, filter) => {
     const rows = await prisma.auditEntry.findMany({
-      where: { gameId, ...idAfter(after) },
+      where: { gameId, ...gameOrGroupOf(filter), ...idAfter(after) },
       orderBy: { id: "asc" },
       take: EXPORT_BATCH_SIZE,
     });
@@ -418,7 +457,11 @@ function relationshipReader(type: string, kind: ExportRecordKind): BatchReader {
 
 // The whole export as text chunks, one batch per chunk. Pulled lazily,
 // so a slow reader holds at most one batch in memory.
-async function* exportChunks(prisma: PrismaClient, gameId: string): AsyncGenerator<string> {
+async function* exportChunks(
+  prisma: PrismaClient,
+  gameId: string,
+  filter: ExportFilter,
+): AsyncGenerator<string> {
   const position = await readStreamPosition(prisma, gameId);
   const counts = Object.fromEntries(EXPORT_RECORD_KINDS.map((k) => [k, 0])) as Record<
     ExportRecordKind,
@@ -431,6 +474,8 @@ async function* exportChunks(prisma: PrismaClient, gameId: string): AsyncGenerat
     gameId,
     exportedAt: new Date().toISOString(),
     position: position.toString(),
+    records: EXPORT_RECORD_KINDS.filter((k) => k !== "game" && filter.records.has(k)),
+    groupKinds: filter.groupKinds,
   })}\n`;
 
   const game = await prisma.game.findUnique({ where: { id: gameId } });
@@ -447,11 +492,11 @@ async function* exportChunks(prisma: PrismaClient, gameId: string): AsyncGenerat
   })}\n`;
 
   for (const kind of EXPORT_RECORD_KINDS) {
-    if (kind === "game") continue;
+    if (kind === "game" || !filter.records.has(kind)) continue;
     const read = readers[kind];
     let after: string | null = null;
     do {
-      const batch: Batch = await read(prisma, gameId, after);
+      const batch: Batch = await read(prisma, gameId, after, filter);
       counts[kind] += batch.records.length;
       if (batch.records.length > 0) {
         yield batch.records.map((r) => `${JSON.stringify(r)}\n`).join("");
@@ -461,6 +506,50 @@ async function* exportChunks(prisma: PrismaClient, gameId: string): AsyncGenerat
   }
 
   yield `${JSON.stringify({ kind: "end", counts })}\n`;
+}
+
+const MAX_FILTER_GROUP_KINDS = 32;
+const GROUP_KIND_MAX_LENGTH = 64;
+
+function splitList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+}
+
+// `records` and `groupKinds` are comma-separated; an absent `records`
+// means every kind, an absent `groupKinds` every group. Present but
+// empty, unknown kinds, or more than 32 group kinds are a 400.
+export function parseExportFilter(
+  records: string | undefined,
+  groupKinds: string | undefined,
+): ExportFilter {
+  let recordSet: Set<ExportRecordKind>;
+  if (records === undefined) {
+    recordSet = new Set(EXPORT_RECORD_KINDS);
+  } else {
+    const names = splitList(records);
+    const known = new Set<string>(EXPORT_RECORD_KINDS.filter((k) => k !== "game"));
+    const unknown = names.filter((n) => !known.has(n));
+    if (names.length === 0) throw Errors.badRequest("records must name at least one record kind");
+    if (unknown.length > 0) {
+      throw Errors.badRequest(`unknown record kind(s): ${unknown.join(", ")}`);
+    }
+    recordSet = new Set(names as ExportRecordKind[]);
+  }
+  let kinds: string[] | null = null;
+  if (groupKinds !== undefined) {
+    kinds = [...new Set(splitList(groupKinds))];
+    if (kinds.length === 0) throw Errors.badRequest("groupKinds must name at least one group kind");
+    if (kinds.length > MAX_FILTER_GROUP_KINDS) {
+      throw Errors.badRequest(`groupKinds names at most ${MAX_FILTER_GROUP_KINDS} kinds`);
+    }
+    if (kinds.some((k) => k.length > GROUP_KIND_MAX_LENGTH)) {
+      throw Errors.badRequest(`group kinds are at most ${GROUP_KIND_MAX_LENGTH} characters`);
+    }
+  }
+  return { records: recordSet, groupKinds: kinds };
 }
 
 // GET /v1/export
@@ -480,8 +569,9 @@ export function exportHandler(prisma: PrismaClient): Handler {
       select: { canExport: true },
     });
     if (!key?.canExport) throw Errors.permissionDenied("this API key may not export the game");
+    const filter = parseExportFilter(c.req.query("records"), c.req.query("groupKinds"));
 
-    const chunks = exportChunks(prisma, gameId);
+    const chunks = exportChunks(prisma, gameId, filter);
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {

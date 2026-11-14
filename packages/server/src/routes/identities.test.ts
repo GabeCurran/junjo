@@ -337,6 +337,7 @@ describe.skipIf(!TEST_DATABASE_URL)("identity formats and rendering", () => {
         gameId: gameId as GameId,
         groupId: group.id as GroupId,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: MC as UserId,
         reason: "left",
         memberVersion: 1,

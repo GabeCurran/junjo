@@ -122,7 +122,7 @@ import { generateInvitationCode, parseDurationMs, serializeInvitation } from "./
 import type { WireInvitation } from "./invitations.js";
 import { setGroupParentSafely } from "./parentCycle.js";
 import { resolvePermission } from "./permissions.js";
-import { serializeGroupRelationship } from "./relationships.js";
+import { serializeGroupRelationship, serializeGroupRelationships } from "./relationships.js";
 import type { WireGroupRelationship } from "./relationships.js";
 
 export interface WireUserGameRow {
@@ -1816,7 +1816,7 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
         const upserted = await tx.groupRelationship.upsert({
           where: { groupAId_groupBId: { groupAId: dir.aId, groupBId: dir.bId } },
           create: { groupAId: dir.aId, groupBId: dir.bId, type, setByUserId: null },
-          update: { type, since: new Date() },
+          update: { type, since: new Date(), setByUserId: null },
         });
         if (dir.aId === a) primary = upserted;
 
@@ -1843,7 +1843,8 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
             gameId: gameId as GameId,
             groupId: upserted.groupAId as GroupId,
             otherGroupId: upserted.groupBId as GroupId,
-            relationship: toPublicGroupRelationship(upserted),
+            relationship: toPublicGroupRelationship(upserted, null),
+            actorUserId: null,
           }),
         );
       }
@@ -1859,7 +1860,9 @@ export function setAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Even
 
     publishStagedEvents(hub, ...result.events);
 
-    return c.json<WireGroupRelationship>(serializeGroupRelationship(result.primary));
+    return c.json<WireGroupRelationship>(
+      await serializeGroupRelationship(prisma, gameId, result.primary),
+    );
   };
 }
 
@@ -1930,6 +1933,7 @@ export function clearAdminGroupRelationshipHandler(prisma: PrismaClient, hub: Ev
             groupId: dir.aId as GroupId,
             otherGroupId: dir.bId as GroupId,
             relationship: null,
+            actorUserId: null,
           }),
         );
       }
@@ -1966,7 +1970,7 @@ export function getAdminGroupRelationshipHandler(prisma: PrismaClient): Handler 
     });
     if (!rel) throw Errors.notFound("relationship");
 
-    return c.json<WireGroupRelationship>(serializeGroupRelationship(rel));
+    return c.json<WireGroupRelationship>(await serializeGroupRelationship(prisma, gameId, rel));
   };
 }
 
@@ -1990,7 +1994,7 @@ export function listAdminGroupRelationshipsHandler(prisma: PrismaClient): Handle
       orderBy: { groupBId: "asc" },
     });
 
-    return c.json<WireGroupRelationship[]>(rels.map(serializeGroupRelationship));
+    return c.json<WireGroupRelationship[]>(await serializeGroupRelationships(prisma, gameId, rels));
   };
 }
 
@@ -2142,6 +2146,7 @@ export function updateAdminGroupHandler(prisma: PrismaClient, hub: EventHub): Ha
         gameId: gameId as GameId,
         groupId: result.id as GroupId,
         group: toPublicGroup(result, memberCount),
+        actorUserId: null,
       });
 
       return { row: result, event, memberCount };

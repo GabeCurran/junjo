@@ -20,6 +20,7 @@ function joined(userId: string): MemberJoinedEvent {
     gameId: "game_1" as GameId,
     groupId: "group_1" as GroupId,
     occurredAt: at,
+    origin: { apiKeyId: null, tag: null },
     userId: userId as UserId,
     member: {
       id: "mem_1" as MemberId,
@@ -77,6 +78,7 @@ describe("renderEvent", () => {
       gameId: "game_1" as GameId,
       groupId: "group_1" as GroupId,
       occurredAt: at,
+      origin: { apiKeyId: null, tag: null },
       invitation: {
         id: "inv_1" as InvitationId,
         groupId: "group_1" as GroupId,

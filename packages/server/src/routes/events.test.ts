@@ -99,6 +99,7 @@ function memberJoinedEvent(groupId: string, gameId: string, id = "evt_1"): Membe
     gameId: gameId as GameId,
     groupId: groupId as GroupId,
     occurredAt: new Date("2026-04-28T00:00:00.000Z"),
+    origin: { apiKeyId: null, tag: null },
     userId: "user_alice" as UserId,
     member: {
       id: "mem_1" as MemberId,

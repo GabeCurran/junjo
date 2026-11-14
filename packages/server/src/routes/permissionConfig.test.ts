@@ -239,7 +239,7 @@ describe.skipIf(!TEST_DATABASE_URL)("permission config reads and change events",
       expect(typeof logged[0]?.payload.id).toBe("string");
       expect(typeof logged[0]?.payload.occurredAt).toBe("string");
       expect(Object.keys(logged[0]?.payload ?? {}).sort()).toEqual(
-        ["contexts", "gameId", "id", "mode", "occurredAt", "type"].sort(),
+        ["contexts", "gameId", "id", "mode", "occurredAt", "origin", "type"].sort(),
       );
 
       expect((await patchConfig({ permissions: { contexts: INHERIT } })).status).toBe(200);
