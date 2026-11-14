@@ -14,9 +14,9 @@ import { RoleChip } from "../components/ui/role-chip";
 const jbMono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500"] });
 
 export const metadata = {
-  title: "Junjo - Guilds, ranks and moderation for multiplayer games",
+  title: "Junjo - The social layer for multiplayer games",
   description:
-    "Groups, ranks, permissions, friends, bans, sanctions and a live event stream for multiplayer games. SDKs for TypeScript, React, Java, Roblox, C++ and Unreal Engine. Works with your existing auth. Self-hostable.",
+    "Groups, roles, permissions, friends, bans, sanctions and a live event stream for multiplayer games. SDKs for TypeScript, React, Java, Roblox, C++ and Unreal Engine. Works with your existing auth. Self-hostable.",
 };
 
 const GITHUB_URL = "https://github.com/GabeCurran/junjo";
@@ -29,8 +29,11 @@ const EXT = { target: "_blank", rel: "noopener noreferrer" } as const;
 
 // The client surface from packages/sdk/src/index.ts, in the SDK's words.
 const SURFACE: readonly { ns: string; body: string }[] = [
-  { ns: "groups", body: "Guilds, clans, parties and sub-groups, with per-kind limits." },
-  { ns: "roles", body: "Ranks with grants, denies, inheritance and per-world entries." },
+  {
+    ns: "groups",
+    body: "Guilds, clans, parties and sub-groups, with per-kind limits and batches.",
+  },
+  { ns: "roles", body: "Roles with grants, denies, inheritance and entries scoped by context." },
   { ns: "members", body: "Rosters, joins, kicks, promotions and bulk import." },
   { ns: "permissions", body: "One check or a hundred, answered by the deciding rule." },
   { ns: "bans", body: "Game and group bans with full history." },
@@ -38,25 +41,25 @@ const SURFACE: readonly { ns: string; body: string }[] = [
   { ns: "identities", body: "Linked accounts across platforms, and display names." },
   { ns: "friends", body: "Requests, tags, suggestions and blocks." },
   { ns: "invitations", body: "Direct invites and links, with expiry." },
-  { ns: "events", body: "One ordered stream of every change, resumable." },
+  { ns: "events", body: "One ordered stream of every change, resumable, saying who made it." },
 ];
 
-const SERVER_FEATURES: readonly { title: string; body: string }[] = [
-  {
-    title: "Permissions per world",
-    body: "Grant build in creative and deny it in survival on the same rank. Worlds inherit from each other, nearest first.",
-  },
-  {
-    title: "Checks without a round trip",
-    body: "The Java mirror keeps bans, ranks and the players you track in memory and answers from memory, then follows the stream to stay current.",
-  },
-  {
-    title: "Writes that survive a restart",
-    body: "A write queue on disk replays bans and promotions after an outage, with versions so a stale write never wins.",
-  },
+const LIVE_FEATURES: readonly { title: string; body: string }[] = [
   {
     title: "One stream for the whole game",
-    body: "Every change in order, with a position to resume from. Your other servers and your website see the same thing.",
+    body: "Every change in order, with a position to resume from. Your servers, your website and your bots see the same thing.",
+  },
+  {
+    title: "Safe when several places write",
+    body: "Every group has a version. A write can require the version it read, and a batch applies several changes together or not at all.",
+  },
+  {
+    title: "Knows its own writes",
+    body: "Each event says which key and which writer made it, so a server that keeps a local copy skips its own echoes.",
+  },
+  {
+    title: "Permissions with context",
+    body: "Grant a permission in one map or mode and deny it in another on the same role. Contexts inherit, nearest first.",
   },
 ];
 
@@ -103,13 +106,13 @@ function GuildState() {
         ))}
         <li className="landing-join flex items-center justify-between py-2 text-sm">
           <span>
-            steve <span className="ml-1 text-xs text-muted-foreground">joined by invite</span>
+            nova <span className="ml-1 text-xs text-muted-foreground">joined by invite</span>
           </span>
           <RoleChip name="Member" color="#6A9CF7" />
         </li>
       </ul>
       <p className="landing-check border-t border-border px-4 py-2.5 text-sm">
-        steve can invite: <span className="font-semibold text-allow">yes</span>
+        nova can invite: <span className="font-semibold text-allow">yes</span>
         <span className="text-muted-foreground">, from Member</span>
       </p>
     </div>
@@ -154,11 +157,11 @@ export default function LandingPage() {
       <main className="flex-1">
         <section className="mx-auto max-w-screen-lg px-6 pt-14 md:pt-20">
           <h1 className="max-w-3xl font-condensed text-5xl font-semibold leading-[0.95] tracking-tight md:text-7xl">
-            Guilds, ranks and bans for multiplayer games
+            The social layer for multiplayer games
           </h1>
           <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-            One API for groups, roles, permissions, moderation and a live stream of every change.
-            SDKs for TypeScript, React, Java, Roblox, C++ and Unreal Engine.
+            One API for groups, roles, friends, moderation and a live stream of every change. SDKs
+            for TypeScript, React, Java, Roblox, C++ and Unreal Engine.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4">
             <a
@@ -194,11 +197,11 @@ export default function LandingPage() {
               <span className={KW}>await</span>
               {' junjo.groups.create({\n  kind: "guild",\n  name: "Crimson Dawn",\n});\n\n'}
               <span className={KW}>await</span>
-              {' junjo.groups.inviteByUserId(guild.id, "steve");\n\n'}
+              {' junjo.groups.inviteByUserId(guild.id, "nova");\n\n'}
               <span className={KW}>const</span>
               {" ok = "}
               <span className={KW}>await</span>
-              {' junjo.can("steve", guild.id, "invite");'}
+              {' junjo.can("nova", guild.id, "invite");'}
             </Code>
             <GuildState />
           </div>
@@ -208,14 +211,14 @@ export default function LandingPage() {
           <div className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
             <div>
               <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
-                Built for game servers
+                Built for live games
               </h2>
               <p className="mt-4 max-w-md text-muted-foreground">
-                The Java SDK runs inside a Minecraft or any JVM server. Ranks and bans live in
-                Junjo, so every server, your website and your bot agree.
+                Game servers, your website and your bots read and write the same groups, and every
+                one of them sees every change, on any platform an SDK covers.
               </p>
               <dl className="mt-8 flex flex-col gap-6">
-                {SERVER_FEATURES.map((f) => (
+                {LIVE_FEATURES.map((f) => (
                   <div key={f.title}>
                     <dt className="font-semibold">{f.title}</dt>
                     <dd className="mt-1 text-sm leading-6 text-muted-foreground">{f.body}</dd>
@@ -223,25 +226,21 @@ export default function LandingPage() {
                 ))}
               </dl>
             </div>
-            <Code file="BuildListener.java">
-              <span className={KW}>var</span>
-              {" checker = mirror.checker(\n    playerId, guildId, Context.of("}
-              {'"world"'}
-              {", world));\n\n"}
-              <span className={KW}>if</span>
-              {" (checker.can("}
-              {'"build.place"'}
-              {") != Answer.YES) {\n    event.setCancelled("}
-              <span className={KW}>true</span>
-              {");\n}\n\n"}
+            <Code file="handover.ts">
+              <span className={KW}>const</span>
+              {" guild = "}
+              <span className={KW}>await</span>
+              {" junjo.groups.get(guildId);\n\n"}
               <span className="text-muted-foreground">
-                {"// a ban from the website reaches\n// every server through the stream"}
+                {"// hand over the lead in one step,\n// only if nobody changed the guild since"}
               </span>
               {"\n"}
-              <span className={KW}>if</span>
-              {" (mirror.isBanned(playerId) == Answer.YES) {\n    player.kick("}
-              {'"Banned"'}
-              {");\n}"}
+              <span className={KW}>await</span>
+              {" junjo.groups.batch(guildId, [\n"}
+              {'  { op: "member.role.add", userId: "nova", roleId: lead },\n'}
+              {'  { op: "member.role.remove", userId: "aria", roleId: lead },\n'}
+              {'  { op: "member.role.add", userId: "aria", roleId: officer },\n'}
+              {"], { ifMatch: guild?.version });"}
             </Code>
           </div>
         </section>
