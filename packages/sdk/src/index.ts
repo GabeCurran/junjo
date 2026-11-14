@@ -88,6 +88,13 @@ export interface JunjoConfig {
    * `{ enabled: false }` to resolve every check against the server.
    */
   permissionCache?: PermissionCacheOptions;
+  /**
+   * Sent as `Junjo-Write-Tag` on every write unless the write's own
+   * `writeTag` overrides it: 1 to 128 printable ASCII characters, no
+   * spaces. Events carry it as `origin.tag`, so several writers sharing
+   * one API key can each recognise their own changes.
+   */
+  writeTag?: string;
 }
 
 const DEFAULT_BASE_URL = "https://api.junjo.io";
@@ -115,6 +122,17 @@ function warnIfSecretKeyInBrowser(apiKey: string): void {
   console.warn(
     '[junjo-sdk] a secret per-game API key (jk_*) is being used in a browser; every visitor can read it and gain full control of the game. Construct the client on your server instead, or use `new Junjo({ proxy: true, baseUrl: "/api/junjo" })` with a backend proxy that injects the key.',
   );
+}
+
+// Same rule as the server: printable ASCII, no spaces, 1 to 128.
+function validWriteTag(tag: string): string {
+  if (!/^[!-~]{1,128}$/.test(tag)) {
+    throw new JunjoError(
+      "writeTag must be 1 to 128 printable ASCII characters with no spaces",
+      "invalid_config",
+    );
+  }
+  return tag;
 }
 
 function validateApiKeyShape(apiKey: unknown): void {
@@ -262,6 +280,7 @@ export class Junjo {
       baseUrl,
       fetch: fetchImpl,
       ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      ...(config.writeTag !== undefined ? { writeTag: validWriteTag(config.writeTag) } : {}),
     });
     // No fallback to baseUrl: minting `https://api.junjo.io/invite/CODE`
     // style links would hand out dead URLs. inviteByLink throws
@@ -634,10 +653,14 @@ export type {
   AuthAdapter,
   Ban,
   DisplayNameMatch,
+  EventOrigin,
   GameUserSanctionedEvent,
   GameConfigPermissionContext,
   GameUserUnsanctionedEvent,
   Group,
+  GroupBatchOp,
+  GroupBatchResponse,
+  GroupBatchResult,
   GroupId,
   IdentityChangeField,
   IdentityLinkResult,

@@ -40,6 +40,8 @@ export interface ExportPersonRecord {
 export interface ExportGroupRecord {
   kind: "group";
   id: string;
+  /** The group's version for the state exported, as a decimal string. */
+  version: string;
   groupKind: string;
   name: string;
   visibility: string;
@@ -285,6 +287,26 @@ export interface ExportOptions {
    * bound one.
    */
   signal?: AbortSignal;
+  /**
+   * The record kinds to export; all of them when omitted. The header,
+   * game and end records are always sent.
+   */
+  records?: readonly Exclude<ExportRecordKind, "game">[];
+  /**
+   * Keeps group-scoped records (groups, roles, members, invitations,
+   * relationships by their A side, and the group rows of ban history
+   * and audit) for groups of these kinds only. Game-scoped records are
+   * not affected; leave them out with `records`.
+   */
+  groupKinds?: readonly string[];
+}
+
+function exportPath(opts?: ExportOptions): string {
+  const query = new URLSearchParams();
+  if (opts?.records !== undefined) query.set("records", opts.records.join(","));
+  if (opts?.groupKinds !== undefined) query.set("groupKinds", opts.groupKinds.join(","));
+  const qs = query.toString();
+  return qs ? `/v1/export?${qs}` : "/v1/export";
 }
 
 function wireError(message: string): JunjoError {
@@ -330,7 +352,7 @@ export async function* exportGame(
   http: HttpClient,
   opts?: ExportOptions,
 ): AsyncGenerator<ExportRecord, void, undefined> {
-  const res = await http.openStream("/v1/export", {
+  const res = await http.openStream(exportPath(opts), {
     signal: opts?.signal,
     accept: "application/x-ndjson",
   });

@@ -133,6 +133,7 @@ function memberJoined(member: Member): JunjoEvent {
     gameId: GAME_ID,
     groupId: GROUP_ID,
     occurredAt: new Date(),
+    origin: { apiKeyId: null, tag: null },
     userId: member.userId,
     member,
   };
@@ -622,6 +623,7 @@ describe("subscribe-then-fetch", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: joiner.userId,
         reason: "left",
         memberVersion: 2,
@@ -793,6 +795,7 @@ describe("shared subscription via hooks", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         invitation: targeted,
       });
     });
