@@ -208,40 +208,42 @@ export default function LandingPage() {
         </section>
 
         <section className="border-t border-border">
-          <div className="mx-auto grid max-w-screen-lg items-start gap-10 px-6 py-16 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-            <div>
-              <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
-                Built for live games
-              </h2>
-              <p className="mt-4 max-w-md text-muted-foreground">
-                Game servers, your website and your bots read and write the same groups, and every
-                one of them sees every change, on any platform an SDK covers.
-              </p>
-              <dl className="mt-8 flex flex-col gap-6">
-                {LIVE_FEATURES.map((f) => (
-                  <div key={f.title}>
-                    <dt className="font-semibold">{f.title}</dt>
-                    <dd className="mt-1 text-sm leading-6 text-muted-foreground">{f.body}</dd>
-                  </div>
-                ))}
-              </dl>
+          <div className="mx-auto max-w-screen-lg px-6 py-16">
+            <div className="grid items-center gap-10 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+              <div>
+                <h2 className="font-condensed text-4xl font-semibold leading-none tracking-tight">
+                  Built for live games
+                </h2>
+                <p className="mt-4 max-w-md text-muted-foreground">
+                  Game servers, your website and your bots read and write the same groups, and every
+                  one of them sees every change, on any platform an SDK covers.
+                </p>
+              </div>
+              <Code file="handover.ts">
+                <span className={KW}>const</span>
+                {" guild = "}
+                <span className={KW}>await</span>
+                {" junjo.groups.get(guildId);\n\n"}
+                <span className="text-muted-foreground">
+                  {"// hand over the lead in one step,\n// only if nobody changed the guild since"}
+                </span>
+                {"\n"}
+                <span className={KW}>await</span>
+                {" junjo.groups.batch(guildId, [\n"}
+                {'  { op: "member.role.add", userId: "nova", roleId: lead },\n'}
+                {'  { op: "member.role.remove", userId: "aria", roleId: lead },\n'}
+                {'  { op: "member.role.add", userId: "aria", roleId: officer },\n'}
+                {"], { ifMatch: guild?.version });"}
+              </Code>
             </div>
-            <Code file="handover.ts">
-              <span className={KW}>const</span>
-              {" guild = "}
-              <span className={KW}>await</span>
-              {" junjo.groups.get(guildId);\n\n"}
-              <span className="text-muted-foreground">
-                {"// hand over the lead in one step,\n// only if nobody changed the guild since"}
-              </span>
-              {"\n"}
-              <span className={KW}>await</span>
-              {" junjo.groups.batch(guildId, [\n"}
-              {'  { op: "member.role.add", userId: "nova", roleId: lead },\n'}
-              {'  { op: "member.role.remove", userId: "aria", roleId: lead },\n'}
-              {'  { op: "member.role.add", userId: "aria", roleId: officer },\n'}
-              {"], { ifMatch: guild?.version });"}
-            </Code>
+            <dl className="mt-12 grid gap-x-10 gap-y-6 border-t border-border pt-8 sm:grid-cols-2 lg:grid-cols-4">
+              {LIVE_FEATURES.map((f) => (
+                <div key={f.title}>
+                  <dt className="font-semibold">{f.title}</dt>
+                  <dd className="mt-1 text-sm leading-6 text-muted-foreground">{f.body}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </section>
 
