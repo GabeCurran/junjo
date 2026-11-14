@@ -55,6 +55,46 @@ export function assertVersion(expected: number | null, current: number): void {
 }
 
 // =====================================================================
+// Group version
+// =====================================================================
+
+// A group's version is a stream position (see eventLog.ts), so it is a
+// bigint and may outgrow the member version's 32-bit range.
+const QUOTED_POSITION = /^"(\d{1,19})"$/;
+const BARE_POSITION = /^(\d{1,19})$/;
+const MAX_POSITION = 9_223_372_036_854_775_807n;
+
+// The group version an `If-Match` header names, or null when absent.
+// Throws 400 on any value that is not one version.
+export function readGroupIfMatch(c: Context): bigint | null {
+  const raw = c.req.header("if-match");
+  if (raw === undefined) return null;
+  const value = raw.trim();
+  const match = QUOTED_POSITION.exec(value) ?? BARE_POSITION.exec(value);
+  const parsed = match?.[1] === undefined ? null : BigInt(match[1]);
+  if (parsed === null || parsed > MAX_POSITION) {
+    throw Errors.badRequest('If-Match must be one version, quoted ("7") or bare (7)');
+  }
+  return parsed;
+}
+
+// Throws 412 when a precondition was sent and does not name `current`.
+// For checks outside a write; writes register theirs with
+// `trackGroupVersion` so the check runs under the counter lock.
+export function assertGroupVersion(expected: bigint | null, current: bigint): void {
+  if (expected !== null && expected !== current) {
+    throw Errors.preconditionFailed(
+      `If-Match "${expected}" does not match the group's version "${current}"`,
+      { version: current.toString() },
+    );
+  }
+}
+
+export function setGroupEtag(c: Context, version: bigint | null): void {
+  c.header("ETag", `"${version ?? 0n}"`);
+}
+
+// =====================================================================
 // Member version
 // =====================================================================
 

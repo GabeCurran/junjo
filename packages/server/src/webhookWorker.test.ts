@@ -34,6 +34,8 @@ function makeGroupUpdatedEvent(
     gameId: gameId as GameId,
     groupId: groupId as GroupId,
     occurredAt,
+    origin: { apiKeyId: null, tag: null },
+    actorUserId: null,
     group: {
       id: groupId as GroupId,
       gameId: gameId as GameId,

@@ -24,6 +24,7 @@ This example targets a server. The `jk_` key is a full-control secret; never exp
 | `authAdapter` | no | An `AuthAdapter` (Clerk, Supabase, JWT, or BYO). Used by `verifyToken`; not required for server-to-server calls. |
 | `fetch` | no | Override the `fetch` implementation. Useful in environments without a global `fetch`, and to mock requests in tests. |
 | `timeoutMs` | no | Per-request timeout in milliseconds; a request that exceeds it rejects with `JunjoError` code `timeout`. Defaults to `30000`. Set `0` to disable. SSE subscriptions are exempt: an event stream stays open by design. Every request-making method also accepts a per-request `timeoutMs` in its options that overrides this client-level value for that call. |
+| `writeTag` | no | Sent as the [`Junjo-Write-Tag`](/api-reference#write-tags) header on every request (event streams excepted); a write's own `writeTag` option overrides it. 1 to 128 printable ASCII characters, no spaces; anything else throws `JunjoError` code `invalid_config` from the constructor. Every event a write causes carries the tag as `event.origin.tag`, so a writer can recognise its own changes on the stream. See [Recognising your own writes](/sdk/events#recognising-your-own-writes). |
 
 Every request-making method also accepts an `AbortSignal` via `signal` in its options for caller-side cancellation (rejects with code `cancelled`). The SDK never retries automatically; see the [errors reference](/api-reference/errors) for the retry stance and `retryAfterSeconds`.
 
@@ -60,21 +61,22 @@ Branch on `error.code`, not on `error.message`. Codes are stable; messages are n
 
 ## Safe writes
 
-Every method that writes accepts two more options next to `signal` and `timeoutMs`:
+Every method that writes accepts more options next to `signal` and `timeoutMs`:
 
 | Option | Methods | Sent as |
 |--------|---------|---------|
 | `idempotencyKey` | Every write. | `Idempotency-Key: <key>`. A retry with the same key and the same request returns the first answer without running the write again. 1 to 255 printable ASCII characters, no spaces. Kept for 24 hours. |
-| `ifMatch` | Member-scoped writes (`members.setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`; `groups.kick`, `ban`, `unban`), game bans (`bans.add`, `bans.remove`) and sanctions (`sanctions.add`, `sanctions.remove`). | `If-Match: "<version>"`. Pass the number (`7`), the string (`"7"`) or the `ETag` value as is. A stale version rejects with `precondition_failed` and writes nothing. |
+| `writeTag` | Every write. | `Junjo-Write-Tag: <tag>`, overriding the client's `writeTag` for this call. 1 to 128 printable ASCII characters, no spaces; the SDK does not check a per-write tag, and the server rejects a malformed one with `bad_request` before writing anything. |
+| `ifMatch` | Member-scoped writes (`members.setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`; `groups.kick`, `ban`, `unban`), group writes (`groups.update`, `groups.delete`, [`groups.batch`](/sdk/groups#batchgroupid-ops-opts)), game bans (`bans.add`, `bans.remove`) and sanctions (`sanctions.add`, `sanctions.remove`). | `If-Match: "<version>"`. Pass the number (`7`), the string (`"7"`) or the `ETag` value as is. A stale version rejects with `precondition_failed` and writes nothing. |
 | `ifNoneMatch` | `members.add`. | `If-None-Match: *`. The only value is `"*"`: the add applies only when the user has no membership row in the group, and otherwise rejects with `precondition_failed` and writes nothing. See [Create-only](/sdk/members#create-only). |
 
-The version to send comes from the object you last read: `Member.version` and `MemberAccess.version` for member-scoped writes, `Ban.version`, `Sanction.version` or [`bans.moderation(userId)`](/sdk/bans#moderationuserid) for game bans and sanctions, which share one moderation version. Member, game ban and sanction events carry the version their write produced as `memberVersion` / `moderationVersion`.
+The version to send comes from the object you last read: `Member.version` and `MemberAccess.version` for member-scoped writes, `Group.version` (a decimal string, on groups returned by `get`, `create`, `update` and `restore`) for group writes, `Ban.version`, `Sanction.version` or [`bans.moderation(userId)`](/sdk/bans#moderationuserid) for game bans and sanctions, which share one moderation version. Member, game ban and sanction events carry the version their write produced as `memberVersion` / `moderationVersion`.
 
 | Code | Status | Meaning |
 |------|--------|---------|
 | `idempotency_key_reused` | 422 | The key was already used for a different request. Use a new key per distinct write. |
 | `idempotency_key_in_progress` | 409 | The first request with this key is still running. Wait `retryAfterSeconds` and send it again. |
-| `precondition_failed` | 412 | `ifMatch` names a version other than the current one: re-read, decide whether the write still applies, and resend with the new version and a new key. On a create-only `members.add`, the user already has a membership: leave it as it is. |
+| `precondition_failed` | 412 | `ifMatch` names a version other than the current one: re-read, decide whether the write still applies, and resend with the new version and a new key. On a group write, `err.details.version` is the group's current version. On a create-only `members.add`, the user already has a membership: leave it as it is. |
 
 ### Queued writes
 

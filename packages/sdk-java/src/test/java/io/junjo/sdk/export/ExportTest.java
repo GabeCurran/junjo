@@ -151,6 +151,47 @@ class ExportTest {
     }
 
     @Test
+    void filtersAreSentAsCommaListsAndTheFilteredHeaderReads() throws Exception {
+        String filteredHeader = HEADER.replace("\"position\":\"42\"",
+                "\"position\":\"42\",\"records\":[\"group\",\"member\"],\"groupKinds\":[\"party\"]");
+        server.on("GET", "/v1/export", (req, ex) -> {
+            ex.getResponseHeaders().set("Content-Type", "application/x-ndjson");
+            ex.sendResponseHeaders(200, 0);
+            OutputStream out = ex.getResponseBody();
+            FakeServer.write(out, filteredHeader + "\n{\"kind\":\"game\",\"id\":\"gm\"}\n");
+            FakeServer.write(out, "{\"kind\":\"group\",\"id\":\"g1\",\"version\":\"9007199254740993\",\"groupKind\":\"party\"}\n");
+            FakeServer.write(out, "{\"kind\":\"end\",\"counts\":{\"game\":1,\"group\":1,\"member\":0,\"role\":0}}\n");
+        });
+        List<ExportRecord> records = new CopyOnWriteArrayList<>();
+        ExportOptions opts = ExportOptions.all().withRecords(List.of("group", "member")).withGroupKinds(List.of("party"));
+        ExportSummary s = join(client.export().read(opts, records::add));
+        assertEquals("/v1/export?records=group%2Cmember&groupKinds=party", server.requests.get(0).pathAndQuery());
+        assertEquals(List.of("group", "member"), records.get(0).get("records"));
+        assertEquals(List.of("party"), records.get(0).get("groupKinds"));
+        assertEquals("9007199254740993", records.get(2).get("version"), "the version stays an exact string");
+        assertEquals(1L, s.counts().get("group"));
+
+        server.requests.clear();
+        join(client.export().read(ExportOptions.all().withRecords(List.of("group")), r -> { }));
+        assertEquals("/v1/export?records=group", server.requests.get(0).pathAndQuery());
+        server.requests.clear();
+        join(client.export().read(null, r -> { }));
+        assertEquals("/v1/export", server.requests.get(0).pathAndQuery());
+    }
+
+    @Test
+    void exportOptionsRefuseListsTheQueryCannotCarry() {
+        assertThrows(IllegalArgumentException.class, () -> new ExportOptions(List.of(), null));
+        assertThrows(IllegalArgumentException.class, () -> new ExportOptions(null, List.of("a,b")));
+        assertThrows(IllegalArgumentException.class, () -> new ExportOptions(List.of(""), null));
+        assertThrows(NullPointerException.class, () -> new ExportOptions(java.util.Arrays.asList("a", null), null));
+        List<String> kinds = new ArrayList<>(List.of("party"));
+        ExportOptions o = new ExportOptions(null, kinds);
+        kinds.add("raid");
+        assertEquals(List.of("party"), o.groupKinds(), "the lists are copied");
+    }
+
+    @Test
     void withoutPermissionTheReadFails() throws Exception {
         server.on("GET", "/v1/export", (req, ex) ->
                 FakeServer.json(ex, 403, FakeServer.error("permission_denied", 403, "no canExport")));

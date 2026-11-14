@@ -208,6 +208,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         role: created,
       });
     });
@@ -233,6 +234,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         role: replacement,
       });
     });
@@ -259,6 +261,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: a.id,
       });
     });
@@ -272,6 +275,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: "role_unknown" as RoleId,
       });
     });
@@ -295,6 +299,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "members.ban" as PermissionKey,
       });
@@ -327,6 +332,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "members.ban" as PermissionKey,
       });
@@ -354,6 +360,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "members.kick" as PermissionKey,
       });
@@ -379,6 +386,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "members.ban" as PermissionKey,
       });
@@ -411,6 +419,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "members.ban" as PermissionKey,
       });
@@ -438,6 +447,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "fly" as PermissionKey,
       });
@@ -470,6 +480,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         permission: "fly" as PermissionKey,
       });
@@ -506,6 +517,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: before.id,
         changed: ["entries", "parents"],
       });
@@ -544,6 +556,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         roleId: role.id,
         changed: ["name"],
       });
@@ -573,6 +586,7 @@ describe("useRoles", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: "user_a" as UserId,
         added: [role.id],
         removed: [],

@@ -133,6 +133,71 @@ class SseAndDecoderTest {
                 EventDecoder.decode(event("permissions.config.updated", "\"contexts\":{}"))).code());
     }
 
+    static final String GROUP = """
+            "group":{"id":"g","gameId":"gm","kind":"party","name":"A","visibility":"public","metadata":{},
+             "defaultRoleId":null,"parentGroupId":null,"memberCount":1,"hasPasscode":false,
+             "createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z","softDeletedAt":null}""";
+
+    @Test
+    void decodesTheOriginWhenPresentAndReadsItsAbsenceAsNone() {
+        JunjoEvent tagged = EventDecoder.decode(event("group.deleted",
+                "\"groupId\":\"g\",\"origin\":{\"apiKeyId\":\"key_1\",\"tag\":\"shard-1\"}"));
+        assertEquals("key_1", tagged.origin().apiKeyId());
+        assertEquals("shard-1", tagged.origin().tag());
+        assertEquals(tagged.origin(), tagged.meta().origin());
+
+        JunjoEvent admin = EventDecoder.decode(event("group.deleted",
+                "\"groupId\":\"g\",\"origin\":{\"apiKeyId\":null,\"tag\":null}"));
+        assertEquals(JunjoEvent.EventOrigin.NONE, admin.origin());
+
+        JunjoEvent partial = EventDecoder.decode(event("group.deleted", "\"groupId\":\"g\",\"origin\":{\"tag\":\"t\"}"));
+        assertNull(partial.origin().apiKeyId());
+        assertEquals("t", partial.origin().tag());
+
+        JunjoEvent older = EventDecoder.decode(event("group.deleted", "\"groupId\":\"g\""));
+        assertEquals(JunjoEvent.EventOrigin.NONE, older.origin(), "an older server sends no origin");
+        assertEquals(JunjoEvent.EventOrigin.NONE,
+                EventDecoder.decode(event("group.deleted", "\"groupId\":\"g\",\"origin\":null")).origin());
+        assertEquals(JunjoEvent.EventOrigin.NONE, new JunjoEvent.EventMeta("e", "gm", null).origin());
+        assertEquals(JunjoEvent.EventOrigin.NONE, new JunjoEvent.EventMeta("e", "gm", null, null).origin());
+    }
+
+    @Test
+    void decodesTheActorOfGroupEventsAndTheKicker() {
+        JunjoEvent.GroupUpdated u = assertInstanceOf(JunjoEvent.GroupUpdated.class, EventDecoder.decode(event(
+                "group.updated", "\"groupId\":\"g\",\"actorUserId\":\"ns:mod\"," + GROUP)));
+        assertEquals("ns:mod", u.actorUserId());
+        assertNull(u.group().version(), "event payloads carry no group version");
+        JunjoEvent.GroupUpdated u0 = assertInstanceOf(JunjoEvent.GroupUpdated.class, EventDecoder.decode(event(
+                "group.updated", "\"groupId\":\"g\"," + GROUP)));
+        assertNull(u0.actorUserId(), "absent on older servers");
+
+        JunjoEvent.GroupDeleted d = assertInstanceOf(JunjoEvent.GroupDeleted.class, EventDecoder.decode(event(
+                "group.deleted", "\"groupId\":\"g\",\"actorUserId\":\"ns:mod\"")));
+        assertEquals("ns:mod", d.actorUserId());
+        assertNull(assertInstanceOf(JunjoEvent.GroupDeleted.class, EventDecoder.decode(event(
+                "group.deleted", "\"groupId\":\"g\",\"actorUserId\":null"))).actorUserId());
+
+        JunjoEvent.GroupRelationshipChanged r = assertInstanceOf(JunjoEvent.GroupRelationshipChanged.class,
+                EventDecoder.decode(event("group.relationship.changed", """
+                        "groupId":"g","otherGroupId":"h","actorUserId":"ns:mod","relationship":{"groupAId":"g",
+                        "groupBId":"h","type":"ally","since":"2026-11-01T00:00:00Z","setBy":"ns:mod"}""")));
+        assertEquals("ns:mod", r.actorUserId());
+        assertEquals("ns:mod", r.relationship().setBy());
+        JunjoEvent.GroupRelationshipChanged cleared = assertInstanceOf(JunjoEvent.GroupRelationshipChanged.class,
+                EventDecoder.decode(event("group.relationship.changed",
+                        "\"groupId\":\"g\",\"otherGroupId\":\"h\",\"relationship\":null")));
+        assertNull(cleared.relationship());
+        assertNull(cleared.actorUserId());
+
+        JunjoEvent.MemberLeft kicked = assertInstanceOf(JunjoEvent.MemberLeft.class, EventDecoder.decode(event(
+                "member.left", "\"groupId\":\"g\",\"userId\":\"u\",\"reason\":\"kicked\",\"kickedBy\":\"ns:mod\"")));
+        assertEquals("ns:mod", kicked.kickedBy());
+        JunjoEvent.MemberLeft unattributed = assertInstanceOf(JunjoEvent.MemberLeft.class, EventDecoder.decode(event(
+                "member.left", "\"groupId\":\"g\",\"userId\":\"u\",\"reason\":\"kicked\"")));
+        assertNull(unattributed.kickedBy());
+    }
+
     @Test
     void everyEventTypeRoundTripsItsWireName() {
         for (EventType t : EventType.values()) assertEquals(t, EventType.fromWire(t.wire()).orElseThrow());

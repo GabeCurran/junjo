@@ -72,7 +72,7 @@ export const joinGroupBody = z.object({
 
 export type JoinGroupBody = z.infer<typeof joinGroupBody>;
 
-export const updateGroupBody = z
+export const updateGroupFields = z
   .object({
     name: z.string().min(1).max(120).optional(),
     visibility: z.enum(VISIBILITY).optional(),
@@ -81,11 +81,31 @@ export const updateGroupBody = z
     // String = set new passcode (replaces any prior); null = clear.
     // Omit to leave the existing passcode (if any) untouched.
     passcode: passcodeString.nullable().optional(),
+    // Attributes the change in audit and on the group.updated event; it
+    // is not a change itself, so it does not satisfy the field check.
+    actorUserId: z.string().min(1).optional(),
   })
-  .strict()
-  .refine((d) => Object.values(d).some((v) => v !== undefined), {
-    message: "at least one field is required",
-  });
+  .strict();
+
+// True when `fields` names at least one change; `actorUserId` and any
+// other listed attribution keys do not count.
+export function namesGroupChange(
+  fields: Record<string, unknown>,
+  ignore: readonly string[] = ["actorUserId"],
+): boolean {
+  return Object.entries(fields).some(([k, v]) => !ignore.includes(k) && v !== undefined);
+}
+
+export const updateGroupBody = updateGroupFields.refine((d) => namesGroupChange(d), {
+  message: "at least one field is required",
+});
+
+// `hard` is a hard delete only when exactly "true"; any other value is
+// a soft delete, as before the query had a schema.
+export const deleteGroupQuery = z.object({
+  hard: z.string().optional(),
+  actorUserId: z.string().min(1).optional(),
+});
 
 export type UpdateGroupBody = z.infer<typeof updateGroupBody>;
 
@@ -115,12 +135,12 @@ export const leaveGroupBody = z.object({
 
 export type LeaveGroupBody = z.infer<typeof leaveGroupBody>;
 
-export const kickMemberBody = z
-  .object({
-    reason: z.string().max(500).nullable().optional(),
-  })
-  .optional()
-  .transform((b) => b ?? {});
+export const kickMemberFields = z.object({
+  reason: z.string().max(500).nullable().optional(),
+  actorUserId: z.string().min(1).optional(),
+});
+
+export const kickMemberBody = kickMemberFields.optional().transform((b) => b ?? {});
 
 export type KickMemberBody = z.infer<typeof kickMemberBody>;
 
@@ -130,43 +150,40 @@ export type KickMemberBody = z.infer<typeof kickMemberBody>;
 // expiry on read still treats already-elapsed values as not-banned for
 // rows that pre-date this validation. Optional `actorUserId` attributes
 // the action to a specific moderator (mirrors `createGameBanBody`).
-export const banMemberBody = z
-  .object({
-    reason: z.string().max(500).nullable().optional(),
-    expiresAt: z
-      .string()
-      .min(1)
-      .refine((s) => !Number.isNaN(Date.parse(s)), {
-        message: "expiresAt must be an ISO 8601 date",
-      })
-      .nullable()
-      .optional(),
-    actorUserId: z.string().min(1).optional(),
-  })
-  .optional()
-  .transform((b) => b ?? {});
+export const banMemberFields = z.object({
+  reason: z.string().max(500).nullable().optional(),
+  expiresAt: z
+    .string()
+    .min(1)
+    .refine((s) => !Number.isNaN(Date.parse(s)), {
+      message: "expiresAt must be an ISO 8601 date",
+    })
+    .nullable()
+    .optional(),
+  actorUserId: z.string().min(1).optional(),
+});
+
+export const banMemberBody = banMemberFields.optional().transform((b) => b ?? {});
 
 export type BanMemberBody = z.infer<typeof banMemberBody>;
 
 // Per-group unban. Body is genuinely optional (no actor = null actor).
-export const unbanMemberBody = z
-  .object({
-    actorUserId: z.string().min(1).optional(),
-  })
-  .optional()
-  .transform((b) => b ?? {});
+export const unbanMemberFields = z.object({
+  actorUserId: z.string().min(1).optional(),
+});
+
+export const unbanMemberBody = unbanMemberFields.optional().transform((b) => b ?? {});
 
 export type UnbanMemberBody = z.infer<typeof unbanMemberBody>;
 
 // Role assign / unassign. Body is fully optional; supplying
 // `actorUserId` attributes the action in audit + the role.changed
 // event. Mirrors the ban / unban actor pattern.
-export const roleAssignBody = z
-  .object({
-    actorUserId: z.string().min(1).optional(),
-  })
-  .optional()
-  .transform((b) => b ?? {});
+export const roleAssignFields = z.object({
+  actorUserId: z.string().min(1).optional(),
+});
+
+export const roleAssignBody = roleAssignFields.optional().transform((b) => b ?? {});
 
 export type RoleAssignBody = z.infer<typeof roleAssignBody>;
 
@@ -198,6 +215,8 @@ export const RELATIONSHIP_TYPE_MAX_LENGTH = 64;
 export const setRelationshipBody = z.object({
   type: z.string().min(1).max(RELATIONSHIP_TYPE_MAX_LENGTH),
   mutual: z.boolean().optional(),
+  // Recorded as the relationship's `setBy`, in audit and on the event.
+  actorUserId: z.string().min(1).optional(),
 });
 
 export type SetRelationshipBody = z.infer<typeof setRelationshipBody>;
@@ -206,6 +225,7 @@ export type SetRelationshipBody = z.infer<typeof setRelationshipBody>;
 // `includeExpired` / `includeUsed` flags on `listInvitationsQuery`.
 export const clearRelationshipQuery = z.object({
   mutual: z.enum(["true", "false"]).optional(),
+  actorUserId: z.string().min(1).optional(),
 });
 
 export type ClearRelationshipQuery = z.infer<typeof clearRelationshipQuery>;

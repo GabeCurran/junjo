@@ -29,6 +29,8 @@ interface WireEventBase {
   id: string;
   gameId: string;
   occurredAt: string;
+  // Absent on events from servers older than the field.
+  origin?: { apiKeyId?: string | null; tag?: string | null } | null;
 }
 
 // Group-scoped events carry the routing groupId; user-scoped events
@@ -120,19 +122,23 @@ interface WirePermissionRevokedEvent extends WireGroupEventBase {
   permission: string;
 }
 
+// `actorUserId` is absent on events from servers older than the field.
 interface WireGroupUpdatedEvent extends WireGroupEventBase {
   type: "group.updated";
   group: WireGroup;
+  actorUserId?: string | null;
 }
 
 interface WireGroupDeletedEvent extends WireGroupEventBase {
   type: "group.deleted";
+  actorUserId?: string | null;
 }
 
 interface WireGroupRelationshipChangedEvent extends WireGroupEventBase {
   type: "group.relationship.changed";
   otherGroupId: string;
   relationship: WireGroupRelationship | null;
+  actorUserId?: string | null;
 }
 
 interface WireFriendRequestSentEvent extends WireEventBase {
@@ -288,6 +294,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
     id: w.id,
     gameId: w.gameId as GameId,
     occurredAt: parseWireDate(w.occurredAt, "occurredAt"),
+    origin: { apiKeyId: w.origin?.apiKeyId ?? null, tag: w.origin?.tag ?? null },
   };
   switch (w.type) {
     case "member.joined":
@@ -400,9 +407,15 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         groupId: w.groupId as GroupId,
         type: "group.updated",
         group: deserializeGroup(w.group),
+        actorUserId: (w.actorUserId ?? null) as UserId | null,
       };
     case "group.deleted":
-      return { ...base, groupId: w.groupId as GroupId, type: "group.deleted" };
+      return {
+        ...base,
+        groupId: w.groupId as GroupId,
+        type: "group.deleted",
+        actorUserId: (w.actorUserId ?? null) as UserId | null,
+      };
     case "group.relationship.changed":
       return {
         ...base,
@@ -410,6 +423,7 @@ export function deserializeEvent(w: WireJunjoEvent): JunjoEvent {
         type: "group.relationship.changed",
         otherGroupId: w.otherGroupId as GroupId,
         relationship: w.relationship === null ? null : deserializeGroupRelationship(w.relationship),
+        actorUserId: (w.actorUserId ?? null) as UserId | null,
       };
     case "friend.request.sent":
       return {

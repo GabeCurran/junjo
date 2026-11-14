@@ -13,6 +13,7 @@ import { type ApiKeyStore, apiKeyMiddleware } from "./middleware/apiKey.js";
 import { errorHandler } from "./middleware/error.js";
 import { type RateLimiter, buildRateLimiter, rateLimitMiddleware } from "./middleware/rateLimit.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
+import { writeTagMiddleware } from "./middleware/writeTag.js";
 import { newRequestContext, runWithRequestContext } from "./requestContext.js";
 import { getAdminGameConfigHandler, updateAdminGameConfigHandler } from "./routes/admin.config.js";
 import {
@@ -139,6 +140,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono {
   // Opens the per-request context the identity, rendering and audit
   // helpers read; the API key middleware fills in the key's part.
   app.use("*", (_c, next) => runWithRequestContext(newRequestContext(), next));
+  app.use("*", writeTagMiddleware());
   app.onError(errorHandler);
 
   // Same response as the framework default; the flag tells the

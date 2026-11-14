@@ -20,7 +20,10 @@ group.gameId;        // GameId (branded string)
 group.memberCount;   // 0
 group.createdAt;     // Date
 group.softDeletedAt; // null
+group.version;       // "0": no event has touched the group yet
 ```
+
+`Group.version` is the group's [version](/api-reference/groups#group-versions), a decimal string. It is set on groups returned by `create`, `get`, `update` and `restore` (except a `restore` of a group that was not deleted), and `undefined` on groups from `list`, `listAll`, `listChildren`, `setParent` and events. Pass it as `ifMatch` to [`update`](#updateid-input-opts) or [`delete`](#deleteid-opts) to make the write conditional.
 
 ### Input
 
@@ -60,6 +63,7 @@ if (!group) {
   return;
 }
 group.memberCount; // active member count, computed server-side
+group.version;     // "4211": pass as ifMatch to update or delete
 ```
 
 ### Errors
@@ -138,19 +142,21 @@ for await (const group of junjo.groups.listAll({ limit: 100 })) {
 
 Accepts the same options as `list` except `cursor` (the iterator manages cursors internally). HTTP errors from the underlying `list` calls propagate out of the loop.
 
-## `update(id, input)`
+## `update(id, input, opts?)`
 
-Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId, passcode }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided.
+Partially updates a group. The input is a subset of `{ name, visibility, metadata, defaultRoleId, passcode }`; only the fields you include are touched. Pass `defaultRoleId: null` to clear the role. At least one field must be provided; `actorUserId` alone does not count.
 
 ```ts
-const updated = await junjo.groups.update("grp_xyz" as GroupId, {
-  name: "Crimson Lions",
-  visibility: "public",
-});
+const updated = await junjo.groups.update(
+  "grp_xyz" as GroupId,
+  { name: "Crimson Lions", visibility: "public", actorUserId: "user_officer" as UserId },
+  { ifMatch: group.version },
+);
 
 updated.name;       // "Crimson Lions"
 updated.visibility; // "public"
 updated.updatedAt;  // Date: bumped only when something actually changed
+updated.version;    // the version after the write
 ```
 
 ### Input
@@ -162,17 +168,27 @@ updated.updatedAt;  // Date: bumped only when something actually changed
 | `metadata` | object | **Replaces the existing metadata wholesale**, not a deep merge. To preserve unrelated keys, read the current value first and merge client-side. |
 | `defaultRoleId` | `RoleId \| null` | Pass `null` to clear; pass a string to set. |
 | `passcode` | `string \| null` | Pass a 4-128 char string to set or replace the join passcode; pass `null` to clear it. Omit to leave any existing passcode untouched. |
+| `actorUserId` | `UserId` | Optional. The person making the change. Recorded as the audit actor and sent as `actorUserId` on the `group.updated` event. |
+
+### Options
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `opts.ifMatch` | number \| string | Optional. The group's `version`; a group changed since then rejects with `precondition_failed` (the current version is in `err.details.version`) and nothing is written. Checked even when the update changes nothing. |
+| `opts.idempotencyKey` | string | Optional. Sent as `Idempotency-Key`, so a retry does not apply the write twice. |
+| `opts.writeTag` | string | Optional. Sent as `Junjo-Write-Tag`, overriding the client's `writeTag`. See [Safe writes](/sdk#safe-writes). |
 
 ### Returns
 
-`Group`: the updated row, with timestamps deserialized to `Date`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, and leaves `updatedAt` unchanged.
+`Group`: the updated row, with timestamps deserialized to `Date` and the new `version`. `memberCount` is the live count of active members. If every supplied field already matches the stored value, the call succeeds, returns the unchanged group, writes no audit entry, emits no event, and leaves `updatedAt` and `version` unchanged.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
-| `bad_request` | 400 | Empty input, invalid field, malformed body. |
+| `bad_request` | 400 | Empty input (or only `actorUserId`), invalid field, malformed body, or a malformed `ifMatch`. |
 | `not_found` | 404 | No group with that id in the calling game (also for soft-deleted rows and cross-game ids). Thrown, not converted to `null`. |
+| `precondition_failed` | 412 | `opts.ifMatch` does not match the group's version. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ### See also
@@ -187,6 +203,12 @@ Soft-deletes a group. The group disappears from `get` / `list` immediately but t
 await junjo.groups.delete("grp_xyz" as GroupId);
 
 await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
+
+// Only if nothing changed since the read, and attributed to a person.
+await junjo.groups.delete(group.id, {
+  ifMatch: group.version,
+  actorUserId: "user_officer" as UserId,
+});
 ```
 
 ### Options
@@ -194,16 +216,21 @@ await junjo.groups.delete("grp_xyz" as GroupId, { hard: true });
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `hard` | boolean | `false` | When `true`, hard-deletes immediately. When `false` (or omitted), soft-deletes; the row is hard-deleted by the server's background sweeper after 7 days. |
+| `actorUserId` | `UserId` | none | The person deleting the group. Recorded as the audit actor of a soft delete and sent as `actorUserId` on the `group.deleted` event. |
+| `ifMatch` | number \| string | none | The group's `version`, as on [`update`](#updateid-input-opts). Applies to soft and hard deletes. |
+| `idempotencyKey`, `writeTag` | string | none | See [Safe writes](/sdk#safe-writes). |
 
 ### Returns
 
-`Promise<void>`. The server returns the soft-deleted group (or `204` for a hard delete) but the SDK discards the body in both cases. A second `delete()` on an already-soft-deleted group is idempotent.
+`Promise<void>`. The server returns the soft-deleted group (or `204` for a hard delete) but the SDK discards the body in both cases. A second `delete()` on an already-soft-deleted group is idempotent; a stale `ifMatch` still rejects.
 
 ### Errors
 
 | Code | Status | When |
 |------|--------|------|
+| `bad_request` | 400 | A malformed `ifMatch`, or an empty `actorUserId`. |
 | `not_found` | 404 | No group with that id in the calling game (also for cross-game ids). |
+| `precondition_failed` | 412 | `ifMatch` does not match the group's version (the current one is in `err.details.version`). Nothing was deleted. |
 | `invalid_api_key` | 401 | API key missing, malformed, or revoked. |
 
 ### See also
@@ -221,7 +248,7 @@ group.softDeletedAt; // null
 
 ### Returns
 
-`Group`: the restored row, with timestamps deserialized to `Date`.
+`Group`: the restored row, with timestamps deserialized to `Date` and its new `version`. On a group that was not deleted, the unchanged group comes back without `version`.
 
 ### Errors
 
@@ -540,7 +567,7 @@ Removes a member from the group on the dev backend's behalf. Returns the post-st
 const member = await junjo.groups.kick(
   "grp_xyz" as GroupId,
   "user_alice" as UserId,
-  { reason: "violated guild rules" },
+  { reason: "violated guild rules", actorUserId: "user_officer" as UserId },
 );
 member.status; // "kicked"
 ```
@@ -552,6 +579,7 @@ member.status; // "kicked"
 | `groupId` | `GroupId` | The group. |
 | `userId` | `UserId` | The kicked user's external id. |
 | `opts.reason` | string | Optional. Up to 500 characters. Lands on the `member.kicked` audit entry's payload; `null` when omitted. |
+| `opts.actorUserId` | `UserId` | Optional. The person doing the kick. Recorded as the audit actor and sent as `kickedBy` on the `member.left` event; without it, `kickedBy` is absent. |
 | `opts.ifMatch` | number \| string | Optional. The member's `version`; a mismatch rejects with `precondition_failed` and changes nothing. See [Safe writes](/sdk#safe-writes). |
 | `opts.idempotencyKey` | string | Optional. Sent as `Idempotency-Key`, so a retry does not apply the write twice. |
 
@@ -746,6 +774,116 @@ result.errors;  // []
 
 - [`POST /v1/groups/:id/bulk-invite`](/api-reference/groups) - the underlying HTTP route.
 
+## `batch(groupId, ops, opts?)`
+
+```ts
+async batch(
+  groupId: GroupId,
+  ops: GroupBatchOp[],
+  opts?: ConditionalWriteOptions, // ifMatch, idempotencyKey, writeTag, signal, timeoutMs
+): Promise<GroupBatchResponse>
+```
+
+Applies `ops` to the group in order, in one transaction: all of them or none. Each op has the fields and checks of the single call it stands for, sees the effects of the ops before it, and emits that call's events, which are published after the commit in op order. With `ifMatch` (the group's `version`), the batch applies only if nobody changed the group since it was read. The full rules are in [`POST /v1/groups/:id/batch`](/api-reference/groups#post-v1groupsidbatch).
+
+```ts
+const { version, results } = await junjo.groups.batch(
+  groupId,
+  [
+    { op: "member.add", userId: "user_carol" as UserId },
+    { op: "member.role.add", userId: "user_carol" as UserId, roleId: officerRole },
+  ],
+  { ifMatch: group.version },
+);
+```
+
+### Ops
+
+`GroupBatchOp` is a union discriminated on `op`; 1 to 50 per batch.
+
+| `op` | Fields | Single call |
+|------|--------|-------------|
+| `member.add` | `userId`, `roleId?`, `actorUserId?`, `createOnly?` | [`members.add`](/sdk/members#addgroupid-userid-opts); `createOnly: true` is `ifNoneMatch: "*"` |
+| `member.kick` | `userId`, `reason?`, `actorUserId?` | [`kick`](#kickgroupid-userid-opts) |
+| `member.leave` | `userId` | [`leave`](#leavegroupid-userid) |
+| `member.ban` | `userId`, `reason?`, `expiresAt?` (ISO string or `null`), `actorUserId?` | [`ban`](#bangroupid-userid-opts) |
+| `member.unban` | `userId`, `actorUserId?` | [`unban`](#unbangroupid-userid-opts) |
+| `member.update` | `userId`, `metadata?`, `notesPublic?`, `notesPrivate?` | `members.setMetadata` / `setNotes` |
+| `member.role.add`, `member.role.remove` | `userId`, `roleId`, `actorUserId?` | `members.assignRole` / `removeRole` |
+| `group.update` | `name?`, `visibility?`, `metadata?`, `defaultRoleId?`, `actorUserId?` (no `passcode`) | [`update`](#updateid-input-opts) |
+| `role.entry.set` | `roleId`, `permission`, `value?`, `context?` | `roles.grantPermission`, for a role of this group |
+| `role.entry.remove` | `roleId`, `permission`, `context?` | `roles.revokePermission`, for a role of this group |
+| `relationship.set` | `otherGroupId`, `type`, `mutual?`, `actorUserId?` | [`setRelationship`](#setrelationshipgroupaid-groupbid-type-opts) from this group |
+| `relationship.clear` | `otherGroupId`, `mutual?`, `actorUserId?` | [`clearRelationship`](#clearrelationshipgroupaid-groupbid-opts) from this group |
+
+### Returns
+
+```ts
+interface GroupBatchResponse {
+  version: string; // the group's version after the batch
+  results: GroupBatchResult[]; // Member | Group | Role | GroupRelationship | null
+}
+```
+
+`results[i]` is what op `i`'s single call returns, deserialized, describing the state right after op `i`: a `Member` for `member.*` ops, the `Group` (without `version`) for `group.update`, the `Role` for role-entry ops, the A->B `GroupRelationship` for `relationship.set`, and `null` for `relationship.clear`. `version` is the one to pass as `ifMatch` next time.
+
+### Errors
+
+A failing op fails the whole batch with that op's own error; `err.details.opIndex` names it, next to the op's own details.
+
+| Code | Status | When |
+|------|--------|------|
+| `bad_request` | 400 | Empty or oversized list, unknown op or field, `passcode` in `group.update`, or an op that fails validation (`details.opIndex`). |
+| `not_found` | 404 | The group is missing or deleted (no `opIndex`), or an op's own 404 (`details.opIndex`), including ops after one that deleted an emptied group. |
+| `precondition_failed` | 412 | `ifMatch` is stale: `details.version` is the current version and nothing was written. With `details.opIndex` instead, a `createOnly` add found an existing row. |
+| any op's code | varies | `banned`, `group_full`, `group_limit_reached`, `role_group_mismatch`, ... with `details.opIndex`. |
+
+### Example: hand over the top role
+
+Move a leader role from one member to another, keep the old leader as an officer, and retry when the group changed in between:
+
+```ts
+import { JunjoError, type GroupBatchOp, type GroupId, type RoleId, type UserId } from "@junjo.io/sdk";
+
+async function handOver(
+  groupId: GroupId,
+  from: UserId,
+  to: UserId,
+  leader: RoleId,
+  officer: RoleId,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const group = await junjo.groups.get(groupId);
+    const current = group && (await junjo.members.get(groupId, from));
+    // Re-check on every attempt: the reason for the handover may be gone.
+    if (!group || !current?.roles.includes(leader)) return false;
+
+    const ops: GroupBatchOp[] = [
+      { op: "member.role.remove", userId: from, roleId: leader },
+      { op: "member.role.add", userId: to, roleId: leader },
+      { op: "member.role.add", userId: from, roleId: officer },
+    ];
+    try {
+      await junjo.groups.batch(groupId, ops, {
+        ifMatch: group.version,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      return true;
+    } catch (e) {
+      const stale =
+        e instanceof JunjoError &&
+        e.code === "precondition_failed" &&
+        e.details?.opIndex === undefined;
+      if (!stale) throw e;
+      // Someone changed the group since the read: read again and decide again.
+    }
+  }
+  return false;
+}
+```
+
+Nothing is half applied at any point: other readers see either the old leader or the new one, never both or neither.
+
 ## `setRelationship(groupAId, groupBId, type, opts?)`
 
 ```ts
@@ -753,16 +891,24 @@ async setRelationship(
   groupAId: GroupId,
   groupBId: GroupId,
   type: GroupRelationshipType,
-  opts?: { mutual?: boolean },
+  opts?: WriteOptions & { mutual?: boolean; actorUserId?: UserId },
 ): Promise<GroupRelationship>
 ```
 
 Set or update the directed A->B relationship. Pass `mutual: true` to write both A->B and B->A with the same `type` in the same transaction. The return value is always the A->B row (the canonical "this group's stance" view).
 
+```ts
+const rel = await junjo.groups.setRelationship(guildA, guildB, "ally", {
+  mutual: true,
+  actorUserId: "user_officer" as UserId,
+});
+rel.setBy; // "user_officer"
+```
+
 ### Behavior
 
-- Each direction is independent. If A->B already has the supplied `type` it is a no-op for that direction (no audit, no `since` bump). The other direction (B->A) still goes through its own check when `mutual: true`.
-- `actorUserId` is null (the dev's backend is the trusted layer behind the API key); `setBy` reads as `null` on the wire and on the deserialized SDK type.
+- Each direction is independent. If A->B already has the supplied `type` it is a no-op for that direction (no audit, no `since` bump, and the existing `setBy` is kept). The other direction (B->A) still goes through its own check when `mutual: true`.
+- `opts.actorUserId` names the person setting the relationship. It becomes the row's `setBy`, the audit actor, and `actorUserId` (and `relationship.setBy`) on the `group.relationship.changed` event. Without it, `setBy` is `null`. `setBy` is rendered with the key's [namespace preference](/api-reference/identity#preferred-namespaces), like other user ids.
 - Self-relationships (`groupAId === groupBId`) throw `bad_request`.
 
 ### Returns
@@ -794,11 +940,11 @@ interface GroupRelationship {
 async clearRelationship(
   groupAId: GroupId,
   groupBId: GroupId,
-  opts?: { mutual?: boolean },
+  opts?: WriteOptions & { mutual?: boolean; actorUserId?: UserId },
 ): Promise<void>
 ```
 
-Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missing row is a no-op (no audit entry, no error).
+Clear the A->B relationship (and B->A when `mutual: true`). Idempotent: a missing row is a no-op (no audit entry, no error). `opts.actorUserId` names the person clearing it: the audit actor and `actorUserId` on the `group.relationship.changed` event.
 
 ### Errors
 
@@ -941,6 +1087,7 @@ The promise resolves once the server has accepted the connection. Initial-handsh
 - **Heartbeats.** The server emits a `:heartbeat` SSE comment every 30 seconds; the SDK silently drops these (your `handler` is not invoked).
 - **Unknown event types are skipped.** When a newer server sends an event type this SDK predates, the frame is dropped without invoking `handler` and the stream stays alive. Upgrade the SDK to receive the new type.
 - **`member.updated`.** A member's metadata, notes, or permission overrides changed. It is a change signal with no new values; see [`member.updated`](/sdk/events#memberupdated).
+- **Origin.** Every event carries `event.origin` (`{ apiKeyId, tag }`), so a writer can skip the events its own writes caused; see [Recognising your own writes](/sdk/events#recognising-your-own-writes).
 - **Game stream.** To receive every group's events (and game bans, friends, identity changes) on one resumable connection, use [`junjo.events.subscribe`](/sdk/events).
 - **Cleanup.** `close()` aborts the underlying fetch via `AbortController`. The server observes the abort and deregisters its listener within a few milliseconds.
 

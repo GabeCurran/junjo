@@ -67,7 +67,8 @@ Namespaces on the client:
 
 | Namespace | Calls |
 |-----------|-------|
-| `groups()` | `get`, `create`, `list`, `kick`, `ban`, `unban` |
+| `groups()` | `get`, `create`, `list`, `update`, `delete`, `restore`, `inviteByUserId`, `inviteByCode`, `acceptInvitation`, `declineInvitation`, `join`, `leave`, `kick`, `ban`, `unban`, `banHistory`, `setRelationship`, `clearRelationship`, `getRelationship`, `listRelationships`, `setParent`, `listChildren`, `batch` |
+| `invitations()` | `list`, `get`, `revoke` |
 | `members()` | `add`, `get`, `list`, `getAccess`, `getAccessMany`, `setMetadata`, `setNotes`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `importMembers` |
 | `roles()` | `create`, `get`, `list`, `update`, `delete`, `setEntries`, `grantPermission`, `revokePermission`, `setParents`, `getGraph` |
 | `permissions()` | `check`, `checkBatch` (split into chunks of 100) |
@@ -79,8 +80,8 @@ Namespaces on the client:
 
 Return types follow two rules:
 
-- **Every paged list returns `JunjoResponse<Page<T>>`**: `groups().list`, `members().list`, `bans().list`, `sanctions().list` and `sanctions().history`. Reads that carry a [stream position](/api-reference/events#snapshots-and-the-stream) or an `ETag` return a `JunjoResponse` too (`roles().getGraph`, `roles().list`, `members().getAccess`, `members().getAccessMany`, `bans().moderation`, `sanctions().forUser`, `identities().list`). `JunjoResponse` has `value()`, `streamPosition()` and `etag()`; the last two are null when the server sent none.
-- **Single-resource reads return an `Optional`**, empty for `not_found`: `groups().get`, `members().get`, `roles().get`, `bans().get`.
+- **Every paged list returns `JunjoResponse<Page<T>>`**: `groups().list`, `groups().banHistory`, `members().list`, `invitations().list`, `bans().list`, `sanctions().list` and `sanctions().history`. Reads that carry a [stream position](/api-reference/events#snapshots-and-the-stream) or an `ETag` return a `JunjoResponse` too (`roles().getGraph`, `roles().list`, `members().getAccess`, `members().getAccessMany`, `bans().moderation`, `sanctions().forUser`, `identities().list`). `JunjoResponse` has `value()`, `streamPosition()` and `etag()`; the last two are null when the server sent none.
+- **Single-resource reads return an `Optional`**, empty for `not_found`: `groups().get`, `groups().getRelationship`, `members().get`, `roles().get`, `bans().get`, `invitations().get`.
 
 `close()` the client on shutdown: pending calls fail with `cancelled`, and the SDK's daemon threads and connections are released.
 
@@ -97,7 +98,14 @@ The Java names match the TypeScript SDK's. The differences come from Java itself
 | `members.overridePermission(...)`, `members.clearPermissionOverride(...)` | same names |
 | `roles.grantPermission(roleId, key, { value })` | `roles().grantPermission(roleId, key)` or `grantPermission(roleId, key, value, opts)` |
 | `roles.getGraph`, `roles.setEntries`, `roles.revokePermission` | same names |
-| `groups.kick`, `groups.ban`, `groups.unban` | same names |
+| `groups.kick`, `groups.ban`, `groups.unban`, `groups.join`, `groups.leave`, `groups.restore`, relationships, `setParent`, `listChildren` | same names |
+| `groups.update(id, { name, actorUserId }, { ifMatch })` | `groups().update(id, UpdateGroupInput.builder().name(...).actorUserId(...).build(), WriteOptions.none().withIfMatch(group.version()))` |
+| `groups.delete(id, { hard, actorUserId, ifMatch })` | `groups().delete(id, hard, actorUserId, opts)` |
+| `groups.kick(groupId, userId, { reason, actorUserId })` | `groups().kick(groupId, userId, reason, actorUserId, opts)` |
+| `groups.setRelationship(a, b, type, { mutual, actorUserId })` | `groups().setRelationship(a, b, type, mutual, actorUserId, opts)` |
+| `new Junjo({ writeTag })`, `{ writeTag }` on a write | `JunjoClient.builder().writeTag(tag)`, `WriteOptions.withWriteTag(tag)` |
+| `groups.batch(groupId, ops, { ifMatch })` | `groups().batch(groupId, List.of(GroupBatchOp.memberRoleAdd(...), ...), WriteOptions.none().withIfMatch(group.version()))` |
+| `junjo.export({ records, groupKinds })` | `export().read(ExportOptions.all().withRecords(...).withGroupKinds(...), consumer)` |
 | `bans.add(input)` | `bans().add(CreateBanInput)` |
 | `sanctions.add(userId, AddSanctionInput)` | `sanctions().add(AddSanctionInput)`; the user id is part of the input's builder |
 | `isNotActive(err)` | `JunjoException.isNotActive()` |
@@ -119,6 +127,7 @@ Every failure is a `JunjoException`, wrapped in a `CompletionException` when you
 | `requestId()` | The server's correlation id. |
 | `retryAfterSeconds()` | The `Retry-After` header. |
 | `details()` | The envelope's optional `details` object. `importRowErrors()` reads a bulk import's failing rows from it. |
+| `opIndex()` | The index of the op that failed a [group batch](#group-batches), from `details.opIndex`; empty for any other failure. |
 | `isNotActive()` | True for a lift with nothing to lift: `404 not_found` with `details.reason: "not_active"`. |
 
 Unknown server codes pass through unchanged; keep a default branch when switching on `code()`.
@@ -128,6 +137,100 @@ Unknown server codes pass through unchanged; keep a default branch when switchin
 Every call has a connect timeout (default 10 s) and a request timeout that covers the whole response, body included (default 30 s). Both are set on the builder.
 
 Calls that are safe to repeat retry automatically: GETs, the read-only POSTs (`checkBatch`, `getAccessMany`), and writes that carry an `Idempotency-Key`. They retry on network errors, timeouts, 5xx, 408, 429 and 409 `idempotency_key_in_progress`, up to `maxAttempts` (default 3), with exponential backoff and full jitter. A `Retry-After` header is honoured exactly, up to `RetryPolicy.maxRetryAfter` (30 s); a longer one fails the call at once. Other writes are sent once.
+
+## Groups
+
+`groups()` covers the whole group lifecycle: create, read, update, delete and restore; membership by invitation, open join and leave; kicks and per-group bans with their history; relationships between groups; and the sub-group hierarchy. `invitations()` lists a group's invitations, looks one up by code and revokes one; creating, accepting and declining live on `groups()`.
+
+```java
+Group group = junjo.groups().get("grp_main").join().orElseThrow();
+
+// Rename, attributed to a moderator, only if nobody changed the group since the read.
+Group renamed = junjo.groups().update("grp_main",
+        UpdateGroupInput.builder().name("Main").actorUserId(moderatorId).build(),
+        WriteOptions.idempotent().withIfMatch(group.version())).join();
+
+// Invitations: one addressed to a user, and an open code that expires in a week.
+Invitation direct = junjo.groups().inviteByUserId("grp_main", player, "role_member", WriteOptions.idempotent()).join();
+Invitation open = junjo.groups().inviteByCode("grp_main", null, "7d", WriteOptions.idempotent()).join();
+junjo.groups().acceptInvitation(open.code(), otherPlayer).join();
+junjo.invitations().revoke(direct.code());
+
+// Kick and relationship writes carry an optional actor.
+junjo.groups().kick("grp_main", player, "spam", moderatorId, WriteOptions.idempotent());
+junjo.groups().setRelationship("grp_main", "grp_rival", "enemy", true, moderatorId, WriteOptions.idempotent());
+
+// Soft delete (undo with restore) or hard delete, with an actor and a version check.
+junjo.groups().delete("grp_old", false, moderatorId, WriteOptions.none().withIfMatch(old.version()));
+```
+
+| Call | Notes |
+|------|-------|
+| `update(groupId, UpdateGroupInput, opts)` | Sends only the fields set on the builder. `actorUserId` is not a change on its own: `build()` throws `IllegalStateException` when it is the only field. A passcode is set with `passcode(...)` and cleared with `passcode(null)`. |
+| `delete(groupId, hard, actorUserId, opts)` | A soft delete can be undone with `restore` within the server's retention window and is idempotent; `hard = true` removes the group and everything in it. `delete(groupId)` is a soft delete with no actor. |
+| `restore(groupId, opts)` | Idempotent for a group that is not deleted; fails with `restore_window_expired` after the window. |
+| `inviteByUserId(groupId, userId, roleId, opts)`, `inviteByCode(groupId, roleId, expiresIn, opts)` | `expiresIn` is a positive integer followed by `s`, `m`, `h` or `d`, or null for no expiry. |
+| `acceptInvitation(code, userId, opts)`, `declineInvitation(code, userId, opts)` | The declining user may be null. |
+| `join(groupId, userId, passcode, opts)`, `leave(groupId, userId, opts)` | Only a `public` group admits an open join; a group with a passcode needs the right one. |
+| `kick(groupId, userId, reason, actorUserId, opts)` | The actor is carried as `kickedBy` on the `member.left` event. The older `kick(groupId, userId, reason, opts)` sends no actor. |
+| `banHistory(groupId, PageOptions)` | Every set and lift of a ban in the group, newest first, as `BanHistoryEntry` records. |
+| `setRelationship(a, b, type, mutual, actorUserId, opts)`, `clearRelationship(a, b, mutual, actorUserId, opts)` | The actor becomes the relationship's `setBy`. `getRelationship(a, b)` returns an `Optional`; `listRelationships(groupId)` lists the group's A side. |
+| `setParent(groupId, parentGroupId, opts)`, `listChildren(groupId)` | A null parent makes the group top-level; a cycle fails with `parent_cycle`. |
+| `invitations().list(groupId, ListInvitationsOptions)` | Used and expired invitations are left out unless the options include them. |
+
+`Group.version()` is the group's [version](/api-reference/groups#group-versions), a decimal string. Groups returned by `get`, `create`, `update` and `restore` carry it; groups from lists, `setParent`, `listChildren` and events have it null, as do groups from servers older than the field. Pass it to `withIfMatch` for `update` and `delete`: a group changed since fails with `412 precondition_failed`, and `details()` holds the current `version`. A null version sends no `If-Match`, so check for one before relying on the guard. Every `actorUserId` parameter may be null.
+
+### Group batches
+
+`groups().batch(groupId, ops, opts)` applies up to 50 (`GroupBatchOp.MAX_OPS`) writes to one group in order, in one transaction: all of them or none. Each op is the write of one single-group call, built with a `GroupBatchOp` factory, and sees the effects of the ops before it. `withIfMatch(group.version())` makes the whole batch conditional on the group's version. The server rules are in [`POST /v1/groups/:id/batch`](/api-reference/groups#post-v1groupsidbatch).
+
+| Factory | Single call |
+|---------|-------------|
+| `memberAdd(userId)`, `memberAdd(userId, roleId, actorUserId, createOnly)` | `members().add`; `createOnly` is the batch form of `withIfNoneMatchAny()` |
+| `memberKick(userId, reason, actorUserId)` | `groups().kick` |
+| `memberLeave(userId)` | `groups().leave` |
+| `memberBan(userId, reason, expiresAt, actorUserId)` | `groups().ban` (null `expiresAt`: permanent) |
+| `memberUnban(userId, actorUserId)` | `groups().unban` |
+| `memberMetadata(userId, metadata)`, `memberNotes(userId, SetMemberNotesInput)` | `members().setMetadata`, `members().setNotes` |
+| `memberRoleAdd(userId, roleId, actorUserId)`, `memberRoleRemove(userId, roleId, actorUserId)` | `members().assignRole`, `members().removeRole` |
+| `groupUpdate(UpdateGroupInput)` | `groups().update`, without a passcode (throws `IllegalArgumentException` if the input sets one) |
+| `roleEntrySet(roleId, PermissionEntry)`, `roleEntryRemove(roleId, permission, context)` | `roles().grantPermission`, `roles().revokePermission`, for a role of this group; a null context is global |
+| `relationshipSet(otherGroupId, type, mutual, actorUserId)`, `relationshipClear(otherGroupId, mutual, actorUserId)` | `groups().setRelationship`, `groups().clearRelationship` from this group |
+
+Nullable arguments (reasons, actors, roles) may be null; required ids throw `NullPointerException` when null, and `batch` throws `IllegalArgumentException` for an empty list or more than 50 ops.
+
+The answer is a `GroupBatchResponse`: `version()` is the group's version after the batch, and `results()` (or `result(i)`) holds one `GroupBatchResult` per op, describing the state right after that op. Read it with `asMember()`, `asGroup()` (a group without a version), `asRole()` or `asRelationship()`, each an `Optional` that is empty when the op answered something else; `relationshipClear` answers `GroupBatchResult.NONE`. The results are a sealed hierarchy (`MemberResult`, `GroupResult`, `RoleResult`, `RelationshipResult`, `Empty`), so a `switch` over them works too.
+
+A failing op fails the whole batch with that op's own error, and `JunjoException.opIndex()` names it; it is empty for a failure of the batch as a whole, such as a stale `If-Match`. Handing a group's top role from one member to another, with a retry when the group changed in between:
+
+```java
+boolean handOver(String groupId, String from, String to, String leaderRole, String officerRole) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        Group group = junjo.groups().get(groupId).join().orElseThrow();
+        Member current = junjo.members().get(groupId, from).join().orElse(null);
+        if (current == null || !current.roles().contains(leaderRole)) return false;   // nothing to hand over
+
+        List<GroupBatchOp> ops = List.of(
+                GroupBatchOp.memberRoleRemove(from, leaderRole, null),
+                GroupBatchOp.memberRoleAdd(to, leaderRole, null),
+                GroupBatchOp.memberRoleAdd(from, officerRole, null));
+        try {
+            GroupBatchResponse done = junjo.groups().batch(groupId, ops,
+                    WriteOptions.idempotent().withIfMatch(group.version())).join();
+            done.result(1).asMember().ifPresent(m -> log.info("new leader at version " + m.version()));
+            return true;
+        } catch (CompletionException e) {
+            if (!(e.getCause() instanceof JunjoException je)
+                    || !"precondition_failed".equals(je.code())
+                    || je.opIndex().isPresent()) {
+                throw e;
+            }
+            // The group changed since the read: read again and decide again.
+        }
+    }
+    return false;
+}
+```
 
 ## Safe writes
 
@@ -143,7 +246,23 @@ junjo.members().assignRole("grp_main", player, "role_mod", moderatorId,
         WriteOptions.idempotent().withIfMatch(m.version()));
 ```
 
-`Member.version` and `MemberAccess.version` are the member version; `Ban.version` and `Sanction.version` are the person's moderation version, which bans and sanctions share. `bans().moderation(userId)` reads it for a person with nothing active; an id the game has never seen reads as version 0.
+`Member.version` and `MemberAccess.version` are the member version; `Ban.version` and `Sanction.version` are the person's moderation version, which bans and sanctions share. `bans().moderation(userId)` reads it for a person with nothing active; an id the game has never seen reads as version 0. `Group.version()` is the group version, a decimal string that `withIfMatch(String)` sends as it is (see [Groups](#groups)).
+
+### Write tags
+
+A write tag labels the writes of one writer, so it can recognise the events they cause (see [Event origin](#event-origin)). Set one for the whole client, or per write:
+
+```java
+JunjoClient junjo = JunjoClient.builder()
+        .baseUrl("https://api.junjo.io")
+        .apiKey(System.getenv("JUNJO_API_KEY"))
+        .writeTag("server-1")          // sent as Junjo-Write-Tag on every request
+        .build();
+
+junjo.groups().update("grp_main", input, WriteOptions.idempotent().withWriteTag("server-1-admin"));
+```
+
+A tag is 1 to 128 (`WriteOptions.WRITE_TAG_MAX_LENGTH`) printable ASCII characters without spaces; the builder, `withWriteTag` and the `WriteOptions` constructor throw `IllegalArgumentException` for anything else. `withWriteTag(null)` falls back to the client-level tag. A [`WriteQueue`](#writequeue) sends its client's tag on every queued write; `QueuedWrite` has no tag of its own. See [Write tags](/api-reference#write-tags).
 
 ### Create-only adds
 
@@ -307,6 +426,22 @@ Events are a sealed `JunjoEvent` hierarchy of records; `type()` returns the `Eve
 - Any other 4xx on a reconnect (`429 too_many_streams`, `401`) is fatal and reported once to `onError`.
 - Unknown event types are skipped, but their position still counts, so a newer server cannot break an older client.
 
+### Event origin
+
+Every event carries `origin()`, a `JunjoEvent.EventOrigin(apiKeyId, tag)`: the id of the per-game key whose write caused the event (null for dashboard writes and for changes the server makes on its own) and that write's tag, or null. Events from servers older than the field read as `EventOrigin.NONE`, with both null. A writer that applies its own changes locally when they succeed can skip the events they cause:
+
+```java
+String myTag = "server-1";   // the client's writeTag
+junjo.events().subscribe((event, pos) -> {
+    if (myTag.equals(event.origin().tag())) return;   // this server made the change
+    apply(event);
+}, SubscribeOptions.builder().from(position).build());
+```
+
+Writers that share one key need different tags. See [Event origin](/api-reference/events#event-origin).
+
+`GroupUpdated`, `GroupDeleted` and `GroupRelationshipChanged` carry `actorUserId()`, the user the write named as its actor, or null; `MemberLeft.kickedBy()` is set when a kick named an actor. On the game stream, the position of an event about a group is the [group version](/api-reference/groups#group-versions) it gave the group, so it compares with `Group.version()`.
+
 ## Sanctions
 
 A [sanction](/api-reference/sanctions) is a game-wide restriction on a person, with a type your game defines (`mute`, `trade.lock`); at most one is active per person and type. Sanctions share the person's moderation version with game bans, so every write takes `If-Match` against it.
@@ -353,6 +488,17 @@ ExportSummary summary = junjo.export().read(record -> {
 }).join();
 // summary.position(): replay the game stream from here to catch writes made during the export
 ```
+
+To export only some record kinds, or only the groups of some kinds, pass `ExportOptions`:
+
+```java
+ExportOptions opts = ExportOptions.all()
+        .withRecords(List.of("group", "role", "member"))
+        .withGroupKinds(List.of("guild"));
+junjo.export().read(opts, record -> backup.write(record.json())).join();
+```
+
+`records` names the kinds to export (never `game`, which is always sent with the header and end records); `groupKinds` keeps the group-scoped records (groups, roles, members, invitations, relationships by their A side, and the group rows of ban history and audit) of groups of those kinds only, and leaves game-scoped records alone. Null means no filter. `ExportOptions` throws `IllegalArgumentException` for an empty list or an entry that is empty or contains a comma; the server refuses an unknown kind with `bad_request`. Excluded kinds count 0 in the end record, and `group` records carry the group's `version`. See [Export](/api-reference/export).
 
 `read` runs on its own daemon thread and hands records over in order, header and end included. `open()` returns a blocking `ExportReader` iterator instead. Either way the export fails with `invalid_wire_data` when the end record is missing (a cut-short export), when its counts disagree with the records read, or when the header is not format `junjo-export` version 1, and with `stream_overflow` when one line passes 16 Mi characters. Records already handed over stay handed over, so discard your output on any failure.
 
@@ -427,13 +573,14 @@ queue.enqueue(QueuedWrite.addMemberIfAbsent("grp_main", player, "role_member", n
 queue.close();   // drains for up to closeTimeout (10 s); the rest is resent on the next open()
 ```
 
-The `QueuedWrite` factories are named after the API calls and send exactly the same requests: `addMember`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `setMetadata`, `setNotes`, `kick`, `groupBan`, `groupUnban`, `addBan`, `removeBan`, `addSanction`, `removeSanction`, plus `custom` for any other route. `addMemberIfAbsent` is `addMember` with `If-None-Match: *` (the queued form of `withIfNoneMatchAny()`), and `ifNoneMatchAny()` adds the same header to any queued write.
+The `QueuedWrite` factories are named after the API calls and send exactly the same requests: `addMember`, `assignRole`, `removeRole`, `overridePermission`, `clearPermissionOverride`, `setMetadata`, `setNotes`, `kick` (with an optional actor: `kick(groupId, userId, reason, actorUserId)`), `groupBan`, `groupUnban`, `addBan`, `removeBan`, `addSanction`, `removeSanction`, plus `groupBatch(groupId, ops)` for a [group batch](#group-batches) and `custom` for any other route. `addMemberIfAbsent` is `addMember` with `If-None-Match: *` (the queued form of `withIfNoneMatchAny()`), and `ifNoneMatchAny()` adds the same header to any queued write.
 
 - **Durable.** `enqueue` returns after the entry is appended to the journal and forced to disk; when the force fails, `enqueue` throws and the entry is not queued. Concurrent `enqueue` calls share forces, and the force runs outside the queue's lock. A success's `done` record is not forced on its own (the next force or `close()` writes it); if a crash loses it, the entry is resent with its idempotency key. Every journal line carries a CRC32. On open the journal is replayed and compacted through a temporary file, an atomic move and a directory `fsync`; when the file system cannot move atomically, the old journal is kept and an ERROR is logged.
 - **Dead letters.** Every entry the server refuses (`412` or another 4xx) is appended, with the status and the raw response body, to the dead-letter file next to the journal (`deadLetterFile()`, the journal's name plus `.dead`) before any callback runs. A journal line that fails its checksum, or the torn last line of a crashed append, is moved there too, with a reason.
 - **Replay-safe.** Each entry carries a random `Idempotency-Key` for its whole life, across retries and restarts. Add `ifMatch(version)` so a write is refused, not applied, if the state changed after you decided it; that also covers replays older than the server's 24-hour key retention.
 - **Ordered.** One drain thread sends entries in enqueue order. Network errors, timeouts, 5xx, 408, 429, 409 `idempotency_key_in_progress` and 401 retry the head entry with backoff (401 is kept so a rotated key does not wipe the queue).
 - **Outcomes.** 2xx calls `onSuccess`. `412 precondition_failed` drops the entry and calls `onConflict`; for `addMemberIfAbsent` that means the player already had a membership, which was left untouched. Any other 4xx drops it and calls `onRejected`.
+- **Batches.** A queued `groupBatch` keeps one idempotency key for its whole life, like every entry, and applies all of its ops or none, so a replay cannot apply part of it twice. With `ifMatch(group.version())`, a batch on a group that changed in the meantime is refused with `412` and goes to `onConflict`; it is not retried. A failing op is a rejection (`onRejected`), and the error's `opIndex()` names the op.
 - **Lifts that find nothing to lift succeed.** A queued lift (`removeBan`, `groupUnban`, `removeSanction`) answered with `isNotActive()` counts as success. A `not_found` without that reason (an unknown group) is still a rejection.
 
 ## Ids

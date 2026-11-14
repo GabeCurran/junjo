@@ -15,6 +15,8 @@ export interface HttpClientOptions {
    * credential, so the SDK attaches no authorization header at all.
    */
   apiKey?: string;
+  /** Sent as `Junjo-Write-Tag` on every request unless one overrides it. */
+  writeTag?: string;
   baseUrl: string;
   fetch: typeof fetch;
   /**
@@ -60,12 +62,19 @@ export interface WriteOptions {
    * keys for 24 hours and ignores them on requests without an API key.
    */
   idempotencyKey?: string;
+  /**
+   * Sent as the `Junjo-Write-Tag` header: 1 to 128 printable ASCII
+   * characters, no spaces. Every event the write causes carries it as
+   * `origin.tag`, so a writer can recognise its own changes on the
+   * stream. Overrides the client-level `writeTag` for this call.
+   */
+  writeTag?: string;
 }
 
 /**
  * Options for writes the server can make conditional on a version: the
- * member-scoped writes (member version) and game ban create and lift
- * (moderation version).
+ * member-scoped writes (member version), game ban create and lift
+ * (moderation version), and group update and delete (group version).
  */
 export interface ConditionalWriteOptions extends WriteOptions {
   /**
@@ -101,6 +110,7 @@ export function writeOptions(
     headers["if-match"] = /^".*"$/.test(tag) ? tag : `"${tag}"`;
   }
   if (opts?.ifNoneMatch !== undefined) headers["if-none-match"] = opts.ifNoneMatch;
+  if (opts?.writeTag !== undefined) headers["junjo-write-tag"] = opts.writeTag;
   return { signal: opts?.signal, timeoutMs: opts?.timeoutMs, headers };
 }
 
@@ -182,15 +192,22 @@ function abortError(err: unknown, abort: ComposedAbort): JunjoError {
  */
 export class HttpClient {
   private readonly apiKey: string | undefined;
+  private readonly writeTag: string | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(opts: HttpClientOptions) {
     this.apiKey = opts.apiKey;
+    this.writeTag = opts.writeTag;
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.fetchImpl = opts.fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  // Lowest-precedence headers: a request's own options override them.
+  private defaultHeaders(): Record<string, string> {
+    return this.writeTag === undefined ? {} : { "junjo-write-tag": this.writeTag };
   }
 
   private authHeaders(): Record<string, string> {
@@ -235,6 +252,7 @@ export class HttpClient {
     // stray `authorization` or `content-type` in opts.headers must not
     // silently clobber the credential or the JSON encoding.
     const headers: Record<string, string> = {
+      ...this.defaultHeaders(),
       ...(opts.headers ?? {}),
       ...this.authHeaders(),
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
@@ -266,6 +284,7 @@ export class HttpClient {
       {
         method: "POST",
         headers: {
+          ...this.defaultHeaders(),
           ...(opts.headers ?? {}),
           ...this.authHeaders(),
           "content-type": contentType,

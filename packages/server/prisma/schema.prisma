@@ -44,6 +44,7 @@ model Game {
   linkCodes          LinkCode[]
   eventCounter       GameEventCounter?
   eventLog           EventLog[]
+  groupVersions      GroupVersion[]
   moderationStates   ModerationState[]
   sanctions          Sanction[]
   sanctionHistory    SanctionHistory[]
@@ -60,6 +61,21 @@ model GameEventCounter {
   gameId String @id
   game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
   seq    BigInt @default(0)
+}
+
+// A group's version: the stream position of the latest logged event
+// about the group. Written only while the game's counter row is locked
+// (see eventLog.ts), so a check against it there is serialized with
+// every other write in the game. No foreign key to the group: a
+// hard-deleted group's row is removed by the statement batch that logs
+// the deletion.
+model GroupVersion {
+  groupId String @id
+  gameId  String
+  game    Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  seq     BigInt
+
+  @@index([gameId])
 }
 
 // Every event a game emits, in stream position order, kept for the

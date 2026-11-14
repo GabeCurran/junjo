@@ -287,6 +287,10 @@ export async function mergePeople(
     where: { actorUserId: attachedId },
     data: { actorUserId: survivorId },
   });
+  await tx.groupRelationship.updateMany({
+    where: { setByUserId: attachedId },
+    data: { setByUserId: survivorId },
+  });
   await tx.gameBan.updateMany({
     where: { bannedByUserId: attachedId },
     data: { bannedByUserId: survivorId },

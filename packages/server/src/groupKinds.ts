@@ -112,7 +112,8 @@ export async function kindLimitFailures(
 // The per-(game, kind, person) advisory locks that serialize `maxPerUser`
 // counts, taken in one sorted order by every caller so that two writers
 // cannot deadlock on them. JSON keeps the three parts unambiguous.
-async function lockPerUserCounts(
+// Re-taking a key the transaction already holds returns at once.
+export async function lockPerUserCounts(
   tx: Tx,
   gameId: string,
   kinds: readonly string[],
@@ -224,6 +225,7 @@ export async function softDeleteGroupInTx(
     type: "group.deleted",
     gameId: group.gameId as GameId,
     groupId: group.id as GroupId,
+    actorUserId: null,
   });
 }
 

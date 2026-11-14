@@ -52,6 +52,9 @@ public final class Transport implements AutoCloseable {
     /** The header that carries a stream position on snapshot reads and on the game stream. */
     public static final String POSITION_HEADER = "Junjo-Stream-Position";
 
+    /** The header that carries a write tag, recorded on the events the write causes. */
+    public static final String WRITE_TAG_HEADER = "Junjo-Write-Tag";
+
     private static final DateTimeFormatter HTTP_DATE = DateTimeFormatter.RFC_1123_DATE_TIME;
     private static final int MAX_ERROR_BODY_BYTES = 64 * 1024;
 
@@ -61,6 +64,7 @@ public final class Transport implements AutoCloseable {
     private final RetryPolicy retry;
     private final JunjoLogger logger;
     private final String userAgent;
+    private final String writeTag;
     private final HttpClient http;
     private final ExecutorService ownedExecutor;
     private final Executor executor;
@@ -75,6 +79,8 @@ public final class Transport implements AutoCloseable {
      * @param apiKey the per-game API key, or null for no Authorization header
      * @param requestTimeout the default whole-request timeout
      * @param executor the executor for HTTP work and callbacks, or null for an owned pool
+     * @param writeTag the {@code Junjo-Write-Tag} sent on every request whose own headers carry
+     *     none, or null for none; the caller has validated it
      */
     public Transport(
             String baseUrl,
@@ -84,7 +90,8 @@ public final class Transport implements AutoCloseable {
             RetryPolicy retry,
             JunjoLogger logger,
             Executor executor,
-            String userAgent) {
+            String userAgent,
+            String writeTag) {
         String trimmed = Objects.requireNonNull(baseUrl, "baseUrl").trim();
         while (trimmed.endsWith("/")) trimmed = trimmed.substring(0, trimmed.length() - 1);
         URI parsed = URI.create(trimmed);
@@ -98,6 +105,7 @@ public final class Transport implements AutoCloseable {
         this.retry = Objects.requireNonNull(retry, "retry");
         this.logger = logger == null ? JunjoLogger.NONE : logger;
         this.userAgent = userAgent;
+        this.writeTag = writeTag;
         if (executor == null) {
             this.ownedExecutor = Executors.newCachedThreadPool(Threads.daemonFactory("junjo-http"));
             this.executor = ownedExecutor;
@@ -336,7 +344,9 @@ public final class Transport implements AutoCloseable {
     private HttpRequest buildRequest(Call call, Duration timeout, String accept) {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + call.path()))
                 .timeout(timeout);
-        // Caller headers first so the SDK-owned values below win.
+        // The client-level tag first so a call's own tag replaces it, then caller headers so the
+        // SDK-owned values below win.
+        if (writeTag != null) b.setHeader(WRITE_TAG_HEADER, writeTag);
         for (Map.Entry<String, String> h : call.headers().entrySet()) {
             b.setHeader(h.getKey(), h.getValue());
         }

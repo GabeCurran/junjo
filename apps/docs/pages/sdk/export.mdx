@@ -37,7 +37,13 @@ Keep the export key separate from your game server's everyday key.
 ## `junjo.export(opts?)`
 
 ```ts
-export(opts?: { signal?: AbortSignal }): AsyncGenerator<ExportRecord>;
+export(opts?: ExportOptions): AsyncGenerator<ExportRecord>;
+
+interface ExportOptions {
+  signal?: AbortSignal;
+  records?: readonly Exclude<ExportRecordKind, "game">[];
+  groupKinds?: readonly string[];
+}
 ```
 
 Opens `GET /v1/export` with the client's base URL, key and `fetch`, and
@@ -50,14 +56,32 @@ The client timeout does not apply, since a large game streams for as
 long as it takes. Pass `signal` to bound or cancel it; an abort rejects
 with `cancelled`.
 
+### Filters
+
+`records` and `groupKinds` are sent as the route's [query parameters](/api-reference/export#get-v1export):
+
+- `records`: the record kinds to export, any kind except `game`. Omitted: every kind. The header, `game` and end records always arrive.
+- `groupKinds`: keeps the group-scoped records (groups, roles, members, invitations, relationships by their A side, and the group rows of ban history and audit) of groups of these kinds only. Game-scoped records are not affected; leave them out with `records`.
+
+```ts
+for await (const record of junjo.export({
+  records: ["group", "role", "member"],
+  groupKinds: ["guild"],
+})) {
+  // only guilds, their roles and their members
+}
+```
+
+An empty list, an unknown kind, more than 32 group kinds or a group kind over 64 characters rejects with `bad_request` on the first `next()`.
+
 ### Records
 
 Each record is a JSON object discriminated on `kind`. They arrive in this
 order:
 
-1. `header` (first): `{ kind, format: "junjo-export", version: 1, gameId, exportedAt, position }`. `position` is the game's [stream position](/sdk/events#positions), read before any record.
+1. `header` (first): `{ kind, format: "junjo-export", version: 1, gameId, exportedAt, position, records, groupKinds }`. `position` is the game's [stream position](/sdk/events#positions), read before any record. `records` lists the kinds the export carries (without `game`) and `groupKinds` the group kinds it was limited to, or `null`.
 2. Records grouped by kind: `game`, `person`, `group`, `role`, `member`, `invitation`, `relationship`, `ban`, `banHistory`, `sanction`, `sanctionHistory`, `friendship`, `friendRequest`, `block`, `friendTag`, `audit`. A kind with no rows has no records.
-3. `end` (last): `{ kind: "end", counts }`, the number of records per kind.
+3. `end` (last): `{ kind: "end", counts }`, the number of records per kind; a kind left out by `records` counts `0`.
 
 ```ts
 for await (const record of junjo.export()) {
@@ -67,6 +91,9 @@ for await (const record of junjo.export()) {
       break;
     case "person":
       for (const id of record.identities) indexName(id.userId, id.displayName);
+      break;
+    case "group":
+      // record.version: the group's version for the exported state
       break;
     case "member":
       // record.personId, record.groupId, record.roles, record.version, ...
@@ -103,6 +130,7 @@ once the loop finishes without throwing.
 
 | Code | When |
 |------|------|
+| `bad_request` | `records` or `groupKinds` is empty or names something invalid. |
 | `permission_denied` | The key does not have `canExport`. |
 | `invalid_wire_data` | The stream ended without the end record, the counts disagree, the first line is not the header, data follows the end record, or a line is not a JSON object with a string `kind`. |
 | `network_error` | The connection failed mid-stream. Export again; the export does not resume. |

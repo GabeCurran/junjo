@@ -96,6 +96,7 @@ export async function setGroupParentSafely(
         gameId: gameId as GameId,
         groupId: result.id as GroupId,
         group: toPublicGroup(result, count),
+        actorUserId: null,
       });
       return { row: result, memberCount: count, event: staged };
     }),

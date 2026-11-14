@@ -142,6 +142,44 @@ The first connection is not retried: every failure rejects the `subscribe` promi
 
 In [proxy mode](/react/provider#browser-apps-proxy-mode) your proxy must forward the `Last-Event-ID` request header and the `Junjo-Stream-Position` response header, and must not buffer the response. Without the response header, `subscribe` rejects with `invalid_wire_data`.
 
+## Recognising your own writes
+
+Every event carries `origin`: where the write behind it came from.
+
+```ts
+import type { EventOrigin } from "@junjo.io/sdk";
+
+interface EventOrigin {
+  apiKeyId: string | null;
+  tag: string | null;
+}
+
+event.origin; // EventOrigin
+```
+
+`apiKeyId` is the id of the per-game key whose request caused the event (the key's `id` in the [admin API](/api-reference/admin#get-v1admingamesgameidapi-keys)), or `null` for dashboard writes and for changes Junjo makes on its own, such as expiry. `tag` is the [`Junjo-Write-Tag`](/api-reference#write-tags) the request sent, or `null`. Events from servers older than the field, and events logged before it, parse with both set to `null`.
+
+A process that keeps its own copy of the data and applies its own changes locally when a write succeeds can skip the events those writes cause. Give each such process a tag of its own with the client's `writeTag` option, and drop events that carry it:
+
+```ts
+const TAG = `sync-${process.env.INSTANCE_ID}`;
+const junjo = new Junjo({ apiKey: process.env.JUNJO_API_KEY!, writeTag: TAG });
+
+await junjo.groups.update(groupId, { name: "Crimson Lions" }); // tagged
+applyLocally(groupId, { name: "Crimson Lions" });
+
+const sub = await junjo.events.subscribe((event) => {
+  if (event.origin.tag === TAG) return; // this process made the change
+  applyEvent(event); // another server, the dashboard, or Junjo itself
+});
+```
+
+A single write can carry another tag with its own `writeTag` option (see [Safe writes](/sdk#safe-writes)). Two processes sharing one API key need different tags; the tag is a label, not a credential.
+
+## Actors on group events
+
+`group.updated`, `group.deleted` and `group.relationship.changed` carry `actorUserId: UserId | null`: the person the write named with `actorUserId` (on [`groups.update`](/sdk/groups#updateid-input-opts), [`groups.delete`](/sdk/groups#deleteid-opts), [`setRelationship`](/sdk/groups#setrelationshipgroupaid-groupbid-type-opts) and [`clearRelationship`](/sdk/groups#clearrelationshipgroupaid-groupbid-opts)), or `null`. `member.left` from [`groups.kick`](/sdk/groups#kickgroupid-userid-opts) carries `kickedBy` when the kick named an `actorUserId`. Events from servers older than these fields parse `actorUserId` as `null`.
+
 ## `member.updated`
 
 `member.updated` reports that a member's metadata, notes, or overrides changed. Like `role.updated`, it is a change signal: `changed` names what changed (`"metadata"`, `"notes"`, `"overrides"`), not the new values. Read the member, or the member's access, for the current state.
@@ -153,6 +191,7 @@ interface MemberUpdatedEvent {
   gameId: GameId;
   groupId: GroupId;
   occurredAt: Date;
+  origin: EventOrigin;
   userId: UserId;
   changed: ("metadata" | "notes" | "overrides")[];
   memberVersion: number;
@@ -171,6 +210,7 @@ interface PermissionsConfigUpdatedEvent {
   id: string;
   gameId: GameId;
   occurredAt: Date;
+  origin: EventOrigin;
   mode: "exact" | "nodes";
   contexts: Record<string, { inherit: Record<string, string[]> }>;
 }
@@ -186,6 +226,7 @@ Member, game ban and sanction events carry the version their write produced:
 |--------|-------|--------------|
 | `member.joined`, `member.left`, `member.updated`, `member.banned`, `member.unbanned`, `role.changed` | `memberVersion` | `Member.version` |
 | `game.user.banned`, `game.user.unbanned`, `game.user.sanctioned`, `game.user.unsanctioned` | `moderationVersion` | `Ban.version`, `Sanction.version`, or `version` from [`bans.moderation`](/sdk/bans#moderationuserid) |
+| Any event with a `groupId` | `meta.position` (game stream only) | `Group.version`: the position of an event about a group is the [group version](/api-reference/groups#group-versions) it gave the group. |
 
 A snapshot whose version is greater than or equal to the event's already reflects it, so the event can be skipped. That makes the overlap described in [Load state without missing events](#load-state-without-missing-events) harmless for members and bans:
 

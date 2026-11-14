@@ -25,6 +25,8 @@ function makeGroupUpdatedEvent(
     gameId: gameId as GameId,
     groupId: groupId as GroupId,
     occurredAt,
+    origin: { apiKeyId: null, tag: null },
+    actorUserId: null,
     group: {
       id: groupId as GroupId,
       gameId: gameId as GameId,
@@ -50,6 +52,7 @@ function makeMemberJoinedEvent(gameId: string, groupId: string): MemberJoinedEve
     gameId: gameId as GameId,
     groupId: groupId as GroupId,
     occurredAt: new Date("2026-04-28T12:00:00.000Z"),
+    origin: { apiKeyId: null, tag: null },
     userId: "user_alice" as UserId,
     member: {
       id: "mem_1" as never,

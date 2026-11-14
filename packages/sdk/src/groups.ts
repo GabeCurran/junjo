@@ -4,6 +4,9 @@ import type {
   CreateInvitationInput,
   GameId,
   Group,
+  GroupBatchOp,
+  GroupBatchResponse,
+  GroupBatchResult,
   GroupId,
   GroupRelationship,
   GroupRelationshipType,
@@ -28,6 +31,7 @@ import {
 } from "./http.js";
 import { type WireMember, deserializeMember } from "./members.js";
 import { paginate } from "./pagination.js";
+import { type WireRole, deserializeRole } from "./roles.js";
 import { decodeEventData, readSSEFrames, toError } from "./sse.js";
 import { parseWireDate } from "./wire.js";
 
@@ -120,6 +124,25 @@ export interface WireGroup {
   createdAt: string;
   updatedAt: string;
   softDeletedAt: string | null;
+  version?: string;
+}
+
+// Each op answers with the single call's shape, picked by the op name.
+function deserializeBatchResult(op: GroupBatchOp | undefined, wire: unknown): GroupBatchResult {
+  if (wire === null || op === undefined) return null;
+  switch (op.op) {
+    case "group.update":
+      return deserializeGroup(wire as WireGroup);
+    case "role.entry.set":
+    case "role.entry.remove":
+      return deserializeRole(wire as WireRole);
+    case "relationship.set":
+      return deserializeGroupRelationship(wire as WireGroupRelationship);
+    case "relationship.clear":
+      return null;
+    default:
+      return deserializeMember(wire as WireMember);
+  }
 }
 
 export function deserializeGroup(w: WireGroup): Group {
@@ -138,6 +161,7 @@ export function deserializeGroup(w: WireGroup): Group {
     updatedAt: parseWireDate(w.updatedAt, "updatedAt"),
     softDeletedAt:
       w.softDeletedAt === null ? null : parseWireDate(w.softDeletedAt, "softDeletedAt"),
+    ...(w.version === undefined ? {} : { version: w.version }),
   };
 }
 
@@ -259,7 +283,15 @@ export class GroupsApi {
     return paginate((cursor) => this.list({ ...opts, cursor }));
   }
 
-  async update(id: GroupId, input: UpdateGroupInput, opts?: WriteOptions): Promise<Group> {
+  /**
+   * `ifMatch` takes the group's `version`; a group changed since then
+   * fails with `precondition_failed` (details carry the current version).
+   */
+  async update(
+    id: GroupId,
+    input: UpdateGroupInput,
+    opts?: ConditionalWriteOptions,
+  ): Promise<Group> {
     const wire = await this.http.patch<WireGroup>(
       `/v1/groups/${encodeURIComponent(id)}`,
       input,
@@ -268,11 +300,19 @@ export class GroupsApi {
     return deserializeGroup(wire);
   }
 
-  /** Soft delete with a 7-day undo window; `hard: true` bypasses it. */
-  async delete(id: GroupId, opts?: WriteOptions & { hard?: boolean }): Promise<void> {
-    const path = opts?.hard
-      ? `/v1/groups/${encodeURIComponent(id)}?hard=true`
-      : `/v1/groups/${encodeURIComponent(id)}`;
+  /**
+   * Soft delete with a 7-day undo window; `hard: true` bypasses it.
+   * `ifMatch` takes the group's `version`, as on `update`.
+   */
+  async delete(
+    id: GroupId,
+    opts?: ConditionalWriteOptions & { hard?: boolean; actorUserId?: UserId },
+  ): Promise<void> {
+    const query = new URLSearchParams();
+    if (opts?.hard) query.set("hard", "true");
+    if (opts?.actorUserId !== undefined) query.set("actorUserId", opts.actorUserId);
+    const qs = query.toString();
+    const path = `/v1/groups/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
     await this.http.delete<unknown>(path, undefined, writeOptions(opts));
   }
 
@@ -409,10 +449,11 @@ export class GroupsApi {
   async kick(
     groupId: GroupId,
     userId: UserId,
-    opts?: ConditionalWriteOptions & { reason?: string },
+    opts?: ConditionalWriteOptions & { reason?: string; actorUserId?: UserId },
   ): Promise<Member> {
     const body: Record<string, string> = {};
     if (opts?.reason !== undefined) body.reason = opts.reason;
+    if (opts?.actorUserId !== undefined) body.actorUserId = opts.actorUserId;
     const wire = await this.http.post<WireMember>(
       `/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/kick`,
       body,
@@ -607,16 +648,43 @@ export class GroupsApi {
     return { close };
   }
 
+  // ------ Batches ------
+
+  /**
+   * Applies `ops` to the group in order, in one transaction: all of them
+   * or none. `ifMatch` takes the group's `version`; a group changed since
+   * fails with `precondition_failed` and nothing is written. A failing op
+   * fails the whole batch with its own error, `details.opIndex` naming
+   * it. `results[i]` is what op i's single call returns, as of right
+   * after op i (null for `relationship.clear`).
+   */
+  async batch(
+    groupId: GroupId,
+    ops: GroupBatchOp[],
+    opts?: ConditionalWriteOptions,
+  ): Promise<GroupBatchResponse> {
+    const wire = await this.http.post<{ version: string; results: unknown[] }>(
+      `/v1/groups/${encodeURIComponent(groupId)}/batch`,
+      { ops },
+      writeOptions(opts),
+    );
+    return {
+      version: wire.version,
+      results: wire.results.map((r, i) => deserializeBatchResult(ops[i], r)),
+    };
+  }
+
   // ------ Group relationships ------
 
   async setRelationship(
     groupAId: GroupId,
     groupBId: GroupId,
     type: GroupRelationshipType,
-    opts?: WriteOptions & { mutual?: boolean },
+    opts?: WriteOptions & { mutual?: boolean; actorUserId?: UserId },
   ): Promise<GroupRelationship> {
-    const body: { type: string; mutual?: boolean } = { type };
+    const body: { type: string; mutual?: boolean; actorUserId?: string } = { type };
     if (opts?.mutual !== undefined) body.mutual = opts.mutual;
+    if (opts?.actorUserId !== undefined) body.actorUserId = opts.actorUserId;
     const wire = await this.http.put<WireGroupRelationship>(
       `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`,
       body,
@@ -628,11 +696,13 @@ export class GroupsApi {
   async clearRelationship(
     groupAId: GroupId,
     groupBId: GroupId,
-    opts?: WriteOptions & { mutual?: boolean },
+    opts?: WriteOptions & { mutual?: boolean; actorUserId?: UserId },
   ): Promise<void> {
-    const path = opts?.mutual
-      ? `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}?mutual=true`
-      : `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}`;
+    const query = new URLSearchParams();
+    if (opts?.mutual) query.set("mutual", "true");
+    if (opts?.actorUserId !== undefined) query.set("actorUserId", opts.actorUserId);
+    const qs = query.toString();
+    const path = `/v1/groups/${encodeURIComponent(groupAId)}/relationships/${encodeURIComponent(groupBId)}${qs ? `?${qs}` : ""}`;
     await this.http.delete<unknown>(path, undefined, writeOptions(opts));
   }
 

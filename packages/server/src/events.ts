@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type {
+  EventOrigin,
   GameId,
   GroupId,
   GroupRelationshipType,
@@ -28,6 +29,7 @@ import type {
 import type { Db } from "./db.js";
 import { type EventHub, eventHub as defaultHub } from "./eventHub.js";
 import { recordEvents } from "./eventLog.js";
+import { currentRequestContext } from "./requestContext.js";
 import { EMPTY_ROLE_DETAIL, type RoleDetail, grantedKeys } from "./roleDetails.js";
 import { enqueueWebhookDeliveries, enqueueWebhookDeliveriesBatch } from "./webhooks.js";
 
@@ -110,31 +112,44 @@ export function toPublicInvitation(inv: PrismaInvitation): PublicInvitation {
   };
 }
 
-export function toPublicGroupRelationship(rel: PrismaGroupRelationship): PublicGroupRelationship {
+// The stored `setByUserId` is an internal person id, so the caller
+// supplies the external id to show (the write's actor) instead.
+export function toPublicGroupRelationship(
+  rel: PrismaGroupRelationship,
+  setBy: UserId | null,
+): PublicGroupRelationship {
   return {
     groupAId: rel.groupAId as GroupId,
     groupBId: rel.groupBId as GroupId,
     type: rel.type as GroupRelationshipType,
     since: rel.since,
-    setBy: rel.setByUserId ? (rel.setByUserId as UserId) : null,
+    setBy,
   };
 }
 
+// What a route supplies for an event; minting adds the rest.
+export type EventPayload<E extends JunjoEvent> = Omit<E, "id" | "occurredAt" | "origin">;
+
+// The origin of the events the current request causes: its key and
+// write tag. Outside a request (background jobs) both are null.
+export function currentEventOrigin(): EventOrigin {
+  const ctx = currentRequestContext();
+  return { apiKeyId: ctx?.apiKeyId ?? null, tag: ctx?.writeTag ?? null };
+}
+
 // Mints the full event envelope without publishing it anywhere.
-export function mintEvent<E extends JunjoEvent>(payload: Omit<E, "id" | "occurredAt">): E {
+export function mintEvent<E extends JunjoEvent>(payload: EventPayload<E>): E {
   return {
     id: newEventId(),
     occurredAt: new Date(),
+    origin: currentEventOrigin(),
     ...payload,
   } as unknown as E;
 }
 
 // Hub is injected per-router so tests can swap a fresh `EventHub` via
 // `createApp({ events: { hub } })`.
-export function publishEvent<E extends JunjoEvent>(
-  hub: EventHub,
-  payload: Omit<E, "id" | "occurredAt">,
-): E {
+export function publishEvent<E extends JunjoEvent>(hub: EventHub, payload: EventPayload<E>): E {
   const event = mintEvent<E>(payload);
   hub.publish(event);
   return event;
@@ -148,7 +163,7 @@ export function publishEvent<E extends JunjoEvent>(
 // observe a rolled-back mutation); `publishStagedEvents` is the usual way.
 export async function stageEvent<E extends JunjoEvent>(
   db: Db,
-  payload: Omit<E, "id" | "occurredAt">,
+  payload: EventPayload<E>,
 ): Promise<E> {
   const event = mintEvent<E>(payload);
   await enqueueWebhookDeliveries(db, event);
@@ -162,7 +177,7 @@ export async function stageEvent<E extends JunjoEvent>(
 // statements instead of scaling with row count.
 export async function stageEventsBatch<E extends JunjoEvent>(
   db: Db,
-  payloads: Omit<E, "id" | "occurredAt">[],
+  payloads: EventPayload<E>[],
 ): Promise<E[]> {
   const events = payloads.map((p) => mintEvent<E>(p));
   await enqueueWebhookDeliveriesBatch(db, events);
@@ -186,7 +201,7 @@ export function publishStagedEvents(hub: EventHub, ...events: JunjoEvent[]): voi
 export async function dispatchEvent<E extends JunjoEvent>(
   prisma: PrismaClient,
   hub: EventHub,
-  payload: Omit<E, "id" | "occurredAt">,
+  payload: EventPayload<E>,
 ): Promise<E> {
   const event = await stageEvent<E>(prisma, payload);
   hub.publish(event);

@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 
 /**
@@ -121,6 +122,16 @@ public final class JunjoException extends RuntimeException {
                     Json.stringOrNull(map.get("message"))));
         }
         return List.copyOf(out);
+    }
+
+    /**
+     * The index of the op that failed a group batch, from {@code details.opIndex}. Empty for a
+     * failure of the batch as a whole (a malformed envelope, a stale {@code If-Match}) and for every
+     * other call.
+     */
+    public OptionalInt opIndex() {
+        if (details != null && details.get("opIndex") instanceof Number n) return OptionalInt.of(n.intValue());
+        return OptionalInt.empty();
     }
 
     /** True when the request may have reached the server without a response. */

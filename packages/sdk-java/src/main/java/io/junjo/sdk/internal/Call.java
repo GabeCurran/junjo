@@ -46,6 +46,7 @@ public record Call(
             }
             if (opts.ifMatch() != null) headers.put("If-Match", opts.ifMatch());
             if (opts.ifNoneMatch() != null) headers.put("If-None-Match", opts.ifNoneMatch());
+            if (opts.writeTag() != null) headers.put(Transport.WRITE_TAG_HEADER, opts.writeTag());
             timeout = opts.timeout();
         }
         return new Call(method, path, body, headers, retryable, timeout);

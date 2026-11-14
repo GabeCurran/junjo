@@ -281,6 +281,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: newMember.userId,
         member: newMember,
       });
@@ -310,6 +311,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: replacement.userId,
         member: replacement,
       });
@@ -340,6 +342,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: replacement.userId,
         member: replacement,
       });
@@ -369,6 +372,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: replacement.userId,
         member: replacement,
       });
@@ -398,6 +402,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: a.userId,
         reason: "left",
       });
@@ -428,6 +433,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: member.userId,
         added: ["role_three" as RoleId],
         removed: ["role_one" as RoleId],
@@ -459,6 +465,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: "user_unknown" as UserId,
         added: ["role_x" as RoleId],
         removed: [],
@@ -485,9 +492,11 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "group.updated",
+        actorUserId: null,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         group: updated,
       });
     });
@@ -510,9 +519,11 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "group.deleted",
+        actorUserId: null,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
       });
     });
 
@@ -535,9 +546,11 @@ describe("useGroup", () => {
       handler({
         id: "evt_1",
         type: "group.deleted",
+        actorUserId: null,
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
       });
     });
     expect(result.current.membersHasMore).toBe(false);
@@ -572,6 +585,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: a.userId,
         reason: "griefing",
         bannedUntil: null,
@@ -601,6 +615,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: a.userId,
       });
     });
@@ -628,6 +643,7 @@ describe("useGroup", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         role: {
           id: "role_x" as RoleId,
           groupId: GROUP_ID,
@@ -1014,6 +1030,7 @@ describe("useGroup", () => {
         userId: "user_c" as UserId,
         member: c,
         occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+        origin: { apiKeyId: null, tag: null },
       };
       const capture = h.captures[0];
       if (!capture) throw new Error("expected subscription capture");
@@ -1054,6 +1071,7 @@ describe("useGroup", () => {
         userId: "user_c" as UserId,
         member: c,
         occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+        origin: { apiKeyId: null, tag: null },
       };
       const capture = h.captures[0];
       if (!capture) throw new Error("expected subscription capture");

@@ -354,6 +354,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         invitation: fresh,
       });
     });
@@ -380,6 +381,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         invitation: makeInvitation("code_b"),
       });
     });
@@ -409,6 +411,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         invitation: updated,
       });
     });
@@ -438,6 +441,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date("2026-04-29T00:00:00.000Z"),
+        origin: { apiKeyId: null, tag: null },
         userId: "user_target" as UserId,
         member: {
           id: "mem_1" as never,
@@ -482,6 +486,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt,
+        origin: { apiKeyId: null, tag: null },
         userId: "user_target" as UserId,
         member: {
           id: "mem_1" as never,
@@ -526,6 +531,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: "user_other" as UserId,
         member: {
           id: "mem_1" as never,
@@ -566,6 +572,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         userId: "user_anyone" as UserId,
         member: {
           id: "mem_1" as never,
@@ -604,6 +611,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         role: {
           id: "role_x" as RoleId,
           groupId: GROUP_ID,
@@ -649,6 +657,7 @@ describe("useInvitations", () => {
         gameId: GAME_ID,
         groupId: GROUP_ID,
         occurredAt: new Date(),
+        origin: { apiKeyId: null, tag: null },
         invitation: freshPending,
       });
     });
@@ -992,6 +1001,7 @@ describe("useInvitations", () => {
         groupId: GROUP_ID,
         invitation: newInvite,
         occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+        origin: { apiKeyId: null, tag: null },
       };
       const capture = h.captures[0];
       if (!capture) throw new Error("expected subscription capture");
@@ -1029,6 +1039,7 @@ describe("useInvitations", () => {
         groupId: GROUP_ID,
         invitation: newInvite,
         occurredAt: new Date("2026-04-28T01:00:00.000Z"),
+        origin: { apiKeyId: null, tag: null },
       };
       const capture = h.captures[0];
       if (!capture) throw new Error("expected subscription capture");

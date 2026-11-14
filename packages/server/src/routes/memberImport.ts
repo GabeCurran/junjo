@@ -21,7 +21,12 @@ import type { Handler } from "hono";
 import { resolveGameConfig } from "../config/defaults.js";
 import { Errors, JunjoError } from "../errors.js";
 import type { EventHub } from "../eventHub.js";
-import { publishStagedEvents, stageEventsBatch, toPublicMember } from "../events.js";
+import {
+  type EventPayload,
+  publishStagedEvents,
+  stageEventsBatch,
+  toPublicMember,
+} from "../events.js";
 import { isActiveUntil } from "../expiry.js";
 import {
   type MembershipGroup,
@@ -794,9 +799,9 @@ async function emitEvents(
       : await tx.groupMember.findMany({ where: { id: { in: touched.map(memberId) } } });
   const finalRowOf = new Map(finalRows.map((r) => [r.id, r]));
 
-  const joinedPayloads: Omit<MemberJoinedEvent, "id" | "occurredAt">[] = [];
-  const rolePayloads: Omit<RoleChangedEvent, "id" | "occurredAt">[] = [];
-  const updatedPayloads: Omit<MemberUpdatedEvent, "id" | "occurredAt">[] = [];
+  const joinedPayloads: EventPayload<MemberJoinedEvent>[] = [];
+  const rolePayloads: EventPayload<RoleChangedEvent>[] = [];
+  const updatedPayloads: EventPayload<MemberUpdatedEvent>[] = [];
   const versionOf = new Map<Plan, number>();
   for (const p of plans) {
     const row = finalRowOf.get(memberId(p)) ?? p.existing?.row;

@@ -47,6 +47,12 @@ export interface Group {
   createdAt: Date;
   updatedAt: Date;
   softDeletedAt: Date | null;
+  // The group's version: the stream position of the latest event about
+  // the group or anything in it, as a decimal string. Present on
+  // single-group responses (get, create, update, delete, restore), which
+  // also send it as the ETag; absent on lists and event payloads. Pass
+  // it as `ifMatch` to make an update or delete conditional.
+  version?: string;
 }
 
 export interface CreateGroupInput {
@@ -80,6 +86,8 @@ export interface UpdateGroupInput {
   // Pass a string to set/replace the passcode; pass `null` to clear it.
   // Omit to leave the existing passcode (if any) untouched.
   passcode?: string | null;
+  // Attributes the change in audit and on the group.updated event.
+  actorUserId?: UserId;
 }
 
 // =====================================================================
@@ -489,6 +497,103 @@ export interface GroupRelationship {
 }
 
 // =====================================================================
+// Group batch
+// =====================================================================
+
+// `POST /v1/groups/:id/batch` applies its ops in order in one
+// transaction: all of them or none. Each op's fields and checks are
+// those of the single route named beside it.
+export const GROUP_BATCH_MAX_OPS = 50;
+
+export type GroupBatchOp =
+  // POST /groups/:id/members. `createOnly` is the body form of
+  // `If-None-Match: *`.
+  | {
+      op: "member.add";
+      userId: UserId;
+      roleId?: RoleId;
+      actorUserId?: UserId;
+      createOnly?: boolean;
+    }
+  // POST /groups/:id/members/:userId/kick
+  | { op: "member.kick"; userId: UserId; reason?: string | null; actorUserId?: UserId }
+  // POST /groups/:id/leave
+  | { op: "member.leave"; userId: UserId }
+  // POST /groups/:id/members/:userId/ban
+  | {
+      op: "member.ban";
+      userId: UserId;
+      reason?: string | null;
+      expiresAt?: string | null;
+      actorUserId?: UserId;
+    }
+  // DELETE /groups/:id/members/:userId/ban
+  | { op: "member.unban"; userId: UserId; actorUserId?: UserId }
+  // PATCH /groups/:id/members/:userId
+  | {
+      op: "member.update";
+      userId: UserId;
+      metadata?: MemberMetadata;
+      notesPublic?: string | null;
+      notesPrivate?: string | null;
+    }
+  // POST /groups/:id/members/:userId/roles/:roleId
+  | { op: "member.role.add"; userId: UserId; roleId: RoleId; actorUserId?: UserId }
+  // DELETE /groups/:id/members/:userId/roles/:roleId
+  | { op: "member.role.remove"; userId: UserId; roleId: RoleId; actorUserId?: UserId }
+  // PATCH /groups/:id without `passcode`, which a batch cannot set.
+  | {
+      op: "group.update";
+      name?: string;
+      visibility?: GroupVisibility;
+      metadata?: GroupMetadata;
+      defaultRoleId?: RoleId | null;
+      actorUserId?: UserId;
+    }
+  // POST /roles/:roleId/permissions, for a role of this group.
+  | {
+      op: "role.entry.set";
+      roleId: RoleId;
+      permission: PermissionKey;
+      value?: boolean;
+      context?: PermissionContext;
+    }
+  // DELETE /roles/:roleId/permissions/:permission, for a role of this group.
+  | {
+      op: "role.entry.remove";
+      roleId: RoleId;
+      permission: PermissionKey;
+      context?: PermissionContext;
+    }
+  // PUT /groups/:id/relationships/:otherGroupId
+  | {
+      op: "relationship.set";
+      otherGroupId: GroupId;
+      type: GroupRelationshipType;
+      mutual?: boolean;
+      actorUserId?: UserId;
+    }
+  // DELETE /groups/:id/relationships/:otherGroupId
+  | { op: "relationship.clear"; otherGroupId: GroupId; mutual?: boolean; actorUserId?: UserId };
+
+export type GroupBatchOpName = GroupBatchOp["op"];
+
+export interface GroupBatchInput {
+  ops: GroupBatchOp[];
+}
+
+// `results[i]` is what op i's single route answers, as of right after
+// op i: a member, the group (without `version`), a role or the A->B
+// relationship; null for `relationship.clear`.
+export type GroupBatchResult = Member | Group | Role | GroupRelationship | null;
+
+export interface GroupBatchResponse {
+  // The group's version after the batch; also sent as the ETag.
+  version: string;
+  results: GroupBatchResult[];
+}
+
+// =====================================================================
 // Invitation
 // =====================================================================
 
@@ -650,10 +755,24 @@ export interface ListAuditOptions {
 // it without a follow-up API call. (Cost: payloads are slightly larger.
 // Benefit: SDK consumers don't need to round-trip on every event.)
 
+// Where the write behind an event came from. `apiKeyId` is the id of the
+// per-game key that made it, null for admin writes and for changes junjo
+// makes on its own (expiry, cleanup). `tag` is the `Junjo-Write-Tag`
+// request header of that write, as sent, or null. A writer that keeps
+// its own copy of the data drops the events it caused by matching these.
+export interface EventOrigin {
+  apiKeyId: string | null;
+  tag: string | null;
+}
+
+export const WRITE_TAG_HEADER = "Junjo-Write-Tag";
+export const WRITE_TAG_MAX_LENGTH = 128;
+
 interface EventBase {
   id: string;
   gameId: GameId;
   occurredAt: Date;
+  origin: EventOrigin;
 }
 
 // Most JunjoEvent types are scoped to a single group (members, roles,
@@ -759,19 +878,24 @@ export interface PermissionRevokedEvent extends GroupEventBase {
   permission: PermissionKey;
 }
 
+// `actorUserId` on the group events below is the user the write named
+// as its actor, or null when it named none.
 export interface GroupUpdatedEvent extends GroupEventBase {
   type: "group.updated";
   group: Group;
+  actorUserId: UserId | null;
 }
 
 export interface GroupDeletedEvent extends GroupEventBase {
   type: "group.deleted";
+  actorUserId: UserId | null;
 }
 
 export interface GroupRelationshipChangedEvent extends GroupEventBase {
   type: "group.relationship.changed";
   otherGroupId: GroupId;
   relationship: GroupRelationship | null; // null = cleared
+  actorUserId: UserId | null;
 }
 
 // User-scoped friend events. No `groupId`, so no group stream carries
@@ -1393,7 +1517,8 @@ export interface JunjoErrorEnvelope {
   requestId?: string;
   // Structured detail. The member import sets
   // `{ rows: MemberImportRowError[] }`; ban and sanction lifts with
-  // nothing to lift set `{ reason: "not_active" }`.
+  // nothing to lift set `{ reason: "not_active" }`; a group batch adds
+  // `opIndex`, the index of the op that failed, to that op's details.
   details?: Record<string, unknown>;
 }
 
@@ -1432,6 +1557,10 @@ export interface ExportHeader {
   exportedAt: string;
   // The game's stream position, read before any record.
   position: string;
+  // The record kinds this export carries and the group kinds it was
+  // limited to (null: every group), as the request asked.
+  records: ExportRecordKind[];
+  groupKinds: string[] | null;
 }
 
 export interface ExportEnd {
